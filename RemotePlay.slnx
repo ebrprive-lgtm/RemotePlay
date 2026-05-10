@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="RemotePlay.csproj" />
+  <Project Path="RemotePlay.Tests/RemotePlay.Tests.csproj" />
+</Solution>
