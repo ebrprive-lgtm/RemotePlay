@@ -8,6 +8,8 @@ internal static class Logger
     private static readonly string LogFile =
         Path.Combine(AppContext.BaseDirectory, "remoteplay.log");
 
+    public static string FilePath => LogFile;
+
     public static void Info(string message) => Write("INFO", message, null);
     public static void Error(string message, Exception? ex = null) => Write("ERROR", message, ex);
 

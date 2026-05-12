@@ -1,6 +1,8 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+using System.Security.Cryptography;
+using System.Text;
 using System.Windows;
 using System.Windows.Media.Imaging;
 
@@ -12,6 +14,9 @@ namespace RemotePlay;
 /// </summary>
 internal static class ThumbnailHelper
 {
+    private static readonly string ThumbnailCacheDirectory =
+        Path.Combine(AppContext.BaseDirectory, "thumbnail-cache");
+
     // ── Shell COM interfaces ──────────────────────────────────────────────────
 
     [ComImport]
@@ -74,6 +79,10 @@ internal static class ThumbnailHelper
     {
         try
         {
+            var cached = TryReadCachedThumbnail(filePath, size);
+            if (cached is not null)
+                return cached;
+
             var riid = typeof(IShellItem).GUID;
             SHCreateItemFromParsingName(filePath, null, ref riid, out var shellItem);
 
@@ -97,7 +106,9 @@ internal static class ThumbnailHelper
                 var encoder = new JpegBitmapEncoder { QualityLevel = 82 };
                 encoder.Frames.Add(BitmapFrame.Create(bitmapSource));
                 encoder.Save(ms);
-                return ms.ToArray();
+                var bytes = ms.ToArray();
+                TryWriteCachedThumbnail(filePath, size, bytes);
+                return bytes;
             }
             finally
             {
@@ -109,5 +120,40 @@ internal static class ThumbnailHelper
             Logger.Error($"Thumbnail extraction failed for {filePath}", ex);
             return null;
         }
+    }
+
+    private static byte[]? TryReadCachedThumbnail(string filePath, int size)
+    {
+        try
+        {
+            var cachePath = GetCachePath(filePath, size);
+            return File.Exists(cachePath) ? File.ReadAllBytes(cachePath) : null;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Thumbnail cache read failed for {filePath}", ex);
+            return null;
+        }
+    }
+
+    private static void TryWriteCachedThumbnail(string filePath, int size, byte[] bytes)
+    {
+        try
+        {
+            Directory.CreateDirectory(ThumbnailCacheDirectory);
+            File.WriteAllBytes(GetCachePath(filePath, size), bytes);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Thumbnail cache write failed for {filePath}", ex);
+        }
+    }
+
+    private static string GetCachePath(string filePath, int size)
+    {
+        var fileInfo = new FileInfo(filePath);
+        var key = $"{Path.GetFullPath(filePath)}|{fileInfo.Length}|{fileInfo.LastWriteTimeUtc.Ticks}|{size}";
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
+        return Path.Combine(ThumbnailCacheDirectory, hash + ".jpg");
     }
 }

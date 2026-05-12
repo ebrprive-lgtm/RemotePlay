@@ -11,7 +11,8 @@
         WindowStyle="SingleBorderWindow"
         WindowState="Normal"
         Width="900" Height="620"
-        ResizeMode="CanResize">
+        ResizeMode="CanResize"
+        PreviewKeyDown="OnWindowPreviewKeyDown">
 
     <Window.Resources>
         <!-- Tab header style -->
@@ -36,6 +37,111 @@
                                 <Setter TargetName="Tab" Property="Background" Value="#252540"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Settings category sidebar button style -->
+        <Style x:Key="SettingsCatBtn" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#AAAAAA"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="16,10"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bg" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bg" Property="Background" Value="#1a2035"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Dark ComboBox style -->
+        <Style x:Key="DarkComboBox" TargetType="ComboBox">
+            <Setter Property="Background" Value="#1e1e2e"/>
+            <Setter Property="Foreground" Value="#EEE"/>
+            <Setter Property="BorderBrush" Value="#444"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="ItemContainerStyle">
+                <Setter.Value>
+                    <Style TargetType="ComboBoxItem">
+                        <Setter Property="Background" Value="#1e1e2e"/>
+                        <Setter Property="Foreground" Value="#EEE"/>
+                        <Setter Property="Padding" Value="8,6"/>
+                        <Style.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter Property="Background" Value="#2d2d4e"/>
+                                <Setter Property="Foreground" Value="#E94560"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton x:Name="ToggleButton"
+                                          Background="{TemplateBinding Background}"
+                                          BorderBrush="{TemplateBinding BorderBrush}"
+                                          BorderThickness="{TemplateBinding BorderThickness}"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          Padding="{TemplateBinding Padding}"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                          Focusable="False" ClickMode="Press">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="{TemplateBinding Background}"
+                                                BorderBrush="{TemplateBinding BorderBrush}"
+                                                BorderThickness="{TemplateBinding BorderThickness}">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="20"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ContentPresenter Grid.Column="0" Margin="{TemplateBinding Padding}"
+                                                                  VerticalAlignment="Center"/>
+                                                <Path Grid.Column="1" Data="M 0 0 L 4 4 L 8 0 Z"
+                                                      Fill="#888" VerticalAlignment="Center"
+                                                      HorizontalAlignment="Center" Margin="0,0,4,0"/>
+                                            </Grid>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter x:Name="ContentSite"
+                                              IsHitTestVisible="False"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              Margin="8,6,24,6"
+                                              VerticalAlignment="Center"/>
+                            <Popup x:Name="Popup" Placement="Bottom"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   AllowsTransparency="True" Focusable="False"
+                                   PopupAnimation="Slide">
+                                <Grid MinWidth="{TemplateBinding ActualWidth}" MaxHeight="200">
+                                    <Border Background="#1e1e2e" BorderBrush="#444" BorderThickness="1"
+                                            CornerRadius="0,0,3,3">
+                                        <ScrollViewer>
+                                            <StackPanel IsItemsHost="True"/>
+                                        </ScrollViewer>
+                                    </Border>
+                                </Grid>
+                            </Popup>
+                        </Grid>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -124,141 +230,216 @@
 
             <!-- ── SETTINGS tab ── -->
             <TabItem Header="⚙️  Settings" Style="{StaticResource DarkTab}">
-                <ScrollViewer Background="#111111" VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="24,20" MaxWidth="560">
+                <Grid Background="#111111">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="180"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
 
-                        <!-- Section: Movies folder -->
-                        <TextBlock Text="Movies Folder" Foreground="#E94560"
-                                   FontSize="14" FontWeight="Bold" Margin="0,0,0,8"/>
-                        <TextBlock Foreground="#888" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"
-                                   Text="The folder (and all subfolders) scanned for video files (.mp4 .mkv .avi .mov .wmv .m4v .ts .flv)."/>
-
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBox x:Name="MoviesFolderBox"
-                                     Grid.Column="0"
-                                     Background="#1e1e2e" Foreground="#EEE"
-                                     BorderBrush="#444" BorderThickness="1"
-                                     Padding="8,6" FontSize="13"
-                                     VerticalContentAlignment="Center"
-                                     TextWrapping="NoWrap"/>
-                            <Button Grid.Column="1" Content="Browse…"
-                                    Click="OnBrowseFolder"
-                                    Background="#333" Foreground="White" BorderThickness="0"
-                                    Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
-                        </Grid>
-
-                        <Button Content="Apply &amp; Restart Server"
-                                Click="OnApplySettings"
-                                Background="#E94560" Foreground="White" BorderThickness="0"
-                                Padding="14,8" HorizontalAlignment="Left"
-                                Margin="0,8,0,0" Cursor="Hand"/>
-
-                        <TextBlock x:Name="SettingsFeedback" Foreground="#00D4AA"
-                                   FontSize="12" Margin="0,10,0,0"
-                                   Visibility="Collapsed" TextWrapping="Wrap"/>
-
-                        <!-- Separator -->
-                        <Border Background="#333" Height="1" Margin="0,28,0,24"/>
-
-                        <!-- Section: Port -->
-                        <TextBlock Text="Web Server Port" Foreground="#E94560"
-                                   FontSize="14" FontWeight="Bold" Margin="0,0,0,8"/>
-                        <TextBlock Foreground="#888" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"
-                                   Text="Port the web interface listens on. Requires app restart after change."/>
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="120"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBox x:Name="PortBox"
-                                     Grid.Column="0"
-                                     Background="#1e1e2e" Foreground="#EEE"
-                                     BorderBrush="#444" BorderThickness="1"
-                                     Padding="8,6" FontSize="13"
-                                     VerticalContentAlignment="Center"/>
-                            <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
-                                       VerticalAlignment="Center" Margin="12,0,0,0"
-                                       Text="(1024–65535)"/>
-                        </Grid>
-
-                        <CheckBox x:Name="UseHttpsBox"
-                                  Content="Use secure HTTPS web interface"
-                                  Foreground="#EEE"
-                                  FontSize="13"
-                                  Margin="0,8,0,0"/>
-                        <TextBlock Foreground="#888" FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap"
-                                   Text="HTTPS helps mobile devices install the site as a PWA. First-time setup may require running RemotePlay as administrator and mobile browsers may ask you to trust the local certificate."/>
-
-                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                            <Button Content="Export HTTPS Certificate"
-                                    Click="OnExportCertificate"
-                                    Background="#333" Foreground="White" BorderThickness="0"
-                                    Padding="12,6" Cursor="Hand"/>
-                            <Button Content="Open Health Page"
-                                    Click="OnOpenHealthPage"
-                                    Background="#333" Foreground="White" BorderThickness="0"
-                                    Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
+                    <!-- Left sidebar -->
+                    <Border Grid.Column="0" Background="#0d0d1a" BorderBrush="#2a2a3e" BorderThickness="0,0,1,0">
+                        <StackPanel Margin="0,12,0,0">
+                            <TextBlock Text="SETTINGS" Foreground="#555" FontSize="10" FontWeight="Bold"
+                                       Margin="16,0,0,10"/>
+                            <Button x:Name="SettingsCatLibrary"   Content="📁  Library"         Click="OnSettingsCat" Tag="Library"   Style="{StaticResource SettingsCatBtn}" Background="#1a2a3a" Foreground="#E94560"/>
+                            <Button x:Name="SettingsCatServer"    Content="🌐  Server"          Click="OnSettingsCat" Tag="Server"    Style="{StaticResource SettingsCatBtn}"/>
+                            <Button x:Name="SettingsCatPlayback"  Content="▶  Playback"         Click="OnSettingsCat" Tag="Playback"  Style="{StaticResource SettingsCatBtn}"/>
+                            <Button x:Name="SettingsCatTracks"    Content="🎵  Audio &amp; Subs"   Click="OnSettingsCat" Tag="Tracks"    Style="{StaticResource SettingsCatBtn}"/>
+                            <Button x:Name="SettingsCatDisplay"   Content="🖥  Display"          Click="OnSettingsCat" Tag="Display"   Style="{StaticResource SettingsCatBtn}"/>
                         </StackPanel>
+                    </Border>
 
-                        <Button Content="Apply &amp; Restart Server"
-                                Click="OnApplySettings"
-                                Background="#555" Foreground="White" BorderThickness="0"
-                                Padding="14,8" HorizontalAlignment="Left"
-                                Margin="0,8,0,0" Cursor="Hand"/>
+                    <!-- Right content area -->
+                    <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" Background="#111111">
+                        <StackPanel Margin="28,24,28,24">
 
-                    </StackPanel>
-                </ScrollViewer>
-            </TabItem>
+                            <!-- Feedback banner (shared) -->
+                            <TextBlock x:Name="SettingsFeedback" Foreground="#00D4AA"
+                                       FontSize="12" Margin="0,0,0,16"
+                                       Visibility="Collapsed" TextWrapping="Wrap"/>
 
-        </TabControl>
+                            <!-- ── LIBRARY panel ── -->
+                            <StackPanel x:Name="PanelLibrary" Visibility="Visible">
+                                <TextBlock Text="Library" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
+                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20"
+                                           Text="The folder scanned for video files (.mp4 .mkv .avi .mov .wmv .m4v .ts .flv). All subfolders are included."/>
+
+                                <TextBlock Text="Movies Folder" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="MoviesFolderBox" Grid.Column="0"
+                                             Background="#1e1e2e" Foreground="#EEE"
+                                             BorderBrush="#444" BorderThickness="1"
+                                             Padding="8,6" FontSize="13"
+                                             VerticalContentAlignment="Center"/>
+                                    <Button Grid.Column="1" Content="Browse…" Click="OnBrowseFolder"
+                                            Background="#333" Foreground="White" BorderThickness="0"
+                                            Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
+                                </Grid>
+
+                                <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
+                                        Background="#E94560" Foreground="White" BorderThickness="0"
+                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
+                            </StackPanel>
+
+                            <!-- ── SERVER panel ── -->
+                            <StackPanel x:Name="PanelServer" Visibility="Collapsed">
+                                <TextBlock Text="Server" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
+                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20"
+                                           Text="Configure the web interface port and HTTPS settings."/>
+
+                                <TextBlock Text="Port" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="120"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="PortBox" Grid.Column="0"
+                                             Background="#1e1e2e" Foreground="#EEE"
+                                             BorderBrush="#444" BorderThickness="1"
+                                             Padding="8,6" FontSize="13"
+                                             VerticalContentAlignment="Center"/>
+                                    <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
+                                               VerticalAlignment="Center" Margin="12,0,0,0"
+                                               Text="(1024 – 65535)"/>
+                                </Grid>
+
+                                <CheckBox x:Name="UseHttpsBox"
+                                          Content="Use secure HTTPS (recommended for mobile PWA)"
+                                          Foreground="#EEE" FontSize="13" Margin="0,12,0,6"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
+                                           Text="HTTPS lets mobile browsers install RemotePlay as a PWA. First-time setup may require running as administrator. Browsers may prompt you to trust the local certificate."/>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,20">
+                                    <Button Content="Export HTTPS Certificate" Click="OnExportCertificate"
+                                            Background="#333" Foreground="White" BorderThickness="0"
+                                            Padding="12,6" Cursor="Hand"/>
+                                    <Button Content="Open Health Page" Click="OnOpenHealthPage"
+                                            Background="#333" Foreground="White" BorderThickness="0"
+                                            Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
+                                </StackPanel>
+
+                                <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
+                                        Background="#E94560" Foreground="White" BorderThickness="0"
+                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
+                            </StackPanel>
+
+                            <!-- ── PLAYBACK panel ── -->
+                            <StackPanel x:Name="PanelPlayback" Visibility="Collapsed">
+                                <TextBlock Text="Playback" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
+                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20"
+                                           Text="Default behaviour when a video finishes playing."/>
+
+                                <TextBlock Text="When a video ends" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                <ComboBox x:Name="PlaybackEndBehaviorCombo"
+                                          Style="{StaticResource DarkComboBox}"
+                                          HorizontalAlignment="Left" MinWidth="220" Margin="0,0,0,20">
+                                    <ComboBoxItem Content="Stop playback" Tag="Stop"/>
+                                    <ComboBoxItem Content="Play next video automatically" Tag="PlayNext"/>
+                                    <ComboBoxItem Content="Return to library" Tag="ReturnToLibrary"/>
+                                </ComboBox>
+
+                                <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
+                                        Background="#E94560" Foreground="White" BorderThickness="0"
+                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
+                            </StackPanel>
+
+                            <!-- ── AUDIO & SUBS panel ── -->
+                            <StackPanel x:Name="PanelTracks" Visibility="Collapsed">
+                                <TextBlock Text="Audio &amp; Subtitles" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
+                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20"
+                                           Text="Default track language preferences applied automatically when a video starts."/>
+
+                                <TextBlock Text="Preferred audio language" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"
+                                           Text="3-letter ISO 639-2 code, e.g. eng, fra, deu, jpn. Leave blank to use the default track."/>
+                                <TextBox x:Name="PreferredAudioLangBox"
+                                         Background="#1e1e2e" Foreground="#EEE"
+                                         BorderBrush="#444" BorderThickness="1"
+                                         Padding="8,6" FontSize="13" MaxWidth="140"
+                                         HorizontalAlignment="Left" Margin="0,0,0,20"
+                                         VerticalContentAlignment="Center"/>
+
+                                <TextBlock Text="Preferred subtitle language" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"
+                                           Text="3-letter ISO 639-2 code, e.g. eng, fra. Leave blank to disable auto-selection."/>
+                                <TextBox x:Name="PreferredSubtitleLangBox"
+                                         Background="#1e1e2e" Foreground="#EEE"
+                                         BorderBrush="#444" BorderThickness="1"
+                                         Padding="8,6" FontSize="13" MaxWidth="140"
+                                         HorizontalAlignment="Left" Margin="0,0,0,20"
+                                         VerticalContentAlignment="Center"/>
+
+                                <CheckBox x:Name="PreferForcedSubtitlesBox"
+                                          Content="Prefer forced subtitle tracks (dialogue subtitles for foreign language portions)"
+                                          Foreground="#EEE" FontSize="13" Margin="0,0,0,24"/>
+
+                                <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
+                                        Background="#E94560" Foreground="White" BorderThickness="0"
+                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
+                            </StackPanel>
+
+                                            <!-- ── DISPLAY panel ── -->
+                                            <StackPanel x:Name="PanelDisplay" Visibility="Collapsed">
+                                                <TextBlock Text="Display" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
+                                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
+                                                           Text="Choose which monitor the fullscreen video window opens on."/>
+
+                                                <TextBlock Text="Fullscreen display" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                                <ComboBox x:Name="PreferredDisplayCombo"
+                                                          Style="{StaticResource DarkComboBox}"
+                                                          HorizontalAlignment="Left" MinWidth="280" Margin="0,0,0,20"/>
+
+                                                <Button Content="Apply" Click="OnApplySettings"
+                                                        Background="#E94560" Foreground="White" BorderThickness="0"
+                                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
+                                            </StackPanel>
+
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                </Grid>
+                            </TabItem>
+
+                        </TabControl>
 
         <!-- ── Video Panel (hidden until toggled) ── -->
         <Grid x:Name="VideoPanel" Grid.Row="0" Grid.RowSpan="2" Visibility="Collapsed" Background="Black"
-              MouseMove="OnVideoMouseMove">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
-
+              MouseMove="OnVideoMouseMove" ClipToBounds="True">
             <vlc:VideoView x:Name="VideoPlayer"
-                           Grid.Row="1"
                            HorizontalAlignment="Stretch"
                            VerticalAlignment="Stretch"/>
 
             <Border x:Name="VideoBrightnessOverlay"
-                    Grid.Row="1"
                     Background="White"
                     Opacity="0"
                     IsHitTestVisible="False"
                     Panel.ZIndex="1"/>
 
             <!-- Idle overlay -->
-            <StackPanel x:Name="IdleOverlay"
-                        Grid.Row="1"
-                        HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
-                        Visibility="Visible"
-                        Panel.ZIndex="2">
-                <TextBlock Text="🎬" FontSize="72" HorizontalAlignment="Center"/>
-                <TextBlock Text="RemotePlay" FontSize="32" Foreground="#E94560"
-                           HorizontalAlignment="Center" Margin="0,8,0,0"/>
-                <TextBlock x:Name="IdleIpText" FontSize="16" Foreground="#AAAAAA"
-                           HorizontalAlignment="Center" Margin="0,12,0,0"/>
-                <Border Background="White" Padding="8" CornerRadius="6" HorizontalAlignment="Center" Margin="0,16,0,0">
-                    <Image x:Name="FullscreenQrImage" Width="180" Height="180" Stretch="Uniform"/>
-                </Border>
-                <TextBlock Text="Scan to open RemotePlay" FontSize="13" Foreground="#AAAAAA"
-                           HorizontalAlignment="Center" Margin="0,8,0,0"/>
-            </StackPanel>
+            <Grid x:Name="IdleOverlay"
+                  Background="Black"
+                  Visibility="Visible"
+                  Panel.ZIndex="2">
+                <StackPanel HorizontalAlignment="Center"
+                            VerticalAlignment="Center">
+                    <TextBlock Text="🎬" FontSize="72" HorizontalAlignment="Center"/>
+                    <TextBlock Text="RemotePlay" FontSize="32" Foreground="#E94560"
+                               HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                    <TextBlock x:Name="IdleIpText" FontSize="16" Foreground="#AAAAAA"
+                               HorizontalAlignment="Center" Margin="0,12,0,0"/>
+                    <Border Background="White" Padding="8" CornerRadius="6" HorizontalAlignment="Center" Margin="0,16,0,0">
+                        <Image x:Name="FullscreenQrImage" Width="180" Height="180" Stretch="Uniform"/>
+                    </Border>
+                    <TextBlock Text="Scan to open RemotePlay" FontSize="13" Foreground="#AAAAAA"
+                               HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                </StackPanel>
+            </Grid>
 
             <!-- Fullscreen overlay toolbar (auto-hide) — debug access only -->
             <Border x:Name="VideoOverlayToolbar"
-                    Grid.Row="0"
                     VerticalAlignment="Top" HorizontalAlignment="Stretch"
                     Background="#CC1a1a2e" Padding="8,6" Opacity="0"
                     Visibility="Collapsed" IsHitTestVisible="False"
@@ -276,7 +457,6 @@
 
             <!-- Transparent hit target that reveals the overlay when the pointer touches the top edge. -->
             <Border x:Name="VideoTopHotZone"
-                    Grid.Row="0"
                     VerticalAlignment="Top" HorizontalAlignment="Stretch"
                     Height="18" Background="Transparent"
                     MouseEnter="OnVideoTopHotZoneMouseEnter"
@@ -284,9 +464,9 @@
 
             <!-- Now-playing banner -->
             <Border x:Name="NowPlayingBanner"
-                    Grid.Row="2"
                     VerticalAlignment="Bottom" HorizontalAlignment="Stretch"
-                    Background="#AA000000" Padding="24,12" Opacity="0">
+                    Background="#AA000000" Padding="24,12" Opacity="0"
+                    Panel.ZIndex="9">
                 <TextBlock x:Name="NowPlayingText" FontSize="22" Foreground="White"
                            TextTrimming="CharacterEllipsis"/>
             </Border>

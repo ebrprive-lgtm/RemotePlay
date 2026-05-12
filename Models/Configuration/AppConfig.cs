@@ -9,10 +9,16 @@ internal sealed class AppConfig
     public bool UseHttps { get; init; }
     public string MoviesPath { get; init; } = Path.Combine(AppContext.BaseDirectory, "Movies");
     public double Volume { get; init; } = 1;
-    public double Brightness { get; init; }
+    public double Brightness { get; init; } = 0.5;
+    public double Zoom { get; init; } = 1;
     public double AudioBoost { get; init; } = 1;
     public double PlaybackSpeed { get; init; } = 1;
     public bool SubtitlesEnabled { get; init; } = true;
+    public string PreferredAudioLanguage { get; init; } = "eng";
+    public string PreferredSubtitleLanguage { get; init; } = "eng";
+    public bool PreferForcedSubtitles { get; init; } = true;
+    public PlaybackEndMode PlaybackEndBehavior { get; init; } = PlaybackEndMode.Stop;
+    public int PreferredDisplayIndex { get; init; } = -1; // -1 = primary screen
 
     private static readonly string ConfigFile =
         Path.Combine(AppContext.BaseDirectory, "remoteplay.json");
@@ -57,4 +63,11 @@ internal sealed class AppConfig
 
         return new AppConfig();
     }
+}
+
+internal enum PlaybackEndMode
+{
+    Stop,
+    PlayNext,
+    ReturnToLibrary
 }

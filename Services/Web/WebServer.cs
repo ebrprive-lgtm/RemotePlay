@@ -8,6 +8,8 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using QRCoder;
+using RemotePlay.Models;
+using Timer = System.Threading.Timer;
 
 namespace RemotePlay;
 
@@ -23,14 +25,41 @@ internal sealed record PlaybackStatus
     public string LastError { get; init; } = string.Empty;
     public bool CanResume { get; init; }
     public double Brightness { get; init; }
+    public double Saturation { get; init; } = 1;
+    public double Zoom { get; init; } = 1;
     public double AudioBoost { get; init; } = 1;
     public double PlaybackSpeed { get; init; } = 1;
     public bool SubtitlesEnabled { get; init; }
     public bool HasSubtitles { get; init; }
+    public TrackOption[] AudioTracks { get; init; } = [];
+    public TrackOption[] SubtitleTracks { get; init; } = [];
+    public int CurrentAudioTrackId { get; init; }
+    public int CurrentSubtitleTrackId { get; init; } = -1;
+    public string? PreviousTitle { get; init; }
+    public string? NextTitle { get; init; }
+    public string? FilePath { get; init; }
+    public PlaybackQueueItem[] Queue { get; init; } = [];
+    public int QueueCount { get; init; }
 }
 
-internal sealed class WebServer
+internal sealed record TrackOption(int Id, string Name);
+
+internal sealed record PlaybackQueueItem(string Path, string Title);
+
+internal sealed record LibraryScanStatus
 {
+    public bool IsScanning { get; init; }
+    public int IndexedFiles { get; init; }
+    public int ScannedFiles { get; init; }
+    public DateTimeOffset? StartedUtc { get; init; }
+    public DateTimeOffset? CompletedUtc { get; init; }
+    public string LastError { get; init; } = string.Empty;
+}
+
+internal sealed partial class WebServer
+{
+    private const string WebAssetsDirectoryName = "WebAssets";
+
     private static readonly HashSet<string> VideoExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv" };
     private static readonly HashSet<string> HiddenFolderNames =
@@ -39,19 +68,8 @@ internal sealed class WebServer
     private const string HttpsCertificateSubject = "CN=RemotePlay Local HTTPS";
 
     private readonly AppConfig _config;
+    private readonly WebServerCallbacks _callbacks;
     private HttpListener _listener = new();
-    private readonly Action<string> _onPlay;
-    private readonly Action _onStop;
-    private readonly Action _onPause;
-    private readonly Func<PlaybackStatus> _onGetStatus;
-    private readonly Action<double> _onSeek;
-    private readonly Action<double> _onSkip;
-    private readonly Action<double> _onSetVolume;
-    private readonly Action _onToggleMute;
-    private readonly Action<double> _onSetBrightness;
-    private readonly Action<double> _onSetAudioBoost;
-    private readonly Action<double> _onSetPlaybackSpeed;
-    private readonly Action _onToggleSubtitles;
     // Thumbnail cache: base64-encoded path → JPEG bytes (null = not available)
     private readonly ConcurrentDictionary<string, byte[]?> _thumbCache = new();
     private readonly Timer _libraryIndexTimer;
@@ -59,28 +77,17 @@ internal sealed class WebServer
     private LibraryFile[] _libraryIndex = [];
     private DateTimeOffset _lastRequestUtc = DateTimeOffset.UtcNow;
     private DateTimeOffset? _lastIndexRefreshUtc;
+    private DateTimeOffset? _scanStartedUtc;
+    private int _scannedFiles;
+    private string _lastScanError = string.Empty;
     private bool _isIndexing;
     private string _activeScheme;
     private string? _startupWarning;
 
-    public WebServer(AppConfig config, Action<string> onPlay, Action onStop, Action onPause,
-        Func<PlaybackStatus> onGetStatus, Action<double> onSeek, Action<double> onSkip,
-        Action<double> onSetVolume, Action onToggleMute, Action<double> onSetBrightness,
-        Action<double> onSetAudioBoost, Action<double> onSetPlaybackSpeed, Action onToggleSubtitles)
+    public WebServer(AppConfig config, WebServerCallbacks callbacks)
     {
         _config = config;
-        _onPlay = onPlay;
-        _onStop = onStop;
-        _onPause = onPause;
-        _onGetStatus = onGetStatus;
-        _onSeek = onSeek;
-        _onSkip = onSkip;
-        _onSetVolume = onSetVolume;
-        _onToggleMute = onToggleMute;
-        _onSetBrightness = onSetBrightness;
-        _onSetAudioBoost = onSetAudioBoost;
-        _onSetPlaybackSpeed = onSetPlaybackSpeed;
-        _onToggleSubtitles = onToggleSubtitles;
+        _callbacks = callbacks;
         _activeScheme = config.Scheme;
         _libraryIndexTimer = new Timer(_ => RefreshLibraryIndexIfIdle(), null,
             TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
@@ -88,6 +95,16 @@ internal sealed class WebServer
 
     public string ActiveScheme => _activeScheme;
     public string? StartupWarning => _startupWarning;
+
+    private LibraryScanStatus GetLibraryScanStatus() => new()
+    {
+        IsScanning = _isIndexing,
+        IndexedFiles = _libraryIndex.Length,
+        ScannedFiles = _scannedFiles,
+        StartedUtc = _scanStartedUtc,
+        CompletedUtc = _lastIndexRefreshUtc,
+        LastError = _lastScanError
+    };
 
     public void Start()
     {
@@ -238,647 +255,6 @@ internal sealed class WebServer
         return (process.ExitCode, output);
     }
 
-    private async Task ListenLoopAsync()
-    {
-        while (_listener.IsListening)
-        {
-            try
-            {
-                var ctx = await _listener.GetContextAsync().ConfigureAwait(false);
-                _ = Task.Run(() => HandleRequestSafe(ctx));
-            }
-            catch (HttpListenerException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("Unexpected error in listen loop", ex);
-            }
-        }
-    }
-
-    private void HandleRequestSafe(HttpListenerContext ctx)
-    {
-        try { HandleRequest(ctx); }
-        catch (Exception ex)
-        {
-            Logger.Error("Error handling request", ex);
-            TrySendResponse(ctx, 500, "text/plain", "Internal server error");
-        }
-    }
-
-    private void HandleRequest(HttpListenerContext ctx)
-    {
-        var req = ctx.Request;
-        var urlPath = req.Url?.AbsolutePath ?? "/";
-        _lastRequestUtc = DateTimeOffset.UtcNow;
-
-        Logger.Info($"{req.HttpMethod} {urlPath}");
-
-        ctx.Response.AddHeader("Access-Control-Allow-Origin", "*");
-
-        switch (urlPath)
-        {
-            case "/" or "/index.html":
-                TrySendResponse(ctx, 200, "text/html; charset=utf-8", HtmlPage);
-                break;
-
-            case "/manifest.webmanifest":
-                TrySendResponse(ctx, 200, "application/manifest+json; charset=utf-8", ManifestJson);
-                break;
-
-            case "/service-worker.js":
-                ctx.Response.AddHeader("Cache-Control", "no-cache");
-                TrySendResponse(ctx, 200, "application/javascript; charset=utf-8", ServiceWorkerJs);
-                break;
-
-            case "/icons/icon-192.png":
-                HandleStaticIcon(ctx, "icon-192.png");
-                break;
-
-            case "/icons/icon-512.png":
-                HandleStaticIcon(ctx, "icon-512.png");
-                break;
-
-            case "/icons/apple-touch-icon.png":
-                HandleStaticIcon(ctx, "apple-touch-icon.png");
-                break;
-
-            case "/health":
-                HandleHealthPage(ctx);
-                break;
-
-            case "/certificate.cer":
-                HandleCertificateDownload(ctx);
-                break;
-
-            case "/qr.svg":
-                HandleQrCode(ctx);
-                break;
-
-            case "/setup-code.png":
-                HandleSetupCodePng(ctx);
-                break;
-
-            // Returns the subfolders and video files in a given directory.
-            // Query param: dir=<base64-encoded absolute path>  (omit for root movies folder)
-            case "/api/browse":
-                HandleBrowse(ctx);
-                break;
-
-            case "/api/search":
-                HandleSearch(ctx);
-                break;
-
-            case "/api/rescan":
-                StartLibraryIndexRefresh(force: true);
-                TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true, indexing = true }));
-                break;
-
-            case "/api/play":
-                HandlePlay(ctx);
-                break;
-
-            case "/api/stop":
-                _onStop();
-                TrySendResponse(ctx, 200, "text/plain", "OK");
-                break;
-
-            case "/api/pause":
-                _onPause();
-                TrySendResponse(ctx, 200, "text/plain", "OK");
-                break;
-
-            case "/api/thumb":
-                HandleThumb(ctx);
-                break;
-
-            case "/api/status":
-                HandleStatus(ctx);
-                break;
-
-            case "/api/seek":
-                HandleSeek(ctx);
-                break;
-
-            case "/api/skip":
-                HandleSkip(ctx);
-                break;
-
-            case "/api/volume":
-                HandleVolume(ctx);
-                break;
-
-            case "/api/brightness":
-                HandleBrightness(ctx);
-                break;
-
-            case "/api/audio-boost":
-                HandleAudioBoost(ctx);
-                break;
-
-            case "/api/speed":
-                HandlePlaybackSpeed(ctx);
-                break;
-
-            case "/api/subtitles":
-                _onToggleSubtitles();
-                TrySendResponse(ctx, 200, "text/plain", "OK");
-                break;
-
-            case "/api/mute":
-                _onToggleMute();
-                TrySendResponse(ctx, 200, "text/plain", "OK");
-                break;
-
-            case "/api/health":
-                HandleHealth(ctx);
-                break;
-
-            default:
-                TrySendResponse(ctx, 404, "text/plain", "Not found");
-                break;
-        }
-    }
-
-    private void HandleThumb(HttpListenerContext ctx)
-    {
-        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(encodedPath))
-        {
-            TrySendResponse(ctx, 400, "text/plain", "Missing path");
-            return;
-        }
-
-        var jpeg = _thumbCache.GetOrAdd(encodedPath, key =>
-        {
-            try
-            {
-                var filePath = WebPathHelpers.DecodePath(key);
-                return ThumbnailHelper.GetJpegThumbnail(filePath);
-            }
-            catch { return null; }
-        });
-
-        if (jpeg is null)
-        {
-            TrySendResponse(ctx, 404, "text/plain", "No thumbnail");
-            return;
-        }
-
-        ctx.Response.AddHeader("Cache-Control", "public, max-age=3600");
-        TrySendBytes(ctx, 200, "image/jpeg", jpeg);
-    }
-
-    private static void HandleStaticIcon(HttpListenerContext ctx, string fileName)
-    {
-        var path = Path.Combine(AppContext.BaseDirectory, "Assets", "Pwa", fileName);
-        if (!File.Exists(path))
-        {
-            TrySendResponse(ctx, 404, "text/plain", "Icon not found");
-            return;
-        }
-
-        ctx.Response.AddHeader("Cache-Control", "public, max-age=86400");
-        TrySendBytes(ctx, 200, "image/png", File.ReadAllBytes(path));
-    }
-
-    private void HandleStatus(HttpListenerContext ctx)
-    {
-        var s = _onGetStatus();
-        var json = JsonSerializer.Serialize(new
-        {
-            isPlaying  = s.IsPlaying,
-            isPaused   = s.IsPaused,
-            position   = Math.Round(s.PositionSeconds, 1),
-            duration   = Math.Round(s.DurationSeconds, 1),
-            title      = s.Title ?? string.Empty,
-            volume     = Math.Round(s.Volume, 2),
-            brightness = Math.Round(s.Brightness, 2),
-            audioBoost = Math.Round(s.AudioBoost, 2),
-            playbackSpeed = Math.Round(s.PlaybackSpeed, 2),
-            isMuted    = s.IsMuted,
-            lastError  = s.LastError ?? string.Empty,
-            canResume  = s.CanResume,
-            subtitlesEnabled = s.SubtitlesEnabled,
-            hasSubtitles = s.HasSubtitles
-        });
-        TrySendResponse(ctx, 200, "application/json", json);
-    }
-
-    private void HandleSeek(HttpListenerContext ctx)
-    {
-        var posParam = ctx.Request.QueryString["pos"];
-        if (double.TryParse(posParam, System.Globalization.NumberStyles.Any,
-                System.Globalization.CultureInfo.InvariantCulture, out var secs))
-        {
-            _onSeek(secs);
-            TrySendResponse(ctx, 200, "text/plain", "OK");
-        }
-        else
-        {
-            TrySendResponse(ctx, 400, "text/plain", "Bad pos");
-        }
-    }
-
-    private void HandleSkip(HttpListenerContext ctx)
-    {
-        var secondsParam = ctx.Request.QueryString["seconds"];
-        if (double.TryParse(secondsParam, System.Globalization.NumberStyles.Any,
-                System.Globalization.CultureInfo.InvariantCulture, out var seconds))
-        {
-            _onSkip(seconds);
-            TrySendResponse(ctx, 200, "text/plain", "OK");
-        }
-        else
-        {
-            TrySendResponse(ctx, 400, "text/plain", "Bad seconds");
-        }
-    }
-
-    private void HandleVolume(HttpListenerContext ctx)
-    {
-        var valueParam = ctx.Request.QueryString["value"];
-        if (double.TryParse(valueParam, System.Globalization.NumberStyles.Any,
-                System.Globalization.CultureInfo.InvariantCulture, out var volume))
-        {
-            _onSetVolume(Math.Clamp(volume, 0, 1));
-            TrySendResponse(ctx, 200, "text/plain", "OK");
-        }
-        else
-        {
-            TrySendResponse(ctx, 400, "text/plain", "Bad volume");
-        }
-    }
-
-    private void HandleBrightness(HttpListenerContext ctx)
-    {
-        var valueParam = ctx.Request.QueryString["value"];
-        if (double.TryParse(valueParam, System.Globalization.NumberStyles.Any,
-                System.Globalization.CultureInfo.InvariantCulture, out var brightness))
-        {
-            _onSetBrightness(Math.Clamp(brightness, 0, 1));
-            TrySendResponse(ctx, 200, "text/plain", "OK");
-        }
-        else
-        {
-            TrySendResponse(ctx, 400, "text/plain", "Bad brightness");
-        }
-    }
-
-    private void HandleAudioBoost(HttpListenerContext ctx)
-    {
-        var valueParam = ctx.Request.QueryString["value"];
-        if (double.TryParse(valueParam, System.Globalization.NumberStyles.Any,
-                System.Globalization.CultureInfo.InvariantCulture, out var audioBoost))
-        {
-            _onSetAudioBoost(Math.Clamp(audioBoost, 1, 2));
-            TrySendResponse(ctx, 200, "text/plain", "OK");
-        }
-        else
-        {
-            TrySendResponse(ctx, 400, "text/plain", "Bad audio boost");
-        }
-    }
-
-    private void HandlePlaybackSpeed(HttpListenerContext ctx)
-    {
-        var valueParam = ctx.Request.QueryString["value"];
-        if (double.TryParse(valueParam, System.Globalization.NumberStyles.Any,
-                System.Globalization.CultureInfo.InvariantCulture, out var playbackSpeed))
-        {
-            _onSetPlaybackSpeed(Math.Clamp(playbackSpeed, 0.5, 2));
-            TrySendResponse(ctx, 200, "text/plain", "OK");
-        }
-        else
-        {
-            TrySendResponse(ctx, 400, "text/plain", "Bad speed");
-        }
-    }
-
-    private void HandleHealth(HttpListenerContext ctx)
-    {
-        var status = _onGetStatus();
-        var json = JsonSerializer.Serialize(new
-        {
-            ok = true,
-            requestedScheme = _config.Scheme,
-            activeScheme = _activeScheme,
-            startupWarning = _startupWarning ?? string.Empty,
-            port = _config.Port,
-            moviesPath = _config.ResolvedMoviesPath,
-            isPlaying = status.IsPlaying,
-            lastError = status.LastError ?? string.Empty,
-            indexedFiles = _libraryIndex.Length,
-            isIndexing = _isIndexing,
-            lastIndexRefreshUtc = _lastIndexRefreshUtc
-        });
-        TrySendResponse(ctx, 200, "application/json", json);
-    }
-
-    private void HandleHealthPage(HttpListenerContext ctx)
-    {
-        var status = _onGetStatus();
-        var certificate = TryGetHttpsCertificate();
-        var html = $$"""
-            <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/>
-            <meta name="viewport" content="width=device-width,initial-scale=1"/>
-            <title>RemotePlay Health</title>
-            <style>body{background:#111;color:#eee;font-family:Segoe UI,Arial,sans-serif;margin:0;padding:24px}main{max-width:760px;margin:auto}h1{color:#e94560}.card{background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:16px;margin:12px 0}.ok{color:#00d4aa}.warn{color:#ffaa00}dt{color:#888;margin-top:10px}dd{margin:3px 0 0 0;word-break:break-word}a{color:#00d4aa}</style>
-            </head><body><main><h1>RemotePlay Health</h1>
-            <section class="card"><h2 class="ok">Server</h2><dl>
-            <dt>Requested mode</dt><dd>{{HtmlEncode(_config.Scheme.ToUpperInvariant())}}</dd>
-            <dt>Active mode</dt><dd>{{HtmlEncode(_activeScheme.ToUpperInvariant())}}</dd>
-            <dt>Port</dt><dd>{{_config.Port}}</dd>
-            <dt>Movies folder</dt><dd>{{HtmlEncode(_config.ResolvedMoviesPath)}}</dd>
-            <dt>Startup warning</dt><dd class="warn">{{HtmlEncode(_startupWarning ?? "None")}}</dd>
-            </dl></section>
-            <section class="card"><h2>Playback</h2><dl>
-            <dt>Playing</dt><dd>{{status.IsPlaying}}</dd>
-            <dt>Last error</dt><dd>{{HtmlEncode(string.IsNullOrWhiteSpace(status.LastError) ? "None" : status.LastError)}}</dd>
-            </dl></section>
-            <section class="card"><h2>Library index</h2><dl>
-            <dt>Indexed videos</dt><dd>{{_libraryIndex.Length}}</dd>
-            <dt>Indexing now</dt><dd>{{_isIndexing}}</dd>
-            <dt>Last refresh UTC</dt><dd>{{_lastIndexRefreshUtc?.ToString("u") ?? "Never"}}</dd>
-            </dl></section>
-            <section class="card"><h2>HTTPS certificate</h2><dl>
-            <dt>Certificate present</dt><dd>{{certificate is not null}}</dd>
-            <dt>Expires</dt><dd>{{certificate?.NotAfter.ToString("u") ?? "N/A"}}</dd>
-            <dt>Thumbprint</dt><dd>{{HtmlEncode(certificate?.Thumbprint ?? "N/A")}}</dd>
-            </dl><p><a href="/certificate.cer">Download certificate</a></p></section>
-            </main></body></html>
-            """;
-        certificate?.Dispose();
-        TrySendResponse(ctx, 200, "text/html; charset=utf-8", html);
-    }
-
-    private static void HandleCertificateDownload(HttpListenerContext ctx)
-    {
-        using var certificate = TryGetHttpsCertificate();
-        if (certificate is null)
-        {
-            TrySendResponse(ctx, 404, "text/plain", "HTTPS certificate not found. Enable HTTPS once to create it.");
-            return;
-        }
-
-        ctx.Response.AddHeader("Content-Disposition", "attachment; filename=RemotePlay-Local-HTTPS.cer");
-        TrySendBytes(ctx, 200, "application/x-x509-ca-cert", certificate.Export(X509ContentType.Cert));
-    }
-
-    private void HandleQrCode(HttpListenerContext ctx)
-    {
-        var target = ctx.Request.QueryString["url"];
-        if (string.IsNullOrWhiteSpace(target))
-            target = $"{_activeScheme}://{ctx.Request.UserHostName?.Split(':')[0]}:{_config.Port}/";
-
-        TrySendResponse(ctx, 200, "image/svg+xml; charset=utf-8", BuildSetupQrSvg(target));
-    }
-
-    private void HandleSetupCodePng(HttpListenerContext ctx)
-    {
-        var target = ctx.Request.QueryString["url"];
-        if (string.IsNullOrWhiteSpace(target))
-            target = $"{_activeScheme}://{ctx.Request.UserHostName?.Split(':')[0]}:{_config.Port}/";
-
-        TrySendBytes(ctx, 200, "image/png", BuildSetupCodePng(target));
-    }
-
-    private void HandleSearch(HttpListenerContext ctx)
-    {
-        var query = (ctx.Request.QueryString["q"] ?? string.Empty).Trim();
-        StartLibraryIndexRefresh(force: false);
-
-        var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var files = terms.Length == 0
-            ? Array.Empty<object>()
-            : _libraryIndex
-                .Where(f => terms.All(t => f.SearchText.Contains(t, StringComparison.OrdinalIgnoreCase)))
-                .OrderBy(f => f.Name)
-                .Take(200)
-                .Select(f => new { name = f.Name, path = f.EncodedPath, folder = f.FolderName })
-                .ToArray<object>();
-
-        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new
-        {
-            files,
-            total = files.Length,
-            indexedFiles = _libraryIndex.Length,
-            indexing = _isIndexing,
-            lastRefreshUtc = _lastIndexRefreshUtc
-        }));
-    }
-
-    private void HandleBrowse(HttpListenerContext ctx)
-    {
-        var root = _config.ResolvedMoviesPath;
-        var dirParam = ctx.Request.QueryString["dir"];
-
-        string targetDir;
-        if (string.IsNullOrWhiteSpace(dirParam))
-        {
-            targetDir = root;
-        }
-        else
-        {
-            targetDir = WebPathHelpers.DecodePath(dirParam);
-            // Security: ensure path stays within the configured root
-            if (!WebPathHelpers.IsUnderRoot(targetDir, root))
-            {
-                TrySendResponse(ctx, 403, "text/plain", "Forbidden");
-                return;
-            }
-        }
-
-        if (!Directory.Exists(targetDir))
-        {
-            try { Directory.CreateDirectory(targetDir); } catch { }
-            TrySendResponse(ctx, 200, "application/json",
-                JsonSerializer.Serialize(new { folders = Array.Empty<object>(), files = Array.Empty<object>(), current = targetDir, isRoot = true, breadcrumbs = Array.Empty<object>() }));
-            return;
-        }
-
-        var folders = Directory.EnumerateDirectories(targetDir)
-            .Where(d => !HiddenFolderNames.Contains(Path.GetFileName(d)))
-            .OrderBy(d => d)
-            .Select(d => new
-            {
-                name = Path.GetFileName(d),
-                dir = WebPathHelpers.EncodePath(d)
-            })
-            .ToArray();
-
-        var files = Directory.EnumerateFiles(targetDir)
-            .Where(f => WebPathHelpers.IsVideoFile(f, VideoExtensions))
-            .OrderBy(f => f)
-            .Select(f => new
-            {
-                name = Path.GetFileNameWithoutExtension(f),
-                path = WebPathHelpers.EncodePath(f)
-            })
-            .ToArray();
-
-        // Parent dir (null if we're already at root)
-        string? parentEncoded = null;
-        var parent = Path.GetDirectoryName(targetDir);
-        if (parent is not null && WebPathHelpers.IsUnderRoot(parent, root))
-            parentEncoded = WebPathHelpers.EncodePath(parent);
-
-        var result = JsonSerializer.Serialize(new
-        {
-            folders,
-            files,
-            current = Path.GetFileName(targetDir),
-            currentFull = targetDir,
-            parent = parentEncoded,
-            breadcrumbs = BuildBreadcrumbs(root, targetDir),
-            isRoot = string.Equals(targetDir, root, StringComparison.OrdinalIgnoreCase)
-        });
-
-        TrySendResponse(ctx, 200, "application/json", result);
-    }
-
-    private void HandlePlay(HttpListenerContext ctx)
-    {
-        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(encodedPath))
-        {
-            TrySendResponse(ctx, 400, "text/plain", "Missing path");
-            return;
-        }
-
-        var filePath = WebPathHelpers.DecodePath(encodedPath);
-        if (!File.Exists(filePath))
-        {
-            TrySendResponse(ctx, 404, "text/plain", "File not found");
-            return;
-        }
-
-        _onPlay(filePath);
-        TrySendResponse(ctx, 200, "text/plain", "OK");
-    }
-
-    private void RefreshLibraryIndexIfIdle()
-    {
-        if (DateTimeOffset.UtcNow - _lastRequestUtc < TimeSpan.FromHours(1))
-            return;
-
-        if (_lastIndexRefreshUtc is not null && DateTimeOffset.UtcNow - _lastIndexRefreshUtc.Value < TimeSpan.FromDays(1))
-            return;
-
-        StartLibraryIndexRefresh(force: false);
-    }
-
-    private void StartLibraryIndexRefresh(bool force)
-    {
-        lock (_libraryIndexGate)
-        {
-            if (_isIndexing)
-                return;
-
-            if (!force && _libraryIndex.Length > 0 && _lastIndexRefreshUtc is not null)
-                return;
-
-            _isIndexing = true;
-        }
-
-        Task.Run(() =>
-        {
-            try
-            {
-                var root = _config.ResolvedMoviesPath;
-                if (!Directory.Exists(root))
-                {
-                    _libraryIndex = [];
-                    return;
-                }
-
-                var files = EnumerateLibraryVideoFiles(root)
-                    .Where(f => WebPathHelpers.IsVideoFile(f, VideoExtensions))
-                    .Select(f => new LibraryFile(
-                        Path.GetFileNameWithoutExtension(f),
-                        WebPathHelpers.EncodePath(f),
-                        Path.GetFileName(Path.GetDirectoryName(f)) ?? string.Empty,
-                        BuildSearchText(root, f)))
-                    .ToArray();
-
-                _libraryIndex = files;
-                _lastIndexRefreshUtc = DateTimeOffset.UtcNow;
-                Logger.Info($"Library index refreshed: {files.Length} videos");
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("Library index refresh failed", ex);
-            }
-            finally
-            {
-                lock (_libraryIndexGate)
-                    _isIndexing = false;
-            }
-        });
-    }
-
-    private static string BuildSearchText(string root, string filePath)
-    {
-        var relative = Path.GetRelativePath(root, filePath);
-        return relative.Replace(Path.DirectorySeparatorChar, ' ')
-            .Replace(Path.AltDirectorySeparatorChar, ' ');
-    }
-
-    private static IEnumerable<string> EnumerateLibraryVideoFiles(string root)
-    {
-        var pending = new Stack<string>();
-        pending.Push(root);
-
-        while (pending.Count > 0)
-        {
-            var dir = pending.Pop();
-
-            IEnumerable<string> files;
-            try { files = Directory.EnumerateFiles(dir); }
-            catch { continue; }
-
-            foreach (var file in files)
-                yield return file;
-
-            IEnumerable<string> subdirs;
-            try { subdirs = Directory.EnumerateDirectories(dir); }
-            catch { continue; }
-
-            foreach (var subdir in subdirs)
-            {
-                if (!HiddenFolderNames.Contains(Path.GetFileName(subdir)))
-                    pending.Push(subdir);
-            }
-        }
-    }
-
-    private static object[] BuildBreadcrumbs(string root, string targetDir)
-    {
-        var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var normalizedTarget = Path.GetFullPath(targetDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-        var crumbs = new List<object>
-        {
-            new { name = Path.GetFileName(normalizedRoot), dir = WebPathHelpers.EncodePath(normalizedRoot) }
-        };
-
-        var relative = Path.GetRelativePath(normalizedRoot, normalizedTarget);
-        if (relative == ".")
-            return crumbs.ToArray();
-
-        var current = normalizedRoot;
-        foreach (var part in relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
-        {
-            current = Path.Combine(current, part);
-            crumbs.Add(new { name = part, dir = WebPathHelpers.EncodePath(current) });
-        }
-
-        return crumbs.ToArray();
-    }
-
-    private sealed record LibraryFile(string Name, string EncodedPath, string FolderName, string SearchText);
 
     private static readonly string ManifestJson = JsonSerializer.Serialize(new
     {
@@ -928,6 +304,28 @@ internal sealed class WebServer
           event.respondWith(fetch(event.request).catch(() => caches.match(event.request).then(r => r || caches.match('/'))));
         });
         """;
+
+    private static string GetHtmlPage() =>
+        LoadWebAsset("index.html", HtmlPage);
+
+    private static string GetServiceWorkerJs() =>
+        LoadWebAsset("service-worker.js", ServiceWorkerJs);
+
+    private static string LoadWebAsset(string fileName, string fallback)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, WebAssetsDirectoryName, fileName);
+        try
+        {
+            return File.Exists(path)
+                ? File.ReadAllText(path, Encoding.UTF8)
+                : fallback;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Failed to load web asset {path}; using embedded fallback", ex);
+            return fallback;
+        }
+    }
 
     private static void TrySendResponse(HttpListenerContext ctx, int status,
         string contentType, string body)
@@ -1010,18 +408,34 @@ internal sealed class WebServer
         header{background:#1a1a2e;padding:.55rem .75rem;display:grid;grid-template-columns:auto minmax(160px,1fr) minmax(360px,720px);gap:.7rem;align-items:start;position:sticky;top:0;z-index:10}
         #brand{display:flex;flex-direction:column;gap:.35rem;align-items:stretch}
         h1{font-size:1.05rem;color:#e94560;white-space:nowrap;line-height:1.9rem}
+        #brand-actions{display:flex;gap:.35rem;align-items:center}
+        #health-link{display:inline-flex;align-items:center;gap:.3rem;background:#162033;border:1px solid #2e426a;color:#cfe0ff;text-decoration:none;border-radius:999px;padding:.34rem .55rem;font-size:.75rem;font-weight:700}
+        #health-link:hover{background:#203252}
+        #diag-dot{width:.65rem;height:.65rem;border-radius:999px;background:#ffaa00;box-shadow:0 0 0 3px rgba(255,170,0,.18)}
+        #diag-dot.ok{background:#00d4aa;box-shadow:0 0 0 3px rgba(0,212,170,.18)}
+        #diag-dot.error{background:#ff5959;box-shadow:0 0 0 3px rgba(255,89,89,.2)}
         #search-wrap{display:flex;flex-direction:column;gap:.2rem;min-width:0}
         #search-row{display:flex;gap:.35rem;min-width:0}
         #search{background:#222;color:#eee;border:1px solid #444;padding:.38rem .6rem;border-radius:4px;font-size:.86rem;flex:1;min-width:100px}
         .btn{border:none;border-radius:4px;cursor:pointer;font-size:.78rem;padding:.36rem .65rem;color:#fff;transition:background .15s}
         .btn-red{background:#e94560}.btn-red:hover{background:#c73652}
         .btn-dim{background:#333}.btn-dim:hover{background:#555}
+        .btn-nav{background:#2b3f6b}.btn-nav:hover{background:#36528a}
+        .btn-nav{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.28rem;line-height:1.05;min-height:46px;width:100%}
+        .nav-main{font-size:.9rem;font-weight:800;text-transform:uppercase;letter-spacing:.02em}
+        .nav-title{font-size:.58rem;font-weight:600;opacity:.78;width:100%;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-transform:none;letter-spacing:0}
+        .btn:disabled{opacity:.45;cursor:not-allowed;filter:saturate(.6)}
+        .btn:disabled:hover{background:inherit}
+        .btn-seek{background:#38404f}.btn-seek:hover{background:#4a5568}
+        .btn-stop{background:#7d2432}.btn-stop:hover{background:#a83143}
         #install-hint{display:none;background:#10251f;border-bottom:1px solid #00d4aa;color:#ddfff7;padding:.55rem .75rem;font-size:.82rem;align-items:center;gap:.55rem;justify-content:space-between}
         #install-hint button{background:#00d4aa;color:#06110f;border:none;border-radius:4px;padding:.3rem .55rem;font-weight:700;cursor:pointer}
         #now-playing-bar{display:none;min-width:0;width:100%;flex-direction:column;gap:.6rem;background:linear-gradient(135deg,#0d0d1a,#151526);padding:.7rem;border:1px solid #30304a;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.38)}
         #player-title{font-size:.9rem;color:#fff;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
         .player-top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.7rem}
-        .transport-controls{display:flex;gap:.4rem;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+        .transport-controls{display:flex;gap:.45rem;align-items:stretch;justify-content:flex-end;flex-wrap:wrap}
+        .button-group{display:flex;gap:.25rem;background:#111627;border:1px solid #2d314a;border-radius:10px;padding:.25rem}
+        .transport-nav-group{flex-direction:column;min-width:180px}
         .transport-controls .btn{font-weight:700;min-width:58px}
         #pause-btn{min-width:92px}
         #progress-row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:.65rem}
@@ -1042,7 +456,9 @@ internal sealed class WebServer
           body.desktop-player-docked #browser{padding-right:calc(clamp(320px,34vw,460px) + 18px)}
           body.desktop-player-docked .player-top{grid-template-columns:1fr}
           body.desktop-player-docked #player-title{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.25;max-height:none}
-          body.desktop-player-docked .transport-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.55rem;justify-content:stretch}
+          body.desktop-player-docked .transport-controls{display:flex;gap:.5rem;justify-content:stretch}
+          body.desktop-player-docked .button-group{flex:1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.35rem}
+          body.desktop-player-docked .transport-nav-group{display:grid;grid-template-columns:1fr;min-width:0}
           body.desktop-player-docked .transport-controls .btn{width:100%;min-height:42px;font-size:.9rem}
           body.desktop-player-docked #pause-btn{min-width:0}
           body.desktop-player-docked #speed-row{justify-content:center;padding:0}
@@ -1053,20 +469,38 @@ internal sealed class WebServer
           body.desktop-player-docked .control-card{padding:.65rem .75rem;border-radius:11px;background:#18182c}
           body.desktop-player-docked .slider-wrap{gap:.6rem}
           body.desktop-player-docked .icon-btn{width:34px;height:34px}
+          body.desktop-player-docked .display-icon-btn{width:auto;height:auto}
           body.desktop-player-docked #volume,
           body.desktop-player-docked #brightness,
+          body.desktop-player-docked #saturation,
+          body.desktop-player-docked #zoom,
           body.desktop-player-docked #audio-boost{min-height:42px}
           body.desktop-player-docked #volume-label,
           body.desktop-player-docked #brightness-label,
+          body.desktop-player-docked #saturation-label,
+          body.desktop-player-docked #zoom-label,
           body.desktop-player-docked #audio-boost-label{min-width:56px;font-size:1rem}
         }
         @media (min-width:1281px){
-          body.desktop-player-docked .transport-controls{grid-template-columns:repeat(4,minmax(0,1fr))}
+          body.desktop-player-docked .button-group{grid-template-columns:repeat(2,minmax(0,1fr))}
+          body.desktop-player-docked .transport-nav-group{grid-template-columns:1fr}
         }
         .control-title{font-size:.68rem;color:#888;text-transform:uppercase;letter-spacing:.08em;font-weight:700}
         .control-actions{display:flex;gap:.35rem;flex-wrap:wrap;align-items:center}
+        .track-select{width:100%;min-width:0;background:#22263b;color:#eee;border:1px solid #3a3a57;border-radius:8px;padding:.45rem .55rem;font-size:.86rem}
+        .track-select-row{display:flex;flex-direction:column;gap:.5rem}
+        .track-group{display:flex;flex-direction:column;gap:.22rem}
+        .track-group-label{font-size:.68rem;color:#9ea2b8;text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+        #player-meta{font-size:.76rem;color:#9ea2b8;line-height:1.25;min-height:1rem}
+        #connection-status{font-size:.7rem;color:#ffaa00;line-height:1.2;min-height:.9rem}
+        #connection-status.connected{color:#00d4aa}
+        #connection-status.error{color:#ff7777}
         .slider-wrap{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:.45rem;min-width:0}
+        .display-slider-wrap{grid-template-columns:minmax(96px,auto) minmax(0,1fr) auto}
+        .zoom-slider-wrap{grid-template-columns:minmax(96px,auto) minmax(0,1fr) auto;gap:.45rem;width:100%;margin-top:.28rem}
         .icon-btn{width:28px;height:28px;border:none;background:transparent;display:grid;place-items:center;cursor:pointer;border-radius:6px;transition:background .15s}
+        .display-icon-btn{width:auto;height:auto;display:flex;align-items:center;gap:.35rem;padding:.2rem .25rem .2rem 0}
+        .display-icon-btn .icon-caption{font-size:.62rem;color:#9ea2b8;line-height:1;text-transform:uppercase;letter-spacing:.04em;font-weight:700;white-space:nowrap}
         .icon-btn:hover{background:#22263c}
         .icon-btn .control-icon{width:20px;height:20px;fill:#aaa;flex:0 0 auto}
         .icon-btn .icon-strike{display:none;stroke:#ff7777;stroke-width:2.2;stroke-linecap:round;fill:none}
@@ -1074,14 +508,29 @@ internal sealed class WebServer
         .icon-btn.off .icon-strike{display:block}
         .range-shell{position:relative;display:flex;align-items:center;width:100%}
         .mid-marker{position:absolute;left:50%;transform:translateX(-50%);width:2px;height:7px;background:#9ea2b8;border-radius:1px;pointer-events:none;opacity:.9}
-        .mid-marker-top{top:-6px}
         .mid-marker-bottom{bottom:-6px}
-        #volume,#brightness,#audio-boost{width:100%;accent-color:#e94560;cursor:pointer;min-height:24px}
-        #volume-label,#brightness-label,#audio-boost-label{font-size:.9rem;color:#ddd;min-width:42px;text-align:right;font-weight:600}
+        #volume,#brightness,#saturation,#audio-boost{width:100%;accent-color:#e94560;cursor:pointer;min-height:24px}
+        #zoom{width:100%;accent-color:#3b82f6;cursor:pointer;min-height:24px}
+        #volume-label,#brightness-label,#saturation-label,#zoom-label,#audio-boost-label{font-size:.9rem;color:#ddd;min-width:42px;text-align:right;font-weight:600}
         @media (max-width:900px){header{grid-template-columns:1fr;gap:.5rem}#brand{align-items:flex-start}.player-top{grid-template-columns:1fr}.transport-controls{justify-content:flex-start}#media-controls{grid-template-columns:1fr}.btn{padding:.62rem .85rem;font-size:.9rem}}
+        @media (min-width:761px) and (max-width:1280px) and (pointer:coarse){
+          header{padding:.75rem .9rem;gap:.75rem}
+          .btn{min-height:44px;padding:.7rem .9rem;font-size:.95rem;border-radius:8px}
+          .transport-controls .btn{min-height:50px;font-size:1rem}
+          .button-group{gap:.45rem;padding:.4rem;border-radius:12px}
+          .speed-chip{min-height:42px;padding:.55rem .85rem;font-size:.9rem}
+          #progress{min-height:48px}
+          .control-card{padding:.75rem;border-radius:12px}
+          .track-select{min-height:46px;font-size:.95rem}
+          #volume,#brightness,#saturation,#zoom,#audio-boost{min-height:42px}
+          .movie-grid{grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:.9rem}
+          .movie-card{min-height:165px;border-radius:11px}
+          .movie-card-inner{padding:1rem;gap:.65rem}
+          .movie-title{font-size:.95rem}
+        }
         @media (max-width:760px) and (pointer:coarse){
           body.phone-remote-only{overflow-x:hidden;overflow-y:auto}
-          body.phone-remote-only.phone-playing{overflow:hidden}
+          body.phone-remote-only.phone-playing{overflow-x:hidden;overflow-y:auto;min-height:100dvh}
           body.phone-remote-only header{grid-template-columns:1fr;gap:.55rem;padding:.7rem .65rem;position:static}
           body.phone-remote-only:not(.phone-playing) header{position:sticky;top:0;z-index:20}
           body.phone-remote-only #brand{flex-direction:row;align-items:center;justify-content:space-between}
@@ -1092,26 +541,36 @@ internal sealed class WebServer
           body.phone-remote-only #status{display:none !important}
           body.phone-remote-only.phone-playing #back-button{display:none !important}
           body.phone-remote-only.phone-playing #browser{display:none !important}
-          body.phone-remote-only.phone-playing #now-playing-bar{display:flex;gap:.75rem;padding:.9rem;border-radius:14px;border:1px solid #37375a;box-shadow:0 10px 24px rgba(0,0,0,.45)}
+          body.phone-remote-only.phone-playing #now-playing-bar{display:flex;gap:.75rem;padding:.9rem;margin-bottom:1rem;border-radius:14px;border:1px solid #37375a;box-shadow:0 10px 24px rgba(0,0,0,.45)}
+          body.phone-remote-only.phone-playing.controls-dimmed #now-playing-bar{opacity:.34;transition:opacity .25s}
+          body.phone-remote-only.phone-playing.controls-dimmed #player-title,
+          body.phone-remote-only.phone-playing.controls-dimmed #player-meta,
+          body.phone-remote-only.phone-playing.controls-dimmed #connection-status{opacity:1}
+          body.phone-remote-only.phone-playing:not(.controls-dimmed) #now-playing-bar{opacity:1;transition:opacity .18s}
           body.phone-remote-only:not(.phone-playing) #now-playing-bar{display:none !important}
           body.phone-remote-only .player-top{grid-template-columns:1fr}
-          body.phone-remote-only .transport-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.55rem}
-          body.phone-remote-only .transport-controls .btn,
-          body.phone-remote-only #subtitles-btn{width:100%;min-height:46px;font-size:.95rem;font-weight:700}
+          body.phone-remote-only .transport-controls{display:grid;grid-template-columns:1fr;gap:.55rem}
+          body.phone-remote-only .button-group{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.35rem;width:100%}
+          body.phone-remote-only .transport-nav-group{grid-template-columns:1fr;min-width:0}
+          body.phone-remote-only .transport-controls .btn{width:100%;min-height:46px;font-size:.95rem;font-weight:700}
           body.phone-remote-only #pause-btn{min-width:0}
           body.phone-remote-only #progress-row{grid-template-columns:1fr}
           body.phone-remote-only #time-label{text-align:left;min-width:0;font-size:.82rem;color:#aaa}
           body.phone-remote-only #speed-row{margin-top:.1rem}
           body.phone-remote-only #media-controls{grid-template-columns:1fr;gap:.6rem;border-top:0;padding-top:.15rem}
           body.phone-remote-only .speed-chip{min-height:40px;padding:.42rem .72rem;font-size:.86rem}
+          body.phone-remote-only .track-select{min-height:42px;font-size:.9rem}
           body.phone-remote-only #progress{min-height:44px}
           body.phone-remote-only.phone-playing.landscape-controls #media-controls{grid-template-columns:repeat(2,minmax(0,1fr));gap:.55rem}
-          body.phone-remote-only.phone-playing.landscape-controls .transport-controls{grid-template-columns:repeat(4,minmax(0,1fr))}
+          body.phone-remote-only.phone-playing.landscape-controls .transport-controls{grid-template-columns:repeat(3,minmax(0,1fr))}
           body.phone-remote-only .control-card{padding:.65rem;border-radius:12px;background:#18182c}
           body.phone-remote-only .slider-wrap{gap:.55rem}
           body.phone-remote-only #volume,
           body.phone-remote-only #brightness,
+          body.phone-remote-only #saturation,
+          body.phone-remote-only #zoom,
           body.phone-remote-only #audio-boost{min-height:34px}
+          body.phone-remote-only .zoom-slider-wrap{margin-top:.24rem}
         }
         #error{display:none;color:#ff7777;font-size:.78rem;margin-top:.2rem}
         #breadcrumb{font-size:.92rem;color:#888;display:flex;align-items:center;gap:.3rem;flex-wrap:wrap;min-height:1.25rem;line-height:1.25rem}
@@ -1131,13 +590,23 @@ internal sealed class WebServer
         .folder-name{font-size:.9rem;word-break:break-word}
         .movie-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.7rem}
         .movie-card{position:relative;background:#1e1e2e;background-size:cover;background-position:center;border-radius:8px;overflow:hidden;display:flex;flex-direction:column;min-height:140px;cursor:pointer;border:2px solid #e94560;transition:transform .12s,box-shadow .12s,border-color .12s}
-        .movie-card::before{content:'';position:absolute;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,.45) 0%,rgba(0,0,0,.75) 100%);border-radius:6px;pointer-events:none}
+        .movie-card::before{content:'';position:absolute;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,.32) 0%,rgba(0,0,0,.76) 100%);border-radius:6px;pointer-events:none;transition:background .15s}
+        .movie-card::after{content:'';position:absolute;left:0;right:0;bottom:0;height:44%;background:linear-gradient(to top,rgba(6,8,16,.92),rgba(6,8,16,0));opacity:0;pointer-events:none;transition:opacity .15s}
+        @media (hover:hover) and (pointer:fine){.movie-card:not(.playing):hover::after{opacity:1}}
         .movie-card:hover{transform:translateY(-2px);box-shadow:0 5px 18px rgba(233,69,96,.35)}
         .movie-card.playing{border-color:#00d46a}
         .movie-card.played{border-color:#2d8cff}
         .movie-card.playing.played{border-color:#00d46a}
         .movie-card-inner{position:relative;z-index:1;display:flex;flex-direction:column;gap:.5rem;padding:.8rem;flex:1}
+        .movie-card{-webkit-user-select:none;user-select:none}
         .movie-title{font-size:.85rem;line-height:1.3;word-break:break-word;flex:1;text-shadow:0 1px 3px rgba(0,0,0,.8)}
+        .movie-meta{font-size:.72rem;color:#cfd3e9;text-shadow:0 1px 3px rgba(0,0,0,.8)}
+        .resume-badge{align-self:flex-start;background:rgba(0,212,170,.92);color:#071513;border-radius:999px;padding:.22rem .5rem;font-size:.7rem;font-weight:800;box-shadow:0 2px 8px rgba(0,0,0,.35)}
+        .card-actions{display:none;grid-template-columns:repeat(3,minmax(0,1fr));gap:.25rem;background:rgba(8,10,20,.72);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:.28rem;backdrop-filter:blur(4px)}
+        @media (hover:hover) and (pointer:fine){.movie-card:not(.playing):hover .card-actions{display:grid}}
+        .card-actions button{background:rgba(20,20,34,.82);color:#fff;border:1px solid rgba(255,255,255,.18);padding:.38rem .25rem;border-radius:4px;cursor:pointer;font-size:.72rem;backdrop-filter:blur(2px)}
+        .card-actions button:hover{background:rgba(45,140,255,.85)}
+        @media (pointer:coarse){.movie-card:not(.playing).actions-open .card-actions{display:grid}}
         .stop-btn{background:rgba(0,180,90,.9);color:#fff;border:none;padding:.5rem .35rem;border-radius:4px;cursor:pointer;font-size:.85rem;width:100%;backdrop-filter:blur(2px)}
         .stop-btn:hover{background:#00d46a}
         #empty{text-align:center;padding:3rem;color:#555}
@@ -1146,6 +615,7 @@ internal sealed class WebServer
         <header>
           <div id="brand">
             <h1>&#127916; RemotePlay</h1>
+            <div id="brand-actions"><a id="health-link" href="/health" target="_blank" rel="noopener"><span id="diag-dot"></span>Health</a></div>
             <button id="back-button" class="crumb-back" onclick="goBack()" style="display:none">&#8592; Back</button>
           </div>
           <div id="search-wrap">
@@ -1158,12 +628,18 @@ internal sealed class WebServer
           </div>
           <div id="now-playing-bar">
             <div class="player-top">
-              <div id="player-title">Nothing playing</div>
+              <div><div id="player-title">Nothing playing</div><div id="player-meta"></div><div id="connection-status">Connecting...</div></div>
               <div class="transport-controls">
-                <button id="seek-back-btn" class="btn btn-dim" onclick="quickSkip(-10)" onpointerdown="beginSeekHold(event,-10)" onpointerup="endSeekHold()" onpointercancel="endSeekHold()" onpointerleave="endSeekHold()">-10s</button>
-                <button id="pause-btn" class="btn btn-red" onclick="togglePause()">&#9646;&#9646; Pause</button>
-                <button id="seek-forward-btn" class="btn btn-dim" onclick="quickSkip(10)" onpointerdown="beginSeekHold(event,10)" onpointerup="endSeekHold()" onpointercancel="endSeekHold()" onpointerleave="endSeekHold()">+10s</button>
-                <button class="btn btn-dim" onclick="stop()">&#9632;</button>
+                <div class="button-group transport-nav-group">
+                  <button id="previous-btn" class="btn btn-nav" onclick="playAdjacent('previous')"><span class="nav-main">Prev</span><span class="nav-title"></span></button>
+                  <button id="next-btn" class="btn btn-nav" onclick="playAdjacent('next')"><span class="nav-main">Next</span><span class="nav-title"></span></button>
+                </div>
+                <div class="button-group transport-main-group">
+                  <button id="seek-back-btn" class="btn btn-seek" onclick="quickSkip(-10)" onpointerdown="beginSeekHold(event,-10)" onpointerup="endSeekHold()" onpointercancel="endSeekHold()" onpointerleave="endSeekHold()">-10s</button>
+                  <button id="pause-btn" class="btn btn-red" onclick="togglePause()">&#9646;&#9646; Pause</button>
+                  <button id="seek-forward-btn" class="btn btn-seek" onclick="quickSkip(10)" onpointerdown="beginSeekHold(event,10)" onpointerup="endSeekHold()" onpointercancel="endSeekHold()" onpointerleave="endSeekHold()">+10s</button>
+                  <button class="btn btn-stop" onclick="stop()">&#9632; STOP</button>
+                </div>
               </div>
             </div>
             <div id="speed-row">
@@ -1184,12 +660,20 @@ internal sealed class WebServer
               </div>
               <div class="control-card">
                 <div class="control-title">Display</div>
-                <span class="slider-wrap"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5a7.5 7.5 0 1 0 0 15V4.5zm0-2v2-2zm0 19v-2 2zm9.5-9.5h-2 2zm-19 0h2-2zm16.4-6.4-1.4 1.4 1.4-1.4zM5.1 18.9l1.4-1.4-1.4 1.4zm13.8 0-1.4-1.4 1.4 1.4zM5.1 5.1l1.4 1.4-1.4-1.4z"/></svg><span class="range-shell"><input id="brightness" type="range" min="0" max="1" value="0" step="0.05" oninput="setBrightness(this.value)" onchange="setBrightness(this.value)"/><span class="mid-marker mid-marker-top" aria-hidden="true"></span><span class="mid-marker mid-marker-bottom" aria-hidden="true"></span></span><span id="brightness-label">0%</span></span>
+                <div class="slider-wrap display-slider-wrap"><button class="icon-btn display-icon-btn" type="button" onclick="resetBrightnessMid()" aria-label="Reset brightness to midpoint"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5a7.5 7.5 0 1 0 0 15V4.5zm0-2v2-2zm0 19v-2 2zm9.5-9.5h-2 2zm-19 0h2-2zm16.4-6.4-1.4 1.4 1.4-1.4zM5.1 18.9l1.4-1.4-1.4 1.4zm13.8 0-1.4-1.4 1.4 1.4zM5.1 5.1l1.4 1.4-1.4-1.4z"/></svg><span class="icon-caption">Brightness</span></button><span class="range-shell"><input id="brightness" type="range" min="0.2" max="0.8" value="0.5" step="0.01" oninput="setBrightness(this.value)" onchange="setBrightness(this.value)"/><span class="mid-marker mid-marker-bottom" aria-hidden="true"></span></span><span id="brightness-label">50%</span></div>
+                <div class="slider-wrap display-slider-wrap"><button class="icon-btn display-icon-btn" type="button" onclick="resetSaturationMid()" aria-label="Reset saturation to midpoint"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5zm0 2.2L19 8v8l-7 3.8L5 16V8l7-3.8z"/></svg><span class="icon-caption">Saturation</span></button><span class="range-shell"><input id="saturation" type="range" min="0" max="2" value="1" step="0.01" oninput="setSaturation(this.value)" onchange="setSaturation(this.value)"/></span><span id="saturation-label">100%</span></div>
+                <div class="slider-wrap display-slider-wrap zoom-slider-wrap"><button class="icon-btn display-icon-btn" type="button" onclick="resetZoomDefault()" aria-label="Reset zoom to default"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4a6 6 0 1 0 3.78 10.66l4.28 4.28 1.41-1.41-4.28-4.28A6 6 0 0 0 10 4zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8z"/><path d="M10 7v6M7 10h6"/></svg><span class="icon-caption">Zoom</span></button><span class="range-shell"><input id="zoom" type="range" min="1" max="2" value="1" step="0.01" onpointerdown="onZoomPointerDown()" onpointerup="onZoomPointerUp()" onpointercancel="onZoomPointerUp()" oninput="setZoomPreview(this.value)" onchange="commitZoom(this.value)"/></span><span id="zoom-label">100%</span></div>
               </div>
               <div id="options-card" class="control-card" style="display:none">
-                <div class="control-title">Options</div>
-                <div class="control-actions">
-                  <button id="subtitles-btn" class="btn btn-dim" onclick="toggleSubtitles()" style="display:none">Subtitles</button>
+                <div id="track-controls" class="track-select-row" style="display:none">
+                  <div id="audio-track-group" class="track-group" style="display:none">
+                    <div class="track-group-label">Audio</div>
+                    <select id="audio-track-select" class="track-select" onchange="setAudioTrack(this.value)" aria-label="Audio"></select>
+                  </div>
+                  <div id="subtitle-track-group" class="track-group" style="display:none">
+                    <div class="track-group-label">Subtitles</div>
+                    <select id="subtitle-track-select" class="track-select" onchange="setSubtitleTrack(this.value)" aria-label="Subtitles"></select>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1204,6 +688,10 @@ internal sealed class WebServer
         let lastVolumeBeforeMute=.7,lastBoostBeforeMute=.3;
         let seekHoldTimer=null,seekHoldInterval=null,seekHoldTriggered=false,suppressNextSeekTap=false;
         let currentPlaybackSpeed=1;
+        let statusFailures=0;
+        let cardHoldTimer=null,cardHoldOpened=false;
+        let phoneIdleTimer=null;
+        let zoomDragging=false;
         const playedVideos=new Set(loadPlayedVideos());
         const installHint=document.getElementById('install-hint');
         const phoneLayoutQuery=window.matchMedia('(max-width:760px) and (pointer:coarse)');
@@ -1214,6 +702,22 @@ internal sealed class WebServer
           if(!isPhoneRemoteOnly)return;
           document.body.classList.toggle('phone-playing',Boolean(isPlaying));
           document.getElementById('now-playing-bar').style.display=isPlaying?'flex':'none';
+          if(isPlaying)resetPhoneIdleTimer();else clearPhoneIdleTimer();
+        }
+
+        function clearPhoneIdleTimer(){
+          clearTimeout(phoneIdleTimer);
+          phoneIdleTimer=null;
+          document.body.classList.remove('controls-dimmed');
+        }
+
+        function resetPhoneIdleTimer(){
+          if(!isPhoneRemoteOnly||!document.body.classList.contains('phone-playing'))return;
+          document.body.classList.remove('controls-dimmed');
+          clearTimeout(phoneIdleTimer);
+          phoneIdleTimer=setTimeout(()=>{
+            if(isPhoneRemoteOnly&&document.body.classList.contains('phone-playing'))document.body.classList.add('controls-dimmed');
+          },4200);
         }
 
         function applyDesktopDockedLayout(isPlaying){
@@ -1226,6 +730,7 @@ internal sealed class WebServer
           document.body.classList.toggle('phone-remote-only',isPhoneRemoteOnly);
           if(!isPhoneRemoteOnly){
             document.body.classList.remove('phone-playing');
+            clearPhoneIdleTimer();
             document.body.classList.remove('landscape-controls');
             applyDesktopDockedLayout(Boolean(playingPath));
             if(!playingPath)document.getElementById('now-playing-bar').style.display='none';
@@ -1243,26 +748,27 @@ internal sealed class WebServer
           if(!('vibrate' in navigator))return;
           try{navigator.vibrate(ms);}catch{}
         }
+        ['pointerdown','touchstart','keydown','scroll'].forEach(eventName=>{
+          document.addEventListener(eventName,()=>resetPhoneIdleTimer(),{passive:true});
+        });
         function startPolling(){if(pollInterval)return;pollInterval=setInterval(pollStatus,1000);}
         function stopPolling(){clearInterval(pollInterval);pollInterval=null;}
 
         async function pollStatus(){
           try{
             const res=await fetch('/api/status');
-            if(!res.ok)return;
+            if(!res.ok){setConnectionStatus('Retrying connection...',true);statusFailures++;return;}
             const s=await res.json();
+            statusFailures=0;
+            setConnectionStatus('Connected',false,true);
+            updateDiagnosticsIndicator(s.lastError? 'error':'ok');
             const bar=document.getElementById('now-playing-bar');
             if(s.isPlaying){
               bar.style.display='flex';
               const pb=document.getElementById('pause-btn');
               pb.textContent=s.isPaused?'\u25B6 Resume':'\u23F8 Pause';
               document.getElementById('player-title').textContent=(s.title||'Now playing').replace(/^\s*[▶⏸]\s*/,'');
-              const subtitlesBtn=document.getElementById('subtitles-btn');
               const optionsCard=document.getElementById('options-card');
-              const showSubtitles=s.hasSubtitles;
-              subtitlesBtn.style.display=showSubtitles?'inline-block':'none';
-              optionsCard.style.display=showSubtitles?'flex':'none';
-              subtitlesBtn.textContent=s.subtitlesEnabled?'Subtitles On':'Subtitles Off';
               const volume=Math.max(0,Math.min(1,Number(s.volume)||0));
               document.getElementById('volume').value=volume;
               document.getElementById('volume-label').textContent=Math.round(volume*100)+'%';
@@ -1273,8 +779,19 @@ internal sealed class WebServer
               document.getElementById('audio-boost-label').textContent=Math.round(boostAmount*100)+'%';
               if(boostAmount>0.001)lastBoostBeforeMute=boostAmount;
               updateAudioBoostIcon(boostAmount);
-              document.getElementById('brightness').value=s.brightness;
-              document.getElementById('brightness-label').textContent=Math.round(s.brightness*100)+'%';
+              const brightness=Math.max(0.2,Math.min(0.8,Number(s.brightness)||0.5));
+              document.getElementById('brightness').value=brightness;
+              document.getElementById('brightness-label').textContent=Math.round(brightness*100)+'%';
+              const rawSaturation=Number(s.saturation);
+              const saturation=Math.max(0,Math.min(2,Number.isFinite(rawSaturation)?rawSaturation:1));
+              document.getElementById('saturation').value=saturation;
+              document.getElementById('saturation-label').textContent=Math.round(saturation*100)+'%';
+              const rawZoom=Number(s.zoom);
+              const zoom=Math.max(1,Math.min(2,Number.isFinite(rawZoom)?rawZoom:1));
+              if(!zoomDragging){
+                document.getElementById('zoom').value=zoom;
+                document.getElementById('zoom-label').textContent=Math.round(zoom*100)+'%';
+              }
               const err=document.getElementById('error');
               if(s.lastError){err.style.display='block';err.textContent='Playback error: '+s.lastError;}else{err.style.display='none';err.textContent='';}
               const progress=document.getElementById('progress');
@@ -1285,15 +802,37 @@ internal sealed class WebServer
               document.getElementById('time-label').textContent=fmt(s.position)+' / '+fmt(s.duration);
               currentPlaybackSpeed=Math.max(0.5,Math.min(2,Number(s.playbackSpeed)||1));
               syncSpeedChips(currentPlaybackSpeed);
+              updateTrackControls(s);
+              updateAdjacentButtons(s);
+              document.getElementById('player-meta').textContent=buildPlayerMeta(s,volume,boostAmount);
+              requestWakeLock();
               if(isPhoneRemoteOnly)applyPhonePlaybackState(true);
               else applyDesktopDockedLayout(true);
             }else if(isPhoneRemoteOnly){
+              releaseWakeLock();
               applyPhonePlaybackState(false);
             }else{
+              releaseWakeLock();
               applyDesktopDockedLayout(false);
               bar.style.display='none';
             }
-          }catch(e){}
+          }catch(e){statusFailures++;setConnectionStatus(statusFailures>2?'Connection lost - retrying...':'Retrying connection...',true);updateDiagnosticsIndicator('error');}
+        }
+
+        function updateDiagnosticsIndicator(state){
+          const dot=document.getElementById('diag-dot');
+          if(!dot)return;
+          dot.classList.toggle('ok',state==='ok');
+          dot.classList.toggle('error',state==='error');
+          dot.title=state==='ok'?'Server connected':state==='error'?'Server or playback issue':'Checking server';
+        }
+
+        function setConnectionStatus(message,isError,isConnected){
+          const el=document.getElementById('connection-status');
+          if(!el)return;
+          el.textContent=message;
+          el.classList.toggle('error',Boolean(isError));
+          el.classList.toggle('connected',Boolean(isConnected));
         }
 
         function fmt(sec){
@@ -1376,7 +915,15 @@ internal sealed class WebServer
           slider.value=next.toFixed(2);
           await setAudioBoost(slider.value);
         }
-        async function setBrightness(value){document.getElementById('brightness-label').textContent=Math.round(parseFloat(value)*100)+'%';await api('/api/brightness?value='+encodeURIComponent(value));}
+        async function setBrightness(value){const brightness=Math.max(0.2,Math.min(0.8,parseFloat(value)||0.5));document.getElementById('brightness').value=brightness.toFixed(2);document.getElementById('brightness-label').textContent=Math.round(brightness*100)+'%';await api('/api/brightness?value='+encodeURIComponent(brightness.toFixed(2)));}
+        async function setSaturation(value){const parsed=parseFloat(value);const saturation=Math.max(0,Math.min(2,Number.isFinite(parsed)?parsed:1));document.getElementById('saturation').value=saturation.toFixed(2);document.getElementById('saturation-label').textContent=Math.round(saturation*100)+'%';await api('/api/saturation?value='+encodeURIComponent(saturation.toFixed(2)));}
+        function onZoomPointerDown(){zoomDragging=true;}
+        function onZoomPointerUp(){zoomDragging=false;}
+        function setZoomPreview(value){const parsed=parseFloat(value);const zoom=Math.max(1,Math.min(2,Number.isFinite(parsed)?parsed:1));document.getElementById('zoom').value=zoom.toFixed(2);document.getElementById('zoom-label').textContent=Math.round(zoom*100)+'%';}
+        async function commitZoom(value){setZoomPreview(value);await api('/api/zoom?value='+encodeURIComponent(parseFloat(document.getElementById('zoom').value).toFixed(2)));zoomDragging=false;}
+        function resetBrightnessMid(){haptic(8);setBrightness(0.5);}
+        function resetSaturationMid(){haptic(8);setSaturation(1);}
+        function resetZoomDefault(){haptic(8);commitZoom(1);}
         function syncSpeedChips(speed){
           const chips=Array.from(document.querySelectorAll('.speed-chip'));
           let selected=null;
@@ -1404,7 +951,71 @@ internal sealed class WebServer
           haptic(10);
           await api('/api/speed?value='+encodeURIComponent(speed.toFixed(2)));
         }
-        async function toggleSubtitles(){haptic(8);await api('/api/subtitles');}
+        function updateTrackControls(s){
+          const audioSelect=document.getElementById('audio-track-select');
+          const subtitleSelect=document.getElementById('subtitle-track-select');
+          const audioGroup=document.getElementById('audio-track-group');
+          const subtitleGroup=document.getElementById('subtitle-track-group');
+          const trackControls=document.getElementById('track-controls');
+          const audioTracks=Array.isArray(s.audioTracks)?s.audioTracks:[];
+          const subtitleTracks=Array.isArray(s.subtitleTracks)?s.subtitleTracks:[];
+          const showAudio=audioTracks.length>1;
+          const showSubtitles=subtitleTracks.some(t=>Number(t.id)>=0);
+          renderTrackSelect(audioSelect,audioTracks,s.currentAudioTrackId);
+          renderTrackSelect(subtitleSelect,subtitleTracks,s.currentSubtitleTrackId);
+          audioGroup.style.display=showAudio?'flex':'none';
+          subtitleGroup.style.display=showSubtitles?'flex':'none';
+          trackControls.style.display=(showAudio||showSubtitles)?'flex':'none';
+          document.getElementById('options-card').style.display=(showAudio||showSubtitles)?'flex':'none';
+        }
+        function renderTrackSelect(select,tracks,currentId){
+          const signature=JSON.stringify((tracks||[]).map(t=>[t.id,t.name]));
+          if(select.dataset.signature!==signature){
+            select.innerHTML=(tracks||[]).map(t=>'<option value="'+esc(String(t.id))+'">'+esc(t.name||('Track '+t.id))+'</option>').join('');
+            select.dataset.signature=signature;
+          }
+          select.value=String(currentId);
+        }
+        function updateAdjacentButtons(s){
+          const previous=document.getElementById('previous-btn');
+          const next=document.getElementById('next-btn');
+          const previousTitle=(s.previousTitle||'').trim();
+          const nextTitle=(s.nextTitle||'').trim();
+          previous.querySelector('.nav-title').textContent=previousTitle?shortTitle(previousTitle):'';
+          next.querySelector('.nav-title').textContent=nextTitle?shortTitle(nextTitle):'';
+          previous.title=previousTitle?('Play previous: '+previousTitle):'No previous video';
+          next.title=nextTitle?('Play next: '+nextTitle):'No next video';
+          previous.disabled=!previousTitle;
+          next.disabled=!nextTitle;
+        }
+        function shortTitle(value){return value.length>80?value.slice(0,77)+'...':value;}
+        function buildPlayerMeta(s,volume,boostAmount){
+          const watched=s.duration>0?Math.round((s.position/s.duration)*100)+'% watched':'';
+          const bits=[watched,currentPlaybackSpeed.toFixed(2).replace(/\.00$/,'')+'x','Vol '+Math.round(volume*100)+'%','Boost '+Math.round(boostAmount*100)+'%'];
+          return bits.filter(Boolean).join(' • ');
+        }
+        async function setAudioTrack(id){haptic(8);await api('/api/audio-track?id='+encodeURIComponent(id));}
+        async function setSubtitleTrack(id){haptic(8);await api('/api/subtitle-track?id='+encodeURIComponent(id));}
+        async function playAdjacent(direction){
+          haptic(10);
+          await api('/api/adjacent?direction='+encodeURIComponent(direction));
+          // Poll until the new file is playing (up to ~2s)
+          let tries=0;
+          const poll=setInterval(async()=>{
+            try{
+              const res=await fetch('/api/status');
+              if(!res.ok){if(++tries>8)clearInterval(poll);return;}
+              const s=await res.json();
+              if(s.isPlaying&&s.filePath&&s.filePath!==playingPath){
+                clearInterval(poll);
+                const oldPath=playingPath;
+                playingPath=s.filePath;
+                markPlayed(s.filePath);
+                updatePlayingCard(s.filePath,oldPath);
+              }else if(++tries>8){clearInterval(poll);}
+            }catch(e){if(++tries>8)clearInterval(poll);}
+          },250);
+        }
         async function rescan(){setStatus('Refreshing search index...');await api('/api/rescan');}
 
         function resetCardsScrollTop(){
@@ -1414,6 +1025,14 @@ internal sealed class WebServer
           document.body.scrollTop=0;
           window.scrollTo(0,0);
         }
+        async function loadRecent(){
+          try{
+            const res=await fetch('/api/recent');
+            if(!res.ok)return [];
+            const data=await res.json();
+            return Array.isArray(data.files)?data.files:[];
+          }catch(e){return [];}
+        }
         async function browse(d){
           setStatus('Loading...');currentDir=d;document.getElementById('search').value='';
           try{
@@ -1421,6 +1040,7 @@ internal sealed class WebServer
             const res=await fetch(url);
             if(!res.ok){setStatus('Server error '+res.status);return;}
             currentData=await res.json();render(currentData);
+            if(!d)renderRecent(await loadRecent());
             resetCardsScrollTop();
           }catch(e){setStatus('Error: '+e);}
         }
@@ -1472,26 +1092,93 @@ internal sealed class WebServer
               const bg='style="background-image:url('+thumbUrl+')"';
               const cardClass='movie-card '+(f.path===playingPath?'playing ':'')+(played?'played':'');
               const isPlaying=f.path===playingPath;
-              const action=isPlaying?'':' onclick="play(\''+f.path+'\')"';
+              const action=isPlaying?'':' onclick="onCardClick(event,\''+f.path+'\')"';
               const stopButton=isPlaying?'<button class="stop-btn" onclick="stopPlayingCard(event,\''+f.path+'\')">&#9632; STOP</button>':'';
-              return '<div class="'+cardClass+'" id="card-'+f.path+'" '+bg+action+'>'+
+              const cardActions=isPlaying?'':'<div class="card-actions"><button onclick="playCardAction(event,\''+f.path+'\',\''+esc(f.name)+'\')">Play</button><button onclick="startOverCard(event,\''+f.path+'\',\''+esc(f.name)+'\')">Start over</button><button onclick="toggleWatchedCard(event,\''+f.path+'\')">'+(played?'Unwatch':'Watched')+'</button></div>';
+              const displayName=f.displayName||f.name;
+              const resumeBadge=f.resume?'<div class="resume-badge">Resume '+esc(f.resume)+'</div>':'';
+              return '<div class="'+cardClass+'" id="card-'+f.path+'" '+bg+action+' onpointerdown="beginCardHold(event,\''+f.path+'\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">'+
                 '<div class="movie-card-inner">'+
-                '<div class="movie-title">'+esc(f.name)+'</div>'+
+                '<div class="movie-title">'+esc(displayName)+'</div>'+
+                resumeBadge+
                 stopButton+
+                cardActions+
                 '</div></div>';
             }).join('');
             html+='</div>';}
           if(!data.folders.length&&!data.files.length)html='<div id="empty">No subfolders or video files here.</div>';
           document.getElementById('browser').innerHTML=html;
         }
+        function renderRecent(files){
+          if(!files.length)return;
+          const browser=document.getElementById('browser');
+          const cards=files.map(f=>{
+            const thumbUrl='/api/thumb?path='+encodeURIComponent(f.path);
+            const bg='style="background-image:url('+thumbUrl+')"';
+            const pct=Math.max(0,Math.min(99,Math.round((Number(f.progress)||0)*100)));
+            const displayName=f.displayName||f.name;
+            const resume=f.resume||fmt(Number(f.position)||0);
+            return '<div class="movie-card played" id="recent-card-'+f.path+'" '+bg+' onclick="onCardClick(event,\''+f.path+'\')" onpointerdown="beginCardHold(event,\''+f.path+'\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">'+
+              '<div class="movie-card-inner"><div class="movie-title">'+esc(displayName)+'</div>'+
+              '<div class="resume-badge">Resume '+esc(resume)+'</div>'+
+              '<div class="movie-meta">'+pct+'% • '+esc(f.folder||'')+'</div>'+
+              '<div class="card-actions"><button onclick="playCardAction(event,\''+f.path+'\',\''+esc(displayName)+'\')">Play</button><button onclick="startOverCard(event,\''+f.path+'\',\''+esc(displayName)+'\')">Start over</button><button onclick="toggleWatchedCard(event,\''+f.path+'\')">Unwatch</button></div></div></div>';
+          }).join('');
+          const html='<div class="section-label recent-toggle" onclick="toggleRecentSection(this)" style="cursor:pointer;user-select:none;">'+
+            'Recently watched <span class="recent-chevron" style="font-size:0.75em;margin-left:6px;">▶</span></div>'+
+            '<div class="movie-grid recent-grid" style="display:none;">'+cards+'</div>';
+          browser.innerHTML=html+browser.innerHTML;
+        }
+        function toggleRecentSection(label){
+          const grid=label.nextElementSibling;
+          const chevron=label.querySelector('.recent-chevron');
+          const open=grid.style.display==='none';
+          grid.style.display=open?'':'none';
+          if(chevron)chevron.textContent=open?'▼':'▶';
+        }
         function goBack(){const d=document.getElementById('back-button').dataset.dir;if(d)browse(d);}
+        function onCardClick(event,p){
+          if(cardHoldOpened){cardHoldOpened=false;event.preventDefault();event.stopPropagation();return;}
+          play(p);
+        }
+        function beginCardHold(event,p){
+          if(!window.matchMedia('(pointer:coarse)').matches)return;
+          clearTimeout(cardHoldTimer);
+          cardHoldOpened=false;
+          const targetCard=event.currentTarget;
+          cardHoldTimer=setTimeout(()=>{
+            document.querySelectorAll('.movie-card.actions-open').forEach(card=>card.classList.remove('actions-open'));
+            if(targetCard){targetCard.classList.add('actions-open');cardHoldOpened=true;haptic(18);}
+          },520);
+        }
+        function endCardHold(){clearTimeout(cardHoldTimer);cardHoldTimer=null;}
         async function play(p,name){
           const title=name||'';
           playingPath=p;setStatus(title?'Playing: '+title:'Playing...');
+          setPlayerPoster(p);
           markPlayed(p);
           updatePlayingCard(p);
           await api('/api/play?path='+encodeURIComponent(p));
           startPolling();
+        }
+        function setPlayerPoster(p){
+          const bar=document.getElementById('now-playing-bar');
+          if(!bar||!p)return;
+          const thumb='/api/thumb?path='+encodeURIComponent(p);
+          bar.style.background='linear-gradient(135deg,rgba(13,13,26,.92),rgba(21,21,38,.88)),url('+thumb+') center/cover';
+        }
+        async function playCardAction(event,p,name){
+          event.stopPropagation();
+          await play(p,name);
+        }
+        async function startOverCard(event,p,name){
+          event.stopPropagation();
+          await play(p,name);
+          await api('/api/seek?pos=0');
+        }
+        function toggleWatchedCard(event,p){
+          event.stopPropagation();
+          if(playedVideos.has(p))unmarkPlayed(p);else markPlayed(p);
         }
         async function stopPlayingCard(event,p){
           event.stopPropagation();
@@ -1502,6 +1189,7 @@ internal sealed class WebServer
           const stoppedPath=playingPath;
           playingPath=null;
           updatePlayingCard(null,stoppedPath);
+          document.getElementById('now-playing-bar').style.background='linear-gradient(135deg,#0d0d1a,#151526)';
           if(isPhoneRemoteOnly)applyPhonePlaybackState(false);
           else{
             applyDesktopDockedLayout(false);
@@ -1523,7 +1211,20 @@ internal sealed class WebServer
         function markPlayed(p){
           playedVideos.add(p);savePlayedVideos();
           const card=document.getElementById('card-'+p);
-          if(card)card.classList.add('played');
+          if(card){
+            card.classList.add('played');
+            const buttons=card.querySelectorAll('.card-actions button');
+            if(buttons.length>=3)buttons[2].textContent='Unwatch';
+          }
+        }
+        function unmarkPlayed(p){
+          playedVideos.delete(p);savePlayedVideos();
+          const card=document.getElementById('card-'+p);
+          if(card){
+            card.classList.remove('played');
+            const buttons=card.querySelectorAll('.card-actions button');
+            if(buttons.length>=3)buttons[2].textContent='Watched';
+          }
         }
         function updatePlayingCard(newPath,oldPath){
           const paths=[oldPath,playingPath,newPath].filter(Boolean);
@@ -1532,8 +1233,11 @@ internal sealed class WebServer
             const card=document.getElementById('card-'+p);if(!card)continue;
             const isActive=p===newPath;
             card.classList.toggle('playing',isActive);
+            card.classList.remove('actions-open');
             card.classList.toggle('played',!isActive&&playedVideos.has(p));
-            card.onclick=isActive?null:()=>play(p,card.querySelector('.movie-title')?.textContent||'');
+            card.onclick=isActive?null:event=>onCardClick(event,p);
+            const actions=card.querySelector('.card-actions');
+            if(actions)actions.style.display=isActive?'none':'';
             const existing=card.querySelector('.stop-btn');
             if(isActive&&!existing){
               const btn=document.createElement('button');
@@ -1549,6 +1253,17 @@ internal sealed class WebServer
         function setStatus(m){document.getElementById('status').textContent=m;}
         function dismissInstallHint(){localStorage.setItem('remotePlayInstallHintDismissed','1');installHint.style.display='none';}
         function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+        let wakeLock=null;
+        async function requestWakeLock(){
+          if(wakeLock||!('wakeLock' in navigator))return;
+          try{wakeLock=await navigator.wakeLock.request('screen');wakeLock.addEventListener('release',()=>wakeLock=null);}catch(e){}
+        }
+        async function releaseWakeLock(){
+          if(!wakeLock)return;
+          try{await wakeLock.release();}catch(e){}
+          wakeLock=null;
+        }
+        document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&playingPath)requestWakeLock();});
         if('serviceWorker' in navigator){
           window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').catch(()=>{}));
         }
