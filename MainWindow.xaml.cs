@@ -47,6 +47,41 @@ public partial class MainWindow : Window
     private TimeSpan _duration = TimeSpan.Zero;
     private bool _isApplyingMoviePreferences;
     private readonly List<string> _playbackQueue = [];
+    private static readonly LanguageOption[] LanguageOptions =
+    [
+        new("", "Default / none"),
+        new("eng", "English"),
+        new("nld", "Dutch"),
+        new("fra", "French"),
+        new("deu", "German"),
+        new("spa", "Spanish"),
+        new("ita", "Italian"),
+        new("por", "Portuguese"),
+        new("jpn", "Japanese"),
+        new("kor", "Korean"),
+        new("zho", "Chinese"),
+        new("rus", "Russian"),
+        new("ara", "Arabic"),
+        new("hin", "Hindi"),
+        new("tur", "Turkish"),
+        new("pol", "Polish"),
+        new("swe", "Swedish"),
+        new("nor", "Norwegian"),
+        new("dan", "Danish"),
+        new("fin", "Finnish"),
+        new("ell", "Greek"),
+        new("heb", "Hebrew"),
+        new("ces", "Czech"),
+        new("hun", "Hungarian"),
+        new("ron", "Romanian"),
+        new("ukr", "Ukrainian"),
+        new("tha", "Thai"),
+        new("vie", "Vietnamese"),
+        new("ind", "Indonesian"),
+        new("msa", "Malay")
+    ];
+    private sealed record LanguageOption(string Code, string Name);
+
     private static readonly HashSet<string> VideoExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv" };
     private static readonly string[] SubtitleExtensions = [".srt", ".ass", ".ssa", ".vtt", ".sub"];
@@ -130,6 +165,8 @@ public partial class MainWindow : Window
             Logger.Error("MainWindow constructor failed", ex);
             throw;
         }
+
+        RefreshCurrentDisplayText();
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -141,10 +178,9 @@ public partial class MainWindow : Window
         PortBox.Text = _config.Port.ToString();
         if (FindName("UseHttpsBox") is System.Windows.Controls.CheckBox useHttpsBox)
             useHttpsBox.IsChecked = _config.UseHttps;
-        if (FindName("PreferredAudioLangBox") is System.Windows.Controls.TextBox audioLangBox)
-            audioLangBox.Text = _config.PreferredAudioLanguage;
-        if (FindName("PreferredSubtitleLangBox") is System.Windows.Controls.TextBox subLangBox)
-            subLangBox.Text = _config.PreferredSubtitleLanguage;
+        PopulateLanguageCombo("PreferredAudioLangCombo", _config.PreferredAudioLanguage);
+        PopulateLanguageCombo("PreferredSubtitleLangCombo", _config.PreferredSubtitleLanguage);
+        PopulateLanguageCombo("SecondarySubtitleLangCombo", _config.SecondarySubtitleLanguage);
         if (FindName("PreferForcedSubtitlesBox") is System.Windows.Controls.CheckBox forcedBox)
             forcedBox.IsChecked = _config.PreferForcedSubtitles;
         if (FindName("PlaybackEndBehaviorCombo") is System.Windows.Controls.ComboBox endCombo)
@@ -155,6 +191,8 @@ public partial class MainWindow : Window
             if (endCombo.SelectedItem is null && endCombo.Items.Count > 0)
                 endCombo.SelectedIndex = 0;
         }
+        if (FindName("PlaybackHistoryLimitBox") is System.Windows.Controls.TextBox historyLimitBox)
+            historyLimitBox.Text = _config.PlaybackHistoryLimit.ToString();
         if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo)
         {
             displayCombo.Items.Clear();
@@ -209,6 +247,36 @@ public partial class MainWindow : Window
         }
     }
 
+    private void PopulateLanguageCombo(string comboName, string selectedCode)
+    {
+        if (FindName(comboName) is not System.Windows.Controls.ComboBox combo)
+            return;
+
+        combo.Items.Clear();
+        foreach (var option in LanguageOptions)
+            combo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = option.Name, Tag = option.Code });
+
+        foreach (System.Windows.Controls.ComboBoxItem item in combo.Items)
+        {
+            if (string.Equals(item.Tag?.ToString(), selectedCode, StringComparison.OrdinalIgnoreCase))
+            {
+                combo.SelectedItem = item;
+                return;
+            }
+        }
+
+        combo.SelectedIndex = 0;
+    }
+
+    private string GetSelectedLanguageCode(string comboName, string fallback)
+    {
+        if (FindName(comboName) is System.Windows.Controls.ComboBox combo
+            && combo.SelectedItem is System.Windows.Controls.ComboBoxItem item)
+            return item.Tag?.ToString() ?? string.Empty;
+
+        return fallback;
+    }
+
     // -- View toggle ---------------------------------------------------------
 
     private void OnToggleView(object sender, RoutedEventArgs e)
@@ -253,6 +321,68 @@ public partial class MainWindow : Window
         return screenIndex >= 0 && screenIndex < screens.Length
             ? screens[screenIndex]
             : System.Windows.Forms.Screen.PrimaryScreen ?? screens[0];
+    }
+
+    private void RefreshDisplaySettings()
+    {
+        if (FindName("PreferredDisplayCombo") is not System.Windows.Controls.ComboBox displayCombo)
+            return;
+
+        displayCombo.Items.Clear();
+        displayCombo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = "Primary screen (default)", Tag = -1 });
+        var screens = System.Windows.Forms.Screen.AllScreens;
+        for (int i = 0; i < screens.Length; i++)
+        {
+            var screen = screens[i];
+            var label = $"Screen {i + 1}  ({screen.Bounds.Width}×{screen.Bounds.Height}){(screen.Primary ? "  [Primary]" : string.Empty)}";
+            displayCombo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = label, Tag = i });
+        }
+
+        var savedDisplayIndex = _config.PreferredDisplayIndex;
+        System.Windows.Controls.ComboBoxItem? savedItem = null;
+        foreach (System.Windows.Controls.ComboBoxItem item in displayCombo.Items)
+        {
+            if (item.Tag is int tag && tag == savedDisplayIndex)
+            {
+                savedItem = item;
+                break;
+            }
+        }
+
+        if (savedItem is null && savedDisplayIndex >= 0)
+        {
+            savedItem = new System.Windows.Controls.ComboBoxItem
+            {
+                Content = $"Saved screen {savedDisplayIndex + 1} (not currently connected)",
+                Tag = savedDisplayIndex
+            };
+            displayCombo.Items.Add(savedItem);
+        }
+
+        displayCombo.SelectedItem = savedItem ?? displayCombo.Items[0];
+        RefreshCurrentDisplayText();
+    }
+
+    private void RefreshCurrentDisplayText()
+    {
+        if (FindName("CurrentDisplayText") is not System.Windows.Controls.TextBlock currentDisplayText)
+            return;
+
+        try
+        {
+            var screen = GetPreferredFullscreenScreen();
+            var screens = System.Windows.Forms.Screen.AllScreens;
+            var index = Array.IndexOf(screens, screen);
+            var screenName = index >= 0 ? $"Screen {index + 1}" : "Primary screen";
+            var savedDisplay = _config.PreferredDisplayIndex < 0
+                ? "Primary screen (default)"
+                : $"Screen {_config.PreferredDisplayIndex + 1}";
+            currentDisplayText.Text = $"Current fullscreen target: {screenName} ({screen.Bounds.Width}×{screen.Bounds.Height}){(screen.Primary ? " [Primary]" : string.Empty)}. Saved preference: {savedDisplay}.";
+        }
+        catch (Exception ex)
+        {
+            currentDisplayText.Text = $"Current fullscreen target unavailable: {ex.Message}";
+        }
     }
 
     private bool EnsureFullscreenWindowBounds(bool force = false)
@@ -381,7 +511,7 @@ public partial class MainWindow : Window
 
     private void OnWindowPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
-        if (e.Key == System.Windows.Input.Key.Escape && _isVideoMode && _currentFilePath is null)
+        if (e.Key == System.Windows.Input.Key.Escape && _isVideoMode)
         {
             OnToggleView(this, new RoutedEventArgs());
             e.Handled = true;
@@ -530,6 +660,7 @@ public partial class MainWindow : Window
                     : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xAA, 0xAA, 0xAA));
             }
         }
+
     }
 
 
@@ -599,13 +730,9 @@ public partial class MainWindow : Window
         var portText = PortBox.Text.Trim();
         var useHttps = FindName("UseHttpsBox") is System.Windows.Controls.CheckBox useHttpsBox && useHttpsBox.IsChecked == true;
 
-        var preferredAudioLang = _config.PreferredAudioLanguage;
-        if (FindName("PreferredAudioLangBox") is System.Windows.Controls.TextBox audioLangBox2)
-            preferredAudioLang = audioLangBox2.Text.Trim();
-
-        var preferredSubtitleLang = _config.PreferredSubtitleLanguage;
-        if (FindName("PreferredSubtitleLangBox") is System.Windows.Controls.TextBox subLangBox2)
-            preferredSubtitleLang = subLangBox2.Text.Trim();
+        var preferredAudioLang = GetSelectedLanguageCode("PreferredAudioLangCombo", _config.PreferredAudioLanguage);
+        var preferredSubtitleLang = GetSelectedLanguageCode("PreferredSubtitleLangCombo", _config.PreferredSubtitleLanguage);
+        var secondarySubtitleLang = GetSelectedLanguageCode("SecondarySubtitleLangCombo", _config.SecondarySubtitleLanguage);
 
         var preferForced = _config.PreferForcedSubtitles;
         if (FindName("PreferForcedSubtitlesBox") is System.Windows.Controls.CheckBox forcedBox2)
@@ -616,6 +743,16 @@ public partial class MainWindow : Window
             && endCombo2.SelectedItem is System.Windows.Controls.ComboBoxItem selectedItem
             && Enum.TryParse<PlaybackEndMode>(selectedItem.Tag?.ToString(), out var parsedMode))
             playbackEndBehavior = parsedMode;
+
+        var playbackHistoryLimit = _config.PlaybackHistoryLimit;
+        if (FindName("PlaybackHistoryLimitBox") is System.Windows.Controls.TextBox historyLimitBox2)
+        {
+            if (!int.TryParse(historyLimitBox2.Text.Trim(), out playbackHistoryLimit) || playbackHistoryLimit < 1)
+            {
+                ShowSettingsFeedback("Playback history limit must be a whole number of at least 1.", isError: true);
+                return;
+            }
+        }
 
         var preferredDisplayIndex = _config.PreferredDisplayIndex;
         if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo2
@@ -646,11 +783,14 @@ public partial class MainWindow : Window
                 _subtitlesEnabled,
                 preferredAudioLang,
                 preferredSubtitleLang,
+                secondarySubtitleLang,
                 preferForced,
                 playbackEndBehavior,
+                playbackHistoryLimit,
                 preferredDisplayIndex);
 
             _config = _settingsApplyService.ApplyAndReload(updatedConfig);
+            _playbackHistory.Trim(_config.PlaybackHistoryLimit);
 
             // Restart the web server with new config
             _webServer?.Stop();
@@ -658,6 +798,7 @@ public partial class MainWindow : Window
             _webServer.Start();
 
             MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
+            RefreshDisplaySettings();
             var ip = GetLocalIp();
             UpdateServerUrlDisplay(ip, _webServer.ActiveScheme, _config.Port, _webServer.StartupWarning);
             ServerStatusText.Text = $"? Server running on {_webServer.ActiveScheme}://*:{_config.Port}";

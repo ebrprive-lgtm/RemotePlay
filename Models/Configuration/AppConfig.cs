@@ -16,8 +16,10 @@ internal sealed class AppConfig
     public bool SubtitlesEnabled { get; init; } = true;
     public string PreferredAudioLanguage { get; init; } = "eng";
     public string PreferredSubtitleLanguage { get; init; } = "eng";
+    public string SecondarySubtitleLanguage { get; init; } = string.Empty;
     public bool PreferForcedSubtitles { get; init; } = true;
     public PlaybackEndMode PlaybackEndBehavior { get; init; } = PlaybackEndMode.Stop;
+    public int PlaybackHistoryLimit { get; init; } = 7;
     public int PreferredDisplayIndex { get; init; } = -1; // -1 = primary screen
 
     private static readonly string ConfigFile =

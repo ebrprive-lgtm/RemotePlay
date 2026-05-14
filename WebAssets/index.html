@@ -30,16 +30,23 @@
         .btn-red{background:#e94560}.btn-red:hover{background:#c73652}
         .btn-dim{background:#333}.btn-dim:hover{background:#555}
         .btn-nav{background:#2b3f6b}.btn-nav:hover{background:#36528a}
+        .btn-nav.queue-mode{background:#ffaa00;color:#1b1300}.btn-nav.queue-mode:hover{background:#ffc247}
         .btn-nav{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.28rem;line-height:1.05;min-height:46px;width:100%}
+        .transport-nav-group.queue-mode{grid-template-columns:1fr}
+        .transport-nav-group.queue-mode #previous-btn{display:none}
         .nav-main{font-size:.9rem;font-weight:800;text-transform:uppercase;letter-spacing:.02em}
         .nav-title{font-size:.58rem;font-weight:600;opacity:.78;width:100%;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-transform:none;letter-spacing:0}
+        .btn-nav.queue-mode .nav-title{opacity:.9;color:#2b1b00}
         .btn:disabled{opacity:.45;cursor:not-allowed;filter:saturate(.6)}
         .btn:disabled:hover{background:inherit}
         .btn-seek{background:#38404f}.btn-seek:hover{background:#4a5568}
         .btn-stop{background:#7d2432}.btn-stop:hover{background:#a83143}
         #install-hint{display:none;background:#10251f;border-bottom:1px solid #00d4aa;color:#ddfff7;padding:.55rem .75rem;font-size:.82rem;align-items:center;gap:.55rem;justify-content:space-between}
         #install-hint button{background:#00d4aa;color:#06110f;border:none;border-radius:4px;padding:.3rem .55rem;font-weight:700;cursor:pointer}
-        #now-playing-bar{display:none;min-width:0;width:100%;flex-direction:column;gap:.6rem;background:linear-gradient(135deg,#0d0d1a,#151526);padding:.7rem;border:1px solid #30304a;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.38)}
+        #now-playing-bar{display:none;min-width:0;width:100%;flex-direction:column;gap:.6rem;background:linear-gradient(135deg,#0d0d1a,#151526);padding:.7rem;border:1px solid #30304a;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.38);-webkit-user-select:none;user-select:none}
+        #now-playing-bar *{-webkit-user-select:none;user-select:none}
+        #player-summary{display:grid;grid-template-columns:72px minmax(0,1fr);gap:.7rem;align-items:center;min-width:0}
+        #player-poster{width:72px;height:96px;border-radius:10px;background:#202038 center/cover no-repeat;border:1px solid #333858;box-shadow:0 5px 15px rgba(0,0,0,.35)}
         #player-title{font-size:.9rem;color:#fff;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
         .player-top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.7rem}
         .transport-controls{display:flex;gap:.45rem;align-items:stretch;justify-content:flex-end;flex-wrap:wrap}
@@ -96,13 +103,20 @@
         }
         .control-title{font-size:.68rem;color:#888;text-transform:uppercase;letter-spacing:.08em;font-weight:700}
         .control-actions{display:flex;gap:.35rem;flex-wrap:wrap;align-items:center}
+        .diag-button{background:#162033;border:1px solid #2e426a;color:#cfe0ff;border-radius:999px;padding:.24rem .48rem;font-size:.7rem;font-weight:700;cursor:pointer;align-self:flex-start}
+        .diag-button:hover{background:#203252}
         .track-select{width:100%;min-width:0;background:#22263b;color:#eee;border:1px solid #3a3a57;border-radius:8px;padding:.45rem .55rem;font-size:.86rem}
         .track-select-row{display:flex;flex-direction:column;gap:.5rem}
         .track-group{display:flex;flex-direction:column;gap:.22rem}
         .track-group-label{font-size:.68rem;color:#9ea2b8;text-transform:uppercase;letter-spacing:.06em;font-weight:700}
         #queue-card{display:flex}
-        .queue-list{display:flex;flex-direction:column;gap:.22rem;max-height:120px;overflow:auto;font-size:.76rem;color:#cfd3e9}
-        .queue-item{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#202038;border-radius:6px;padding:.32rem .45rem}
+        .queue-list{display:flex;flex-direction:column;gap:.35rem;max-height:220px;overflow:auto;font-size:.76rem;color:#cfd3e9;-webkit-user-select:none;user-select:none}
+        .queue-item{display:grid;grid-template-columns:42px minmax(0,1fr) auto;gap:.45rem;align-items:center;background:#202038;border-radius:8px;padding:.35rem}
+        .queue-thumb{width:42px;height:56px;border-radius:6px;background:#111627 center/cover no-repeat;border:1px solid #343856}
+        .queue-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700;color:#edf0ff}
+        .queue-actions{display:flex;gap:.18rem;align-items:center}
+        .queue-actions button{background:#111627;border:1px solid #3a3f62;color:#cfd3e9;border-radius:5px;padding:.22rem .34rem;cursor:pointer;font-size:.7rem}
+        .queue-actions button:hover{background:#2b3f6b;color:#fff}
         .queue-empty{color:#777;font-size:.76rem}
         #player-meta{font-size:.76rem;color:#9ea2b8;line-height:1.25;min-height:1rem}
         #connection-status{font-size:.7rem;color:#ffaa00;line-height:1.2;min-height:.9rem}
@@ -155,11 +169,6 @@
           body.phone-remote-only.phone-playing #back-button{display:none !important}
           body.phone-remote-only.phone-playing #browser{display:none !important}
           body.phone-remote-only.phone-playing #now-playing-bar{display:flex;gap:.75rem;padding:.9rem;margin-bottom:1rem;border-radius:14px;border:1px solid #37375a;box-shadow:0 10px 24px rgba(0,0,0,.45)}
-          body.phone-remote-only.phone-playing.controls-dimmed #now-playing-bar{opacity:.34;transition:opacity .25s}
-          body.phone-remote-only.phone-playing.controls-dimmed #player-title,
-          body.phone-remote-only.phone-playing.controls-dimmed #player-meta,
-          body.phone-remote-only.phone-playing.controls-dimmed #connection-status{opacity:1}
-          body.phone-remote-only.phone-playing:not(.controls-dimmed) #now-playing-bar{opacity:1;transition:opacity .18s}
           body.phone-remote-only:not(.phone-playing) #now-playing-bar{display:none !important}
           body.phone-remote-only .player-top{grid-template-columns:1fr}
           body.phone-remote-only .transport-controls{display:grid;grid-template-columns:1fr;gap:.55rem}
@@ -190,6 +199,7 @@
         #breadcrumb a{color:#00d4aa;cursor:pointer;text-decoration:none}
         #count-line{font-size:.78rem;color:#777;line-height:1rem;min-height:1rem}
         #scan-status{font-size:.72rem;color:#9ea2b8;line-height:1rem;min-height:1rem}
+        #scan-status.global-scan-status{display:block;padding:.42rem .75rem;background:#10251f;border-bottom:1px solid rgba(0,212,170,.28);color:#ddfff7}
         #scan-status.scanning{color:#00d4aa}
         #scan-status.error{color:#ff7777}
         .crumb-back{color:#00d4aa;background:#161624;border:1px solid #2a2a3e;border-radius:8px;padding:.75rem .95rem;cursor:pointer;text-decoration:none;font-size:1.05rem;font-weight:700;text-align:center;min-width:96px}
@@ -197,6 +207,14 @@
         .crumb-current{color:#ddd;font-weight:600}
         #status{padding:.35rem .75rem;background:#0a0a0a;font-size:.74rem;color:#777;border-bottom:1px solid #1a1a1a}
         #browser{padding:.7rem .75rem;flex:1}
+        #diagnostics-overlay{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;padding:1rem;z-index:99}
+        #diagnostics-overlay.open{display:flex}
+        #diagnostics-panel{width:min(680px,100%);max-height:82vh;overflow:auto;background:#151526;border:1px solid #3a3a57;border-radius:14px;padding:1rem;box-shadow:0 20px 45px rgba(0,0,0,.55)}
+        #diagnostics-panel h2{color:#e94560;font-size:1.1rem;margin-bottom:.6rem}
+        #diagnostics-content{display:grid;grid-template-columns:auto 1fr;gap:.42rem .75rem;font-size:.82rem;color:#d8dbea}
+        #diagnostics-content dt{color:#8f94ad;font-weight:700}
+        #diagnostics-content dd{word-break:break-word}
+        #diagnostics-panel .control-actions{margin-top:.9rem;justify-content:flex-end}
         .section-label{color:#555;font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.5rem;margin-top:1rem}
         .section-label:first-child{margin-top:0}
         .folder-list{display:flex;flex-direction:column;gap:.3rem;margin-bottom:.5rem}
@@ -205,6 +223,8 @@
         .folder-icon{font-size:1.1rem}
         .folder-name{font-size:.9rem;word-break:break-word}
         .movie-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.7rem}
+        .continue-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.7rem;margin-bottom:.65rem}
+        .continue-card{min-height:120px;border-color:#00d4aa}
         .movie-card{position:relative;background:#1e1e2e;background-size:cover;background-position:center;border-radius:8px;overflow:hidden;display:flex;flex-direction:column;min-height:140px;cursor:pointer;border:2px solid #e94560;transition:transform .12s,box-shadow .12s,border-color .12s}
         .movie-card::before{content:'';position:absolute;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,.32) 0%,rgba(0,0,0,.76) 100%);border-radius:6px;pointer-events:none;transition:background .15s}
         .movie-card::after{content:'';position:absolute;left:0;right:0;bottom:0;height:44%;background:linear-gradient(to top,rgba(6,8,16,.92),rgba(6,8,16,0));opacity:0;pointer-events:none;transition:opacity .15s}
@@ -220,8 +240,10 @@
         .movie-card{-webkit-user-select:none;user-select:none}
         .movie-title{font-size:.85rem;line-height:1.3;word-break:break-word;flex:1;text-shadow:0 1px 3px rgba(0,0,0,.8)}
         .movie-meta{font-size:.72rem;color:#cfd3e9;text-shadow:0 1px 3px rgba(0,0,0,.8)}
-        .resume-badge{align-self:flex-start;background:rgba(0,212,170,.92);color:#071513;border-radius:999px;padding:.22rem .5rem;font-size:.7rem;font-weight:800;box-shadow:0 2px 8px rgba(0,0,0,.35)}
         .queued-badge{align-self:flex-start;background:rgba(255,170,0,.95);color:#1b1300;border-radius:999px;padding:.22rem .5rem;font-size:.7rem;font-weight:800;box-shadow:0 2px 8px rgba(0,0,0,.35)}
+        .progress-overlay{position:absolute;left:0;right:0;bottom:0;height:7px;background:rgba(255,255,255,.13);z-index:2}
+        .progress-fill{height:100%;background:linear-gradient(90deg,#00d4aa,#2d8cff);box-shadow:0 0 10px rgba(0,212,170,.45)}
+        .progress-label{position:absolute;right:.45rem;top:.55rem;z-index:2;background:rgba(0,0,0,.68);color:#dffff8;border-radius:999px;padding:.18rem .45rem;font-size:.68rem;font-weight:800}
         .card-actions{display:none;grid-template-columns:repeat(3,minmax(0,1fr));gap:.25rem;background:rgba(8,10,20,.72);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:.28rem;backdrop-filter:blur(4px)}
         @media (hover:hover) and (pointer:fine){.movie-card:not(.playing):hover .card-actions{display:grid}}
         .card-actions button{background:rgba(20,20,34,.82);color:#fff;border:1px solid rgba(255,255,255,.18);padding:.38rem .25rem;border-radius:4px;cursor:pointer;font-size:.72rem;backdrop-filter:blur(2px)}
@@ -249,7 +271,7 @@
           </div>
           <div id="now-playing-bar">
             <div class="player-top">
-              <div><div id="player-title">Nothing playing</div><div id="player-meta"></div><div id="connection-status">Connecting...</div></div>
+              <div id="player-summary"><div id="player-poster"></div><div><div id="player-title">Nothing playing</div><div id="player-meta"></div><div id="connection-status">Connecting...</div><button class="diag-button" onclick="openDiagnostics()">Diagnostics</button></div></div>
               <div class="transport-controls">
                 <div class="button-group transport-nav-group">
                   <button id="previous-btn" class="btn btn-nav" onclick="playAdjacent('previous')"><span class="nav-main">Prev</span><span class="nav-title"></span></button>
@@ -308,6 +330,7 @@
         </header>
         <div id="status" style="display:none">Loading...</div>
         <div id="browser"></div>
+        <div id="diagnostics-overlay" onclick="if(event.target===this)closeDiagnostics()"><div id="diagnostics-panel"><h2>RemotePlay diagnostics</h2><dl id="diagnostics-content"></dl><div class="control-actions"><button class="btn btn-dim" onclick="refreshDiagnostics()">Refresh</button><button class="btn btn-red" onclick="closeDiagnostics()">Close</button></div></div></div>
         <script>
         let currentDir=null,currentData=null,playingPath=null;
         let pollInterval=null,seekDragging=false,searchTimer=null;
@@ -316,7 +339,6 @@
         let currentPlaybackSpeed=1;
         let statusFailures=0;
         let cardHoldTimer=null,cardHoldOpened=false;
-        let phoneIdleTimer=null;
         let zoomDragging=false;
         const queuedVideos=new Set();
         const playedVideos=new Set(loadPlayedVideos());
@@ -329,22 +351,6 @@
           if(!isPhoneRemoteOnly)return;
           document.body.classList.toggle('phone-playing',Boolean(isPlaying));
           document.getElementById('now-playing-bar').style.display=isPlaying?'flex':'none';
-          if(isPlaying)resetPhoneIdleTimer();else clearPhoneIdleTimer();
-        }
-
-        function clearPhoneIdleTimer(){
-          clearTimeout(phoneIdleTimer);
-          phoneIdleTimer=null;
-          document.body.classList.remove('controls-dimmed');
-        }
-
-        function resetPhoneIdleTimer(){
-          if(!isPhoneRemoteOnly||!document.body.classList.contains('phone-playing'))return;
-          document.body.classList.remove('controls-dimmed');
-          clearTimeout(phoneIdleTimer);
-          phoneIdleTimer=setTimeout(()=>{
-            if(isPhoneRemoteOnly&&document.body.classList.contains('phone-playing'))document.body.classList.add('controls-dimmed');
-          },4200);
         }
 
         function applyDesktopDockedLayout(isPlaying){
@@ -357,7 +363,6 @@
           document.body.classList.toggle('phone-remote-only',isPhoneRemoteOnly);
           if(!isPhoneRemoteOnly){
             document.body.classList.remove('phone-playing');
-            clearPhoneIdleTimer();
             document.body.classList.remove('landscape-controls');
             applyDesktopDockedLayout(Boolean(playingPath));
             if(!playingPath)document.getElementById('now-playing-bar').style.display='none';
@@ -375,9 +380,6 @@
           if(!('vibrate' in navigator))return;
           try{navigator.vibrate(ms);}catch{}
         }
-        ['pointerdown','touchstart','keydown','scroll'].forEach(eventName=>{
-          document.addEventListener(eventName,()=>resetPhoneIdleTimer(),{passive:true});
-        });
         function startPolling(){if(pollInterval)return;pollInterval=setInterval(pollStatus,1000);}
         function stopPolling(){clearInterval(pollInterval);pollInterval=null;}
 
@@ -477,13 +479,16 @@
         function updateLibraryStatus(scan){
           const el=document.getElementById('scan-status');
           if(!el||!scan)return;
-          const indexed=Number(scan.indexedFiles)||0;
-          const scanned=Number(scan.scannedFiles)||0;
-          const error=(scan.lastError||'').trim();
-          el.classList.toggle('scanning',Boolean(scan.isScanning));
+          const indexed=Number(scan.indexedFiles??scan.IndexedFiles)||0;
+          const scanned=Number(scan.scannedFiles??scan.ScannedFiles)||0;
+          const folders=Number(scan.scannedFolders??scan.ScannedFolders)||0;
+          const isScanning=Boolean(scan.isScanning??scan.IsScanning);
+          const error=(scan.lastError??scan.LastError??'').trim();
+          el.classList.toggle('scanning',isScanning);
           el.classList.toggle('error',Boolean(error));
+          el.classList.toggle('global-scan-status',isScanning);
           if(error){el.textContent='Library scan failed: '+error;return;}
-          if(scan.isScanning){el.textContent='Scanning library... '+scanned+' video(s) found';return;}
+          if(isScanning){el.textContent='Indexing library... '+scanned+' movie(s), '+folders+' folder(s) indexed so far. Normal playback is not interrupted.';return;}
           el.textContent=indexed>0?'Library ready: '+indexed+' indexed video(s)':'Library index not built yet';
         }
 
@@ -493,6 +498,40 @@
           el.textContent=message;
           el.classList.toggle('error',Boolean(isError));
           el.classList.toggle('connected',Boolean(isConnected));
+        }
+
+        function openDiagnostics(){
+          document.getElementById('diagnostics-overlay').classList.add('open');
+          refreshDiagnostics();
+        }
+        function closeDiagnostics(){document.getElementById('diagnostics-overlay').classList.remove('open');}
+        async function refreshDiagnostics(){
+          const content=document.getElementById('diagnostics-content');
+          content.innerHTML='<dt>Status</dt><dd>Loading...</dd>';
+          try{
+            const [statusResponse,healthResponse,displayResponse,libraryResponse]=await Promise.all([
+              fetch('/api/status'),fetch('/api/health'),fetch('/api/display-diagnostics'),fetch('/api/library-status')
+            ]);
+            const status=await statusResponse.json();
+            const health=await healthResponse.json();
+            const display=await displayResponse.json();
+            const library=await libraryResponse.json();
+            const rows=[
+              ['Playback',status.isPlaying?'Playing':status.queueCount>0?'Queued':'Idle'],
+              ['Title',(status.title||'').replace(/^\s*[▶⏸]\s*/,'')||'N/A'],
+              ['Queue',String(status.queueCount||0)+' item(s)'],
+              ['Library',library.isScanning?'Scanning '+(library.scannedFiles||0)+' video(s)':(library.indexedFiles||0)+' indexed video(s)'],
+              ['Server',String(health.activeScheme||'').toUpperCase()+' port '+health.port],
+              ['Display',display.targetDisplayName||'N/A'],
+              ['Fullscreen repair',String(Boolean(display.needsFullscreenRepair))],
+              ['Zoom',Math.round((Number(status.zoom)||1)*100)+'%'],
+              ['Brightness',Math.round((Number(status.brightness)||0)*100)+'%'],
+              ['Last error',status.lastError||health.startupWarning||library.lastError||'None']
+            ];
+            content.innerHTML=rows.map(row=>'<dt>'+esc(row[0])+'</dt><dd>'+esc(row[1])+'</dd>').join('');
+          }catch(e){
+            content.innerHTML='<dt>Error</dt><dd>'+esc(String(e))+'</dd>';
+          }
         }
 
         function fmt(sec){
@@ -639,6 +678,23 @@
         function updateAdjacentButtons(s){
           const previous=document.getElementById('previous-btn');
           const next=document.getElementById('next-btn');
+          const navGroup=previous.closest('.transport-nav-group');
+          const queue=Array.isArray(s.queue)?s.queue:[];
+          const hasQueue=queue.length>0;
+          navGroup?.classList.toggle('queue-mode',hasQueue);
+          previous.classList.toggle('queue-mode',hasQueue);
+          next.classList.toggle('queue-mode',hasQueue);
+          previous.querySelector('.nav-main').textContent='PREV';
+          next.querySelector('.nav-main').textContent=hasQueue?'NEXT QUEUE':'NEXT';
+          if(hasQueue){
+            previous.querySelector('.nav-title').textContent='';
+            next.querySelector('.nav-title').textContent=shortTitle(queue[0].title||'Queued video');
+            previous.title='Previous video unavailable while queue is active';
+            next.title='Play next queued: '+(queue[0].title||'Queued video');
+            previous.disabled=true;
+            next.disabled=false;
+            return;
+          }
           const previousTitle=(s.previousTitle||'').trim();
           const nextTitle=(s.nextTitle||'').trim();
           previous.querySelector('.nav-title').textContent=previousTitle?shortTitle(previousTitle):'';
@@ -658,7 +714,12 @@
           }
           syncQueuedCards();
           if(!queue.length){list.innerHTML='<div class="queue-empty">Queue is empty</div>';return;}
-          list.innerHTML=queue.map((item,index)=>'<div class="queue-item" title="'+esc(item.title||item.path||'')+'">'+(index+1)+'. '+esc(item.title||item.path||'Queued video')+'</div>').join('');
+          list.innerHTML=queue.map((item,index)=>{
+            const path=item.path||'';
+            const title=item.title||path||'Queued video';
+            const thumb='/api/thumb?path='+encodeURIComponent(path);
+            return '<div class="queue-item" title="'+esc(title)+'"><div class="queue-thumb" style="background-image:url('+thumb+')"></div><div class="queue-title">'+(index+1)+'. '+esc(title)+'</div><div class="queue-actions"><button onclick="moveQueueItem(\''+path+'\',\'up\')" '+(index===0?'disabled':'')+'>↑</button><button onclick="moveQueueItem(\''+path+'\',\'down\')" '+(index===queue.length-1?'disabled':'')+'>↓</button><button onclick="removeQueueItem(\''+path+'\')">✕</button></div></div>';
+          }).join('');
         }
         function syncQueuedCards(){
           document.querySelectorAll('.movie-card.queued').forEach(card=>{
@@ -673,7 +734,7 @@
           }
         }
         function setQueuedCard(p,isQueued){
-          const cards=[document.getElementById('card-'+p),document.getElementById('recent-card-'+p)].filter(Boolean);
+          const cards=[document.getElementById('card-'+p),document.getElementById('recent-card-'+p),document.getElementById('continue-card-'+p)].filter(Boolean);
           for(const card of cards){
             card.dataset.path=p;
             card.classList.toggle('queued',isQueued);
@@ -682,12 +743,13 @@
               badge=document.createElement('div');
               badge.className='queued-badge';
               badge.textContent='Queued';
-              const resume=card.querySelector('.resume-badge');
-              if(resume)resume.insertAdjacentElement('afterend',badge);
-              else card.querySelector('.movie-title')?.insertAdjacentElement('afterend',badge);
+              card.querySelector('.movie-title')?.insertAdjacentElement('afterend',badge);
             }else if(!isQueued&&badge){
               badge.remove();
             }
+
+            const buttons=card.querySelectorAll('.card-actions button');
+            if(buttons.length>=2)buttons[1].textContent=isQueued?'Unqueue':'Queue';
           }
         }
         function shortTitle(value){return value.length>80?value.slice(0,77)+'...':value;}
@@ -748,7 +810,7 @@
             const res=await fetch(url);
             if(!res.ok){setStatus('Server error '+res.status);return;}
             currentData=await res.json();render(currentData);
-            if(!d)renderRecent(await loadRecent());
+            if(currentData.isRoot)renderRecent(await loadRecent());
             resetCardsScrollTop();
           }catch(e){setStatus('Error: '+e);}
         }
@@ -804,17 +866,19 @@
               const isPlaying=f.path===playingPath;
               const action=isPlaying?'':' onclick="onCardClick(event,\''+f.path+'\')"';
               const stopButton=isPlaying?'<button class="stop-btn" onclick="stopPlayingCard(event,\''+f.path+'\')">&#9632; STOP</button>':'';
-              const cardActions=isPlaying?'':'<div class="card-actions"><button onclick="playCardAction(event,\''+f.path+'\',\''+esc(f.name)+'\')">Play</button><button onclick="queueCardAction(event,\''+f.path+'\')">Queue</button><button onclick="toggleWatchedCard(event,\''+f.path+'\')">'+(played?'Unwatch':'Watched')+'</button></div>';
+              const cardActions=isPlaying?'':'<div class="card-actions"><button onclick="playCardAction(event,\''+f.path+'\',\''+esc(f.name)+'\')">Play</button><button onclick="queueCardAction(event,\''+f.path+'\')">'+(queued?'Unqueue':'Queue')+'</button><button onclick="toggleWatchedCard(event,\''+f.path+'\')">'+(played?'Unwatch':'Watched')+'</button></div>';
               const displayName=f.displayName||f.name;
-              const resumeBadge=f.resume?'<div class="resume-badge">Resume '+esc(f.resume)+'</div>':'';
+              const progress=Number(f.progress)||0;
+              const progressPct=Math.max(0,Math.min(99,Math.round(progress*100)));
+              const progressOverlay=progressPct>0?'<div class="progress-label">'+progressPct+'%</div><div class="progress-overlay"><div class="progress-fill" style="width:'+progressPct+'%"></div></div>':'';
               const queuedBadge=queued?'<div class="queued-badge">Queued</div>':'';
               return '<div class="'+cardClass+'" id="card-'+f.path+'" data-path="'+esc(f.path)+'" '+bg+action+' onpointerdown="beginCardHold(event,\''+f.path+'\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">'+
                 '<div class="movie-card-inner">'+
                 '<div class="movie-title">'+esc(displayName)+'</div>'+
-                resumeBadge+
                 queuedBadge+
                 stopButton+
                 cardActions+
+                progressOverlay+
                 '</div></div>';
             }).join('');
             html+='</div>';}
@@ -824,24 +888,24 @@
         function renderRecent(files){
           if(!files.length)return;
           const browser=document.getElementById('browser');
-          const cards=files.map(f=>{
-            const thumbUrl='/api/thumb?path='+encodeURIComponent(f.path);
-            const bg='style="background-image:url('+thumbUrl+')"';
-            const pct=Math.max(0,Math.min(99,Math.round((Number(f.progress)||0)*100)));
-            const displayName=f.displayName||f.name;
-            const resume=f.resume||fmt(Number(f.position)||0);
-            const queued=queuedVideos.has(f.path);
-            return '<div class="movie-card '+(queued?'queued ':'')+'played" id="recent-card-'+f.path+'" data-path="'+esc(f.path)+'" '+bg+' onclick="onCardClick(event,\''+f.path+'\')" onpointerdown="beginCardHold(event,\''+f.path+'\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">'+
-              '<div class="movie-card-inner"><div class="movie-title">'+esc(displayName)+'</div>'+
-              '<div class="resume-badge">Resume '+esc(resume)+'</div>'+
-              (queued?'<div class="queued-badge">Queued</div>':'')+
-              '<div class="movie-meta">'+pct+'% • '+esc(f.folder||'')+'</div>'+
-              '<div class="card-actions"><button onclick="playCardAction(event,\''+f.path+'\',\''+esc(displayName)+'\')">Play</button><button onclick="queueCardAction(event,\''+f.path+'\')">Queue</button><button onclick="toggleWatchedCard(event,\''+f.path+'\')">Unwatch</button></div></div></div>';
-          }).join('');
+          const continueFiles=files.filter(f=>Number(f.progress)>0&&Number(f.progress)<0.95).slice(0,6);
+          if(!continueFiles.length)return;
           const html='<div class="section-label recent-toggle" onclick="toggleRecentSection(this)" style="cursor:pointer;user-select:none;">'+
-            'Recently watched <span class="recent-chevron" style="font-size:0.75em;margin-left:6px;">▶</span></div>'+
-            '<div class="movie-grid recent-grid" style="display:none;">'+cards+'</div>';
+            'Continue watching <span class="recent-chevron" style="font-size:0.75em;margin-left:6px;">▶</span></div>'+
+            '<div class="continue-grid recent-grid" style="display:none;">'+continueFiles.map(f=>renderProgressCard(f,true)).join('')+'</div>';
           browser.innerHTML=html+browser.innerHTML;
+        }
+        function renderProgressCard(f,isContinue){
+          const thumbUrl='/api/thumb?path='+encodeURIComponent(f.path);
+          const bg='style="background-image:url('+thumbUrl+')"';
+          const pct=Math.max(0,Math.min(99,Math.round((Number(f.progress)||0)*100)));
+          const displayName=f.displayName||f.name;
+          const queued=queuedVideos.has(f.path);
+          return '<div class="movie-card '+(isContinue?'continue-card ':'')+(queued?'queued ':'')+'played" id="continue-card-'+f.path+'" data-path="'+esc(f.path)+'" '+bg+' onclick="onCardClick(event,\''+f.path+'\')" onpointerdown="beginCardHold(event,\''+f.path+'\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">'+
+            '<div class="movie-card-inner"><div class="movie-title">'+esc(displayName)+'</div>'+
+            (queued?'<div class="queued-badge">Queued</div>':'')+
+            '<div class="movie-meta">'+pct+'% • '+esc(f.folder||'')+'</div>'+
+            '<div class="card-actions"><button onclick="playCardAction(event,\''+f.path+'\',\''+esc(displayName)+'\')">Play</button><button onclick="queueCardAction(event,\''+f.path+'\')">'+(queued?'Unqueue':'Queue')+'</button><button onclick="toggleWatchedCard(event,\''+f.path+'\')">Unwatch</button></div><div class="progress-label">'+pct+'%</div><div class="progress-overlay"><div class="progress-fill" style="width:'+pct+'%"></div></div></div></div>';
         }
         function toggleRecentSection(label){
           const grid=label.nextElementSibling;
@@ -893,12 +957,30 @@
         async function queueCardAction(event,p){
           event.stopPropagation();
           haptic(10);
+          if(queuedVideos.has(p)){
+            await removeQueueItem(p);
+            return;
+          }
+
           await api('/api/queue/add?path='+encodeURIComponent(p));
           queuedVideos.add(p);
           setQueuedCard(p,true);
           updateQueueControls({queue:Array.from(queuedVideos).map(path=>({path:path,title:path.split(/[\\/]/).pop()||path}))});
           await pollStatus();
           setStatus('Added to queue.');
+        }
+        async function removeQueueItem(p){
+          haptic(8);
+          await api('/api/queue/remove?path='+encodeURIComponent(p));
+          queuedVideos.delete(p);
+          setQueuedCard(p,false);
+          await pollStatus();
+          setStatus('Removed from queue.');
+        }
+        async function moveQueueItem(p,direction){
+          haptic(6);
+          await api('/api/queue/move?path='+encodeURIComponent(p)+'&direction='+encodeURIComponent(direction));
+          await pollStatus();
         }
         async function clearQueue(){
           haptic(10);
@@ -908,9 +990,17 @@
           updateQueueControls({queue:[]});
           setStatus('Queue cleared.');
         }
-        function toggleWatchedCard(event,p){
+        async function toggleWatchedCard(event,p){
           event.stopPropagation();
-          if(playedVideos.has(p))unmarkPlayed(p);else markPlayed(p);
+          const target=event.currentTarget;
+          const shouldClear=playedVideos.has(p)||target?.textContent?.trim()==='Unwatch'||Boolean(target?.closest('.continue-card'));
+          if(shouldClear){
+            await api('/api/history/clear?path='+encodeURIComponent(p));
+            unmarkPlayed(p);
+            setStatus('Resume position cleared.');
+          }else{
+            markPlayed(p);
+          }
         }
         async function stopPlayingCard(event,p){
           event.stopPropagation();
@@ -951,11 +1041,19 @@
         }
         function unmarkPlayed(p){
           playedVideos.delete(p);savePlayedVideos();
-          const card=document.getElementById('card-'+p);
-          if(card){
+          for(const card of [document.getElementById('card-'+p),document.getElementById('continue-card-'+p)].filter(Boolean)){
             card.classList.remove('played');
             const buttons=card.querySelectorAll('.card-actions button');
             if(buttons.length>=3)buttons[2].textContent='Watched';
+            if(card.id.startsWith('continue-card-')){
+              const grid=card.closest('.continue-grid');
+              const label=grid?.previousElementSibling;
+              card.remove();
+              if(grid&&!grid.querySelector('.movie-card')){
+                grid.remove();
+                label?.remove();
+              }
+            }
           }
         }
         function updatePlayingCard(newPath,oldPath){

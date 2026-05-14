@@ -23,8 +23,10 @@ public sealed class AppConfigFactoryTests
             subtitlesEnabled: false,
             preferredAudioLanguage: "eng",
             preferredSubtitleLanguage: "fra",
+            secondarySubtitleLanguage: "deu",
             preferForcedSubtitles: true,
             playbackEndBehavior: PlaybackEndMode.PlayNext,
+            playbackHistoryLimit: 9,
             preferredDisplayIndex: 2);
 
         Assert.Equal(5000, config.Port);
@@ -37,8 +39,10 @@ public sealed class AppConfigFactoryTests
         Assert.False(config.SubtitlesEnabled);
         Assert.Equal("eng", config.PreferredAudioLanguage);
         Assert.Equal("fra", config.PreferredSubtitleLanguage);
+        Assert.Equal("deu", config.SecondarySubtitleLanguage);
         Assert.True(config.PreferForcedSubtitles);
         Assert.Equal(PlaybackEndMode.PlayNext, config.PlaybackEndBehavior);
+        Assert.Equal(9, config.PlaybackHistoryLimit);
         Assert.Equal(2, config.PreferredDisplayIndex);
         Assert.Equal(0.5, config.Brightness);
     }
@@ -55,8 +59,10 @@ public sealed class AppConfigFactoryTests
             Zoom = 1.2,
             PreferredAudioLanguage = "jpn",
             PreferredSubtitleLanguage = "eng",
+            SecondarySubtitleLanguage = "fra",
             PreferForcedSubtitles = false,
             PlaybackEndBehavior = PlaybackEndMode.ReturnToLibrary,
+            PlaybackHistoryLimit = 11,
             PreferredDisplayIndex = 1
         };
 
@@ -78,8 +84,10 @@ public sealed class AppConfigFactoryTests
         Assert.True(config.SubtitlesEnabled);
         Assert.Equal("jpn", config.PreferredAudioLanguage);
         Assert.Equal("eng", config.PreferredSubtitleLanguage);
+        Assert.Equal("fra", config.SecondarySubtitleLanguage);
         Assert.False(config.PreferForcedSubtitles);
         Assert.Equal(PlaybackEndMode.ReturnToLibrary, config.PlaybackEndBehavior);
+        Assert.Equal(11, config.PlaybackHistoryLimit);
         Assert.Equal(1, config.PreferredDisplayIndex);
         Assert.Equal(0.5, config.Brightness);
     }

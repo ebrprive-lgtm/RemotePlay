@@ -20,6 +20,9 @@ internal sealed class PlaybackHistory
     public static Dictionary<string, RecentPlaybackItem> GetDefaultResumeMap() =>
         new PlaybackHistory().GetResumeMap();
 
+    public static void ClearDefault(string filePath) =>
+        new PlaybackHistory().Clear(filePath);
+
     public PlaybackHistory(string historyFile)
     {
         if (string.IsNullOrWhiteSpace(historyFile))
@@ -124,6 +127,12 @@ internal sealed class PlaybackHistory
         }
     }
 
+    public void SavePosition(string filePath, TimeSpan position, TimeSpan duration, int historyLimit)
+    {
+        SavePosition(filePath, position, duration);
+        Trim(historyLimit);
+    }
+
     public void SavePreferences(string filePath, MoviePlaybackPreferences preferences)
     {
         if (string.IsNullOrWhiteSpace(filePath))
@@ -155,6 +164,28 @@ internal sealed class PlaybackHistory
         {
             if (_entries.Remove(filePath))
                 SaveEntries();
+        }
+    }
+
+    public void Trim(int historyLimit)
+    {
+        var normalizedLimit = Math.Max(1, historyLimit);
+
+        lock (_gate)
+        {
+            if (_entries.Count <= normalizedLimit)
+                return;
+
+            var entriesToRemove = _entries
+                .OrderByDescending(e => e.Value.UpdatedUtc)
+                .Skip(normalizedLimit)
+                .Select(e => e.Key)
+                .ToArray();
+
+            foreach (var filePath in entriesToRemove)
+                _entries.Remove(filePath);
+
+            SaveEntries();
         }
     }
 
@@ -211,7 +242,4 @@ internal sealed record MoviePlaybackPreferences
     public double Brightness { get; init; } = 0.5;
     public double Saturation { get; init; } = 1;
     public double Zoom { get; init; } = 1;
-    public int? AudioTrackId { get; init; }
-    public int? SubtitleTrackId { get; init; }
-    public bool SubtitlesEnabled { get; init; } = true;
 }

@@ -22,6 +22,9 @@ internal sealed class WebServerCallbacks
     public required Action<int> SetSubtitleTrack { get; init; }
     public required Action<int> PlayAdjacent { get; init; }
     public required Action<string> Enqueue { get; init; }
+    public required Action<string> RemoveFromQueue { get; init; }
+    public required Action<string, int> MoveQueueItem { get; init; }
     public required Action ClearQueue { get; init; }
+    public required Action<string> ClearPlaybackHistory { get; init; }
     public required Func<DisplayDiagnostics> GetDisplayDiagnostics { get; init; }
 }

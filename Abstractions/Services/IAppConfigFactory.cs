@@ -14,8 +14,10 @@ internal interface IAppConfigFactory
         bool subtitlesEnabled,
         string preferredAudioLanguage,
         string preferredSubtitleLanguage,
+        string secondarySubtitleLanguage,
         bool preferForcedSubtitles,
         PlaybackEndMode playbackEndBehavior,
+        int playbackHistoryLimit,
         int preferredDisplayIndex);
 
     AppConfig CreateForPlaybackPreferences(

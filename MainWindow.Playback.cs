@@ -52,6 +52,36 @@ public partial class MainWindow
         });
     }
 
+    private void RemoveFromPlaybackQueue(string filePath)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            var index = _playbackQueue.FindIndex(path => string.Equals(path, filePath, StringComparison.OrdinalIgnoreCase));
+            if (index < 0)
+                return;
+
+            _playbackQueue.RemoveAt(index);
+            AppendLog($"Removed from queue: {Path.GetFileName(filePath)}");
+        });
+    }
+
+    private void MovePlaybackQueueItem(string filePath, int direction)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            var index = _playbackQueue.FindIndex(path => string.Equals(path, filePath, StringComparison.OrdinalIgnoreCase));
+            if (index < 0)
+                return;
+
+            var targetIndex = index + Math.Sign(direction);
+            if (targetIndex < 0 || targetIndex >= _playbackQueue.Count)
+                return;
+
+            (_playbackQueue[index], _playbackQueue[targetIndex]) = (_playbackQueue[targetIndex], _playbackQueue[index]);
+            AppendLog($"Moved queue item: {Path.GetFileName(filePath)}");
+        });
+    }
+
     private PlaybackQueueItem[] GetPlaybackQueue()
     {
         PlaybackQueueItem[] result = [];
@@ -123,9 +153,6 @@ public partial class MainWindow
             _brightness = Math.Clamp(preferences.Brightness, 0, 1);
             _saturation = Math.Clamp(preferences.Saturation, 0, 2);
             _zoom = Math.Clamp(preferences.Zoom, 1, 2);
-            _subtitlesEnabled = preferences.SubtitlesEnabled;
-            _lastAudioTrackId = preferences.AudioTrackId;
-            _lastSubtitleTrackId = preferences.SubtitleTrackId;
         }
         finally
         {
@@ -144,7 +171,6 @@ public partial class MainWindow
             {
                 _mediaPlayer.SetAudioTrack(trackId);
                 _lastAudioTrackId = trackId;
-                SaveCurrentMoviePreferences();
             }
             catch (Exception ex)
             {
@@ -275,13 +301,14 @@ public partial class MainWindow
             ApplyPreferredAudioTrack();
             ApplyVideoZoom();
             var preferredSubtitleTrack = GetPreferredSubtitleTrackId();
-            _hasSubtitles = preferredSubtitleTrack is not null;
-            if (_hasSubtitles)
+            if (preferredSubtitleTrack is int subtitleTrackId)
             {
-                if (_subtitlesEnabled)
+                _hasSubtitles = true;
+                if (_subtitlesEnabled || subtitleTrackId >= 0)
                 {
-                    _mediaPlayer.SetSpu(preferredSubtitleTrack!.Value);
-                    _lastSubtitleTrackId = preferredSubtitleTrack.Value;
+                    _mediaPlayer.SetSpu(subtitleTrackId);
+                    _lastSubtitleTrackId = subtitleTrackId;
+                    _subtitlesEnabled = subtitleTrackId >= 0;
                 }
                 else
                 {
@@ -455,11 +482,25 @@ public partial class MainWindow
 
     private void PlayAdjacent(int direction)
     {
+        if (direction > 0 && TryPlayNextQueuedMovie())
+            return;
+
         string? nextPath = null;
         Dispatcher.Invoke(() => nextPath = GetAdjacentVideoPath(direction));
 
         if (!string.IsNullOrWhiteSpace(nextPath))
             PlayMovie(nextPath);
+    }
+
+    private bool TryPlayNextQueuedMovie()
+    {
+        var hasQueuedMovie = false;
+        Dispatcher.Invoke(() => hasQueuedMovie = _playbackQueue.Count > 0);
+        if (!hasQueuedMovie)
+            return false;
+
+        PlayNextQueuedMovie();
+        return true;
     }
 
     private string? GetAdjacentVideoPath(int direction)
@@ -613,7 +654,7 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(_currentFilePath) || _mediaPlayer.Media is null)
             return;
 
-        _playbackHistory.SavePosition(_currentFilePath, TimeSpan.FromMilliseconds(Math.Max(0, _mediaPlayer.Time)), _duration);
+        _playbackHistory.SavePosition(_currentFilePath, TimeSpan.FromMilliseconds(Math.Max(0, _mediaPlayer.Time)), _duration, _config.PlaybackHistoryLimit);
     }
 
     private void SaveCurrentMoviePreferences()
@@ -625,10 +666,7 @@ public partial class MainWindow
         {
             Brightness = _brightness,
             Saturation = _saturation,
-            Zoom = _zoom,
-            AudioTrackId = _lastAudioTrackId,
-            SubtitleTrackId = _lastSubtitleTrackId,
-            SubtitlesEnabled = _subtitlesEnabled
+            Zoom = _zoom
         });
     }
 
@@ -653,7 +691,10 @@ public partial class MainWindow
             SetSubtitleTrack = SetSubtitleTrack,
             PlayAdjacent = PlayAdjacent,
             Enqueue = EnqueueMovie,
+            RemoveFromQueue = RemoveFromPlaybackQueue,
+            MoveQueueItem = MovePlaybackQueueItem,
             ClearQueue = ClearPlaybackQueue,
+            ClearPlaybackHistory = _playbackHistory.Clear,
             GetDisplayDiagnostics = GetDisplayDiagnostics
         });
 
@@ -763,15 +804,11 @@ public partial class MainWindow
             if (audioTracks is null || audioTracks.Length == 0)
                 return;
 
-            var preferredTrack = FindPreferredTrackId(audioTracks, _config.PreferredAudioLanguage, preferForced: false);
+            var preferredTrack = FindPreferredTrackId(audioTracks, _config.PreferredAudioLanguage);
             if (preferredTrack is not null)
             {
                 _mediaPlayer.SetAudioTrack(preferredTrack.Value);
                 _lastAudioTrackId = preferredTrack.Value;
-            }
-            else if (_lastAudioTrackId is int lastTrack && audioTracks.Any(t => t.Id == lastTrack))
-            {
-                _mediaPlayer.SetAudioTrack(lastTrack);
             }
         }
         catch (Exception ex)
@@ -788,12 +825,19 @@ public partial class MainWindow
             if (subtitleTracks is null || subtitleTracks.Length == 0)
                 return null;
 
-            var configuredTrack = FindPreferredTrackId(
-                subtitleTracks,
-                _config.PreferredSubtitleLanguage,
-                _config.PreferForcedSubtitles);
-            if (configuredTrack is not null)
-                return configuredTrack;
+            var forcedTrack = _config.PreferForcedSubtitles
+                ? FindForcedTrackId(subtitleTracks)
+                : null;
+            if (forcedTrack is not null)
+                return forcedTrack;
+
+            var primaryTrack = FindPreferredTrackId(subtitleTracks, _config.PreferredSubtitleLanguage);
+            if (primaryTrack is not null)
+                return primaryTrack;
+
+            var secondaryTrack = FindPreferredTrackId(subtitleTracks, _config.SecondarySubtitleLanguage);
+            if (secondaryTrack is not null)
+                return secondaryTrack;
 
             if (_lastSubtitleTrackId is int lastTrack && subtitleTracks.Any(t => t.Id == lastTrack))
                 return lastTrack;
@@ -812,18 +856,20 @@ public partial class MainWindow
         }
     }
 
-    private static int? FindPreferredTrackId(IEnumerable<TrackDescription> tracks, string language, bool preferForced)
+    private static int? FindForcedTrackId(IEnumerable<TrackDescription> tracks)
+    {
+        var forcedTrack = tracks
+            .Where(t => t.Id >= 0)
+            .FirstOrDefault(t => IsForcedTrack(t.Name));
+
+        return forcedTrack.Id >= 0 ? forcedTrack.Id : null;
+    }
+
+    private static int? FindPreferredTrackId(IEnumerable<TrackDescription> tracks, string language)
     {
         var usableTracks = tracks.Where(t => t.Id >= 0).ToArray();
         if (usableTracks.Length == 0)
             return null;
-
-        if (preferForced)
-        {
-            var forcedTrack = usableTracks.FirstOrDefault(t => IsForcedTrack(t.Name));
-            if (forcedTrack.Id >= 0)
-                return forcedTrack.Id;
-        }
 
         var normalizedLanguage = NormalizeTrackToken(language);
         if (string.IsNullOrWhiteSpace(normalizedLanguage))
@@ -833,7 +879,7 @@ public partial class MainWindow
         return preferredTrack.Id >= 0 ? preferredTrack.Id : null;
     }
 
-    private static bool TrackNameMatchesLanguage(string? trackName, string language)
+    internal static bool TrackNameMatchesLanguage(string? trackName, string language)
     {
         if (string.IsNullOrWhiteSpace(trackName))
             return false;
@@ -842,9 +888,50 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(normalizedName))
             return false;
 
-        return normalizedName.Split(' ', StringSplitOptions.RemoveEmptyEntries).Any(token => token == language)
-            || normalizedName.Contains(language, StringComparison.OrdinalIgnoreCase);
+        var normalizedLanguage = NormalizeTrackToken(language);
+        if (string.IsNullOrWhiteSpace(normalizedLanguage))
+            return false;
+
+        var aliases = GetLanguageAliases(normalizedLanguage);
+        var tokens = normalizedName.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+
+        return aliases.Any(alias => tokens.Any(token => token == alias || token.StartsWith(alias, StringComparison.OrdinalIgnoreCase)));
     }
+
+    private static string[] GetLanguageAliases(string language) =>
+        language switch
+        {
+            "eng" or "en" or "english" => ["eng", "en", "english"],
+            "fre" or "fra" or "fr" or "french" => ["fre", "fra", "fr", "french"],
+            "ger" or "deu" or "de" or "german" => ["ger", "deu", "de", "german", "deutsch"],
+            "jpn" or "ja" or "japanese" => ["jpn", "ja", "japanese"],
+            "spa" or "es" or "spanish" => ["spa", "es", "spanish"],
+            "ita" or "it" or "italian" => ["ita", "it", "italian"],
+            "por" or "pt" or "portuguese" => ["por", "pt", "portuguese"],
+            "kor" or "ko" or "korean" => ["kor", "ko", "korean"],
+            "chi" or "zho" or "zh" or "chinese" => ["chi", "zho", "zh", "chinese", "mandarin", "cantonese"],
+            "rus" or "ru" or "russian" => ["rus", "ru", "russian"],
+            "ara" or "ar" or "arabic" => ["ara", "ar", "arabic"],
+            "hin" or "hi" or "hindi" => ["hin", "hi", "hindi"],
+            "tur" or "tr" or "turkish" => ["tur", "tr", "turkish"],
+            "pol" or "pl" or "polish" => ["pol", "pl", "polish"],
+            "swe" or "sv" or "swedish" => ["swe", "sv", "swedish"],
+            "nor" or "no" or "norwegian" => ["nor", "no", "norwegian", "nob", "nn"],
+            "dan" or "da" or "danish" => ["dan", "da", "danish"],
+            "fin" or "fi" or "finnish" => ["fin", "fi", "finnish"],
+            "gre" or "ell" or "el" or "greek" => ["gre", "ell", "el", "greek"],
+            "heb" or "he" or "hebrew" => ["heb", "he", "hebrew"],
+            "cze" or "ces" or "cs" or "czech" => ["cze", "ces", "cs", "czech"],
+            "hun" or "hu" or "hungarian" => ["hun", "hu", "hungarian"],
+            "rum" or "ron" or "ro" or "romanian" => ["rum", "ron", "ro", "romanian"],
+            "ukr" or "uk" or "ukrainian" => ["ukr", "uk", "ukrainian"],
+            "tha" or "th" or "thai" => ["tha", "th", "thai"],
+            "vie" or "vi" or "vietnamese" => ["vie", "vi", "vietnamese"],
+            "ind" or "id" or "indonesian" => ["ind", "id", "indonesian"],
+            "may" or "msa" or "ms" or "malay" => ["may", "msa", "ms", "malay"],
+            "dut" or "nld" or "nl" or "dutch" => ["dut", "nld", "nl", "dutch", "nederlands"],
+            _ => [language]
+        };
 
     private static bool IsForcedTrack(string? trackName) =>
         !string.IsNullOrWhiteSpace(trackName)

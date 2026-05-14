@@ -117,12 +117,24 @@ internal sealed partial class WebServer
                 HandleRecent(ctx);
                 break;
 
+            case "/api/history/clear":
+                HandleHistoryClear(ctx);
+                break;
+
             case "/api/play":
                 HandlePlay(ctx);
                 break;
 
             case "/api/queue/add":
                 HandleQueueAdd(ctx);
+                break;
+
+            case "/api/queue/remove":
+                HandleQueueRemove(ctx);
+                break;
+
+            case "/api/queue/move":
+                HandleQueueMove(ctx);
                 break;
 
             case "/api/queue/clear":
@@ -664,7 +676,7 @@ internal sealed partial class WebServer
     private void HandleRecent(HttpListenerContext ctx)
     {
         var root = _config.ResolvedMoviesPath;
-        var files = PlaybackHistory.GetDefaultRecent(12)
+        var files = PlaybackHistory.GetDefaultRecent(_config.PlaybackHistoryLimit)
             .Where(item => WebPathHelpers.IsUnderRoot(item.FilePath, root))
             .Select(item => new
             {
@@ -680,6 +692,26 @@ internal sealed partial class WebServer
             .ToArray();
 
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { files }));
+    }
+
+    private void HandleHistoryClear(HttpListenerContext ctx)
+    {
+        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(encodedPath))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing path");
+            return;
+        }
+
+        var filePath = WebPathHelpers.DecodePath(encodedPath);
+        if (!WebPathHelpers.IsUnderRoot(filePath, _config.ResolvedMoviesPath))
+        {
+            TrySendResponse(ctx, 403, "text/plain", "Forbidden");
+            return;
+        }
+
+        _callbacks.ClearPlaybackHistory(filePath);
+        TrySendResponse(ctx, 200, "text/plain", "OK");
     }
 
     private void HandleBrowse(HttpListenerContext ctx)
@@ -788,6 +820,34 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 200, "text/plain", "OK");
     }
 
+    private void HandleQueueRemove(HttpListenerContext ctx)
+    {
+        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(encodedPath))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing path");
+            return;
+        }
+
+        _callbacks.RemoveFromQueue(WebPathHelpers.DecodePath(encodedPath));
+        TrySendResponse(ctx, 200, "text/plain", "OK");
+    }
+
+    private void HandleQueueMove(HttpListenerContext ctx)
+    {
+        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
+        var directionParam = ctx.Request.QueryString["direction"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(encodedPath))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing path");
+            return;
+        }
+
+        var direction = string.Equals(directionParam, "up", StringComparison.OrdinalIgnoreCase) ? -1 : 1;
+        _callbacks.MoveQueueItem(WebPathHelpers.DecodePath(encodedPath), direction);
+        TrySendResponse(ctx, 200, "text/plain", "OK");
+    }
+
     private void RefreshLibraryIndexIfIdle()
     {
         if (DateTimeOffset.UtcNow - _lastRequestUtc < TimeSpan.FromHours(1))
@@ -812,6 +872,7 @@ internal sealed partial class WebServer
             _isIndexing = true;
             _scanStartedUtc = DateTimeOffset.UtcNow;
             _scannedFiles = 0;
+            _scannedFolders = 0;
             _lastScanError = string.Empty;
         }
 
@@ -827,7 +888,7 @@ internal sealed partial class WebServer
                     return;
                 }
 
-                var files = EnumerateLibraryVideoFiles(root)
+                var files = EnumerateLibraryVideoFiles(root, () => Interlocked.Increment(ref _scannedFolders))
                     .Where(f => WebPathHelpers.IsVideoFile(f, VideoExtensions))
                     .Select(f =>
                     {
@@ -866,7 +927,7 @@ internal sealed partial class WebServer
             .Replace(Path.AltDirectorySeparatorChar, ' ');
     }
 
-    private static IEnumerable<string> EnumerateLibraryVideoFiles(string root)
+    private static IEnumerable<string> EnumerateLibraryVideoFiles(string root, Action? onFolderScanned = null)
     {
         var pending = new Stack<string>();
         pending.Push(root);
@@ -874,6 +935,7 @@ internal sealed partial class WebServer
         while (pending.Count > 0)
         {
             var dir = pending.Pop();
+            onFolderScanned?.Invoke();
 
             IEnumerable<string> files;
             try { files = Directory.EnumerateFiles(dir); }

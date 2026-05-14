@@ -51,6 +51,7 @@ internal sealed record LibraryScanStatus
     public bool IsScanning { get; init; }
     public int IndexedFiles { get; init; }
     public int ScannedFiles { get; init; }
+    public int ScannedFolders { get; init; }
     public DateTimeOffset? StartedUtc { get; init; }
     public DateTimeOffset? CompletedUtc { get; init; }
     public string LastError { get; init; } = string.Empty;
@@ -79,6 +80,7 @@ internal sealed partial class WebServer
     private DateTimeOffset? _lastIndexRefreshUtc;
     private DateTimeOffset? _scanStartedUtc;
     private int _scannedFiles;
+    private int _scannedFolders;
     private string _lastScanError = string.Empty;
     private bool _isIndexing;
     private string _activeScheme;
@@ -101,6 +103,7 @@ internal sealed partial class WebServer
         IsScanning = _isIndexing,
         IndexedFiles = _libraryIndex.Length,
         ScannedFiles = _scannedFiles,
+        ScannedFolders = _scannedFolders,
         StartedUtc = _scanStartedUtc,
         CompletedUtc = _lastIndexRefreshUtc,
         LastError = _lastScanError

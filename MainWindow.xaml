@@ -342,6 +342,22 @@
                                     <ComboBoxItem Content="Return to library" Tag="ReturnToLibrary"/>
                                 </ComboBox>
 
+                                <TextBlock Text="Playback history limit" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="120"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="PlaybackHistoryLimitBox" Grid.Column="0"
+                                             Background="#1e1e2e" Foreground="#EEE"
+                                             BorderBrush="#444" BorderThickness="1"
+                                             Padding="8,6" FontSize="13"
+                                             VerticalContentAlignment="Center"/>
+                                    <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
+                                               VerticalAlignment="Center" Margin="12,0,0,0"
+                                               Text="Maximum number of movies kept in Continue Watching / recent history."/>
+                                </Grid>
+
                                 <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
                                         Background="#E94560" Foreground="White" BorderThickness="0"
                                         Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
@@ -350,28 +366,49 @@
                             <!-- ── AUDIO & SUBS panel ── -->
                             <StackPanel x:Name="PanelTracks" Visibility="Collapsed">
                                 <TextBlock Text="Audio &amp; Subtitles" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
-                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20"
-                                           Text="Default track language preferences applied automatically when a video starts."/>
+                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
+                                           Text="Language preferences applied automatically when a video starts."/>
 
-                                <TextBlock Text="Preferred audio language" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"
-                                           Text="3-letter ISO 639-2 code, e.g. eng, fra, deu, jpn. Leave blank to use the default track."/>
-                                <TextBox x:Name="PreferredAudioLangBox"
-                                         Background="#1e1e2e" Foreground="#EEE"
-                                         BorderBrush="#444" BorderThickness="1"
-                                         Padding="8,6" FontSize="13" MaxWidth="140"
-                                         HorizontalAlignment="Left" Margin="0,0,0,20"
-                                         VerticalContentAlignment="Center"/>
+                                <TextBlock Text="Audio" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                <Grid Margin="0,0,0,22">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="160"/>
+                                        <ColumnDefinition Width="240"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Preferred language" Foreground="#888" FontSize="12" VerticalAlignment="Center"/>
+                                    <ComboBox x:Name="PreferredAudioLangCombo" Grid.Column="1"
+                                              Style="{StaticResource DarkComboBox}"/>
+                                    <TextBlock Grid.Column="2" Foreground="#555" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
+                                               Text="Blank uses the default audio track."/>
+                                </Grid>
 
-                                <TextBlock Text="Preferred subtitle language" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"
-                                           Text="3-letter ISO 639-2 code, e.g. eng, fra. Leave blank to disable auto-selection."/>
-                                <TextBox x:Name="PreferredSubtitleLangBox"
-                                         Background="#1e1e2e" Foreground="#EEE"
-                                         BorderBrush="#444" BorderThickness="1"
-                                         Padding="8,6" FontSize="13" MaxWidth="140"
-                                         HorizontalAlignment="Left" Margin="0,0,0,20"
-                                         VerticalContentAlignment="Center"/>
+                                <TextBlock Text="Subtitles" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="160"/>
+                                        <ColumnDefinition Width="240"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Primary language" Foreground="#888" FontSize="12" VerticalAlignment="Center"/>
+                                    <ComboBox x:Name="PreferredSubtitleLangCombo" Grid.Column="1"
+                                              Style="{StaticResource DarkComboBox}"/>
+                                    <TextBlock Grid.Column="2" Foreground="#555" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
+                                               Text="Tried first when matching subtitle tracks."/>
+                                </Grid>
+
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="160"/>
+                                        <ColumnDefinition Width="240"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Secondary language" Foreground="#888" FontSize="12" VerticalAlignment="Center"/>
+                                    <ComboBox x:Name="SecondarySubtitleLangCombo" Grid.Column="1"
+                                              Style="{StaticResource DarkComboBox}"/>
+                                    <TextBlock Grid.Column="2" Foreground="#555" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
+                                               Text="Optional fallback if the primary subtitle language is unavailable."/>
+                                </Grid>
 
                                 <CheckBox x:Name="PreferForcedSubtitlesBox"
                                           Content="Prefer forced subtitle tracks (dialogue subtitles for foreign language portions)"
@@ -389,6 +426,7 @@
                                                            Text="Choose which monitor the fullscreen video window opens on."/>
 
                                                 <TextBlock Text="Fullscreen display" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                                 <TextBlock x:Name="CurrentDisplayText" Foreground="#888" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"/>
                                                 <ComboBox x:Name="PreferredDisplayCombo"
                                                           Style="{StaticResource DarkComboBox}"
                                                           HorizontalAlignment="Left" MinWidth="280" Margin="0,0,0,20"/>

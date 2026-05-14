@@ -16,8 +16,10 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         bool subtitlesEnabled,
         string preferredAudioLanguage,
         string preferredSubtitleLanguage,
+        string secondarySubtitleLanguage,
         bool preferForcedSubtitles,
         PlaybackEndMode playbackEndBehavior,
+        int playbackHistoryLimit,
         int preferredDisplayIndex)
     {
         ArgumentNullException.ThrowIfNull(currentConfig);
@@ -36,8 +38,10 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             SubtitlesEnabled = subtitlesEnabled,
             PreferredAudioLanguage = preferredAudioLanguage,
             PreferredSubtitleLanguage = preferredSubtitleLanguage,
+            SecondarySubtitleLanguage = secondarySubtitleLanguage,
             PreferForcedSubtitles = preferForcedSubtitles,
             PlaybackEndBehavior = playbackEndBehavior,
+            PlaybackHistoryLimit = playbackHistoryLimit,
             PreferredDisplayIndex = preferredDisplayIndex
         };
     }
@@ -65,8 +69,10 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             SubtitlesEnabled = subtitlesEnabled,
             PreferredAudioLanguage = currentConfig.PreferredAudioLanguage,
             PreferredSubtitleLanguage = currentConfig.PreferredSubtitleLanguage,
+            SecondarySubtitleLanguage = currentConfig.SecondarySubtitleLanguage,
             PreferForcedSubtitles = currentConfig.PreferForcedSubtitles,
             PlaybackEndBehavior = currentConfig.PlaybackEndBehavior,
+            PlaybackHistoryLimit = currentConfig.PlaybackHistoryLimit,
             PreferredDisplayIndex = currentConfig.PreferredDisplayIndex
         };
     }
