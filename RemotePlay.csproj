@@ -38,8 +38,6 @@
     <PackageReference Include="QRCoder" Version="1.8.0" />
     <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.23.1" />
     <None Include=".github\copilot-instructions.md" />
-
-    <None Include="RemotePlay.Tests\RemotePlay.Tests.csproj" />
   </ItemGroup>
 
 </Project>

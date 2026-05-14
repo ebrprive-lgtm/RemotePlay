@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
@@ -654,6 +655,9 @@ internal sealed partial class WebServer
 
         var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var resumeMap = PlaybackHistory.GetDefaultResumeMap();
+        var naturalComparer = new NaturalStringComparer();
+
+        // Find files matching the search terms
         var files = terms.Length == 0
             ? Array.Empty<object>()
             : _libraryIndex
@@ -663,10 +667,25 @@ internal sealed partial class WebServer
                 .Select(f => BuildCardFile(Path.GetFileNameWithoutExtension(f.FilePath), f.FilePath, resumeMap, f.FolderName))
                 .ToArray<object>();
 
+        // Find unique folders that match the search terms
+        var folders = terms.Length == 0
+            ? Array.Empty<object>()
+            : _libraryIndex
+                .Where(f => terms.All(t => f.FolderName.Contains(t, StringComparison.OrdinalIgnoreCase)))
+                .GroupBy(f => f.FolderName, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(g => g.Key, naturalComparer)
+                .Select(g => new
+                {
+                    name = g.Key,
+                    folder = g.Key
+                })
+                .ToArray<object>();
+
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new
         {
+            folders,
             files,
-            total = files.Length,
+            total = folders.Length + files.Length,
             indexedFiles = _libraryIndex.Length,
             indexing = _isIndexing,
             lastRefreshUtc = _lastIndexRefreshUtc
@@ -743,9 +762,10 @@ internal sealed partial class WebServer
             return;
         }
 
+        var naturalComparer = new NaturalStringComparer();
         var folders = Directory.EnumerateDirectories(targetDir)
             .Where(d => !HiddenFolderNames.Contains(Path.GetFileName(d)))
-            .OrderBy(d => d)
+            .OrderBy(d => Path.GetFileName(d), naturalComparer)
             .Select(d => new
             {
                 name = Path.GetFileName(d),
@@ -756,7 +776,7 @@ internal sealed partial class WebServer
         var resumeMap = PlaybackHistory.GetDefaultResumeMap();
         var files = Directory.EnumerateFiles(targetDir)
             .Where(f => WebPathHelpers.IsVideoFile(f, VideoExtensions))
-            .OrderBy(f => f)
+            .OrderBy(f => Path.GetFileNameWithoutExtension(f), naturalComparer)
             .Select(f => BuildCardFile(Path.GetFileNameWithoutExtension(f), f, resumeMap))
             .ToArray();
 
@@ -905,6 +925,7 @@ internal sealed partial class WebServer
 
                 _libraryIndex = files;
                 _lastIndexRefreshUtc = DateTimeOffset.UtcNow;
+                SaveLibraryIndexCache();
                 Logger.Info($"Library index refreshed: {files.Length} videos");
             }
             catch (Exception ex)
@@ -1016,5 +1037,64 @@ internal sealed partial class WebServer
             : $"{time.Minutes}:{time.Seconds:00}";
     }
 
-    private sealed record LibraryFile(string Name, string FilePath, string EncodedPath, string FolderName, string SearchText);
+    private static object[] GetNaturalSortKey(string path)
+    {
+        var name = Path.GetFileName(path);
+        var parts = System.Text.RegularExpressions.Regex.Split(name, @"(\d+)");
+        var result = new List<object>();
+
+        foreach (var part in parts)
+        {
+            if (string.IsNullOrEmpty(part))
+                continue;
+
+            if (int.TryParse(part, out var num))
+                result.Add(num);
+            else
+                result.Add(part);
+        }
+
+        return result.ToArray();
+    }
+
+    private class NaturalStringComparer : IComparer<string>
+    {
+        public int Compare(string? x, string? y)
+        {
+            if (x == null && y == null) return 0;
+            if (x == null) return -1;
+            if (y == null) return 1;
+
+            var xParts = System.Text.RegularExpressions.Regex.Split(x, @"(\d+)");
+            var yParts = System.Text.RegularExpressions.Regex.Split(y, @"(\d+)");
+
+            var maxLen = Math.Max(xParts.Length, yParts.Length);
+            for (int i = 0; i < maxLen; i++)
+            {
+                var xPart = i < xParts.Length ? xParts[i] : string.Empty;
+                var yPart = i < yParts.Length ? yParts[i] : string.Empty;
+
+                if (string.IsNullOrEmpty(xPart) && string.IsNullOrEmpty(yPart))
+                    continue;
+                if (string.IsNullOrEmpty(xPart))
+                    return -1;
+                if (string.IsNullOrEmpty(yPart))
+                    return 1;
+
+                if (int.TryParse(xPart, out var xNum) && int.TryParse(yPart, out var yNum))
+                {
+                    var numCmp = xNum.CompareTo(yNum);
+                    if (numCmp != 0) return numCmp;
+                }
+                else
+                {
+                    var strCmp = string.Compare(xPart, yPart, StringComparison.OrdinalIgnoreCase);
+                    if (strCmp != 0) return strCmp;
+                }
+            }
+
+            return 0;
+        }
+    }
+
 }

@@ -57,9 +57,20 @@ internal sealed record LibraryScanStatus
     public string LastError { get; init; } = string.Empty;
 }
 
+internal sealed record LibraryIndexCache
+{
+    public string RootPath { get; init; } = string.Empty;
+    public DateTimeOffset CreatedUtc { get; init; }
+    public LibraryFile[] Files { get; init; } = [];
+}
+
+internal sealed record LibraryFile(string Name, string FilePath, string EncodedPath, string FolderName, string SearchText);
+
 internal sealed partial class WebServer
 {
     private const string WebAssetsDirectoryName = "WebAssets";
+    private static readonly string LibraryIndexCacheFile =
+        Path.Combine(AppContext.BaseDirectory, "library-index.json");
 
     private static readonly HashSet<string> VideoExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv" };
@@ -91,6 +102,7 @@ internal sealed partial class WebServer
         _config = config;
         _callbacks = callbacks;
         _activeScheme = config.Scheme;
+        LoadLibraryIndexCache();
         _libraryIndexTimer = new Timer(_ => RefreshLibraryIndexIfIdle(), null,
             TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
     }
@@ -108,6 +120,54 @@ internal sealed partial class WebServer
         CompletedUtc = _lastIndexRefreshUtc,
         LastError = _lastScanError
     };
+
+    private void LoadLibraryIndexCache()
+    {
+        try
+        {
+            if (!File.Exists(LibraryIndexCacheFile))
+                return;
+
+            var json = File.ReadAllText(LibraryIndexCacheFile);
+            var cache = JsonSerializer.Deserialize<LibraryIndexCache>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (cache is null || !string.Equals(NormalizePath(cache.RootPath), NormalizePath(_config.ResolvedMoviesPath), StringComparison.OrdinalIgnoreCase))
+                return;
+
+            _libraryIndex = cache.Files
+                .Where(file => File.Exists(file.FilePath))
+                .ToArray();
+            _lastIndexRefreshUtc = cache.CreatedUtc;
+            _scannedFiles = _libraryIndex.Length;
+            Logger.Info($"Loaded persistent library index: {_libraryIndex.Length} videos");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to load library index cache", ex);
+        }
+    }
+
+    private void SaveLibraryIndexCache()
+    {
+        try
+        {
+            var cache = new LibraryIndexCache
+            {
+                RootPath = _config.ResolvedMoviesPath,
+                CreatedUtc = _lastIndexRefreshUtc ?? DateTimeOffset.UtcNow,
+                Files = _libraryIndex
+            };
+
+            var json = JsonSerializer.Serialize(cache, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(LibraryIndexCacheFile, json);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to save library index cache", ex);
+        }
+    }
+
+    private static string NormalizePath(string path) =>
+        Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
     public void Start()
     {

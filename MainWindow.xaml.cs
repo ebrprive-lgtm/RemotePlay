@@ -212,38 +212,41 @@ public partial class MainWindow : Window
                 displayCombo.SelectedIndex = 0;
         }
 
-        // Pre-initialize the VLC HwndHost so its native window is created and
-        // painted black before the user ever enters fullscreen.  Without this the
-        // very first fullscreen entry shows a white surface because the HWND didn't
-        // exist yet and VLC hasn't had a chance to paint it.
-        VideoPanel.Visibility = Visibility.Visible;
-        Dispatcher.InvokeAsync(() =>
-        {
-            VideoPanel.Visibility = Visibility.Collapsed;
-        }, System.Windows.Threading.DispatcherPriority.Render);
-
         AppendLog($"RemotePlay started");
         AppendLog($"Requested URL: {_config.Scheme}://{ip}:{_config.Port}");
         AppendLog($"Movies: {_config.ResolvedMoviesPath}");
 
-        EnsureFirewallRule(_config.Port);
+        // Initialize web server asynchronously on a background thread to prevent UI blocking
+        _ = Task.Run(() => InitializeServerAsync(ip));
+    }
 
-        _webServer = CreateWebServer(_config);
+    private async Task InitializeServerAsync(string ip)
+    {
         try
         {
+            EnsureFirewallRule(_config.Port);
+
+            _webServer = CreateWebServer(_config);
             _webServer.Start();
-            UpdateServerUrlDisplay(ip, _webServer.ActiveScheme, _config.Port, _webServer.StartupWarning);
-            ServerStatusText.Text = $"? Server running on {_webServer.ActiveScheme}://*:{_config.Port}";
-            AppendLog($"Web server listening on {_webServer.ActiveScheme}://*:{_config.Port}");
-            if (!string.IsNullOrWhiteSpace(_webServer.StartupWarning))
-                ShowDiag(_webServer.StartupWarning);
+
+            Dispatcher.InvokeAsync(() =>
+            {
+                UpdateServerUrlDisplay(ip, _webServer.ActiveScheme, _config.Port, _webServer.StartupWarning);
+                ServerStatusText.Text = $"Server running on {_webServer.ActiveScheme}://*:{_config.Port}";
+                AppendLog($"Web server listening on {_webServer.ActiveScheme}://*:{_config.Port}");
+                if (!string.IsNullOrWhiteSpace(_webServer.StartupWarning))
+                    ShowDiag(_webServer.StartupWarning);
+            });
         }
         catch (Exception ex)
         {
             Logger.Error("Failed to start web server", ex);
-            ServerStatusText.Text = $"? Server failed on {_config.Scheme}://*:{_config.Port}";
-            AppendLog($"ERROR starting server: {ex.Message}");
-            ShowDiag($"Server failed: {ex.Message}");
+            Dispatcher.InvokeAsync(() =>
+            {
+                ServerStatusText.Text = $"Server failed on {_config.Scheme}://*:{_config.Port}";
+                AppendLog($"ERROR starting server: {ex.Message}");
+                ShowDiag($"Server failed: {ex.Message}");
+            });
         }
     }
 
@@ -801,18 +804,18 @@ public partial class MainWindow : Window
             RefreshDisplaySettings();
             var ip = GetLocalIp();
             UpdateServerUrlDisplay(ip, _webServer.ActiveScheme, _config.Port, _webServer.StartupWarning);
-            ServerStatusText.Text = $"? Server running on {_webServer.ActiveScheme}://*:{_config.Port}";
+            ServerStatusText.Text = $"Server running on {_webServer.ActiveScheme}://*:{_config.Port}";
             AppendLog($"Settings applied — folder: {folder}, requested scheme: {_config.Scheme}, active scheme: {_webServer.ActiveScheme}, port: {port}");
             Logger.Info($"Settings updated — MoviesPath: {folder}, RequestedScheme: {_config.Scheme}, ActiveScheme: {_webServer.ActiveScheme}, Port: {port}");
             if (string.IsNullOrWhiteSpace(_webServer.StartupWarning))
-                ShowSettingsFeedback("? Settings saved and server restarted.", isError: false);
+                ShowSettingsFeedback("Settings saved and server restarted.", isError: false);
             else
-                ShowSettingsFeedback("?? Settings saved, but HTTPS failed and HTTP fallback is active. See Status tab for details.", isError: true);
+                ShowSettingsFeedback("Settings saved, but HTTPS failed and HTTP fallback is active. See Status tab for details.", isError: true);
         }
         catch (Exception ex)
         {
             Logger.Error("Failed to apply settings", ex);
-            ShowSettingsFeedback($"? Error: {ex.Message}", isError: true);
+            ShowSettingsFeedback($"Error: {ex.Message}", isError: true);
         }
     }
 

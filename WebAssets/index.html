@@ -340,6 +340,7 @@
         let statusFailures=0;
         let cardHoldTimer=null,cardHoldOpened=false;
         let zoomDragging=false;
+        let pendingSearchAbort=null;
         const queuedVideos=new Set();
         const playedVideos=new Set(loadPlayedVideos());
         const installHint=document.getElementById('install-hint');
@@ -805,6 +806,7 @@
         }
         async function browse(d){
           setStatus('Loading...');currentDir=d;document.getElementById('search').value='';
+          clearPendingThumbnails();
           try{
             const url=d?'/api/browse?dir='+encodeURIComponent(d):'/api/browse';
             const res=await fetch(url);
@@ -818,19 +820,35 @@
           const q=document.getElementById('search').value.toLowerCase().trim();
           clearTimeout(searchTimer);
           if(!q){if(currentData)render(currentData);return;}
-          searchTimer=setTimeout(()=>searchLibrary(q),180);
+          clearPendingThumbnails();
+          searchTimer=setTimeout(()=>searchLibrary(q),300);
+        }
+        function clearPendingThumbnails(){
+          if(pendingSearchAbort){
+            pendingSearchAbort.abort();
+            pendingSearchAbort=null;
+          }
+          document.querySelectorAll('.movie-card').forEach(card=>{
+            card.style.backgroundImage='none';
+          });
         }
         async function searchLibrary(q){
           setStatus('Searching library...');
+          clearPendingThumbnails();
+          pendingSearchAbort=new AbortController();
           try{
-            const res=await fetch('/api/search?q='+encodeURIComponent(q));
+            const res=await fetch('/api/search?q='+encodeURIComponent(q),{signal:pendingSearchAbort.signal});
             if(!res.ok){setStatus('Search error '+res.status);return;}
             const data=await res.json();
-            render({folders:[],files:data.files,current:'Search',currentFull:'Search',parent:null,isRoot:false},true);
+            render({folders:data.folders||[],files:data.files,current:'Search',currentFull:'Search',parent:null,isRoot:false},true);
             updateLibraryStatus({isScanning:data.indexing,indexedFiles:data.indexedFiles,scannedFiles:data.indexedFiles,completedUtc:data.lastRefreshUtc,lastError:''});
             const note=data.indexing?' (indexing...)':'';
-            setStatus(data.files.length+' result(s) from '+data.indexedFiles+' indexed video(s)'+note);
-          }catch(e){setStatus('Search failed: '+e);}
+            setStatus((data.folders?.length||0)+' folder(s) and '+data.files.length+' result(s) from '+data.indexedFiles+' indexed video(s)'+note);
+            pendingSearchAbort=null;
+          }catch(e){
+            if(e.name!=='AbortError')setStatus('Search failed: '+e);
+            pendingSearchAbort=null;
+          }
         }
         function render(data,searching){
           const bc=document.getElementById('breadcrumb');
@@ -848,13 +866,20 @@
               return sep+'<a'+cls+' onclick="browse(\''+c.dir+'\')">'+label+'</a>';
             }).join('');
           }else{bc.innerHTML+='<a onclick="browse(null)">&#8962; Root</a>';}
-          if(searching)countLine.textContent=data.files.length+' result(s)';
+          if(searching)countLine.textContent=(data.folders?.length||0)+' folder(s) and '+data.files.length+' result(s)';
           else countLine.textContent=data.folders.length+' folder(s), '+data.files.length+' video(s)';
           let html='';
-          if(data.folders.length&&!searching){
-            html+='<div class="folder-list">';
-            html+=data.folders.map(f=>'<div class="folder-row" onclick="browse(\''+f.dir+'\')">'+'<span class="folder-icon">&#128193;</span><span class="folder-name">'+esc(f.name)+'</span></div>').join('');
-            html+='</div>';}
+          if(data.folders.length){
+            if(searching){
+              html+='<div class="folder-list">';
+              html+=data.folders.map(f=>'<div class="folder-row" onclick="searchLibrary(\''+esc(f.folder||f.name)+'\')">'+'<span class="folder-icon">&#128193;</span><span class="folder-name">'+esc(f.name||f.folder)+'</span></div>').join('');
+              html+='</div>';
+            }else{
+              html+='<div class="folder-list">';
+              html+=data.folders.map(f=>'<div class="folder-row" onclick="browse(\''+f.dir+'\')">'+'<span class="folder-icon">&#128193;</span><span class="folder-name">'+esc(f.name)+'</span></div>').join('');
+              html+='</div>';
+            }
+          }
           if(data.files.length){
             html+='<div class="section-label">Videos</div><div class="movie-grid">';
             html+=data.files.map(f=>{
@@ -1105,6 +1130,13 @@
         });
         window.addEventListener('orientationchange',()=>setTimeout(applyPhoneLayout,80));
         window.addEventListener('resize',()=>{if(document.body.classList.contains('desktop-player-docked'))applyDesktopDockedLayout(true);});
+        document.addEventListener('keydown',(e)=>{
+          if(!playingPath||e.repeat)return;
+          const target=e.target;
+          if(target&&(target.tagName==='INPUT'||target.tagName==='TEXTAREA'||target.contentEditable==='true'))return;
+          if(e.key==='ArrowLeft'){e.preventDefault();haptic(8);skip(-10);}
+          else if(e.key==='ArrowRight'){e.preventDefault();haptic(8);skip(10);}
+        });
         browse(null);
         refreshLibraryStatus();
         setInterval(refreshLibraryStatus,2500);
