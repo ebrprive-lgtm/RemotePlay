@@ -44,8 +44,6 @@ internal sealed partial class WebServer
         var urlPath = req.Url?.AbsolutePath ?? "/";
         _lastRequestUtc = DateTimeOffset.UtcNow;
 
-        Logger.Info($"{req.HttpMethod} {urlPath}");
-
         ctx.Response.AddHeader("Access-Control-Allow-Origin", "*");
 
         switch (urlPath)
@@ -221,6 +219,10 @@ internal sealed partial class WebServer
 
             case "/api/display-diagnostics":
                 HandleDisplayDiagnostics(ctx);
+                break;
+
+            case "/api/peers":
+                HandlePeers(ctx);
                 break;
 
             default:
@@ -654,8 +656,8 @@ internal sealed partial class WebServer
         StartLibraryIndexRefresh(force: false);
 
         var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var resumeMap = PlaybackHistory.GetDefaultResumeMap();
-        var naturalComparer = new NaturalStringComparer();
+        var resumeMap = _playbackHistory.GetResumeMap();
+        var naturalComparer = _naturalComparer;
 
         // Find files matching the search terms
         var files = terms.Length == 0
@@ -695,7 +697,7 @@ internal sealed partial class WebServer
     private void HandleRecent(HttpListenerContext ctx)
     {
         var root = _config.ResolvedMoviesPath;
-        var files = PlaybackHistory.GetDefaultRecent(_config.PlaybackHistoryLimit)
+        var files = _playbackHistory.GetRecent(_config.PlaybackHistoryLimit)
             .Where(item => WebPathHelpers.IsUnderRoot(item.FilePath, root))
             .Select(item => new
             {
@@ -762,7 +764,7 @@ internal sealed partial class WebServer
             return;
         }
 
-        var naturalComparer = new NaturalStringComparer();
+        var naturalComparer = _naturalComparer;
         var folders = Directory.EnumerateDirectories(targetDir)
             .Where(d => !HiddenFolderNames.Contains(Path.GetFileName(d)))
             .OrderBy(d => Path.GetFileName(d), naturalComparer)
@@ -773,7 +775,7 @@ internal sealed partial class WebServer
             })
             .ToArray();
 
-        var resumeMap = PlaybackHistory.GetDefaultResumeMap();
+        var resumeMap = _playbackHistory.GetResumeMap();
         var files = Directory.EnumerateFiles(targetDir)
             .Where(f => WebPathHelpers.IsVideoFile(f, VideoExtensions))
             .OrderBy(f => Path.GetFileNameWithoutExtension(f), naturalComparer)
@@ -1057,16 +1059,21 @@ internal sealed partial class WebServer
         return result.ToArray();
     }
 
+    private static readonly NaturalStringComparer _naturalComparer = new();
+
     private class NaturalStringComparer : IComparer<string>
     {
+        private static readonly System.Text.RegularExpressions.Regex DigitSplitRegex =
+            new(@"(\d+)", System.Text.RegularExpressions.RegexOptions.Compiled);
+
         public int Compare(string? x, string? y)
         {
             if (x == null && y == null) return 0;
             if (x == null) return -1;
             if (y == null) return 1;
 
-            var xParts = System.Text.RegularExpressions.Regex.Split(x, @"(\d+)");
-            var yParts = System.Text.RegularExpressions.Regex.Split(y, @"(\d+)");
+            var xParts = DigitSplitRegex.Split(x);
+            var yParts = DigitSplitRegex.Split(y);
 
             var maxLen = Math.Max(xParts.Length, yParts.Length);
             for (int i = 0; i < maxLen; i++)
@@ -1097,4 +1104,26 @@ internal sealed partial class WebServer
         }
     }
 
+    private void HandlePeers(HttpListenerContext ctx)
+    {
+        if (_broadcaster is null)
+        {
+            TrySendResponse(ctx, 200, "application/json", "[]");
+            return;
+        }
+
+        var peers = _broadcaster.GetPeers().Select(p => new
+        {
+            name = p.Name,
+            scheme = p.Scheme,
+            host = p.Host,
+            port = p.Port,
+            url = p.Url,
+            isSelf = p.IsSelf
+        });
+
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(peers));
+    }
+
 }
+

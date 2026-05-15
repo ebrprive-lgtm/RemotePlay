@@ -6,8 +6,8 @@ internal sealed record MovieFile(string Name, string FullPath);
 
 internal static class MovieScanner
 {
-    private static readonly string[] VideoExtensions =
-        [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv"];
+    private static readonly HashSet<string> VideoExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv" };
 
     public static IReadOnlyList<MovieFile> Scan(string directory)
     {
@@ -22,8 +22,7 @@ internal static class MovieScanner
 
             return Directory
                 .EnumerateFiles(directory, "*.*", SearchOption.AllDirectories)
-                .Where(f => VideoExtensions.Contains(
-                    Path.GetExtension(f).ToLowerInvariant()))
+                .Where(f => VideoExtensions.Contains(Path.GetExtension(f)))
                 .OrderBy(f => f)
                 .Select(f => new MovieFile(
                     Name: Path.GetFileNameWithoutExtension(f),

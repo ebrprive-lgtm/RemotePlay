@@ -14,6 +14,8 @@
   <ItemGroup>
     <Compile Remove="RemotePlay.Tests\**\*.cs" />
     <None Remove="RemotePlay.Tests\**" />
+    <Compile Remove="BenchmarkSuite1\**\*.cs" />
+    <None Remove="BenchmarkSuite1\**" />
   </ItemGroup>
 
   <ItemGroup>

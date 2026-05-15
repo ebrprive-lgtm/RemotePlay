@@ -7,6 +7,7 @@ internal interface IAppConfigFactory
         int port,
         bool useHttps,
         string moviesPath,
+        string instanceName,
         double volume,
         double zoom,
         double audioBoost,

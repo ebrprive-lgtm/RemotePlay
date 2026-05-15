@@ -11,6 +11,7 @@ using LibVLCSharp.Shared;
 using LibVLCSharp.Shared.Structures;
 using RemotePlay.Helpers;
 using RemotePlay.Models;
+using RemotePlay.Services.Discovery;
 
 namespace RemotePlay;
 
@@ -25,10 +26,15 @@ public partial class MainWindow : Window
     private readonly LibVLC _libVlc;
     private readonly MediaPlayer _mediaPlayer;
     private WebServer? _webServer;
+    private PresenceBroadcaster? _broadcaster;
     private readonly DispatcherTimer _bannerTimer;
     private readonly DispatcherTimer _overlayTimer;
     private readonly DispatcherTimer _historyTimer;
     private readonly DispatcherTimer _fullscreenWatchdogTimer;
+    private readonly DispatcherTimer _statsTimer;
+    private readonly DispatcherTimer _miniPreviewTimer;
+    private readonly string _miniPreviewSnapshotPath =
+        Path.Combine(Path.GetTempPath(), "remoteplay_preview.png");
     private bool _isPaused;
     private bool _isVideoMode;
     private string? _currentFilePath;
@@ -44,9 +50,11 @@ public partial class MainWindow : Window
     private int? _lastSubtitleTrackId;
     private int? _lastAudioTrackId;
     private bool _hasSubtitles;
+    private bool _preferredSubtitleApplied;
     private TimeSpan _duration = TimeSpan.Zero;
     private bool _isApplyingMoviePreferences;
     private readonly List<string> _playbackQueue = [];
+    private string? _serverUrl;
     private static readonly LanguageOption[] LanguageOptions =
     [
         new("", "Default / none"),
@@ -142,10 +150,17 @@ public partial class MainWindow : Window
             _fullscreenWatchdogTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
             _fullscreenWatchdogTimer.Tick += (_, _) => EnsureFullscreenWindowBounds();
 
+            _statsTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+            _statsTimer.Tick += (_, _) => RefreshStatusStats();
+
+            _miniPreviewTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(0.1) };
+            _miniPreviewTimer.Tick += (_, _) => UpdateMiniPreview();
+
             _mediaPlayer.Playing += OnMediaPlaying;
             _mediaPlayer.EndReached += OnMediaEnded;
             _mediaPlayer.EncounteredError += OnMediaFailed;
             _mediaPlayer.LengthChanged += OnMediaLengthChanged;
+            _mediaPlayer.ESAdded += OnESAdded;
             ApplyAudioLevel();
             ApplyBrightnessOverlay();
 
@@ -154,6 +169,8 @@ public partial class MainWindow : Window
             {
                 SaveCurrentPlaybackPosition();
                 _webServer?.Stop();
+                _broadcaster?.Stop();
+                _broadcaster?.Dispose();
                 _mediaPlayer.Dispose();
                 _libVlc.Dispose();
             };
@@ -171,11 +188,12 @@ public partial class MainWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        var ip = GetLocalIp();
         MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
 
         MoviesFolderBox.Text = _config.ResolvedMoviesPath;
         PortBox.Text = _config.Port.ToString();
+        if (FindName("InstanceNameBox") is System.Windows.Controls.TextBox instanceNameBox)
+            instanceNameBox.Text = _config.InstanceName;
         if (FindName("UseHttpsBox") is System.Windows.Controls.CheckBox useHttpsBox)
             useHttpsBox.IsChecked = _config.UseHttps;
         PopulateLanguageCombo("PreferredAudioLangCombo", _config.PreferredAudioLanguage);
@@ -201,7 +219,7 @@ public partial class MainWindow : Window
             for (int i = 0; i < screens.Length; i++)
             {
                 var s = screens[i];
-                var label = $"Screen {i + 1}  ({s.Bounds.Width}×{s.Bounds.Height}){(s.Primary ? "  [Primary]" : "")}";
+                var label = $"Screen {i + 1}  ({s.Bounds.Width}x{s.Bounds.Height}){(s.Primary ? "  [Primary]" : "")}";
                 displayCombo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = label, Tag = i });
             }
             var savedIdx = _config.PreferredDisplayIndex;
@@ -213,41 +231,93 @@ public partial class MainWindow : Window
         }
 
         AppendLog($"RemotePlay started");
-        AppendLog($"Requested URL: {_config.Scheme}://{ip}:{_config.Port}");
         AppendLog($"Movies: {_config.ResolvedMoviesPath}");
+        ServerStatusText.Text = $"Server starting on {_config.Scheme}://*:{_config.Port}\u2026";
 
-        // Initialize web server asynchronously on a background thread to prevent UI blocking
-        _ = Task.Run(() => InitializeServerAsync(ip));
+        // Animate the startup indicator dot
+        if (FindResource("PulseAnim") is System.Windows.Media.Animation.Storyboard pulse)
+        {
+            System.Windows.Media.Animation.Storyboard.SetTarget(pulse, StartupPulseDot);
+            pulse.Begin();
+        }
+
+        // GetLocalIp() and all server startup work runs on a background thread to keep the UI responsive.
+        _ = Task.Run(() => InitializeServerAsync());
     }
 
-    private async Task InitializeServerAsync(string ip)
+    private async Task InitializeServerAsync()
     {
         try
         {
-            EnsureFirewallRule(_config.Port);
+            var ip = GetLocalIp();
+
+            // Fire-and-forget: firewall rule setup must not block the server startup path
+            _ = Task.Run(() => EnsureFirewallRule(_config.Port));
+
+            _broadcaster?.Stop();
+            _broadcaster?.Dispose();
+            _broadcaster = new PresenceBroadcaster(_config);
+            _broadcaster.Start();
 
             _webServer = CreateWebServer(_config);
             _webServer.Start();
 
-            Dispatcher.InvokeAsync(() =>
+            await Dispatcher.InvokeAsync(() =>
             {
                 UpdateServerUrlDisplay(ip, _webServer.ActiveScheme, _config.Port, _webServer.StartupWarning);
                 ServerStatusText.Text = $"Server running on {_webServer.ActiveScheme}://*:{_config.Port}";
                 AppendLog($"Web server listening on {_webServer.ActiveScheme}://*:{_config.Port}");
                 if (!string.IsNullOrWhiteSpace(_webServer.StartupWarning))
                     ShowDiag(_webServer.StartupWarning);
+                DismissStartupOverlay(success: true);
+                _ = Task.Run(() => { Console.Beep(880, 120); Console.Beep(1108, 200); });
+                RefreshStatusStats();
+                _statsTimer.Start();
             });
         }
         catch (Exception ex)
         {
             Logger.Error("Failed to start web server", ex);
-            Dispatcher.InvokeAsync(() =>
+            await Dispatcher.InvokeAsync(() =>
             {
                 ServerStatusText.Text = $"Server failed on {_config.Scheme}://*:{_config.Port}";
                 AppendLog($"ERROR starting server: {ex.Message}");
                 ShowDiag($"Server failed: {ex.Message}");
+                DismissStartupOverlay(success: false);
             });
         }
+    }
+
+    private void DismissStartupOverlay(bool success)
+    {
+        if (StartupOverlay.Visibility != Visibility.Visible) return;
+
+        if (!success)
+        {
+            // Briefly flash red so the user sees the failure before it fades
+            StartupPulseDot.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0x59, 0x59));
+            StartupOverlayText.Text = "Server failed to start";
+            StartupOverlayText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0x59, 0x59));
+        }
+
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0,
+            new Duration(TimeSpan.FromMilliseconds(success ? 600 : 1800)));
+        fade.Completed += (_, _) => StartupOverlay.Visibility = Visibility.Collapsed;
+        StartupOverlay.BeginAnimation(OpacityProperty, fade);
+    }
+
+    private void RefreshStatusStats()
+    {
+        if (_webServer is null) return;
+
+        int videoCount = _webServer.LibraryVideoCount;
+        int peerCount = _broadcaster?.GetPeers().Length ?? 0;
+
+        if (FindName("LibraryStatText") is System.Windows.Controls.TextBlock libText)
+            libText.Text = $"{videoCount} videos";
+
+        if (FindName("PeersStatText") is System.Windows.Controls.TextBlock peersText)
+            peersText.Text = $"{peerCount} instance{(peerCount != 1 ? "s" : "")} online";
     }
 
     private void PopulateLanguageCombo(string comboName, string selectedCode)
@@ -288,6 +358,10 @@ public partial class MainWindow : Window
 
         if (_isVideoMode)
         {
+            _miniPreviewTimer.Stop();
+            MiniPreviewBorder.Visibility = Visibility.Collapsed;
+            QrPanel.Visibility = Visibility.Visible;
+            CornerWidget.Visibility = Visibility.Collapsed;
             MainTabs.Visibility = Visibility.Collapsed;
             AppToolbar.Visibility = Visibility.Collapsed;
             ToggleViewBtn.Content = "\uD83E\uDEB5  Switch to Log";
@@ -306,11 +380,14 @@ public partial class MainWindow : Window
             VideoPanel.Visibility = Visibility.Collapsed;
             AppToolbar.Visibility = Visibility.Visible;
             MainTabs.Visibility = Visibility.Visible;
+            CornerWidget.Visibility = Visibility.Visible;
             ToggleViewBtn.Content = "\u25B6  Switch to Video";
             Topmost = false;
             WindowStyle = WindowStyle.SingleBorderWindow;
             WindowState = WindowState.Normal;
             ResizeMode = ResizeMode.CanResize;
+            if (_currentFilePath is not null && _mediaPlayer.IsPlaying)
+                _miniPreviewTimer.Start();
         }
     }
 
@@ -337,7 +414,7 @@ public partial class MainWindow : Window
         for (int i = 0; i < screens.Length; i++)
         {
             var screen = screens[i];
-            var label = $"Screen {i + 1}  ({screen.Bounds.Width}×{screen.Bounds.Height}){(screen.Primary ? "  [Primary]" : string.Empty)}";
+            var label = $"Screen {i + 1}  ({screen.Bounds.Width}ï¿½{screen.Bounds.Height}){(screen.Primary ? "  [Primary]" : string.Empty)}";
             displayCombo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = label, Tag = i });
         }
 
@@ -380,7 +457,7 @@ public partial class MainWindow : Window
             var savedDisplay = _config.PreferredDisplayIndex < 0
                 ? "Primary screen (default)"
                 : $"Screen {_config.PreferredDisplayIndex + 1}";
-            currentDisplayText.Text = $"Current fullscreen target: {screenName} ({screen.Bounds.Width}×{screen.Bounds.Height}){(screen.Primary ? " [Primary]" : string.Empty)}. Saved preference: {savedDisplay}.";
+            currentDisplayText.Text = $"Current fullscreen target: {screenName} ({screen.Bounds.Width}ï¿½{screen.Bounds.Height}){(screen.Primary ? " [Primary]" : string.Empty)}. Saved preference: {savedDisplay}.";
         }
         catch (Exception ex)
         {
@@ -587,9 +664,50 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnMiniPreviewClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (!_isVideoMode)
+            OnToggleView(this, new RoutedEventArgs());
+    }
+
+    private void UpdateMiniPreview()
+    {
+        if (_isVideoMode || !_mediaPlayer.IsPlaying)
+        {
+            _miniPreviewTimer.Stop();
+            MiniPreviewBorder.Visibility = Visibility.Collapsed;
+            QrPanel.Visibility = Visibility.Visible;
+            return;
+        }
+
+        try
+        {
+            if (!_mediaPlayer.TakeSnapshot(0, _miniPreviewSnapshotPath, 0, 0))
+                return;
+
+            if (!File.Exists(_miniPreviewSnapshotPath))
+                return;
+
+            var bitmap = new System.Windows.Media.Imaging.BitmapImage();
+            bitmap.BeginInit();
+            bitmap.UriSource = new Uri(_miniPreviewSnapshotPath, UriKind.Absolute);
+            bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+            bitmap.CreateOptions = System.Windows.Media.Imaging.BitmapCreateOptions.IgnoreImageCache;
+            bitmap.EndInit();
+            bitmap.Freeze();
+
+            MiniPreviewImage.Source = bitmap;
+            MiniPreviewBorder.Visibility = Visibility.Visible;
+            QrPanel.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Mini preview update failed", ex);
+        }
+    }
+
     private void OnTestPort(object sender, RoutedEventArgs e)
     {
-        AppendLog($"--- Network Diagnostics ---");
         AppendLog($"Local IP  : {GetLocalIp()}");
         AppendLog($"Scheme    : {_config.Scheme}");
         AppendLog($"Port      : {_config.Port}");
@@ -623,7 +741,7 @@ public partial class MainWindow : Window
             var output = proc.StandardOutput.ReadToEnd();
             proc.WaitForExit(3000);
             var hasRule = output.Contains("RemotePlay");
-            AppendLog($"Firewall rule: {(hasRule ? "EXISTS ?" : "MISSING ? — click 'Test Port' again as Admin")}");
+            AppendLog($"Firewall rule: {(hasRule ? "EXISTS ?" : "MISSING ? ï¿½ click 'Test Port' again as Admin")}");
         }
         catch (Exception ex)
         {
@@ -731,6 +849,9 @@ public partial class MainWindow : Window
     {
         var folder = MoviesFolderBox.Text.Trim();
         var portText = PortBox.Text.Trim();
+        var instanceName = FindName("InstanceNameBox") is System.Windows.Controls.TextBox instanceNameBox2
+            ? instanceNameBox2.Text.Trim()
+            : _config.InstanceName;
         var useHttps = FindName("UseHttpsBox") is System.Windows.Controls.CheckBox useHttpsBox && useHttpsBox.IsChecked == true;
 
         var preferredAudioLang = GetSelectedLanguageCode("PreferredAudioLangCombo", _config.PreferredAudioLanguage);
@@ -779,6 +900,7 @@ public partial class MainWindow : Window
                 port,
                 useHttps,
                 folder,
+                instanceName,
                 _volume,
                 _zoom,
                 _audioBoost,
@@ -795,22 +917,46 @@ public partial class MainWindow : Window
             _config = _settingsApplyService.ApplyAndReload(updatedConfig);
             _playbackHistory.Trim(_config.PlaybackHistoryLimit);
 
-            // Restart the web server with new config
-            _webServer?.Stop();
-            _webServer = CreateWebServer(_config);
-            _webServer.Start();
-
             MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
             RefreshDisplaySettings();
-            var ip = GetLocalIp();
-            UpdateServerUrlDisplay(ip, _webServer.ActiveScheme, _config.Port, _webServer.StartupWarning);
-            ServerStatusText.Text = $"Server running on {_webServer.ActiveScheme}://*:{_config.Port}";
-            AppendLog($"Settings applied — folder: {folder}, requested scheme: {_config.Scheme}, active scheme: {_webServer.ActiveScheme}, port: {port}");
-            Logger.Info($"Settings updated — MoviesPath: {folder}, RequestedScheme: {_config.Scheme}, ActiveScheme: {_webServer.ActiveScheme}, Port: {port}");
-            if (string.IsNullOrWhiteSpace(_webServer.StartupWarning))
-                ShowSettingsFeedback("Settings saved and server restarted.", isError: false);
-            else
-                ShowSettingsFeedback("Settings saved, but HTTPS failed and HTTP fallback is active. See Status tab for details.", isError: true);
+            ShowSettingsFeedback("Saving\u2026 restarting server.", isError: false);
+
+            var configSnapshot = _config;
+
+            // Restart the web server on a background thread to avoid freezing the UI.
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    var ip = GetLocalIp();
+                    _ = Task.Run(() => EnsureFirewallRule(configSnapshot.Port));
+
+                    _webServer?.Stop();
+                    _broadcaster?.Stop();
+                    _broadcaster?.Dispose();
+                    _broadcaster = new PresenceBroadcaster(configSnapshot);
+                    _broadcaster.Start();
+                    _webServer = CreateWebServer(configSnapshot);
+                    _webServer.Start();
+
+                    Dispatcher.InvokeAsync(() =>
+                    {
+                        UpdateServerUrlDisplay(ip, _webServer.ActiveScheme, configSnapshot.Port, _webServer.StartupWarning);
+                        ServerStatusText.Text = $"Server running on {_webServer.ActiveScheme}://*:{configSnapshot.Port}";
+                        AppendLog($"Settings applied \u2014 folder: {folder}, scheme: {_webServer.ActiveScheme}, port: {configSnapshot.Port}");
+                        Logger.Info($"Settings updated \u2014 MoviesPath: {folder}, Scheme: {_webServer.ActiveScheme}, Port: {configSnapshot.Port}");
+                        if (string.IsNullOrWhiteSpace(_webServer.StartupWarning))
+                            ShowSettingsFeedback("Settings saved and server restarted.", isError: false);
+                        else
+                            ShowSettingsFeedback("Settings saved, but HTTPS failed and HTTP fallback is active. See Status tab for details.", isError: true);
+                    });
+                }
+                catch (Exception bgEx)
+                {
+                    Logger.Error("Failed to restart server after settings apply", bgEx);
+                    Dispatcher.InvokeAsync(() => ShowSettingsFeedback($"Server restart failed: {bgEx.Message}", isError: true));
+                }
+            });
         }
         catch (Exception ex)
         {
@@ -845,16 +991,30 @@ public partial class MainWindow : Window
 
         try
         {
-            var qrUri = new Uri($"{activeUrl}/setup-code.png?url={Uri.EscapeDataString(activeUrl)}");
+            _serverUrl = activeUrl;
+            var qrSource = CreateQrBitmapSource(activeUrl);
             if (FindName("SetupQrImage") is System.Windows.Controls.Image setupQrImage)
-                setupQrImage.Source = new BitmapImage(qrUri);
+                setupQrImage.Source = qrSource;
             if (FindName("FullscreenQrImage") is System.Windows.Controls.Image fullscreenQrImage)
-                fullscreenQrImage.Source = new BitmapImage(qrUri);
+                fullscreenQrImage.Source = qrSource;
         }
         catch (Exception ex)
         {
             Logger.Error("Failed to update setup QR image", ex);
         }
+    }
+
+    private static BitmapImage CreateQrBitmapSource(string url)
+    {
+        var pngBytes = WebServer.GenerateQrCodePng(url);
+        using var ms = new System.IO.MemoryStream(pngBytes);
+        var bmp = new BitmapImage();
+        bmp.BeginInit();
+        bmp.CacheOption = BitmapCacheOption.OnLoad;
+        bmp.StreamSource = ms;
+        bmp.EndInit();
+        bmp.Freeze();
+        return bmp;
     }
 
     // -- Helpers --------------------------------------------------------------
@@ -882,6 +1042,26 @@ public partial class MainWindow : Window
     {
         try
         {
+            // Check whether the rule already exists to avoid a slow redundant netsh add
+            var checkPsi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "netsh",
+                Arguments = $"advfirewall firewall show rule name=\"RemotePlay\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true
+            };
+            using var checkProc = System.Diagnostics.Process.Start(checkPsi);
+            string checkOutput = checkProc?.StandardOutput.ReadToEnd() ?? string.Empty;
+            checkProc?.WaitForExit(2000);
+
+            if (checkOutput.Contains($"LocalPort", StringComparison.OrdinalIgnoreCase)
+                && checkOutput.Contains(port.ToString(), StringComparison.Ordinal))
+            {
+                Logger.Info($"Firewall rule already present for port {port}");
+                return;
+            }
+
             var psi = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "netsh",

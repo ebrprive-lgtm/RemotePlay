@@ -146,6 +146,11 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- Startup pulse animation -->
+        <Storyboard x:Key="PulseAnim" RepeatBehavior="Forever" AutoReverse="True">
+            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                             From="1" To="0.3" Duration="0:0:0.8"/>
+        </Storyboard>
     </Window.Resources>
 
     <Grid Background="#111111">
@@ -176,6 +181,67 @@
             </DockPanel>
         </Border>
 
+        <!-- ── Floating corner widget — QR when idle, preview when playing ── -->
+        <Border x:Name="CornerWidget" Grid.Row="0" Grid.RowSpan="2"
+                HorizontalAlignment="Right" VerticalAlignment="Top"
+                Panel.ZIndex="20"
+                Background="#0d0d1a"
+                BorderBrush="#2a2a4a" BorderThickness="0,0,0,1"
+                CornerRadius="0,0,0,6"
+                Padding="6,6,6,8">
+            <Grid>
+                <!-- QR panel — visible when nothing is playing -->
+                <StackPanel x:Name="QrPanel">
+                    <Border Background="White" CornerRadius="3" Padding="3">
+                        <Image x:Name="SetupQrImage" Width="90" Height="90" Stretch="Uniform"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                    </Border>
+                </StackPanel>
+
+                <!-- Startup indicator — overlays the QR box while server is initialising -->
+                <Border x:Name="StartupOverlay"
+                        Background="#EE0d0d1a"
+                        CornerRadius="3"
+                        IsHitTestVisible="False"
+                        Visibility="Visible">
+                    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                                Margin="6">
+                        <Border x:Name="StartupPulseDot"
+                                Width="10" Height="10" CornerRadius="5"
+                                Background="#FFAA00"
+                                HorizontalAlignment="Center"
+                                Margin="0,0,0,8"/>
+                        <TextBlock x:Name="StartupOverlayText"
+                                   Text="Server&#10;starting…"
+                                   Foreground="#FFAA00" FontSize="18"
+                                   TextAlignment="Center"
+                                   HorizontalAlignment="Center"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Preview panel — visible while a video is playing -->
+                <Border x:Name="MiniPreviewBorder"
+                        Visibility="Collapsed"
+                        Background="Black"
+                        CornerRadius="3"
+                        Cursor="Hand"
+                        MouseLeftButtonUp="OnMiniPreviewClick"
+                        ToolTip="Click to switch to video">
+                    <Grid>
+                        <Image x:Name="MiniPreviewImage"
+                               Width="480" Height="220"
+                               Stretch="Uniform"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                        <Border Background="#99000000" VerticalAlignment="Bottom"
+                                Padding="4,2" CornerRadius="0,0,3,3">
+                            <TextBlock Text="&#9654; Now Playing" Foreground="#E94560"
+                                       FontSize="11" HorizontalAlignment="Center"/>
+                        </Border>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Border>
+
         <!-- ── Tab control (debug mode) ── -->
         <TabControl x:Name="MainTabs" Grid.Row="1"
                     Background="#111111" BorderThickness="0"
@@ -190,28 +256,41 @@
                     </Grid.RowDefinitions>
 
                     <!-- Info bar -->
-                    <Border Grid.Row="0" Background="#0d0d1a" Padding="12,10">
+                    <Border Grid.Row="0" Background="#0d0d1a" Padding="10,8,105,8">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            <StackPanel Grid.Column="0">
-                                <TextBlock x:Name="IpAddressText" Foreground="#00D4AA" FontSize="16"
+                            <StackPanel Grid.Column="0" VerticalAlignment="Top">
+                                <TextBlock x:Name="IpAddressText" Foreground="#00D4AA" FontSize="15"
                                            FontWeight="Bold" TextWrapping="Wrap"/>
-                                <TextBlock x:Name="AlternateUrlText" Foreground="#888" FontSize="12"
-                                           Margin="0,4,0,0" TextWrapping="Wrap"/>
-                                <TextBlock x:Name="MoviesPathText" Foreground="#888" FontSize="11"
-                                           Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                <!-- Stat pills -->
+                                <WrapPanel Margin="0,6,0,0" Orientation="Horizontal">
+                                    <Border Background="#121226" BorderBrush="#2a2a4a" BorderThickness="1"
+                                            CornerRadius="9" Padding="7,3" Margin="0,2,6,2">
+                                        <TextBlock x:Name="LibraryStatText" Foreground="#aaa" FontSize="11" Text="📁 — videos"/>
+                                    </Border>
+                                    <Border Background="#121226" BorderBrush="#2a2a4a" BorderThickness="1"
+                                            CornerRadius="9" Padding="7,3" Margin="0,2,6,2">
+                                        <TextBlock x:Name="PeersStatText" Foreground="#aaa" FontSize="11" Text="🌐 — instances"/>
+                                    </Border>
+                                    <Border Background="#121226" BorderBrush="#2a2a4a" BorderThickness="1"
+                                            CornerRadius="9" Padding="7,3" Margin="0,2,0,2">
+                                        <TextBlock x:Name="MoviesPathText" Foreground="#666" FontSize="11"
+                                                   TextTrimming="CharacterEllipsis" MaxWidth="320"/>
+                                    </Border>
+                                </WrapPanel>
+                                <!-- Diagnostic warning (shown only when needed) -->
                                 <TextBlock x:Name="DiagText" Foreground="#FFAA00" FontSize="11"
-                                           Margin="0,4,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
+                                           Margin="0,5,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
+                                <!-- AlternateUrlText: kept collapsed for code compatibility -->
+                                <TextBlock x:Name="AlternateUrlText" Foreground="#888" FontSize="11"
+                                           Margin="0,0,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
                             </StackPanel>
-                            <StackPanel Grid.Column="1" Margin="16,0,0,0" HorizontalAlignment="Right">
-                                <Image x:Name="SetupQrImage" Width="112" Height="112" Stretch="Uniform"/>
-                                <TextBlock Text="Scan to open" Foreground="#888" FontSize="10" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-                            </StackPanel>
-                        </Grid>
-                    </Border>
+
+                                </Grid>
+                            </Border>
 
                     <!-- Log output -->
                     <Border Grid.Row="1" Background="#0a0a0a" Margin="8" CornerRadius="4"
@@ -290,6 +369,16 @@
                                 <TextBlock Text="Server" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
                                 <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20"
                                            Text="Configure the web interface port and HTTPS settings."/>
+
+                                <TextBlock Text="Instance Name" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <TextBox x:Name="InstanceNameBox"
+                                         Background="#1e1e2e" Foreground="#EEE"
+                                         BorderBrush="#444" BorderThickness="1"
+                                         Padding="8,6" FontSize="13"
+                                         VerticalContentAlignment="Center"
+                                         Margin="0,0,0,4"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
+                                           Text="Friendly label shown when other RemotePlay instances discover this one on the network (e.g. Living Room, Bedroom PC)."/>
 
                                 <TextBlock Text="Port" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
                                 <Grid Margin="0,0,0,6">
@@ -448,7 +537,8 @@
               MouseMove="OnVideoMouseMove" ClipToBounds="True">
             <vlc:VideoView x:Name="VideoPlayer"
                            HorizontalAlignment="Stretch"
-                           VerticalAlignment="Stretch"/>
+                           VerticalAlignment="Stretch"
+                           Visibility="Collapsed"/>
 
             <Border x:Name="VideoBrightnessOverlay"
                     Background="White"

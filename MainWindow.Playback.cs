@@ -108,9 +108,14 @@ public partial class MainWindow
                 _duration = TimeSpan.Zero;
                 _lastSubtitleTrackId = null;
                 _lastAudioTrackId = null;
+                _preferredSubtitleApplied = false;
                 _zoom = 1;
                 ApplyStoredMoviePreferences(filePath);
-                HideIdleOverlay();
+                // VideoPlayer must stay Visible so LibVLC can bind its native HWND surface.
+                // The IdleOverlay (ZIndex=2) sits on top and hides the blank VLC surface
+                // until OnMediaPlaying reveals the first real frame.
+                VideoPlayer.Visibility = Visibility.Visible;
+                // Do NOT hide IdleOverlay here — it stays up until OnMediaPlaying fires.
                 using var media = new Media(_libVlc, new Uri(filePath, UriKind.Absolute));
                 media.AddOption(":avcodec-hw=none");
                 _hasSubtitles = TryAttachSubtitle(media, filePath);
@@ -192,6 +197,7 @@ public partial class MainWindow
                 _subtitlesEnabled = trackId != -1;
                 if (trackId >= 0)
                     _lastSubtitleTrackId = trackId;
+                _preferredSubtitleApplied = true;
                 SavePlaybackPreferences();
             }
             catch (Exception ex)
@@ -209,6 +215,8 @@ public partial class MainWindow
             {
                 SaveCurrentPlaybackPosition();
                 _historyTimer.Stop();
+                _miniPreviewTimer.Stop();
+                MiniPreviewBorder.Visibility = Visibility.Collapsed;
                 _mediaPlayer.Stop();
                 _currentFilePath = null;
                 _pendingResumePosition = null;
@@ -297,9 +305,13 @@ public partial class MainWindow
         Dispatcher.InvokeAsync(() =>
         {
             HideIdleOverlay();
+            // Reveal the video surface only once a frame is actually being rendered.
+            VideoPlayer.Visibility = Visibility.Visible;
 
-            ApplyPreferredAudioTrack();
+            if (!_isVideoMode)
+                _miniPreviewTimer.Start();
             ApplyVideoZoom();
+            Logger.Info("[Subtitle] OnMediaPlaying: attempting subtitle selection");
             var preferredSubtitleTrack = GetPreferredSubtitleTrackId();
             if (preferredSubtitleTrack is int subtitleTrackId)
             {
@@ -314,6 +326,12 @@ public partial class MainWindow
                 {
                     _mediaPlayer.SetSpu(-1);
                 }
+                _preferredSubtitleApplied = true;
+                Logger.Info($"[Subtitle] OnMediaPlaying: applied track id={subtitleTrackId}");
+            }
+            else
+            {
+                Logger.Info("[Subtitle] OnMediaPlaying: no track selected — will retry via ESAdded");
             }
 
             if (string.IsNullOrWhiteSpace(_currentFilePath) || _duration <= TimeSpan.Zero)
@@ -332,6 +350,41 @@ public partial class MainWindow
     private void OnMediaLengthChanged(object? sender, MediaPlayerLengthChangedEventArgs e)
     {
         Dispatcher.InvokeAsync(() => _duration = TimeSpan.FromMilliseconds(Math.Max(0, e.Length)));
+    }
+
+    private void OnESAdded(object? sender, MediaPlayerESAddedEventArgs e)
+    {
+        Logger.Info($"[Subtitle] ESAdded: type={e.Type} id={e.Id}");
+        if (e.Type != TrackType.Text)
+            return;
+
+        Dispatcher.InvokeAsync(() =>
+        {
+            Logger.Info($"[Subtitle] ESAdded (Text track id={e.Id}): preferredSubtitleApplied={_preferredSubtitleApplied}");
+            if (_preferredSubtitleApplied)
+                return;
+
+            var preferredTrack = GetPreferredSubtitleTrackId();
+            if (preferredTrack is not int trackId)
+            {
+                Logger.Info("[Subtitle] ESAdded: GetPreferredSubtitleTrackId returned null");
+                return;
+            }
+
+            _hasSubtitles = true;
+            if (_subtitlesEnabled || trackId >= 0)
+            {
+                _mediaPlayer.SetSpu(trackId);
+                _lastSubtitleTrackId = trackId;
+                _subtitlesEnabled = trackId >= 0;
+            }
+            else
+            {
+                _mediaPlayer.SetSpu(-1);
+            }
+            _preferredSubtitleApplied = true;
+            Logger.Info($"[Subtitle] ESAdded: applied track id={trackId}");
+        });
     }
 
     private void OnMediaFailed(object? sender, EventArgs e)
@@ -360,8 +413,18 @@ public partial class MainWindow
 
     private void ShowIdleOverlay()
     {
+        // Refresh the QR image in case it wasn't loaded yet when UpdateServerUrlDisplay ran.
+        if (_serverUrl is not null
+            && FindName("FullscreenQrImage") is System.Windows.Controls.Image qrImage
+            && qrImage.Source is null)
+        {
+            try { qrImage.Source = CreateQrBitmapSource(_serverUrl); }
+            catch (Exception ex) { Logger.Error("Failed to refresh idle overlay QR", ex); }
+        }
+
         IdleOverlay.Visibility = Visibility.Visible;
         IdleOverlay.IsHitTestVisible = true;
+        // VideoPlayer stays Visible so LibVLC keeps its HWND; IdleOverlay covers it.
 
         // Keep idle screen dark even when brightness overlay had been raised during playback.
         if (VideoPanel.FindName("VideoBrightnessOverlay") is UIElement brightnessOverlay)
@@ -696,7 +759,7 @@ public partial class MainWindow
             ClearQueue = ClearPlaybackQueue,
             ClearPlaybackHistory = _playbackHistory.Clear,
             GetDisplayDiagnostics = GetDisplayDiagnostics
-        });
+        }, _broadcaster, _playbackHistory);
 
     private void ApplyAudioLevel()
     {
@@ -823,31 +886,59 @@ public partial class MainWindow
         {
             var subtitleTracks = _mediaPlayer.SpuDescription;
             if (subtitleTracks is null || subtitleTracks.Length == 0)
+            {
+                Logger.Info("[Subtitle] SpuDescription is empty — no tracks available yet");
                 return null;
+            }
+
+            var trackList = string.Join(", ", subtitleTracks.Select(t => $"[{t.Id}] '{t.Name}'"));
+            Logger.Info($"[Subtitle] Available tracks ({subtitleTracks.Length}): {trackList}");
+            Logger.Info($"[Subtitle] Config: primary='{_config.PreferredSubtitleLanguage}' secondary='{_config.SecondarySubtitleLanguage}' forced={_config.PreferForcedSubtitles}");
 
             var forcedTrack = _config.PreferForcedSubtitles
                 ? FindForcedTrackId(subtitleTracks)
                 : null;
             if (forcedTrack is not null)
+            {
+                Logger.Info($"[Subtitle] Selected forced track id={forcedTrack}");
                 return forcedTrack;
+            }
 
             var primaryTrack = FindPreferredTrackId(subtitleTracks, _config.PreferredSubtitleLanguage);
             if (primaryTrack is not null)
+            {
+                Logger.Info($"[Subtitle] Selected primary language track id={primaryTrack}");
                 return primaryTrack;
+            }
+            Logger.Info($"[Subtitle] No match for primary language '{_config.PreferredSubtitleLanguage}'");
 
             var secondaryTrack = FindPreferredTrackId(subtitleTracks, _config.SecondarySubtitleLanguage);
             if (secondaryTrack is not null)
+            {
+                Logger.Info($"[Subtitle] Selected secondary language track id={secondaryTrack}");
                 return secondaryTrack;
+            }
 
             if (_lastSubtitleTrackId is int lastTrack && subtitleTracks.Any(t => t.Id == lastTrack))
+            {
+                Logger.Info($"[Subtitle] Restored last used track id={lastTrack}");
                 return lastTrack;
+            }
 
             var firstTrack = subtitleTracks
                 .Where(t => t.Id >= 0)
                 .OrderBy(t => t.Id)
+                .Select(t => (int?)t.Id)
                 .FirstOrDefault();
 
-            return firstTrack.Id >= 0 ? firstTrack.Id : null;
+            if (firstTrack is int firstId)
+            {
+                Logger.Info($"[Subtitle] Falling back to first available track id={firstId}");
+                return firstId;
+            }
+
+            Logger.Info("[Subtitle] No usable track found");
+            return null;
         }
         catch (Exception ex)
         {
@@ -856,14 +947,11 @@ public partial class MainWindow
         }
     }
 
-    private static int? FindForcedTrackId(IEnumerable<TrackDescription> tracks)
-    {
-        var forcedTrack = tracks
-            .Where(t => t.Id >= 0)
-            .FirstOrDefault(t => IsForcedTrack(t.Name));
-
-        return forcedTrack.Id >= 0 ? forcedTrack.Id : null;
-    }
+    private static int? FindForcedTrackId(IEnumerable<TrackDescription> tracks) =>
+        tracks
+            .Where(t => t.Id >= 0 && IsForcedTrack(t.Name))
+            .Select(t => (int?)t.Id)
+            .FirstOrDefault();
 
     private static int? FindPreferredTrackId(IEnumerable<TrackDescription> tracks, string language)
     {
@@ -875,8 +963,11 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(normalizedLanguage))
             return null;
 
-        var preferredTrack = usableTracks.FirstOrDefault(t => TrackNameMatchesLanguage(t.Name, normalizedLanguage));
-        return preferredTrack.Id >= 0 ? preferredTrack.Id : null;
+        var preferredTrack = usableTracks
+            .Where(t => TrackNameMatchesLanguage(t.Name, normalizedLanguage))
+            .Select(t => (int?)t.Id)
+            .FirstOrDefault();
+        return preferredTrack;
     }
 
     internal static bool TrackNameMatchesLanguage(string? trackName, string language)

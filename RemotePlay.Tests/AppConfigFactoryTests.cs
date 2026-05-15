@@ -16,6 +16,7 @@ public sealed class AppConfigFactoryTests
             port: 5000,
             useHttps: true,
             moviesPath: "C:\\Movies",
+            instanceName: "Living Room",
             volume: 0.8,
             zoom: 1.15,
             audioBoost: 1.2,
@@ -45,6 +46,7 @@ public sealed class AppConfigFactoryTests
         Assert.Equal(9, config.PlaybackHistoryLimit);
         Assert.Equal(2, config.PreferredDisplayIndex);
         Assert.Equal(0.5, config.Brightness);
+        Assert.Equal("Living Room", config.InstanceName);
     }
 
     [Fact]

@@ -7,6 +7,10 @@ internal sealed class AppConfig
 {
     public int Port { get; init; } = 9090;
     public bool UseHttps { get; init; }
+    /// <summary>Stable identifier for this instance. Used to deduplicate peer entries when a machine has multiple network interfaces.</summary>
+    public string InstanceId { get; init; } = Guid.NewGuid().ToString("N");
+    /// <summary>Friendly display name shown in the peer discovery list. Defaults to the machine hostname.</summary>
+    public string InstanceName { get; init; } = System.Net.Dns.GetHostName();
     public string MoviesPath { get; init; } = Path.Combine(AppContext.BaseDirectory, "Movies");
     public double Volume { get; init; } = 1;
     public double Brightness { get; init; } = 0.5;

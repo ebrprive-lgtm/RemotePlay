@@ -23,9 +23,13 @@
         #diag-dot{width:.65rem;height:.65rem;border-radius:999px;background:#ffaa00;box-shadow:0 0 0 3px rgba(255,170,0,.18)}
         #diag-dot.ok{background:#00d4aa;box-shadow:0 0 0 3px rgba(0,212,170,.18)}
         #diag-dot.error{background:#ff5959;box-shadow:0 0 0 3px rgba(255,89,89,.2)}
-        #search-wrap{display:flex;flex-direction:column;gap:.2rem;min-width:0}
-        #search-row{display:flex;gap:.35rem;min-width:0}
-        #search{background:#222;color:#eee;border:1px solid #444;padding:.38rem .6rem;border-radius:4px;font-size:.86rem;flex:1;min-width:100px}
+        #search-wrap{display:flex;flex-direction:column;gap:.2rem;min-width:0;max-width:420px}
+        #search-row{display:flex;gap:.35rem;min-width:0;align-items:center}
+        #search{background:#222;color:#eee;border:1px solid #444;padding:.38rem .6rem;border-radius:4px;font-size:.86rem;flex:1;min-width:100px;transition:border-color .2s,box-shadow .2s}
+        #search.searching{border-color:#7b8cde;box-shadow:0 0 0 2px rgba(123,140,222,.25)}
+        @keyframes rp-spin{to{transform:rotate(360deg)}}
+        #search-spinner{display:none;width:14px;height:14px;flex-shrink:0;border:2px solid #444;border-top-color:#7b8cde;border-radius:50%;animation:rp-spin .7s linear infinite}
+        #search-spinner.visible{display:block}
         .btn{border:none;border-radius:4px;cursor:pointer;font-size:.78rem;padding:.36rem .65rem;color:#fff;transition:background .15s}
         .btn-red{background:#e94560}.btn-red:hover{background:#c73652}
         .btn-dim{background:#333}.btn-dim:hover{background:#555}
@@ -218,6 +222,7 @@
         .section-label{color:#555;font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.5rem;margin-top:1rem}
         .section-label:first-child{margin-top:0}
         .folder-list{display:flex;flex-direction:column;gap:.3rem;margin-bottom:.5rem}
+                .folder-list.search-folders{max-height:calc(5 * (2.4rem + .3rem));overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#333355 transparent}
         .folder-row{display:flex;align-items:center;gap:.6rem;background:#1a1a2e;border-radius:6px;padding:.55rem .9rem;cursor:pointer;transition:background .15s}
         .folder-row:hover{background:#252540}
         .folder-icon{font-size:1.1rem}
@@ -252,17 +257,40 @@
         .stop-btn{background:rgba(0,180,90,.9);color:#fff;border:none;padding:.5rem .35rem;border-radius:4px;cursor:pointer;font-size:.85rem;width:100%;backdrop-filter:blur(2px)}
         .stop-btn:hover{background:#00d46a}
         #empty{text-align:center;padding:3rem;color:#555}
+        #peers-wrap{position:relative;display:inline-block}
+        #peers-btn{display:inline-flex;align-items:center;gap:.3rem;background:#162033;border:1px solid #2e426a;color:#cfe0ff;border-radius:999px;padding:.34rem .55rem;font-size:.75rem;font-weight:700;cursor:pointer;white-space:nowrap}
+        #peers-btn:hover{background:#203252}
+        #peers-dot{width:.65rem;height:.65rem;border-radius:999px;background:#ffaa00;box-shadow:0 0 0 3px rgba(255,170,0,.18);flex-shrink:0}
+        #peers-dot.multi{background:#00d4aa;box-shadow:0 0 0 3px rgba(0,212,170,.18)}
+        #peers-dropdown{display:none;position:absolute;top:calc(100% + .4rem);left:0;min-width:260px;background:#1a1a2e;border:1px solid #2e426a;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.55);z-index:50;overflow:hidden}
+        #peers-dropdown.open{display:block}
+        @media (max-width:760px) and (pointer:coarse){#peers-dropdown{left:auto;right:0}}
+        #peers-header{padding:.5rem .75rem .35rem;font-size:.68rem;text-transform:uppercase;letter-spacing:.07em;color:#6a7a9b;font-weight:700;border-bottom:1px solid #252545}
+        .peer-item{display:flex;align-items:center;gap:.6rem;padding:.55rem .75rem;font-size:.82rem;color:#cfe0ff;overflow:hidden;border-bottom:1px solid #1e1e38}
+        .peer-item:last-child{border-bottom:0}
+        a.peer-item{cursor:pointer;text-decoration:none}
+        a.peer-item:hover{background:#203252}
+        .peer-self{opacity:.55}
+        .peer-dot{width:.55rem;height:.55rem;border-radius:999px;flex-shrink:0;margin-top:.18rem}
+        .peer-self .peer-dot{background:#ffaa00}
+        a.peer-item .peer-dot{background:#00d4aa}
+        .peer-info{min-width:0}
+        .peer-name{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .peer-addr{font-size:.7rem;color:#5a7a9b;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.08rem}
+        .peer-badge{font-size:.62rem;background:#0d2340;color:#5a90cc;border-radius:999px;padding:.12rem .42rem;font-weight:700;flex-shrink:0;margin-left:auto}
+        .peer-no-others{padding:.65rem .75rem;font-size:.78rem;color:#555;font-style:italic}
         </style></head><body>
         <div id="install-hint"><span>Install RemotePlay from your browser menu for a fullscreen app-like remote.</span><button onclick="dismissInstallHint()">Hide</button></div>
         <header>
           <div id="brand">
             <h1>&#127916; RemotePlay</h1>
-            <div id="brand-actions"><a id="health-link" href="/health" target="_blank" rel="noopener"><span id="diag-dot"></span>Health</a></div>
+            <div id="brand-actions"><a id="health-link" href="/health" target="_blank" rel="noopener"><span id="diag-dot"></span>Health</a><div id="peers-wrap"><button id="peers-btn" onclick="togglePeers()" aria-expanded="false" aria-haspopup="true"><span id="peers-dot"></span>Instances</button><div id="peers-dropdown" role="menu"></div></div></div>
             <button id="back-button" class="crumb-back" onclick="goBack()" style="display:none">&#8592; Back</button>
           </div>
           <div id="search-wrap">
             <div id="search-row">
               <input id="search" type="search" placeholder="Search entire library..." oninput="onSearch()"/>
+              <div id="search-spinner" aria-label="Searching" title="Searching..."></div>
               <button class="btn btn-dim" onclick="rescan()">Rescan</button>
             </div>
             <div id="breadcrumb"></div>
@@ -281,7 +309,7 @@
                   <button id="seek-back-btn" class="btn btn-seek" onclick="quickSkip(-10)" onpointerdown="beginSeekHold(event,-10)" onpointerup="endSeekHold()" onpointercancel="endSeekHold()" onpointerleave="endSeekHold()">-10s</button>
                   <button id="pause-btn" class="btn btn-red" onclick="togglePause()">&#9646;&#9646; Pause</button>
                   <button id="seek-forward-btn" class="btn btn-seek" onclick="quickSkip(10)" onpointerdown="beginSeekHold(event,10)" onpointerup="endSeekHold()" onpointercancel="endSeekHold()" onpointerleave="endSeekHold()">+10s</button>
-                  <button class="btn btn-stop" onclick="stop()">&#9632; STOP</button>
+                  <button id="stop-btn" class="btn btn-stop" onclick="stop()">&#9632; STOP</button>
                 </div>
               </div>
             </div>
@@ -333,7 +361,7 @@
         <div id="diagnostics-overlay" onclick="if(event.target===this)closeDiagnostics()"><div id="diagnostics-panel"><h2>RemotePlay diagnostics</h2><dl id="diagnostics-content"></dl><div class="control-actions"><button class="btn btn-dim" onclick="refreshDiagnostics()">Refresh</button><button class="btn btn-red" onclick="closeDiagnostics()">Close</button></div></div></div>
         <script>
         let currentDir=null,currentData=null,playingPath=null;
-        let pollInterval=null,seekDragging=false,searchTimer=null;
+        let pollInterval=null,seekDragging=false,searchTimer=null,lastQueue=[];
         let lastVolumeBeforeMute=.7,lastBoostBeforeMute=.3;
         let seekHoldTimer=null,seekHoldInterval=null,seekHoldTriggered=false,suppressNextSeekTap=false;
         let currentPlaybackSpeed=1;
@@ -395,10 +423,13 @@
             const bar=document.getElementById('now-playing-bar');
             updateQueueControls(s);
             const hasQueue=Array.isArray(s.queue)&&s.queue.length>0;
+            lastQueue=hasQueue?s.queue:[];
+            updateStopBtn(s.isPlaying,hasQueue);
             if(s.isPlaying||hasQueue){
               bar.style.display='flex';
             }
             if(s.isPlaying){
+              if(s.filePath&&s.filePath!==playingPath)setPlayerPoster(s.filePath);
               const pb=document.getElementById('pause-btn');
               pb.textContent=s.isPaused?'\u25B6 Resume':'\u23F8 Pause';
               document.getElementById('player-title').textContent=(s.title||'Now playing').replace(/^\s*[▶⏸]\s*/,'');
@@ -816,11 +847,18 @@
             resetCardsScrollTop();
           }catch(e){setStatus('Error: '+e);}
         }
+        function setSearchBusy(on){
+          const inp=document.getElementById('search');
+          const sp=document.getElementById('search-spinner');
+          inp.classList.toggle('searching',on);
+          sp.classList.toggle('visible',on);
+        }
         function onSearch(){
           const q=document.getElementById('search').value.toLowerCase().trim();
           clearTimeout(searchTimer);
-          if(!q){if(currentData)render(currentData);return;}
+          if(!q){setSearchBusy(false);if(currentData)render(currentData);return;}
           clearPendingThumbnails();
+          setSearchBusy(true);
           searchTimer=setTimeout(()=>searchLibrary(q),300);
         }
         function clearPendingThumbnails(){
@@ -838,14 +876,16 @@
           pendingSearchAbort=new AbortController();
           try{
             const res=await fetch('/api/search?q='+encodeURIComponent(q),{signal:pendingSearchAbort.signal});
-            if(!res.ok){setStatus('Search error '+res.status);return;}
+            if(!res.ok){setSearchBusy(false);setStatus('Search error '+res.status);return;}
             const data=await res.json();
+            setSearchBusy(false);
             render({folders:data.folders||[],files:data.files,current:'Search',currentFull:'Search',parent:null,isRoot:false},true);
             updateLibraryStatus({isScanning:data.indexing,indexedFiles:data.indexedFiles,scannedFiles:data.indexedFiles,completedUtc:data.lastRefreshUtc,lastError:''});
             const note=data.indexing?' (indexing...)':'';
             setStatus((data.folders?.length||0)+' folder(s) and '+data.files.length+' result(s) from '+data.indexedFiles+' indexed video(s)'+note);
             pendingSearchAbort=null;
           }catch(e){
+            setSearchBusy(false);
             if(e.name!=='AbortError')setStatus('Search failed: '+e);
             pendingSearchAbort=null;
           }
@@ -871,7 +911,9 @@
           let html='';
           if(data.folders.length){
             if(searching){
-              html+='<div class="folder-list">';
+              const folderLabel=data.folders.length>5?'Folders ('+data.folders.length+', scroll for more)':'Folders';
+              html+='<div class="section-label">'+folderLabel+'</div>';
+              html+='<div class="folder-list search-folders">';
               html+=data.folders.map(f=>'<div class="folder-row" onclick="searchLibrary(\''+esc(f.folder||f.name)+'\')">'+'<span class="folder-icon">&#128193;</span><span class="folder-name">'+esc(f.name||f.folder)+'</span></div>').join('');
               html+='</div>';
             }else{
@@ -969,6 +1011,8 @@
           if(!bar||!p)return;
           const thumb='/api/thumb?path='+encodeURIComponent(p);
           bar.style.background='linear-gradient(135deg,rgba(13,13,26,.92),rgba(21,21,38,.88)),url('+thumb+') center/cover';
+          const poster=document.getElementById('player-poster');
+          if(poster)poster.style.backgroundImage='url('+thumb+')';
         }
         async function playCardAction(event,p,name){
           event.stopPropagation();
@@ -1031,6 +1075,25 @@
           event.stopPropagation();
           if(p!==playingPath)return;
           await stop();
+        }
+        function updateStopBtn(isPlaying,hasQueue){
+          const btn=document.getElementById('stop-btn');
+          if(!btn)return;
+          if(!isPlaying&&hasQueue){
+            btn.className='btn btn-nav queue-mode';
+            btn.innerHTML='&#9654; PLAY QUEUE';
+            btn.onclick=playQueueStart;
+          }else{
+            btn.className='btn btn-stop';
+            btn.innerHTML='&#9632; STOP';
+            btn.onclick=stop;
+          }
+        }
+        async function playQueueStart(){
+          if(!lastQueue.length)return;
+          const first=lastQueue[0];
+          await api('/api/play?path='+encodeURIComponent(first.path));
+          await api('/api/queue/remove?path='+encodeURIComponent(first.path));
         }
         async function stop(){
           const stoppedPath=playingPath;
@@ -1144,4 +1207,68 @@
         updateAudioBoostIcon(parseFloat(document.getElementById('audio-boost').value)||0);
         syncSpeedChips(currentPlaybackSpeed);
         startPolling();
+        refreshPeers();
+        setInterval(refreshPeers,8000);
+        document.addEventListener('click',e=>{const dd=document.getElementById('peers-dropdown');if(dd.classList.contains('open')&&!e.target.closest('#peers-wrap'))closePeers();});
+
+        async function refreshPeers(){
+          try{
+            const res=await fetch('/api/peers');
+            if(!res.ok)return;
+            const peers=await res.json();
+            const dot=document.getElementById('peers-dot');
+            const others=peers.filter(p=>!p.isSelf);
+            const count=others.length;
+            dot.className=count>0?'multi':'';
+            const label=count>0?`Instances (${count})`:'Instances';
+            document.getElementById('peers-btn').innerHTML=`<span id="peers-dot" class="${dot.className}"></span>${label}`;
+            document.getElementById('peers-btn').title=count>0?`${count} other instance(s) on the network`:'No other instances found';
+            renderPeersDropdown(peers);
+          }catch{}
+        }
+
+        function renderPeersDropdown(peers){
+          const dd=document.getElementById('peers-dropdown');
+          dd.innerHTML='';
+          const header=document.createElement('div');
+          header.id='peers-header';
+          header.textContent='RemotePlay instances';
+          dd.appendChild(header);
+          const self=peers.find(p=>p.isSelf);
+          const others=peers.filter(p=>!p.isSelf);
+          if(self){
+            const el=document.createElement('div');
+            el.className='peer-item peer-self';
+            el.innerHTML=`<span class="peer-dot"></span><span class="peer-info"><div class="peer-name">${esc(self.name)}</div><div class="peer-addr">${esc(self.host)}:${self.port}</div></span><span class="peer-badge">this</span>`;
+            dd.appendChild(el);
+          }
+          if(others.length===0){
+            const el=document.createElement('div');
+            el.className='peer-no-others';
+            el.textContent='No other instances discovered yet.';
+            dd.appendChild(el);
+          }else{
+            others.forEach(p=>{
+              const a=document.createElement('a');
+              a.className='peer-item';
+              a.href=p.url;
+              a.title=`Switch to ${esc(p.name)} — ${p.url}`;
+              a.innerHTML=`<span class="peer-dot"></span><span class="peer-info"><div class="peer-name">${esc(p.name)}</div><div class="peer-addr">${esc(p.host)}:${p.port}</div></span>`;
+              dd.appendChild(a);
+            });
+          }
+        }
+
+        function togglePeers(){
+          const dd=document.getElementById('peers-dropdown');
+          const btn=document.getElementById('peers-btn');
+          const isOpen=dd.classList.toggle('open');
+          btn.setAttribute('aria-expanded',String(isOpen));
+          if(isOpen)refreshPeers();
+        }
+
+        function closePeers(){
+          document.getElementById('peers-dropdown').classList.remove('open');
+          document.getElementById('peers-btn').setAttribute('aria-expanded','false');
+        }
         </script></body></html>
