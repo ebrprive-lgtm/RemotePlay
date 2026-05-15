@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Security.Cryptography.X509Certificates;
@@ -114,6 +114,14 @@ internal sealed partial class WebServer
 
             case "/api/recent":
                 HandleRecent(ctx);
+                break;
+
+            case "/api/favorites":
+                HandleFavorites(ctx);
+                break;
+
+            case "/api/favorite":
+                HandleFavorite(ctx);
                 break;
 
             case "/api/history/clear":
@@ -240,15 +248,20 @@ internal sealed partial class WebServer
             return;
         }
 
-        var jpeg = _thumbCache.GetOrAdd(encodedPath, key =>
+        byte[]? jpeg;
+        try
         {
-            try
-            {
-                var filePath = WebPathHelpers.DecodePath(key);
-                return ThumbnailHelper.GetJpegThumbnail(filePath);
-            }
-            catch { return null; }
-        });
+            var filePath = WebPathHelpers.DecodePath(encodedPath);
+            var cacheFile = GetThumbnailCacheFile(filePath);
+            if (File.Exists(cacheFile))
+                jpeg = File.ReadAllBytes(cacheFile);
+            else
+                jpeg = _thumbCache.GetOrAdd(encodedPath, key => GenerateAndPersistThumbnail(key, cacheFile));
+        }
+        catch
+        {
+            jpeg = null;
+        }
 
         if (jpeg is null)
         {
@@ -258,6 +271,31 @@ internal sealed partial class WebServer
 
         ctx.Response.AddHeader("Cache-Control", "public, max-age=3600");
         TrySendBytes(ctx, 200, "image/jpeg", jpeg);
+    }
+
+    private static byte[]? GenerateAndPersistThumbnail(string encodedPath, string cacheFile)
+    {
+        try
+        {
+            var filePath = WebPathHelpers.DecodePath(encodedPath);
+            var jpeg = ThumbnailHelper.GetJpegThumbnail(filePath);
+            if (jpeg is null)
+                return null;
+
+            Directory.CreateDirectory(ThumbnailCacheDirectory);
+            File.WriteAllBytes(cacheFile, jpeg);
+            return jpeg;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string GetThumbnailCacheFile(string filePath)
+    {
+        var key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(filePath)));
+        return Path.Combine(ThumbnailCacheDirectory, key + ".jpg");
     }
 
     private static void HandleStaticIcon(HttpListenerContext ctx, string fileName)
@@ -292,6 +330,7 @@ internal sealed partial class WebServer
             isMuted = s.IsMuted,
             lastError = s.LastError ?? string.Empty,
             canResume = s.CanResume,
+            resumePosition = Math.Round(s.ResumePositionSeconds, 1),
             subtitlesEnabled = s.SubtitlesEnabled,
             hasSubtitles = s.HasSubtitles,
             audioTracks = s.AudioTracks.Select(t => new { id = t.Id, name = t.Name }).ToArray(),
@@ -303,7 +342,7 @@ internal sealed partial class WebServer
             filePath = s.FilePath is not null ? WebPathHelpers.EncodePath(s.FilePath) : string.Empty,
             queue = s.Queue.Select(q => new
             {
-                path = WebPathHelpers.EncodePath(q.Path),
+                path = q.Path,
                 title = q.Title
             }).ToArray(),
             queueCount = s.QueueCount,
@@ -474,6 +513,7 @@ internal sealed partial class WebServer
     {
         var status = _callbacks.GetStatus();
         var runtime = BuildRuntimeHealth();
+            var scanStatus = GetLibraryScanStatus();
         var json = JsonSerializer.Serialize(new
         {
             ok = true,
@@ -487,6 +527,7 @@ internal sealed partial class WebServer
             indexedFiles = _libraryIndex.Length,
             isIndexing = _isIndexing,
             lastIndexRefreshUtc = _lastIndexRefreshUtc,
+                scanStatus,
             preferences = new
             {
                 playbackEndBehavior = _config.PlaybackEndBehavior.ToString(),
@@ -523,62 +564,105 @@ internal sealed partial class WebServer
     {
         var status = _callbacks.GetStatus();
         var displayDiagnostics = _callbacks.GetDisplayDiagnostics();
+        var scanStatus = GetLibraryScanStatus();
         var certificate = TryGetHttpsCertificate();
         var runtime = BuildRuntimeHealthJson();
-        var html = $$"""
-            <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/>
+        var startupWarning = string.IsNullOrWhiteSpace(_startupWarning) ? "None" : _startupWarning;
+        var playbackError = string.IsNullOrWhiteSpace(status.LastError) ? "None" : status.LastError;
+        var scanError = string.IsNullOrWhiteSpace(scanStatus.LastError) ? "None" : scanStatus.LastError;
+        var serverState = string.IsNullOrWhiteSpace(_startupWarning) ? "ok" : "warn";
+        var playbackState = string.IsNullOrWhiteSpace(status.LastError) ? "ok" : "warn";
+        var libraryState = string.IsNullOrWhiteSpace(scanStatus.LastError) ? (_isIndexing ? "warn" : "ok") : "warn";
+        var displayState = displayDiagnostics.NeedsFullscreenRepair ? "warn" : "ok";
+        var certificateState = certificate is not null ? "ok" : "warn";
+        var playbackLabel = status.IsPlaying ? "Playing" : "Idle";
+        var libraryLabel = _isIndexing ? "Indexing" : "Ready";
+        var displayLabel = displayDiagnostics.NeedsFullscreenRepair ? "Repair needed" : "Fullscreen OK";
+        var certificateLabel = certificate is not null ? "Available" : "Missing";
+        var html = $$$$"""
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+            <meta charset="utf-8"/>
             <meta name="viewport" content="width=device-width,initial-scale=1"/>
+            <meta name="theme-color" content="#0b1020"/>
             <title>RemotePlay Health</title>
-            <style>body{background:#111;color:#eee;font-family:Segoe UI,Arial,sans-serif;margin:0;padding:24px}main{max-width:860px;margin:auto}h1{color:#e94560}.card{background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:16px;margin:12px 0}.ok{color:#00d4aa}.warn{color:#ffaa00}dt{color:#888;margin-top:10px}dd{margin:3px 0 0 0;word-break:break-word}a,button{color:#00d4aa}button{background:#22263b;border:1px solid #3a3a57;border-radius:6px;padding:8px 10px;cursor:pointer;margin:4px 6px 4px 0}pre{white-space:pre-wrap;background:#0a0a0a;border:1px solid #333;border-radius:8px;padding:12px;overflow:auto}</style>
-            </head><body><main><h1>RemotePlay Health</h1>
-            <section class="card"><h2 class="ok">Server</h2><dl>
-            <dt>Requested mode</dt><dd>{{HtmlEncode(_config.Scheme.ToUpperInvariant())}}</dd>
-            <dt>Active mode</dt><dd>{{HtmlEncode(_activeScheme.ToUpperInvariant())}}</dd>
-            <dt>Port</dt><dd>{{_config.Port}}</dd>
-            <dt>Movies folder</dt><dd>{{HtmlEncode(_config.ResolvedMoviesPath)}}</dd>
-            <dt>Startup warning</dt><dd class="warn">{{HtmlEncode(_startupWarning ?? "None")}}</dd>
-            </dl></section>
-            <section class="card"><h2>Playback</h2><dl>
-            <dt>Playing</dt><dd>{{status.IsPlaying}}</dd>
-            <dt>Last error</dt><dd>{{HtmlEncode(string.IsNullOrWhiteSpace(status.LastError) ? "None" : status.LastError)}}</dd>
-            <dt>Previous video</dt><dd>{{HtmlEncode(string.IsNullOrWhiteSpace(status.PreviousTitle) ? "N/A" : status.PreviousTitle)}}</dd>
-            <dt>Next video</dt><dd>{{HtmlEncode(string.IsNullOrWhiteSpace(status.NextTitle) ? "N/A" : status.NextTitle)}}</dd>
-            </dl></section>
-            <section class="card"><h2>Playback preferences</h2><dl>
-            <dt>End behavior</dt><dd>{{HtmlEncode(_config.PlaybackEndBehavior.ToString())}}</dd>
-            <dt>Preferred audio language</dt><dd>{{HtmlEncode(_config.PreferredAudioLanguage)}}</dd>
-            <dt>Preferred subtitle language</dt><dd>{{HtmlEncode(_config.PreferredSubtitleLanguage)}}</dd>
-            <dt>Prefer forced subtitles</dt><dd>{{_config.PreferForcedSubtitles}}</dd>
-            </dl></section>
-            <section class="card"><h2 class="{{(displayDiagnostics.NeedsFullscreenRepair ? "warn" : "ok")}}">Display diagnostics</h2><dl>
-            <dt>Preferred display index</dt><dd>{{displayDiagnostics.PreferredDisplayIndex}}</dd>
-            <dt>Target display</dt><dd>{{displayDiagnostics.TargetDisplayIndex}} — {{HtmlEncode(displayDiagnostics.TargetDisplayName)}}</dd>
-            <dt>Target bounds</dt><dd>{{displayDiagnostics.TargetLeft}}, {{displayDiagnostics.TargetTop}}, {{displayDiagnostics.TargetWidth}}×{{displayDiagnostics.TargetHeight}}</dd>
-            <dt>Window bounds</dt><dd>{{displayDiagnostics.WindowLeft}}, {{displayDiagnostics.WindowTop}}, {{displayDiagnostics.WindowWidth}}×{{displayDiagnostics.WindowHeight}}</dd>
-            <dt>Window state</dt><dd>{{HtmlEncode(displayDiagnostics.WindowState)}} / {{HtmlEncode(displayDiagnostics.WindowStyle)}} / {{HtmlEncode(displayDiagnostics.ResizeMode)}} / Topmost={{displayDiagnostics.Topmost}}</dd>
-            <dt>DPI scale</dt><dd>{{displayDiagnostics.DpiScaleX}} × {{displayDiagnostics.DpiScaleY}}</dd>
-            <dt>Needs fullscreen repair</dt><dd>{{displayDiagnostics.NeedsFullscreenRepair}}</dd>
-            <dt>Current video</dt><dd>{{HtmlEncode(string.IsNullOrWhiteSpace(displayDiagnostics.CurrentTitle) ? "N/A" : displayDiagnostics.CurrentTitle)}}</dd>
-            <dt>Video file</dt><dd>{{HtmlEncode(string.IsNullOrWhiteSpace(displayDiagnostics.CurrentFilePath) ? "N/A" : displayDiagnostics.CurrentFilePath)}}</dd>
-            <dt>Display settings</dt><dd>Zoom={{Math.Round(displayDiagnostics.Zoom * 100)}}%, Brightness={{Math.Round(displayDiagnostics.Brightness * 100)}}%, Saturation={{Math.Round(displayDiagnostics.Saturation * 100)}}%</dd>
-            <dt>Video surface</dt><dd>Panel {{displayDiagnostics.VideoSurfaceWidth}}×{{displayDiagnostics.VideoSurfaceHeight}}, Player {{displayDiagnostics.VideoPlayerActualWidth}}×{{displayDiagnostics.VideoPlayerActualHeight}}</dd>
-            </dl><p><a href="/api/display-diagnostics" target="_blank" rel="noopener">Open display diagnostics JSON</a></p></section>
-            <section class="card"><h2>Library index</h2><dl>
-            <dt>Indexed videos</dt><dd>{{_libraryIndex.Length}}</dd>
-            <dt>Indexing now</dt><dd>{{_isIndexing}}</dd>
-            <dt>Last refresh UTC</dt><dd>{{_lastIndexRefreshUtc?.ToString("u") ?? "Never"}}</dd>
-            </dl></section>
-            <section class="card"><h2>HTTPS certificate</h2><dl>
-            <dt>Certificate present</dt><dd>{{certificate is not null}}</dd>
-            <dt>Expires</dt><dd>{{certificate?.NotAfter.ToString("u") ?? "N/A"}}</dd>
-            <dt>Thumbprint</dt><dd>{{HtmlEncode(certificate?.Thumbprint ?? "N/A")}}</dd>
-            </dl><p><a href="/certificate.cer">Download certificate</a></p></section>
-            <section class="card"><h2>Runtime diagnostics</h2><pre id="runtime-json">{{HtmlEncode(runtime)}}</pre></section>
-            <section class="card"><h2>Admin actions</h2><p>
-            <button onclick="rescanLibrary()">Start rescan</button>
-            <button onclick="location.href='/remoteplay.log'">Download log</button>
-            <button onclick="refreshRuntime()">Refresh runtime</button>
-            </p><p id="admin-result" class="warn"></p></section>
+            <style>
+            :root{color-scheme:dark;--bg:#090d18;--bg2:#121832;--card:rgba(23,28,53,.82);--card2:rgba(16,20,38,.92);--line:rgba(148,163,184,.18);--text:#eef4ff;--muted:#9aa8c2;--dim:#6f7b94;--accent:#e94560;--cyan:#00d4aa;--warn:#ffaa00;--bad:#ff5c77;--blue:#5b8cff;--shadow:0 20px 60px rgba(0,0,0,.34)}
+            *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at top left,rgba(91,140,255,.22),transparent 34rem),radial-gradient(circle at top right,rgba(233,69,96,.18),transparent 30rem),linear-gradient(135deg,var(--bg),#05070d 70%);color:var(--text);font-family:Segoe UI,Arial,sans-serif}a{color:var(--cyan);text-decoration:none}a:hover{text-decoration:underline}.page{width:min(1440px,100%);margin:0 auto;padding:18px}.hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:1rem;align-items:end;padding:1.1rem;border:1px solid var(--line);border-radius:24px;background:linear-gradient(135deg,rgba(26,32,61,.9),rgba(12,16,32,.86));box-shadow:var(--shadow);position:sticky;top:10px;z-index:3;backdrop-filter:blur(14px)}.eyebrow{color:var(--muted);font-weight:800;font-size:.76rem;text-transform:uppercase;letter-spacing:.1em}.hero h1{margin:.15rem 0 .25rem;font-size:clamp(1.55rem,4vw,3rem);line-height:1;color:#fff}.subtitle{color:var(--muted);font-size:.95rem;line-height:1.35}.actions{display:flex;gap:.55rem;flex-wrap:wrap;justify-content:flex-end}.button,button{display:inline-flex;align-items:center;justify-content:center;gap:.35rem;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(34,41,76,.9);color:#eaf0ff;padding:.68rem .95rem;font-weight:800;cursor:pointer;min-height:42px}.button.primary,button.primary{background:linear-gradient(135deg,var(--accent),#ff6f61);color:#fff}.button:hover,button:hover{filter:brightness(1.12);text-decoration:none}.overview{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.85rem;margin:1rem 0}.tile{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:1rem;box-shadow:0 12px 30px rgba(0,0,0,.2);min-width:0}.tile-label{color:var(--muted);font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}.tile-value{font-size:1.2rem;font-weight:900;margin:.35rem 0 .45rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;padding:.28rem .55rem;font-size:.75rem;font-weight:900;background:rgba(148,163,184,.13);color:var(--muted)}.pill::before{content:'';width:.55rem;height:.55rem;border-radius:50%;background:var(--dim);box-shadow:0 0 0 3px rgba(148,163,184,.12)}.pill.ok{color:#a7ffe9;background:rgba(0,212,170,.12)}.pill.ok::before{background:var(--cyan)}.pill.warn{color:#ffd48a;background:rgba(255,170,0,.13)}.pill.warn::before{background:var(--warn)}.dashboard{display:grid;grid-template-columns:1.1fr .9fr;gap:1rem;align-items:start}.stack{display:grid;gap:1rem}.card{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:1rem;box-shadow:0 12px 32px rgba(0,0,0,.2);overflow:hidden}.card h2{display:flex;align-items:center;justify-content:space-between;gap:.7rem;margin:0 0 .8rem;font-size:1rem}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.55rem .8rem}.metric{background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:.65rem;min-width:0}.metric dt{color:var(--muted);font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.055em;margin:0 0 .3rem}.metric dd{margin:0;color:#fff;word-break:break-word;line-height:1.3}.metric.wide{grid-column:1/-1}.mono{font-family:Consolas,ui-monospace,monospace}.runtime-card{grid-column:1/-1}pre{white-space:pre-wrap;background:rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:1rem;overflow:auto;max-height:420px;color:#dce6ff}.admin-result{min-height:1.2rem;color:#ffd48a;font-weight:700}.footer-note{color:var(--dim);font-size:.78rem;text-align:center;padding:1.2rem}.compact-list{display:grid;gap:.5rem}.divider{height:1px;background:var(--line);margin:.85rem 0}.ok-text{color:var(--cyan)}.warn-text{color:var(--warn)}@media (max-width:1100px){.overview{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard{grid-template-columns:1fr}.runtime-card{grid-column:auto}}@media (max-width:640px){.page{padding:.6rem}.hero{position:static;grid-template-columns:1fr;border-radius:18px;padding:.85rem}.actions{display:grid;grid-template-columns:1fr 1fr;justify-content:stretch}.button,button{width:100%;padding:.72rem .7rem}.overview{grid-template-columns:1fr;gap:.55rem;margin:.65rem 0}.tile{display:grid;grid-template-columns:1fr auto;align-items:center;padding:.75rem;border-radius:16px}.tile-value{font-size:1rem;margin:.1rem 0}.tile .pill{grid-row:1/3;grid-column:2}.card{padding:.75rem;border-radius:16px}.grid{grid-template-columns:1fr;gap:.5rem}.metric{padding:.6rem}.hero h1{font-size:1.55rem}.subtitle{font-size:.84rem}pre{max-height:300px;font-size:.78rem}}
+            </style>
+            </head>
+            <body>
+            <main class="page">
+            <section class="hero">
+              <div><div class="eyebrow">RemotePlay diagnostics</div><h1>Health dashboard</h1><div class="subtitle">Live server, playback, display, library, certificate, and runtime checks for this media computer.</div></div>
+              <div class="actions"><a class="button" href="/">Open remote</a><button class="primary" onclick="refreshRuntime()">Refresh</button><button onclick="location.href='/remoteplay.log'">Log</button></div>
+            </section>
+            <section class="overview" aria-label="Health summary">
+              <article class="tile"><div><div class="tile-label">Server</div><div class="tile-value">{{{{HtmlEncode(_activeScheme.ToUpperInvariant())}}}} : {{{{_config.Port}}}}</div></div><span class="pill {{{{serverState}}}}">{{{{serverState.ToUpperInvariant()}}}}</span></article>
+              <article class="tile"><div><div class="tile-label">Playback</div><div class="tile-value">{{{{HtmlEncode(playbackLabel)}}}}</div></div><span class="pill {{{{playbackState}}}}">{{{{playbackState.ToUpperInvariant()}}}}</span></article>
+              <article class="tile"><div><div class="tile-label">Library</div><div class="tile-value">{{{{_libraryIndex.Length}}}} videos</div></div><span class="pill {{{{libraryState}}}}">{{{{HtmlEncode(libraryLabel)}}}}</span></article>
+              <article class="tile"><div><div class="tile-label">Display</div><div class="tile-value">{{{{HtmlEncode(displayLabel)}}}}</div></div><span class="pill {{{{displayState}}}}">{{{{displayState.ToUpperInvariant()}}}}</span></article>
+              <article class="tile"><div><div class="tile-label">HTTPS cert</div><div class="tile-value">{{{{HtmlEncode(certificateLabel)}}}}</div></div><span class="pill {{{{certificateState}}}}">{{{{certificateState.ToUpperInvariant()}}}}</span></article>
+            </section>
+            <section class="dashboard">
+              <div class="stack">
+                <section class="card"><h2>Server <span class="pill {{{{serverState}}}}">{{{{serverState.ToUpperInvariant()}}}}</span></h2><dl class="grid">
+                  <div class="metric"><dt>Requested mode</dt><dd>{{{{HtmlEncode(_config.Scheme.ToUpperInvariant())}}}}</dd></div>
+                  <div class="metric"><dt>Active mode</dt><dd>{{{{HtmlEncode(_activeScheme.ToUpperInvariant())}}}}</dd></div>
+                  <div class="metric"><dt>Port</dt><dd>{{{{_config.Port}}}}</dd></div>
+                  <div class="metric"><dt>Indexed videos</dt><dd>{{{{_libraryIndex.Length}}}}</dd></div>
+                  <div class="metric wide"><dt>Movies folder</dt><dd class="mono">{{{{HtmlEncode(_config.ResolvedMoviesPath)}}}}</dd></div>
+                  <div class="metric wide"><dt>Startup warning</dt><dd class="{{{{(serverState == "ok" ? "ok-text" : "warn-text")}}}}">{{{{HtmlEncode(startupWarning)}}}}</dd></div>
+                </dl></section>
+                <section class="card"><h2>Display diagnostics <span class="pill {{{{displayState}}}}">{{{{HtmlEncode(displayLabel)}}}}</span></h2><dl class="grid">
+                  <div class="metric"><dt>Preferred display</dt><dd>{{{{displayDiagnostics.PreferredDisplayIndex}}}}</dd></div>
+                  <div class="metric"><dt>Target display</dt><dd>{{{{displayDiagnostics.TargetDisplayIndex}}}} &mdash; {{{{HtmlEncode(displayDiagnostics.TargetDisplayName)}}}}</dd></div>
+                  <div class="metric"><dt>Target bounds</dt><dd>{{{{displayDiagnostics.TargetLeft}}}}, {{{{displayDiagnostics.TargetTop}}}}, {{{{displayDiagnostics.TargetWidth}}}}&times;{{{{displayDiagnostics.TargetHeight}}}}</dd></div>
+                  <div class="metric"><dt>Window bounds</dt><dd>{{{{displayDiagnostics.WindowLeft}}}}, {{{{displayDiagnostics.WindowTop}}}}, {{{{displayDiagnostics.WindowWidth}}}}&times;{{{{displayDiagnostics.WindowHeight}}}}</dd></div>
+                  <div class="metric"><dt>DPI scale</dt><dd>{{{{displayDiagnostics.DpiScaleX}}}} &times; {{{{displayDiagnostics.DpiScaleY}}}}</dd></div>
+                  <div class="metric"><dt>Fullscreen repair</dt><dd>{{{{displayDiagnostics.NeedsFullscreenRepair}}}}</dd></div>
+                  <div class="metric wide"><dt>Window state</dt><dd>{{{{HtmlEncode(displayDiagnostics.WindowState)}}}} / {{{{HtmlEncode(displayDiagnostics.WindowStyle)}}}} / {{{{HtmlEncode(displayDiagnostics.ResizeMode)}}}} / Topmost={{{{displayDiagnostics.Topmost}}}}</dd></div>
+                  <div class="metric wide"><dt>Current video</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(displayDiagnostics.CurrentTitle) ? "N/A" : displayDiagnostics.CurrentTitle)}}}}</dd></div>
+                  <div class="metric wide"><dt>Video file</dt><dd class="mono">{{{{HtmlEncode(string.IsNullOrWhiteSpace(displayDiagnostics.CurrentFilePath) ? "N/A" : displayDiagnostics.CurrentFilePath)}}}}</dd></div>
+                  <div class="metric"><dt>Display settings</dt><dd>Zoom {{{{Math.Round(displayDiagnostics.Zoom * 100)}}}}%, Brightness {{{{Math.Round(displayDiagnostics.Brightness * 100)}}}}%, Saturation {{{{Math.Round(displayDiagnostics.Saturation * 100)}}}}%</dd></div>
+                  <div class="metric"><dt>Video surface</dt><dd>Panel {{{{displayDiagnostics.VideoSurfaceWidth}}}}&times;{{{{displayDiagnostics.VideoSurfaceHeight}}}}, Player {{{{displayDiagnostics.VideoPlayerActualWidth}}}}&times;{{{{displayDiagnostics.VideoPlayerActualHeight}}}}</dd></div>
+                </dl><div class="divider"></div><a href="/api/display-diagnostics" target="_blank" rel="noopener">Open display diagnostics JSON</a></section>
+              </div>
+              <div class="stack">
+                <section class="card"><h2>Playback <span class="pill {{{{playbackState}}}}">{{{{HtmlEncode(playbackLabel)}}}}</span></h2><dl class="grid">
+                  <div class="metric"><dt>Playing</dt><dd>{{{{status.IsPlaying}}}}</dd></div>
+                  <div class="metric"><dt>Paused</dt><dd>{{{{status.IsPaused}}}}</dd></div>
+                  <div class="metric"><dt>Previous video</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(status.PreviousTitle) ? "N/A" : status.PreviousTitle)}}}}</dd></div>
+                  <div class="metric"><dt>Next video</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(status.NextTitle) ? "N/A" : status.NextTitle)}}}}</dd></div>
+                  <div class="metric wide"><dt>Last error</dt><dd class="{{{{(playbackState == "ok" ? "ok-text" : "warn-text")}}}}">{{{{HtmlEncode(playbackError)}}}}</dd></div>
+                </dl></section>
+                <section class="card"><h2>Playback preferences</h2><dl class="grid">
+                  <div class="metric"><dt>End behavior</dt><dd>{{{{HtmlEncode(_config.PlaybackEndBehavior.ToString())}}}}</dd></div>
+                  <div class="metric"><dt>Forced subtitles</dt><dd>{{{{_config.PreferForcedSubtitles}}}}</dd></div>
+                  <div class="metric"><dt>Audio language</dt><dd>{{{{HtmlEncode(_config.PreferredAudioLanguage)}}}}</dd></div>
+                  <div class="metric"><dt>Subtitle language</dt><dd>{{{{HtmlEncode(_config.PreferredSubtitleLanguage)}}}}</dd></div>
+                </dl></section>
+                <section class="card"><h2>Library index <span class="pill {{{{libraryState}}}}">{{{{HtmlEncode(libraryLabel)}}}}</span></h2><dl class="grid">
+                  <div class="metric"><dt>Indexed videos</dt><dd>{{{{_libraryIndex.Length}}}}</dd></div>
+                  <div class="metric"><dt>Indexing now</dt><dd>{{{{_isIndexing}}}}</dd></div>
+                  <div class="metric"><dt>Scanned files</dt><dd>{{{{scanStatus.ScannedFiles}}}}</dd></div>
+                  <div class="metric"><dt>Scanned folders</dt><dd>{{{{scanStatus.ScannedFolders}}}}</dd></div>
+                  <div class="metric"><dt>Scan started UTC</dt><dd>{{{{scanStatus.StartedUtc?.ToString("u") ?? "N/A"}}}}</dd></div>
+                  <div class="metric"><dt>Last refresh UTC</dt><dd>{{{{_lastIndexRefreshUtc?.ToString("u") ?? "Never"}}}}</dd></div>
+                  <div class="metric wide"><dt>Last scan error</dt><dd class="{{{{(scanError == "None" ? "ok-text" : "warn-text")}}}}">{{{{HtmlEncode(scanError)}}}}</dd></div>
+                </dl></section>
+                <section class="card"><h2>HTTPS certificate <span class="pill {{{{certificateState}}}}">{{{{HtmlEncode(certificateLabel)}}}}</span></h2><dl class="grid">
+                  <div class="metric"><dt>Certificate present</dt><dd>{{{{certificate is not null}}}}</dd></div>
+                  <div class="metric"><dt>Expires</dt><dd>{{{{certificate?.NotAfter.ToString("u") ?? "N/A"}}}}</dd></div>
+                  <div class="metric wide"><dt>Thumbprint</dt><dd class="mono">{{{{HtmlEncode(certificate?.Thumbprint ?? "N/A")}}}}</dd></div>
+                </dl><div class="divider"></div><a href="/certificate.cer">Download certificate</a></section>
+              </div>
+              <section class="card runtime-card"><h2>Runtime diagnostics</h2><pre id="runtime-json">{{{{HtmlEncode(runtime)}}}}</pre></section>
+              <section class="card runtime-card"><h2>Admin actions</h2><div class="actions" style="justify-content:flex-start"><button class="primary" onclick="rescanLibrary()">Start rescan</button><button onclick="location.href='/remoteplay.log'">Download log</button><button onclick="refreshRuntime()">Refresh runtime</button></div><p id="admin-result" class="admin-result"></p></section>
+            </section>
+            <div class="footer-note">RemotePlay health page generated locally by this media computer.</div>
+            </main>
             <script>
             async function refreshRuntime(){
               const result=document.getElementById('admin-result');
@@ -598,7 +682,8 @@ internal sealed partial class WebServer
               }catch(error){result.textContent='Rescan failed: '+error;}
             }
             </script>
-            </main></body></html>
+            </body>
+            </html>
             """;
         certificate?.Dispose();
         TrySendResponse(ctx, 200, "text/html; charset=utf-8", html);
@@ -653,7 +738,8 @@ internal sealed partial class WebServer
     private void HandleSearch(HttpListenerContext ctx)
     {
         var query = (ctx.Request.QueryString["q"] ?? string.Empty).Trim();
-        StartLibraryIndexRefresh(force: false);
+        if (_libraryIndex.Length == 0)
+            StartLibraryIndexRefresh(force: false);
 
         var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var resumeMap = _playbackHistory.GetResumeMap();
@@ -666,7 +752,7 @@ internal sealed partial class WebServer
                 .Where(f => terms.All(t => f.SearchText.Contains(t, StringComparison.OrdinalIgnoreCase)))
                 .OrderBy(f => f.Name)
                 .Take(200)
-                .Select(f => BuildCardFile(Path.GetFileNameWithoutExtension(f.FilePath), f.FilePath, resumeMap, f.FolderName))
+                .Select(f => BuildCardFile(Path.GetFileNameWithoutExtension(f.FilePath), f.FilePath, resumeMap, f.FolderName, IsFavorite(f.FilePath)))
                 .ToArray<object>();
 
         // Find unique folders that match the search terms
@@ -704,6 +790,7 @@ internal sealed partial class WebServer
                 name = Path.GetFileNameWithoutExtension(item.FilePath),
                 displayName = CleanDisplayTitle(Path.GetFileNameWithoutExtension(item.FilePath)),
                 path = WebPathHelpers.EncodePath(item.FilePath),
+                favorite = IsFavorite(item.FilePath),
                 position = Math.Round(item.PositionSeconds, 1),
                 duration = Math.Round(item.DurationSeconds, 1),
                 progress = item.DurationSeconds > 0 ? Math.Round(item.PositionSeconds / item.DurationSeconds, 3) : 0,
@@ -713,6 +800,42 @@ internal sealed partial class WebServer
             .ToArray();
 
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { files }));
+    }
+
+    private void HandleFavorites(HttpListenerContext ctx)
+    {
+        var root = _config.ResolvedMoviesPath;
+        var resumeMap = _playbackHistory.GetResumeMap();
+        var files = GetFavoritePaths()
+            .Where(path => WebPathHelpers.IsUnderRoot(path, root) && File.Exists(path))
+            .OrderBy(path => Path.GetFileNameWithoutExtension(path), _naturalComparer)
+            .Select(path => BuildCardFile(Path.GetFileNameWithoutExtension(path), path, resumeMap, Path.GetFileName(Path.GetDirectoryName(path)) ?? string.Empty, isFavorite: true))
+            .ToArray();
+
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { files }));
+    }
+
+    private void HandleFavorite(HttpListenerContext ctx)
+    {
+        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(encodedPath))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing path");
+            return;
+        }
+
+        var filePath = WebPathHelpers.DecodePath(encodedPath);
+        if (!WebPathHelpers.IsUnderRoot(filePath, _config.ResolvedMoviesPath) || !File.Exists(filePath))
+        {
+            TrySendResponse(ctx, 403, "text/plain", "Forbidden");
+            return;
+        }
+
+        var favorite = bool.TryParse(ctx.Request.QueryString["value"], out var parsed)
+            ? parsed
+            : !IsFavorite(filePath);
+        SetFavorite(filePath, favorite);
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true, favorite }));
     }
 
     private void HandleHistoryClear(HttpListenerContext ctx)
@@ -779,7 +902,7 @@ internal sealed partial class WebServer
         var files = Directory.EnumerateFiles(targetDir)
             .Where(f => WebPathHelpers.IsVideoFile(f, VideoExtensions))
             .OrderBy(f => Path.GetFileNameWithoutExtension(f), naturalComparer)
-            .Select(f => BuildCardFile(Path.GetFileNameWithoutExtension(f), f, resumeMap))
+            .Select(f => BuildCardFile(Path.GetFileNameWithoutExtension(f), f, resumeMap, isFavorite: IsFavorite(f)))
             .ToArray();
 
         // Parent dir (null if we're already at root)
@@ -886,16 +1009,23 @@ internal sealed partial class WebServer
         lock (_libraryIndexGate)
         {
             if (_isIndexing)
+            {
+                Logger.Info($"Library index refresh skipped; already indexing (force={force})");
                 return;
+            }
 
-            if (!force && _libraryIndex.Length > 0 && _lastIndexRefreshUtc is not null)
+            if (!force && HasFreshLibraryIndex())
+            {
+                Logger.Info($"Library index refresh skipped; cache is fresh ({_libraryIndex.Length} videos)");
                 return;
+            }
 
             _isIndexing = true;
             _scanStartedUtc = DateTimeOffset.UtcNow;
             _scannedFiles = 0;
             _scannedFolders = 0;
             _lastScanError = string.Empty;
+            Logger.Info($"Library index refresh starting (force={force}, cached={_libraryIndex.Length})");
         }
 
         Task.Run(() =>
@@ -917,12 +1047,7 @@ internal sealed partial class WebServer
                         Interlocked.Increment(ref _scannedFiles);
                         return f;
                     })
-                    .Select(f => new LibraryFile(
-                        Path.GetFileNameWithoutExtension(f),
-                        f,
-                        WebPathHelpers.EncodePath(f),
-                        Path.GetFileName(Path.GetDirectoryName(f)) ?? string.Empty,
-                        BuildSearchText(root, f)))
+                    .Select(f => BuildLibraryFile(root, f))
                     .ToArray();
 
                 _libraryIndex = files;
@@ -948,6 +1073,30 @@ internal sealed partial class WebServer
         var relative = Path.GetRelativePath(root, filePath);
         return relative.Replace(Path.DirectorySeparatorChar, ' ')
             .Replace(Path.AltDirectorySeparatorChar, ' ');
+    }
+
+    private static LibraryFile BuildLibraryFile(string root, string filePath)
+    {
+        long sizeBytes = 0;
+        DateTime lastWriteUtc = default;
+        try
+        {
+            var info = new FileInfo(filePath);
+            sizeBytes = info.Length;
+            lastWriteUtc = info.LastWriteTimeUtc;
+        }
+        catch
+        {
+        }
+
+        return new LibraryFile(
+            Path.GetFileNameWithoutExtension(filePath),
+            filePath,
+            WebPathHelpers.EncodePath(filePath),
+            Path.GetFileName(Path.GetDirectoryName(filePath)) ?? string.Empty,
+            BuildSearchText(root, filePath),
+            sizeBytes,
+            lastWriteUtc);
     }
 
     private static IEnumerable<string> EnumerateLibraryVideoFiles(string root, Action? onFolderScanned = null)
@@ -1003,7 +1152,7 @@ internal sealed partial class WebServer
         return crumbs.ToArray();
     }
 
-    private static object BuildCardFile(string name, string filePath, IReadOnlyDictionary<string, RecentPlaybackItem> resumeMap, string folder = "")
+    private static object BuildCardFile(string name, string filePath, IReadOnlyDictionary<string, RecentPlaybackItem> resumeMap, string folder = "", bool isFavorite = false)
     {
         resumeMap.TryGetValue(filePath, out var resume);
         return new
@@ -1012,6 +1161,7 @@ internal sealed partial class WebServer
             displayName = CleanDisplayTitle(name),
             path = WebPathHelpers.EncodePath(filePath),
             folder,
+            favorite = isFavorite,
             position = resume is null ? 0 : Math.Round(resume.PositionSeconds, 1),
             duration = resume is null ? 0 : Math.Round(resume.DurationSeconds, 1),
             progress = resume is null || resume.DurationSeconds <= 0 ? 0 : Math.Round(resume.PositionSeconds / resume.DurationSeconds, 3),

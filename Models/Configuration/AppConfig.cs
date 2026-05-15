@@ -25,6 +25,9 @@ internal sealed class AppConfig
     public PlaybackEndMode PlaybackEndBehavior { get; init; } = PlaybackEndMode.Stop;
     public int PlaybackHistoryLimit { get; init; } = 7;
     public int PreferredDisplayIndex { get; init; } = -1; // -1 = primary screen
+    public bool StartWithWindows { get; init; }
+    public bool UseTrayIcon { get; init; } = true;
+    public int LibraryRescanDelayMinutes { get; init; } = 10;
 
     private static readonly string ConfigFile =
         Path.Combine(AppContext.BaseDirectory, "remoteplay.json");

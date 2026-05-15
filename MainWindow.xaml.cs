@@ -1,8 +1,10 @@
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Animation;
@@ -27,6 +29,8 @@ public partial class MainWindow : Window
     private readonly MediaPlayer _mediaPlayer;
     private WebServer? _webServer;
     private PresenceBroadcaster? _broadcaster;
+    private System.Windows.Forms.NotifyIcon? _trayIcon;
+    private bool _isExiting;
     private readonly DispatcherTimer _bannerTimer;
     private readonly DispatcherTimer _overlayTimer;
     private readonly DispatcherTimer _historyTimer;
@@ -54,6 +58,7 @@ public partial class MainWindow : Window
     private TimeSpan _duration = TimeSpan.Zero;
     private bool _isApplyingMoviePreferences;
     private CancellationTokenSource? _videoTransitionCts;
+    private bool _serverReady;
     private readonly List<string> _playbackQueue = [];
     private string? _serverUrl;
     private static readonly LanguageOption[] LanguageOptions =
@@ -166,15 +171,7 @@ public partial class MainWindow : Window
             ApplyBrightnessOverlay();
 
             Loaded += OnLoaded;
-            Closing += (_, _) =>
-            {
-                SaveCurrentPlaybackPosition();
-                _webServer?.Stop();
-                _broadcaster?.Stop();
-                _broadcaster?.Dispose();
-                _mediaPlayer.Dispose();
-                _libVlc.Dispose();
-            };
+            Closing += OnClosing;
 
             Logger.Info("MainWindow constructor completed");
         }
@@ -191,6 +188,8 @@ public partial class MainWindow : Window
     {
         Logger.Clear();
         LogBox.Clear();
+        InitializeTrayIcon();
+        ApplyWindowsAutostart(_config.StartWithWindows);
 
         MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
 
@@ -215,6 +214,12 @@ public partial class MainWindow : Window
         }
         if (FindName("PlaybackHistoryLimitBox") is System.Windows.Controls.TextBox historyLimitBox)
             historyLimitBox.Text = _config.PlaybackHistoryLimit.ToString();
+        if (FindName("AutoRescanIntervalMinutesBox") is System.Windows.Controls.TextBox rescanIntervalBox)
+            rescanIntervalBox.Text = _config.LibraryRescanDelayMinutes.ToString();
+        if (FindName("StartWithWindowsBox") is System.Windows.Controls.CheckBox startWithWindowsBox)
+            startWithWindowsBox.IsChecked = _config.StartWithWindows;
+        if (FindName("UseTrayIconBox") is System.Windows.Controls.CheckBox useTrayIconBox)
+            useTrayIconBox.IsChecked = _config.UseTrayIcon;
         if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo)
         {
             displayCombo.Items.Clear();
@@ -236,6 +241,8 @@ public partial class MainWindow : Window
 
         AppendLog($"RemotePlay started");
         AppendLog($"Movies: {_config.ResolvedMoviesPath}");
+        UpdateServerReadiness(isReady: false, "Server: starting\u2026");
+        UpdateLibraryReadiness("Library: waiting for server\u2026", isReady: false, isBusy: true);
         ServerStatusText.Text = $"Server starting on {_config.Scheme}://*:{_config.Port}\u2026";
 
         // Animate the startup indicator dot
@@ -246,62 +253,85 @@ public partial class MainWindow : Window
         }
 
         // GetLocalIp() and all server startup work runs on a background thread to keep the UI responsive.
-        _ = Task.Run(() => InitializeServerAsync());
+        _ = StartServerPipelineAsync(_config, isRestart: false);
     }
 
-    private async Task InitializeServerAsync()
+    private async Task StartServerPipelineAsync(AppConfig config, bool isRestart)
     {
         try
         {
-            Logger.Info("Startup: resolving local IP");
-            await Dispatcher.InvokeAsync(() => AppendLog("Startup: resolving local IP…"));
+            var actionName = isRestart ? "Restart" : "Startup";
+            await Dispatcher.InvokeAsync(() =>
+            {
+                _serverReady = false;
+                UpdateServerReadiness(isReady: false, $"Server: {(isRestart ? "restarting" : "starting")}…");
+                UpdateLibraryReadiness("Library: waiting for server…", isReady: false, isBusy: true);
+            });
+            Logger.Info($"{actionName}: resolving local IP");
+            await Dispatcher.InvokeAsync(() => AppendLog($"{actionName}: resolving local IP…"));
             var ip = GetLocalIp();
-            Logger.Info($"Startup: local IP resolved as {ip}");
+            Logger.Info($"{actionName}: local IP resolved as {ip}");
+            await CheckPortConflictAsync(config.Port, actionName);
 
             // Fire-and-forget: firewall rule setup must not block the server startup path
             _ = Task.Run(() =>
             {
-                Logger.Info("Startup: checking firewall rule in background");
-                EnsureFirewallRule(_config.Port);
+                Logger.Info($"{actionName}: checking firewall rule in background");
+                EnsureFirewallRule(config.Port);
             });
 
-            Logger.Info("Startup: starting presence broadcaster");
-            await Dispatcher.InvokeAsync(() => AppendLog("Startup: starting discovery broadcaster…"));
+            Logger.Info($"{actionName}: starting presence broadcaster");
+            await Dispatcher.InvokeAsync(() => AppendLog($"{actionName}: starting discovery broadcaster…"));
+            _webServer?.Stop();
             _broadcaster?.Stop();
             _broadcaster?.Dispose();
-            _broadcaster = new PresenceBroadcaster(_config);
+            _broadcaster = new PresenceBroadcaster(config);
             _broadcaster.Start();
 
-            Logger.Info("Startup: creating web server");
-            await Dispatcher.InvokeAsync(() => AppendLog("Startup: creating web server…"));
-            _webServer = await RunStartupStepWithTimeoutAsync(() => CreateWebServer(_config), "creating web server", TimeSpan.FromSeconds(15));
-            Logger.Info("Startup: starting web listener");
-            await Dispatcher.InvokeAsync(() => AppendLog($"Startup: starting web listener on {_config.Scheme}://*:{_config.Port}…"));
+            Logger.Info($"{actionName}: creating web server");
+            await Dispatcher.InvokeAsync(() => AppendLog($"{actionName}: creating web server…"));
+            _webServer = await RunStartupStepWithTimeoutAsync(() => CreateWebServer(config), "creating web server", TimeSpan.FromSeconds(15));
+            Logger.Info($"{actionName}: starting web listener");
+            await Dispatcher.InvokeAsync(() => AppendLog($"{actionName}: starting web listener on {config.Scheme}://*:{config.Port}…"));
             await RunStartupStepWithTimeoutAsync(() => _webServer.Start(), "starting web listener", TimeSpan.FromSeconds(15));
-            Logger.Info("Startup: web listener started");
+            Logger.Info($"{actionName}: web listener started");
 
             await Dispatcher.InvokeAsync(() =>
             {
-                UpdateServerUrlDisplay(ip, _webServer.ActiveScheme, _config.Port, _webServer.StartupWarning);
-                ServerStatusText.Text = $"Server running on {_webServer.ActiveScheme}://*:{_config.Port}";
-                AppendLog($"Web server listening on {_webServer.ActiveScheme}://*:{_config.Port}");
+                _serverReady = true;
+                UpdateServerUrlDisplay(ip, _webServer.ActiveScheme, config.Port, _webServer.StartupWarning);
+                ServerStatusText.Text = $"Server running on {_webServer.ActiveScheme}://*:{config.Port}";
+                UpdateServerReadiness(isReady: true, $"Server: ready on {_webServer.ActiveScheme}://*:{config.Port}");
+                UpdateLibraryReadinessFromStatus();
+                AppendLog($"Web server listening on {_webServer.ActiveScheme}://*:{config.Port}");
                 if (!string.IsNullOrWhiteSpace(_webServer.StartupWarning))
                     ShowDiag(_webServer.StartupWarning);
-                DismissStartupOverlay(success: true);
-                _ = Task.Run(() => { Console.Beep(880, 120); Console.Beep(1108, 200); });
+                if (!isRestart)
+                {
+                    DismissStartupOverlay(success: true);
+                    _ = Task.Run(() => { Console.Beep(880, 120); Console.Beep(1108, 200); });
+                }
                 RefreshStatusStats();
                 _statsTimer.Start();
             });
+
+            _ = RunServerSelfTestAsync(ip, _webServer.ActiveScheme, config.Port);
         }
         catch (Exception ex)
         {
             Logger.Error("Failed to start web server", ex);
             await Dispatcher.InvokeAsync(() =>
             {
-                ServerStatusText.Text = $"Server failed on {_config.Scheme}://*:{_config.Port}";
+                _serverReady = false;
+                ServerStatusText.Text = $"Server failed on {config.Scheme}://*:{config.Port}";
+                UpdateServerReadiness(isReady: false, "Server: failed");
+                UpdateLibraryReadiness("Library: unavailable until server starts", isReady: false, isBusy: false);
                 AppendLog($"ERROR starting server: {ex.Message}");
                 ShowDiag($"Server failed: {ex.Message}");
-                DismissStartupOverlay(success: false);
+                if (!isRestart)
+                    DismissStartupOverlay(success: false);
+                else
+                    ShowSettingsFeedback($"Server restart failed: {ex.Message}", isError: true);
             });
         }
     }
@@ -324,6 +354,92 @@ public partial class MainWindow : Window
         StartupOverlay.BeginAnimation(OpacityProperty, fade);
     }
 
+    private void InitializeTrayIcon()
+    {
+        if (!_config.UseTrayIcon)
+        {
+            _trayIcon?.Dispose();
+            _trayIcon = null;
+            return;
+        }
+
+        if (_trayIcon is not null)
+            return;
+
+        _trayIcon = new System.Windows.Forms.NotifyIcon
+        {
+            Icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? System.Reflection.Assembly.GetExecutingAssembly().Location),
+            Text = "RemotePlay",
+            Visible = true,
+            ContextMenuStrip = new System.Windows.Forms.ContextMenuStrip()
+        };
+        _trayIcon.ContextMenuStrip.Items.Add("Open RemotePlay", null, (_, _) => Dispatcher.Invoke(ShowFromTray));
+        _trayIcon.ContextMenuStrip.Items.Add("Exit", null, (_, _) => Dispatcher.Invoke(ExitApplication));
+        _trayIcon.DoubleClick += (_, _) => Dispatcher.Invoke(ShowFromTray);
+    }
+
+    private void ShowFromTray()
+    {
+        Show();
+        ShowInTaskbar = true;
+        WindowState = WindowState.Normal;
+        Activate();
+    }
+
+    private void ExitApplication()
+    {
+        _isExiting = true;
+        Close();
+    }
+
+    private void OnClosing(object? sender, CancelEventArgs e)
+    {
+        if (!_isExiting && _config.UseTrayIcon)
+        {
+            e.Cancel = true;
+            Hide();
+            ShowInTaskbar = false;
+            _trayIcon?.ShowBalloonTip(1500, "RemotePlay", "RemotePlay is still running in the tray.", System.Windows.Forms.ToolTipIcon.Info);
+            return;
+        }
+
+        SaveCurrentPlaybackPosition();
+        _webServer?.Stop();
+        _broadcaster?.Stop();
+        _broadcaster?.Dispose();
+        _trayIcon?.Dispose();
+        _mediaPlayer.Dispose();
+        _libVlc.Dispose();
+    }
+
+    private static void ApplyWindowsAutostart(bool enabled)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
+            if (key is null)
+                return;
+
+            const string valueName = "RemotePlay";
+            if (enabled)
+            {
+                var executable = Environment.ProcessPath ?? System.Reflection.Assembly.GetExecutingAssembly().Location;
+                key.SetValue(valueName, $"\"{executable}\"");
+            }
+            else
+            {
+                key.DeleteValue(valueName, throwOnMissingValue: false);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Could not apply Windows autostart setting", ex);
+        }
+    }
+
     private static async Task RunStartupStepWithTimeoutAsync(Action action, string description, TimeSpan timeout)
     {
         var startupTask = Task.Run(action);
@@ -344,6 +460,68 @@ public partial class MainWindow : Window
         return await startupTask;
     }
 
+    private async Task CheckPortConflictAsync(int port, string actionName)
+    {
+        try
+        {
+            var listeners = System.Net.NetworkInformation.IPGlobalProperties
+                .GetIPGlobalProperties()
+                .GetActiveTcpListeners();
+            var isListening = listeners.Any(listener => listener.Port == port);
+            if (!isListening)
+                return;
+
+            var message = $"{actionName}: port {port} is already listening before RemotePlay starts. Startup may fail if another process owns it.";
+            Logger.Info(message);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                AppendLog(message);
+                ShowDiag($"Port {port} is already in use. If startup fails, choose another port in Settings.");
+            });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Port conflict check failed", ex);
+            await Dispatcher.InvokeAsync(() => AppendLog($"Port conflict check failed: {ex.Message}"));
+        }
+    }
+
+    private async Task RunServerSelfTestAsync(string ip, string activeScheme, int port)
+    {
+        try
+        {
+            await Dispatcher.InvokeAsync(() => AppendLog("Self-test: checking server endpoints…"));
+            var baseUrl = $"{activeScheme}://{ip}:{port}";
+            using var handler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+            };
+            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
+
+            await CheckEndpointAsync(client, baseUrl, "/health");
+            await CheckEndpointAsync(client, baseUrl, "/api/status");
+            await CheckEndpointAsync(client, baseUrl, "/api/library-status");
+
+            Logger.Info("Self-test: server endpoints OK");
+            await Dispatcher.InvokeAsync(() => AppendLog("Self-test: server endpoints OK"));
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Self-test failed", ex);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                AppendLog($"Self-test failed: {ex.Message}");
+                ShowDiag($"Server started, but self-test failed: {ex.Message}");
+            });
+        }
+    }
+
+    private static async Task CheckEndpointAsync(HttpClient client, string baseUrl, string path)
+    {
+        using var response = await client.GetAsync(baseUrl + path).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+    }
+
     private void RefreshStatusStats()
     {
         if (_webServer is null) return;
@@ -356,6 +534,62 @@ public partial class MainWindow : Window
 
         if (FindName("PeersStatText") is System.Windows.Controls.TextBlock peersText)
             peersText.Text = $"{peerCount} instance{(peerCount != 1 ? "s" : "")} online";
+
+        UpdateLibraryReadinessFromStatus();
+    }
+
+    private void OnRescanLibrary(object sender, RoutedEventArgs e)
+    {
+        if (_webServer is null)
+        {
+            AppendLog("Library rescan unavailable until the server starts.");
+            return;
+        }
+
+        _webServer.RequestLibraryRescan();
+        AppendLog("Library rescan requested.");
+        UpdateLibraryReadiness("Library: rescan requested…", isReady: false, isBusy: true);
+        RefreshStatusStats();
+    }
+
+    private void UpdateServerReadiness(bool isReady, string text)
+    {
+        ServerReadyText.Text = text;
+        ServerReadyDot.Background = new System.Windows.Media.SolidColorBrush(isReady
+            ? System.Windows.Media.Color.FromRgb(0x00, 0xD4, 0xAA)
+            : System.Windows.Media.Color.FromRgb(0xFF, 0xAA, 0x00));
+    }
+
+    private void UpdateLibraryReadinessFromStatus()
+    {
+        if (!_serverReady || _webServer is null)
+            return;
+
+        var status = _webServer.LibraryStatus;
+        if (status.IsScanning)
+        {
+            var scanned = status.ScannedFiles > 0 ? $" ({status.ScannedFiles} files checked)" : string.Empty;
+            UpdateLibraryReadiness($"Library: scanning in background{scanned}", isReady: false, isBusy: true);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.LastError))
+        {
+            UpdateLibraryReadiness($"Library: scan warning — {status.LastError}", isReady: false, isBusy: false);
+            return;
+        }
+
+        UpdateLibraryReadiness($"Library: ready ({status.IndexedFiles} videos indexed)", isReady: true, isBusy: false);
+    }
+
+    private void UpdateLibraryReadiness(string text, bool isReady, bool isBusy)
+    {
+        LibraryReadyText.Text = text;
+        LibraryReadyDot.Background = new System.Windows.Media.SolidColorBrush(isReady
+            ? System.Windows.Media.Color.FromRgb(0x00, 0xD4, 0xAA)
+            : isBusy
+                ? System.Windows.Media.Color.FromRgb(0xFF, 0xAA, 0x00)
+                : System.Windows.Media.Color.FromRgb(0xFF, 0x59, 0x59));
     }
 
     private void PopulateLanguageCombo(string comboName, string selectedCode)
@@ -797,7 +1031,7 @@ public partial class MainWindow : Window
         var tag = btn.Tag?.ToString() ?? "";
 
         // Hide all panels
-        foreach (var name in new[] { "PanelLibrary", "PanelServer", "PanelPlayback", "PanelTracks", "PanelDisplay" })
+        foreach (var name in new[] { "PanelLibrary", "PanelServer", "PanelPlayback", "PanelTracks", "PanelDisplay", "PanelStartup" })
             if (FindName(name) is System.Windows.UIElement el)
                 el.Visibility = Visibility.Collapsed;
 
@@ -806,7 +1040,7 @@ public partial class MainWindow : Window
             panel.Visibility = Visibility.Visible;
 
         // Update sidebar highlight
-        foreach (var name in new[] { "SettingsCatLibrary", "SettingsCatServer", "SettingsCatPlayback", "SettingsCatTracks", "SettingsCatDisplay" })
+        foreach (var name in new[] { "SettingsCatLibrary", "SettingsCatServer", "SettingsCatPlayback", "SettingsCatTracks", "SettingsCatDisplay", "SettingsCatStartup" })
         {
             if (FindName(name) is System.Windows.Controls.Button catBtn)
             {
@@ -916,11 +1150,28 @@ public partial class MainWindow : Window
             }
         }
 
+        var libraryRescanDelayMinutes = _config.LibraryRescanDelayMinutes;
+        if (FindName("AutoRescanIntervalMinutesBox") is System.Windows.Controls.TextBox rescanIntervalBox2)
+        {
+            if (!int.TryParse(rescanIntervalBox2.Text.Trim(), out libraryRescanDelayMinutes) || libraryRescanDelayMinutes < 0)
+            {
+                ShowSettingsFeedback("Auto-rescan interval must be a whole number of 0 or more minutes.", isError: true);
+                return;
+            }
+        }
+
         var preferredDisplayIndex = _config.PreferredDisplayIndex;
         if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo2
             && displayCombo2.SelectedItem is System.Windows.Controls.ComboBoxItem displayItem
             && displayItem.Tag is int displayTag)
             preferredDisplayIndex = displayTag;
+
+        var startWithWindows = FindName("StartWithWindowsBox") is System.Windows.Controls.CheckBox startWithWindowsBox2
+            ? startWithWindowsBox2.IsChecked == true
+            : _config.StartWithWindows;
+        var useTrayIcon = FindName("UseTrayIconBox") is System.Windows.Controls.CheckBox useTrayIconBox2
+            ? useTrayIconBox2.IsChecked == true
+            : _config.UseTrayIcon;
 
         var validation = _settingsValidationService.Validate(folder, portText);
         if (!validation.IsValid)
@@ -950,9 +1201,16 @@ public partial class MainWindow : Window
                 preferForced,
                 playbackEndBehavior,
                 playbackHistoryLimit,
-                preferredDisplayIndex);
+                libraryRescanDelayMinutes,
+                preferredDisplayIndex,
+                startWithWindows,
+                useTrayIcon);
 
             _config = _settingsApplyService.ApplyAndReload(updatedConfig);
+            ApplyWindowsAutostart(_config.StartWithWindows);
+            InitializeTrayIcon();
+            if (!_config.UseTrayIcon)
+                ShowInTaskbar = true;
             _playbackHistory.Trim(_config.PlaybackHistoryLimit);
 
             MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
@@ -960,47 +1218,30 @@ public partial class MainWindow : Window
             ShowSettingsFeedback("Saving\u2026 restarting server.", isError: false);
 
             var configSnapshot = _config;
-
-            // Restart the web server on a background thread to avoid freezing the UI.
-            _ = Task.Run(() =>
-            {
-                try
-                {
-                    var ip = GetLocalIp();
-                    _ = Task.Run(() => EnsureFirewallRule(configSnapshot.Port));
-
-                    _webServer?.Stop();
-                    _broadcaster?.Stop();
-                    _broadcaster?.Dispose();
-                    _broadcaster = new PresenceBroadcaster(configSnapshot);
-                    _broadcaster.Start();
-                    _webServer = CreateWebServer(configSnapshot);
-                    _webServer.Start();
-
-                    Dispatcher.InvokeAsync(() =>
-                    {
-                        UpdateServerUrlDisplay(ip, _webServer.ActiveScheme, configSnapshot.Port, _webServer.StartupWarning);
-                        ServerStatusText.Text = $"Server running on {_webServer.ActiveScheme}://*:{configSnapshot.Port}";
-                        AppendLog($"Settings applied \u2014 folder: {folder}, scheme: {_webServer.ActiveScheme}, port: {configSnapshot.Port}");
-                        Logger.Info($"Settings updated \u2014 MoviesPath: {folder}, Scheme: {_webServer.ActiveScheme}, Port: {configSnapshot.Port}");
-                        if (string.IsNullOrWhiteSpace(_webServer.StartupWarning))
-                            ShowSettingsFeedback("Settings saved and server restarted.", isError: false);
-                        else
-                            ShowSettingsFeedback("Settings saved, but HTTPS failed and HTTP fallback is active. See Status tab for details.", isError: true);
-                    });
-                }
-                catch (Exception bgEx)
-                {
-                    Logger.Error("Failed to restart server after settings apply", bgEx);
-                    Dispatcher.InvokeAsync(() => ShowSettingsFeedback($"Server restart failed: {bgEx.Message}", isError: true));
-                }
-            });
+            _ = RestartServerAfterSettingsApplyAsync(configSnapshot, folder);
         }
         catch (Exception ex)
         {
             Logger.Error("Failed to apply settings", ex);
             ShowSettingsFeedback($"Error: {ex.Message}", isError: true);
         }
+    }
+
+    private async Task RestartServerAfterSettingsApplyAsync(AppConfig configSnapshot, string folder)
+    {
+        await StartServerPipelineAsync(configSnapshot, isRestart: true);
+        await Dispatcher.InvokeAsync(() =>
+        {
+            if (_webServer is null)
+                return;
+
+            AppendLog($"Settings applied \u2014 folder: {folder}, scheme: {_webServer.ActiveScheme}, port: {configSnapshot.Port}");
+            Logger.Info($"Settings updated \u2014 MoviesPath: {folder}, Scheme: {_webServer.ActiveScheme}, Port: {configSnapshot.Port}");
+            if (string.IsNullOrWhiteSpace(_webServer.StartupWarning))
+                ShowSettingsFeedback("Settings saved and server restarted.", isError: false);
+            else
+                ShowSettingsFeedback("Settings saved, but HTTPS failed and HTTP fallback is active. See Status tab for details.", isError: true);
+        });
     }
 
     private void ShowSettingsFeedback(string message, bool isError)

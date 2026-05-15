@@ -21,7 +21,10 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         bool preferForcedSubtitles,
         PlaybackEndMode playbackEndBehavior,
         int playbackHistoryLimit,
-        int preferredDisplayIndex)
+        int libraryRescanDelayMinutes,
+        int preferredDisplayIndex,
+        bool startWithWindows,
+        bool useTrayIcon)
     {
         ArgumentNullException.ThrowIfNull(currentConfig);
         ArgumentException.ThrowIfNullOrWhiteSpace(moviesPath);
@@ -44,7 +47,10 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             PreferForcedSubtitles = preferForcedSubtitles,
             PlaybackEndBehavior = playbackEndBehavior,
             PlaybackHistoryLimit = playbackHistoryLimit,
-            PreferredDisplayIndex = preferredDisplayIndex
+            LibraryRescanDelayMinutes = libraryRescanDelayMinutes,
+            PreferredDisplayIndex = preferredDisplayIndex,
+            StartWithWindows = startWithWindows,
+            UseTrayIcon = useTrayIcon
         };
     }
 
@@ -76,7 +82,10 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             PreferForcedSubtitles = currentConfig.PreferForcedSubtitles,
             PlaybackEndBehavior = currentConfig.PlaybackEndBehavior,
             PlaybackHistoryLimit = currentConfig.PlaybackHistoryLimit,
-            PreferredDisplayIndex = currentConfig.PreferredDisplayIndex
+            LibraryRescanDelayMinutes = currentConfig.LibraryRescanDelayMinutes,
+            PreferredDisplayIndex = currentConfig.PreferredDisplayIndex,
+            StartWithWindows = currentConfig.StartWithWindows,
+            UseTrayIcon = currentConfig.UseTrayIcon
         };
     }
 }

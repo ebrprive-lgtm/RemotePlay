@@ -28,7 +28,10 @@ public sealed class AppConfigFactoryTests
             preferForcedSubtitles: true,
             playbackEndBehavior: PlaybackEndMode.PlayNext,
             playbackHistoryLimit: 9,
-            preferredDisplayIndex: 2);
+            libraryRescanDelayMinutes: 12,
+            preferredDisplayIndex: 2,
+            startWithWindows: true,
+            useTrayIcon: false);
 
         Assert.Equal(5000, config.Port);
         Assert.True(config.UseHttps);
@@ -44,7 +47,10 @@ public sealed class AppConfigFactoryTests
         Assert.True(config.PreferForcedSubtitles);
         Assert.Equal(PlaybackEndMode.PlayNext, config.PlaybackEndBehavior);
         Assert.Equal(9, config.PlaybackHistoryLimit);
+        Assert.Equal(12, config.LibraryRescanDelayMinutes);
         Assert.Equal(2, config.PreferredDisplayIndex);
+        Assert.True(config.StartWithWindows);
+        Assert.False(config.UseTrayIcon);
         Assert.Equal(0.5, config.Brightness);
         Assert.Equal("Living Room", config.InstanceName);
     }
@@ -65,7 +71,9 @@ public sealed class AppConfigFactoryTests
             PreferForcedSubtitles = false,
             PlaybackEndBehavior = PlaybackEndMode.ReturnToLibrary,
             PlaybackHistoryLimit = 11,
-            PreferredDisplayIndex = 1
+            PreferredDisplayIndex = 1,
+            StartWithWindows = true,
+            UseTrayIcon = false
         };
 
         var config = factory.CreateForPlaybackPreferences(
@@ -91,6 +99,8 @@ public sealed class AppConfigFactoryTests
         Assert.Equal(PlaybackEndMode.ReturnToLibrary, config.PlaybackEndBehavior);
         Assert.Equal(11, config.PlaybackHistoryLimit);
         Assert.Equal(1, config.PreferredDisplayIndex);
+        Assert.True(config.StartWithWindows);
+        Assert.False(config.UseTrayIcon);
         Assert.Equal(0.5, config.Brightness);
     }
 }

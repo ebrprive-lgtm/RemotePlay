@@ -13,11 +13,32 @@
         <title>RemotePlay</title>
         <style>
         *{box-sizing:border-box;margin:0;padding:0}
-        body{background:#111;color:#eee;font-family:'Segoe UI',sans-serif;min-height:100vh;display:flex;flex-direction:column}
+        body{--folder-bg:#1a1a2e;--folder-hover:#252540;--folder-text:#eee;--section-text:#777;background:#111;color:#eee;font-family:'Segoe UI',sans-serif;min-height:100vh;display:flex;flex-direction:column}
+        body.theme-amoled{--folder-bg:#050505;--folder-hover:#151515;--folder-text:#f2f2f2;--section-text:#aaa;background:#000;color:#f2f2f2}
+        body.theme-amoled header,body.theme-amoled #now-playing-bar{background:#050505!important;border-color:#252525!important}
+        body.theme-blue{--folder-bg:#0d213d;--folder-hover:#173861;--folder-text:#eef6ff;--section-text:#8fb9e8;background:#08111f;color:#eef6ff}
+        body.theme-blue header,body.theme-blue #now-playing-bar{background:#0d213d!important;border-color:#244d7d!important}
+        body.theme-sunset{--folder-bg:#4a2035;--folder-hover:#673047;--folder-text:#fff3e7;--section-text:#ffc08a;background:linear-gradient(135deg,#2b1028,#3a1d0d);color:#fff3e7}
+        body.theme-sunset header,body.theme-sunset #now-playing-bar{background:linear-gradient(135deg,#451b3d,#5a2b12)!important;border-color:#ff9f5a!important}
+        body.theme-neon{--folder-bg:#10122b;--folder-hover:#1b1e44;--folder-text:#f5f7ff;--section-text:#00f0ff;background:#050816;color:#f5f7ff}
+        body.theme-neon header,body.theme-neon #now-playing-bar{background:linear-gradient(135deg,#09111f,#18092b)!important;border-color:#00f0ff!important;box-shadow:0 0 22px rgba(0,240,255,.16)}
+        body.theme-forest{--folder-bg:#0d2416;--folder-hover:#173b25;--folder-text:#eafff2;--section-text:#91e9a7;background:#07130d;color:#eafff2}
+        body.theme-forest header,body.theme-forest #now-playing-bar{background:linear-gradient(135deg,#0d2416,#163420)!important;border-color:#4ad66d!important}
+        body.theme-lavender{--folder-bg:#fff;--folder-hover:#eee6ff;--folder-text:#241932;--section-text:#6f5c90;background:#f5f1ff;color:#241932}
+        body.theme-lavender header,body.theme-lavender #now-playing-bar{background:linear-gradient(135deg,#e7ddff,#f7e8ff)!important;border-color:#bba3ff!important;color:#241932!important}
+        body.theme-peach{--folder-bg:#fffaf6;--folder-hover:#ffe1d1;--folder-text:#352018;--section-text:#9a5f3f;background:#fff3ec;color:#352018}
+        body.theme-peach header,body.theme-peach #now-playing-bar{background:linear-gradient(135deg,#ffe1d1,#fff1c8)!important;border-color:#ffb38a!important;color:#352018!important}
+        body.theme-mint{--folder-bg:#fbfffd;--folder-hover:#d9fff0;--folder-text:#10261d;--section-text:#357d66;background:#effff8;color:#10261d}
+        body.theme-mint header,body.theme-mint #now-playing-bar{background:linear-gradient(135deg,#d9fff0,#eafff9)!important;border-color:#7ee7c2!important;color:#10261d!important}
+        body.theme-high-contrast{--folder-bg:#000;--folder-hover:#222;--folder-text:#fff;--section-text:#fff;background:#000;color:#fff}
+        body.theme-high-contrast header,body.theme-high-contrast #now-playing-bar{background:#000!important;border-color:#fff!important}
+        body.theme-high-contrast .btn{outline:1px solid #fff}
         header{background:#1a1a2e;padding:.55rem .75rem;display:grid;grid-template-columns:auto minmax(160px,1fr) minmax(360px,720px);gap:.7rem;align-items:start;position:sticky;top:0;z-index:10}
         #brand{display:flex;flex-direction:column;gap:.35rem;align-items:stretch}
         h1{font-size:1.05rem;color:#e94560;white-space:nowrap;line-height:1.9rem}
-        #brand-actions{display:flex;gap:.35rem;align-items:center}
+        #brand-actions{display:flex;flex-direction:column;gap:.35rem;align-items:flex-start}
+        #brand-row{display:flex;gap:.35rem;align-items:center}
+        #theme-select{background:#162033;border:1px solid #2e426a;color:#cfe0ff;border-radius:999px;padding:.32rem .45rem;font-size:.72rem;font-weight:700}
         #health-link{display:inline-flex;align-items:center;gap:.3rem;background:#162033;border:1px solid #2e426a;color:#cfe0ff;text-decoration:none;border-radius:999px;padding:.34rem .55rem;font-size:.75rem;font-weight:700}
         #health-link:hover{background:#203252}
         #diag-dot{width:.65rem;height:.65rem;border-radius:999px;background:#ffaa00;box-shadow:0 0 0 3px rgba(255,170,0,.18)}
@@ -36,7 +57,7 @@
         .btn-nav{background:#2b3f6b}.btn-nav:hover{background:#36528a}
         .btn-nav.queue-mode{background:#ffaa00;color:#1b1300}.btn-nav.queue-mode:hover{background:#ffc247}
         .btn-nav{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.28rem;line-height:1.05;min-height:46px;width:100%}
-        .transport-nav-group.queue-mode{grid-template-columns:1fr}
+        .transport-nav-group.queue-mode{display:grid;grid-template-columns:1fr}
         .transport-nav-group.queue-mode #previous-btn{display:none}
         .nav-main{font-size:.9rem;font-weight:800;text-transform:uppercase;letter-spacing:.02em}
         .nav-title{font-size:.58rem;font-weight:600;opacity:.78;width:100%;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-transform:none;letter-spacing:0}
@@ -65,6 +86,12 @@
         #progress::-moz-range-track{height:6px;background:#34344f;border-radius:999px}
         #progress::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:#e94560;border:2px solid #fff;box-shadow:0 0 0 6px rgba(233,69,96,.2)}
         #time-label{font-size:.9rem;color:#ddd;white-space:nowrap;min-width:112px;text-align:right;font-weight:600}
+        #resume-card{display:none;grid-template-columns:minmax(0,1fr) auto;gap:.7rem;align-items:center;background:#241927;border:1px solid #e94560;border-radius:12px;padding:.65rem .75rem;box-shadow:0 8px 22px rgba(233,69,96,.18)}
+        #resume-card.visible{display:grid}
+        #resume-title{font-size:.86rem;font-weight:800;color:#fff}
+        #resume-detail{font-size:.74rem;color:#ffd7df;margin-top:.1rem}
+        #resume-actions{display:flex;gap:.4rem;flex-wrap:wrap;justify-content:flex-end}
+        #resume-actions .btn{min-height:38px;font-weight:800}
         #speed-row{display:flex;gap:.35rem;flex-wrap:wrap;align-items:center;justify-content:center;padding:0 .35rem}
         .speed-chip{border:1px solid #3a3a57;background:#22263b;color:#cfd3e9;padding:.28rem .52rem;border-radius:999px;font-size:.74rem;font-weight:700;cursor:pointer;min-width:52px}
         .speed-chip.active{background:#e94560;border-color:#e94560;color:#fff}
@@ -190,6 +217,8 @@
           body.phone-remote-only.phone-playing.landscape-controls #media-controls{grid-template-columns:repeat(2,minmax(0,1fr));gap:.55rem}
           body.phone-remote-only.phone-playing.landscape-controls .transport-controls{grid-template-columns:repeat(3,minmax(0,1fr))}
           body.phone-remote-only .control-card{padding:.65rem;border-radius:12px;background:#18182c}
+          body.phone-remote-only #resume-card{grid-template-columns:1fr;gap:.55rem}
+          body.phone-remote-only #resume-actions{display:grid;grid-template-columns:1fr 1fr;justify-content:stretch}
           body.phone-remote-only .slider-wrap{gap:.55rem}
           body.phone-remote-only #volume,
           body.phone-remote-only #brightness,
@@ -219,14 +248,14 @@
         #diagnostics-content dt{color:#8f94ad;font-weight:700}
         #diagnostics-content dd{word-break:break-word}
         #diagnostics-panel .control-actions{margin-top:.9rem;justify-content:flex-end}
-        .section-label{color:#555;font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.5rem;margin-top:1rem}
+        .section-label{color:var(--section-text);font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.5rem;margin-top:1rem}
         .section-label:first-child{margin-top:0}
         .folder-list{display:flex;flex-direction:column;gap:.3rem;margin-bottom:.5rem}
                 .folder-list.search-folders{max-height:calc(5 * (2.4rem + .3rem));overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#333355 transparent}
-        .folder-row{display:flex;align-items:center;gap:.6rem;background:#1a1a2e;border-radius:6px;padding:.55rem .9rem;cursor:pointer;transition:background .15s}
-        .folder-row:hover{background:#252540}
+        .folder-row{display:flex;align-items:center;gap:.6rem;background:var(--folder-bg);color:var(--folder-text);border-radius:6px;padding:.55rem .9rem;cursor:pointer;transition:background .15s,color .15s}
+        .folder-row:hover{background:var(--folder-hover)}
         .folder-icon{font-size:1.1rem}
-        .folder-name{font-size:.9rem;word-break:break-word}
+        .folder-name{font-size:.9rem;word-break:break-word;color:var(--folder-text)}
         .movie-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.7rem}
         .continue-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.7rem;margin-bottom:.65rem}
         .continue-card{min-height:120px;border-color:#00d4aa}
@@ -239,6 +268,7 @@
         .movie-card.queued{border-color:#ffaa00}
         .movie-card.queued::before{background:linear-gradient(to bottom,rgba(255,170,0,.18) 0%,rgba(0,0,0,.78) 100%)}
         .movie-card.played{border-color:#2d8cff}
+        .movie-card.favorite{box-shadow:0 0 0 2px rgba(255,204,64,.22),0 5px 18px rgba(255,204,64,.16)}
         .movie-card.playing.played{border-color:#00d46a}
         .movie-card.playing.queued{border-color:#00d46a}
         .movie-card-inner{position:relative;z-index:1;display:flex;flex-direction:column;gap:.5rem;padding:.8rem;flex:1}
@@ -249,12 +279,15 @@
         .progress-overlay{position:absolute;left:0;right:0;bottom:0;height:7px;background:rgba(255,255,255,.13);z-index:2}
         .progress-fill{height:100%;background:linear-gradient(90deg,#00d4aa,#2d8cff);box-shadow:0 0 10px rgba(0,212,170,.45)}
         .progress-label{position:absolute;right:.45rem;top:.55rem;z-index:2;background:rgba(0,0,0,.68);color:#dffff8;border-radius:999px;padding:.18rem .45rem;font-size:.68rem;font-weight:800}
-        .card-actions{display:none;grid-template-columns:repeat(3,minmax(0,1fr));gap:.25rem;background:rgba(8,10,20,.72);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:.28rem;backdrop-filter:blur(4px)}
+        .card-actions{display:none;grid-template-columns:repeat(2,minmax(0,1fr));gap:.3rem;background:rgba(8,10,20,.76);border:1px solid rgba(255,255,255,.14);border-radius:9px;padding:.35rem;backdrop-filter:blur(5px);box-shadow:0 5px 16px rgba(0,0,0,.35)}
         @media (hover:hover) and (pointer:fine){.movie-card:not(.playing):hover .card-actions{display:grid}}
-        .card-actions button{background:rgba(20,20,34,.82);color:#fff;border:1px solid rgba(255,255,255,.18);padding:.38rem .25rem;border-radius:4px;cursor:pointer;font-size:.72rem;backdrop-filter:blur(2px)}
+        .card-actions button{background:rgba(20,20,34,.86);color:#fff;border:1px solid rgba(255,255,255,.18);padding:.42rem .35rem;border-radius:6px;cursor:pointer;font-size:.72rem;font-weight:700;line-height:1.05;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;backdrop-filter:blur(2px)}
         .card-actions button:hover{background:rgba(45,140,255,.85)}
+        .card-actions .primary-action{background:rgba(233,69,96,.9);border-color:rgba(233,69,96,.95)}
+        .card-actions .favorite-action{background:rgba(255,170,0,.92);border-color:rgba(255,170,0,.95);color:#1b1300}
+        .card-actions .muted-action{background:rgba(26,28,45,.88);color:#d9def8}
         @media (pointer:coarse){.movie-card:not(.playing).actions-open .card-actions{display:grid}}
-        .stop-btn{background:rgba(0,180,90,.9);color:#fff;border:none;padding:.5rem .35rem;border-radius:4px;cursor:pointer;font-size:.85rem;width:100%;backdrop-filter:blur(2px)}
+        .stop-btn{position:relative;z-index:3;align-self:stretch;background:rgba(0,180,90,.95);color:#fff;border:none;padding:.5rem .35rem;border-radius:6px;cursor:pointer;font-size:.85rem;font-weight:800;width:100%;backdrop-filter:blur(2px);box-shadow:0 3px 12px rgba(0,0,0,.35)}
         .stop-btn:hover{background:#00d46a}
         #empty{text-align:center;padding:3rem;color:#555}
         #peers-wrap{position:relative;display:inline-block}
@@ -284,7 +317,7 @@
         <header>
           <div id="brand">
             <h1>&#127916; RemotePlay</h1>
-            <div id="brand-actions"><a id="health-link" href="/health" target="_blank" rel="noopener"><span id="diag-dot"></span>Health</a><div id="peers-wrap"><button id="peers-btn" onclick="togglePeers()" aria-expanded="false" aria-haspopup="true"><span id="peers-dot"></span>Instances</button><div id="peers-dropdown" role="menu"></div></div></div>
+            <div id="brand-actions"><div id="brand-row"><a id="health-link" href="/health" target="_blank" rel="noopener"><span id="diag-dot"></span>Health</a><div id="peers-wrap"><button id="peers-btn" onclick="togglePeers()" aria-expanded="false" aria-haspopup="true"><span id="peers-dot"></span>Instances</button><div id="peers-dropdown" role="menu"></div></div></div><select id="theme-select" onchange="setTheme(this.value)" aria-label="Theme"><option value="default">Dark</option><option value="amoled">AMOLED</option><option value="blue">Blue</option><option value="sunset">Sunset Pop</option><option value="neon">Neon Arcade</option><option value="forest">Forest</option><option value="lavender">Pastel Lavender</option><option value="peach">Pastel Peach</option><option value="mint">Pastel Mint</option><option value="high-contrast">High contrast</option></select></div>
             <button id="back-button" class="crumb-back" onclick="goBack()" style="display:none">&#8592; Back</button>
           </div>
           <div id="search-wrap">
@@ -297,7 +330,7 @@
             <div id="count-line"></div>
             <div id="scan-status"></div>
           </div>
-          <div id="now-playing-bar">
+          <div id="now-playing-bar" ontouchstart="onPlayerGestureStart(event)" ontouchend="onPlayerGestureEnd(event)">
             <div class="player-top">
               <div id="player-summary"><div id="player-poster"></div><div><div id="player-title">Nothing playing</div><div id="player-meta"></div><div id="connection-status">Connecting...</div><button class="diag-button" onclick="openDiagnostics()">Diagnostics</button></div></div>
               <div class="transport-controls">
@@ -322,6 +355,10 @@
             <div id="progress-row">
               <input id="progress" type="range" min="0" max="0" value="0" step="0.1" oninput="onSeekDrag()" onchange="onSeekCommit()"/>
               <span id="time-label">0:00 / 0:00</span>
+            </div>
+            <div id="resume-card" aria-live="polite">
+              <div><div id="resume-title">Resume playback?</div><div id="resume-detail"></div></div>
+              <div id="resume-actions"><button class="btn btn-red" onclick="resumeFromSavedPosition()">Resume</button><button class="btn btn-dim" onclick="startFromBeginning()">Start over</button></div>
             </div>
             <div id="media-controls">
               <div class="control-card">
@@ -371,10 +408,22 @@
         let pendingSearchAbort=null;
         const queuedVideos=new Set();
         const playedVideos=new Set(loadPlayedVideos());
+        const favoriteVideos=new Set();
         const installHint=document.getElementById('install-hint');
         const phoneLayoutQuery=window.matchMedia('(max-width:760px) and (pointer:coarse)');
         let isPhoneRemoteOnly=phoneLayoutQuery.matches;
+        let gestureStart=null;
+        applySavedTheme();
         if(!localStorage.getItem('remotePlayInstallHintDismissed')&&window.matchMedia('(display-mode: browser)').matches)installHint.style.display='flex';
+
+        function applySavedTheme(){setTheme(localStorage.getItem('remotePlayTheme')||'default',false);}
+        function setTheme(theme,save=true){
+          document.body.classList.remove('theme-amoled','theme-blue','theme-sunset','theme-neon','theme-forest','theme-lavender','theme-peach','theme-mint','theme-high-contrast');
+          if(theme&&theme!=='default')document.body.classList.add('theme-'+theme);
+          const selector=document.getElementById('theme-select');
+          if(selector)selector.value=theme||'default';
+          if(save)localStorage.setItem('remotePlayTheme',theme||'default');
+        }
 
         function applyPhonePlaybackState(isPlaying){
           if(!isPhoneRemoteOnly)return;
@@ -409,6 +458,35 @@
           if(!('vibrate' in navigator))return;
           try{navigator.vibrate(ms);}catch{}
         }
+        function onPlayerGestureStart(event){
+          if(!isPhoneRemoteOnly||!playingPath)return;
+          if(event.touches&&event.touches.length!==1)return;
+          const target=event.target;
+          if(target&&target.closest('button,input,select,label,a'))return;
+          const p=event.changedTouches?event.changedTouches[0]:event;
+          gestureStart={x:p.clientX,y:p.clientY,t:Date.now()};
+        }
+        function onPlayerGestureEnd(event){
+          if(!gestureStart||!isPhoneRemoteOnly||!playingPath)return;
+          const p=event.changedTouches?event.changedTouches[0]:event;
+          const dx=p.clientX-gestureStart.x;
+          const dy=p.clientY-gestureStart.y;
+          const dt=Date.now()-gestureStart.t;
+          gestureStart=null;
+          if(dt>900)return;
+          if(Math.abs(dx)<35&&Math.abs(dy)<35)return;
+          if(Math.abs(dx)>Math.abs(dy)){quickSkip(dx>0?10:-10);return;}
+          adjustVolumeBy(dy<0?0.05:-0.05);
+        }
+        function adjustVolumeBy(delta){
+          const slider=document.getElementById('volume');
+          if(!slider)return;
+          const current=Math.max(0,Math.min(1,Number(slider.value)||0));
+          const next=Math.max(0,Math.min(1,current+delta));
+          slider.value=next.toFixed(2);
+          setVolume(slider.value);
+          haptic(8);
+        }
         function startPolling(){if(pollInterval)return;pollInterval=setInterval(pollStatus,1000);}
         function stopPolling(){clearInterval(pollInterval);pollInterval=null;}
 
@@ -425,11 +503,17 @@
             const hasQueue=Array.isArray(s.queue)&&s.queue.length>0;
             lastQueue=hasQueue?s.queue:[];
             updateStopBtn(s.isPlaying,hasQueue);
+            updateAdjacentButtons(s);
             if(s.isPlaying||hasQueue){
               bar.style.display='flex';
             }
             if(s.isPlaying){
               if(s.filePath&&s.filePath!==playingPath)setPlayerPoster(s.filePath);
+              if(s.filePath){
+                const oldPath=playingPath&&playingPath!==s.filePath?playingPath:null;
+                playingPath=s.filePath;
+                updatePlayingCard(s.filePath,oldPath);
+              }
               const pb=document.getElementById('pause-btn');
               pb.textContent=s.isPaused?'\u25B6 Resume':'\u23F8 Pause';
               document.getElementById('player-title').textContent=(s.title||'Now playing').replace(/^\s*[▶⏸]\s*/,'');
@@ -459,6 +543,7 @@
               }
               const err=document.getElementById('error');
               if(s.lastError){err.style.display='block';err.textContent='Playback error: '+s.lastError;}else{err.style.display='none';err.textContent='';}
+              updateResumePrompt(s);
               const progress=document.getElementById('progress');
               if(s.duration>0){
                 progress.max=s.duration;
@@ -468,18 +553,19 @@
               currentPlaybackSpeed=Math.max(0.5,Math.min(2,Number(s.playbackSpeed)||1));
               syncSpeedChips(currentPlaybackSpeed);
               updateTrackControls(s);
-              updateAdjacentButtons(s);
               document.getElementById('player-meta').textContent=buildPlayerMeta(s,volume,boostAmount);
               requestWakeLock();
               if(isPhoneRemoteOnly)applyPhonePlaybackState(true);
               else applyDesktopDockedLayout(true);
             }else if(isPhoneRemoteOnly){
               releaseWakeLock();
+              updateResumePrompt(null);
               document.getElementById('player-title').textContent=hasQueue?'Queue ready':'Nothing playing';
               document.getElementById('player-meta').textContent=hasQueue?'Next up: '+s.queue.length+' queued video(s)':'';
               applyPhonePlaybackState(false);
             }else{
               releaseWakeLock();
+              updateResumePrompt(null);
               document.getElementById('player-title').textContent=hasQueue?'Queue ready':'Nothing playing';
               document.getElementById('player-meta').textContent=hasQueue?'Next up: '+s.queue.length+' queued video(s)':'';
               if(hasQueue){
@@ -569,6 +655,40 @@
         function fmt(sec){
           const m=Math.floor(sec/60),s=Math.floor(sec%60);
           return m+':'+(s<10?'0':'')+s;
+        }
+
+        function updateResumePrompt(status){
+          const card=document.getElementById('resume-card');
+          if(!card)return;
+          const position=Number(status?.resumePosition)||0;
+          const path=status?.filePath||'';
+          const visible=Boolean(status?.isPlaying&&status?.canResume&&position>5&&path);
+          card.classList.toggle('visible',visible);
+          if(!visible){resumePromptPath=null;resumePromptPosition=0;return;}
+          resumePromptPath=path;
+          resumePromptPosition=position;
+          document.getElementById('resume-detail').textContent='Continue from '+fmt(position)+' or start this video from the beginning.';
+        }
+
+        async function resumeFromSavedPosition(){
+          if(!resumePromptPath||resumePromptPosition<=0)return;
+          haptic(12);
+          await api('/api/seek?pos='+resumePromptPosition.toFixed(1));
+          updateResumePrompt(null);
+          setStatus('Resumed from '+fmt(resumePromptPosition)+'.');
+          await pollStatus();
+        }
+
+        async function startFromBeginning(){
+          if(!resumePromptPath)return;
+          const path=resumePromptPath;
+          haptic(8);
+          await api('/api/history/clear?path='+encodeURIComponent(path));
+          await api('/api/seek?pos=0');
+          unmarkPlayed(path);
+          updateResumePrompt(null);
+          setStatus('Starting from beginning.');
+          await pollStatus();
         }
 
         async function onSeekDrag(){seekDragging=true;}
@@ -717,16 +837,19 @@
           previous.classList.toggle('queue-mode',hasQueue);
           next.classList.toggle('queue-mode',hasQueue);
           previous.querySelector('.nav-main').textContent='PREV';
-          next.querySelector('.nav-main').textContent=hasQueue?'NEXT QUEUE':'NEXT';
+          next.querySelector('.nav-main').textContent=hasQueue?'PLAY NEXT QUEUED':'NEXT';
           if(hasQueue){
             previous.querySelector('.nav-title').textContent='';
             next.querySelector('.nav-title').textContent=shortTitle(queue[0].title||'Queued video');
             previous.title='Previous video unavailable while queue is active';
             next.title='Play next queued: '+(queue[0].title||'Queued video');
+            next.onclick=playQueueStart;
             previous.disabled=true;
             next.disabled=false;
             return;
           }
+          next.onclick=()=>playAdjacent('next');
+          previous.onclick=()=>playAdjacent('previous');
           const previousTitle=(s.previousTitle||'').trim();
           const nextTitle=(s.nextTitle||'').trim();
           previous.querySelector('.nav-title').textContent=previousTitle?shortTitle(previousTitle):'';
@@ -753,12 +876,20 @@
             return '<div class="queue-item" title="'+esc(title)+'"><div class="queue-thumb" style="background-image:url('+thumb+')"></div><div class="queue-title">'+(index+1)+'. '+esc(title)+'</div><div class="queue-actions"><button onclick="moveQueueItem(\''+path+'\',\'up\')" '+(index===0?'disabled':'')+'>↑</button><button onclick="moveQueueItem(\''+path+'\',\'down\')" '+(index===queue.length-1?'disabled':'')+'>↓</button><button onclick="removeQueueItem(\''+path+'\')">✕</button></div></div>';
           }).join('');
         }
+        function cardIdFor(p){return 'card-'+String(p).replace(/=/g,'_');}
+        function continueCardIdFor(p){return 'continue-card-'+String(p).replace(/=/g,'_');}
+        function getMovieCards(p){
+          return [
+            document.getElementById(cardIdFor(p)),
+            document.getElementById(continueCardIdFor(p)),
+            ...Array.from(document.querySelectorAll('[data-path="'+cssEscape(p)+'"]'))
+          ].filter((card,index,self)=>card&&self.indexOf(card)===index);
+        }
         function syncQueuedCards(){
           document.querySelectorAll('.movie-card.queued').forEach(card=>{
             const path=card.dataset.path||card.id.substring(card.id.indexOf('-')+1);
             if(!queuedVideos.has(path)){
-              card.classList.remove('queued');
-              card.querySelector('.queued-badge')?.remove();
+              setQueuedCard(path,false);
             }
           });
           for(const path of queuedVideos){
@@ -766,23 +897,27 @@
           }
         }
         function setQueuedCard(p,isQueued){
-          const cards=[document.getElementById('card-'+p),document.getElementById('recent-card-'+p),document.getElementById('continue-card-'+p)].filter(Boolean);
+          const cards=getMovieCards(p);
           for(const card of cards){
             card.dataset.path=p;
             card.classList.toggle('queued',isQueued);
-            let badge=card.querySelector('.queued-badge');
+            let badge=card.querySelector('.queue-badge');
             if(isQueued&&!badge){
               badge=document.createElement('div');
-              badge.className='queued-badge';
+              badge.className='queue-badge queued-badge';
               badge.textContent='Queued';
               card.querySelector('.movie-title')?.insertAdjacentElement('afterend',badge);
             }else if(!isQueued&&badge){
               badge.remove();
             }
 
-            const buttons=card.querySelectorAll('.card-actions button');
-            if(buttons.length>=2)buttons[1].textContent=isQueued?'Unqueue':'Queue';
+            const queueButton=findQueueButton(card);
+            if(queueButton)queueButton.textContent=isQueued?'Unqueue':'Queue';
           }
+        }
+        function findQueueButton(card){
+          return Array.from(card.querySelectorAll('.card-actions button'))
+            .find(btn=>String(btn.getAttribute('onclick')||'').includes('queueCardAction'));
         }
         function shortTitle(value){return value.length>80?value.slice(0,77)+'...':value;}
         function buildPlayerMeta(s,volume,boostAmount){
@@ -835,6 +970,17 @@
             return Array.isArray(data.files)?data.files:[];
           }catch(e){return [];}
         }
+        async function loadFavorites(){
+          try{
+            const res=await fetch('/api/favorites');
+            if(!res.ok)return [];
+            const data=await res.json();
+            const files=Array.isArray(data.files)?data.files:[];
+            favoriteVideos.clear();
+            files.forEach(f=>favoriteVideos.add(f.path));
+            return files;
+          }catch(e){return [];}
+        }
         async function browse(d){
           setStatus('Loading...');currentDir=d;document.getElementById('search').value='';
           clearPendingThumbnails();
@@ -843,7 +989,10 @@
             const res=await fetch(url);
             if(!res.ok){setStatus('Server error '+res.status);return;}
             currentData=await res.json();render(currentData);
-            if(currentData.isRoot)renderRecent(await loadRecent());
+            if(currentData.isRoot){
+              renderFavorites(await loadFavorites());
+              renderRecent(await loadRecent());
+            }
             resetCardsScrollTop();
           }catch(e){setStatus('Error: '+e);}
         }
@@ -929,20 +1078,24 @@
               const thumbUrl='/api/thumb?path='+encodeURIComponent(f.path);
               const bg='style="background-image:url('+thumbUrl+')"';
               const queued=queuedVideos.has(f.path);
-              const cardClass='movie-card '+(f.path===playingPath?'playing ':'')+(queued?'queued ':'')+(played?'played':'');
+              if(f.favorite)favoriteVideos.add(f.path);
+              const favorite=favoriteVideos.has(f.path)||Boolean(f.favorite);
+              const cardClass='movie-card '+(f.path===playingPath?'playing ':'')+(queued?'queued ':'')+(played?'played ':'')+(favorite?'favorite':'');
               const isPlaying=f.path===playingPath;
               const action=isPlaying?'':' onclick="onCardClick(event,\''+f.path+'\')"';
               const stopButton=isPlaying?'<button class="stop-btn" onclick="stopPlayingCard(event,\''+f.path+'\')">&#9632; STOP</button>':'';
-              const cardActions=isPlaying?'':'<div class="card-actions"><button onclick="playCardAction(event,\''+f.path+'\',\''+esc(f.name)+'\')">Play</button><button onclick="queueCardAction(event,\''+f.path+'\')">'+(queued?'Unqueue':'Queue')+'</button><button onclick="toggleWatchedCard(event,\''+f.path+'\')">'+(played?'Unwatch':'Watched')+'</button></div>';
+              const cardActions=isPlaying?'':'<div class="card-actions"><button class="primary-action" onclick="playCardAction(event,\''+f.path+'\',\''+esc(f.name)+'\')">Play</button><button class="muted-action" onclick="queueCardAction(event,\''+f.path+'\')">'+(queued?'Unqueue':'Queue')+'</button><button class="favorite-action" onclick="toggleFavoriteCard(event,\''+f.path+'\')">'+(favorite?'Unfavorite':'Favorite')+'</button><button class="muted-action" onclick="toggleWatchedCard(event,\''+f.path+'\')">'+(played?'Unwatch':'Watched')+'</button></div>';
               const displayName=f.displayName||f.name;
               const progress=Number(f.progress)||0;
               const progressPct=Math.max(0,Math.min(99,Math.round(progress*100)));
               const progressOverlay=progressPct>0?'<div class="progress-label">'+progressPct+'%</div><div class="progress-overlay"><div class="progress-fill" style="width:'+progressPct+'%"></div></div>':'';
-              const queuedBadge=queued?'<div class="queued-badge">Queued</div>':'';
-              return '<div class="'+cardClass+'" id="card-'+f.path+'" data-path="'+esc(f.path)+'" '+bg+action+' onpointerdown="beginCardHold(event,\''+f.path+'\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">'+
+              const queuedBadge=queued?'<div class="queue-badge queued-badge">Queued</div>':'';
+              const favoriteBadge=favorite?'<div class="favorite-badge queued-badge">Favorite</div>':'';
+              return '<div class="'+cardClass+'" id="'+cardIdFor(f.path)+'" data-path="'+esc(f.path)+'" '+bg+action+' onpointerdown="beginCardHold(event,\''+f.path+'\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">'+
                 '<div class="movie-card-inner">'+
                 '<div class="movie-title">'+esc(displayName)+'</div>'+
                 queuedBadge+
+                favoriteBadge+
                 stopButton+
                 cardActions+
                 progressOverlay+
@@ -962,17 +1115,26 @@
             '<div class="continue-grid recent-grid" style="display:none;">'+continueFiles.map(f=>renderProgressCard(f,true)).join('')+'</div>';
           browser.innerHTML=html+browser.innerHTML;
         }
-        function renderProgressCard(f,isContinue){
+        function renderFavorites(files){
+          if(!files.length)return;
+          const browser=document.getElementById('browser');
+          const html='<div class="section-label favorites-label">Favorites</div><div class="continue-grid recent-grid favorites-grid">'+files.slice(0,8).map(f=>renderProgressCard(f,false,true)).join('')+'</div>';
+          browser.innerHTML=html+browser.innerHTML;
+        }
+        function renderProgressCard(f,isContinue,isFavoriteSection=false){
           const thumbUrl='/api/thumb?path='+encodeURIComponent(f.path);
           const bg='style="background-image:url('+thumbUrl+')"';
           const pct=Math.max(0,Math.min(99,Math.round((Number(f.progress)||0)*100)));
           const displayName=f.displayName||f.name;
           const queued=queuedVideos.has(f.path);
-          return '<div class="movie-card '+(isContinue?'continue-card ':'')+(queued?'queued ':'')+'played" id="continue-card-'+f.path+'" data-path="'+esc(f.path)+'" '+bg+' onclick="onCardClick(event,\''+f.path+'\')" onpointerdown="beginCardHold(event,\''+f.path+'\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">'+
+          const favorite=favoriteVideos.has(f.path)||Boolean(f.favorite);
+          if(favorite)favoriteVideos.add(f.path);
+          return '<div class="movie-card '+(isContinue?'continue-card ':'')+(isFavoriteSection?'favorite-section-card ':'')+(queued?'queued ':'')+(favorite?'favorite ':'')+'played" id="'+continueCardIdFor(f.path)+'" data-path="'+esc(f.path)+'" '+bg+' onclick="onCardClick(event,\''+f.path+'\')" onpointerdown="beginCardHold(event,\''+f.path+'\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">'+
             '<div class="movie-card-inner"><div class="movie-title">'+esc(displayName)+'</div>'+
-            (queued?'<div class="queued-badge">Queued</div>':'')+
+            (queued?'<div class="queue-badge queued-badge">Queued</div>':'')+
+            (favorite?'<div class="favorite-badge queued-badge">Favorite</div>':'')+
             '<div class="movie-meta">'+pct+'% • '+esc(f.folder||'')+'</div>'+
-            '<div class="card-actions"><button onclick="playCardAction(event,\''+f.path+'\',\''+esc(displayName)+'\')">Play</button><button onclick="queueCardAction(event,\''+f.path+'\')">'+(queued?'Unqueue':'Queue')+'</button><button onclick="toggleWatchedCard(event,\''+f.path+'\')">Unwatch</button></div><div class="progress-label">'+pct+'%</div><div class="progress-overlay"><div class="progress-fill" style="width:'+pct+'%"></div></div></div></div>';
+            '<div class="card-actions"><button class="primary-action" onclick="playCardAction(event,\''+f.path+'\',\''+esc(displayName)+'\')">Play</button><button class="muted-action" onclick="queueCardAction(event,\''+f.path+'\')">'+(queued?'Unqueue':'Queue')+'</button><button class="favorite-action" onclick="toggleFavoriteCard(event,\''+f.path+'\')">'+(favorite?'Unfavorite':'Favorite')+'</button><button class="muted-action" onclick="toggleWatchedCard(event,\''+f.path+'\')">Unwatch</button></div><div class="progress-label">'+pct+'%</div><div class="progress-overlay"><div class="progress-fill" style="width:'+pct+'%"></div></div></div></div>';
         }
         function toggleRecentSection(label){
           const grid=label.nextElementSibling;
@@ -1003,8 +1165,14 @@
           setPlayerPoster(p);
           markPlayed(p);
           updatePlayingCard(p);
+          if(queuedVideos.has(p)){
+            await api('/api/queue/remove?path='+encodeURIComponent(p));
+            queuedVideos.delete(p);
+            setQueuedCard(p,false);
+          }
           await api('/api/play?path='+encodeURIComponent(p));
           startPolling();
+          await pollStatus();
         }
         function setPlayerPoster(p){
           const bar=document.getElementById('now-playing-bar');
@@ -1059,6 +1227,43 @@
           updateQueueControls({queue:[]});
           setStatus('Queue cleared.');
         }
+        async function toggleFavoriteCard(event,p){
+          event.stopPropagation();
+          const favorite=!favoriteVideos.has(p);
+          await api('/api/favorite?path='+encodeURIComponent(p)+'&value='+favorite);
+          setFavoriteCard(p,favorite);
+          setStatus(favorite?'Added to favorites.':'Removed from favorites.');
+        }
+        function setFavoriteCard(p,favorite){
+          if(favorite)favoriteVideos.add(p);else favoriteVideos.delete(p);
+          document.querySelectorAll('[data-path="'+cssEscape(p)+'"]').forEach(card=>{
+            card.classList.toggle('favorite',favorite);
+            const inner=card.querySelector('.movie-card-inner');
+            const existingBadge=card.querySelector('.favorite-badge');
+            if(favorite&&!existingBadge&&inner){
+              const badge=document.createElement('div');
+              badge.className='favorite-badge queued-badge';
+              badge.textContent='Favorite';
+              const stopButton=inner.querySelector('.stop-btn');
+              inner.insertBefore(badge,stopButton||inner.querySelector('.card-actions'));
+            }else if(!favorite&&existingBadge){
+              existingBadge.remove();
+            }
+            card.querySelectorAll('.card-actions button').forEach(btn=>{
+              const text=btn.textContent.trim();
+              if(text==='Favorite'||text==='Unfavorite')btn.textContent=favorite?'Unfavorite':'Favorite';
+            });
+            if(!favorite&&card.classList.contains('favorite-section-card')){
+              const grid=card.closest('.favorites-grid');
+              const label=grid?.previousElementSibling;
+              card.remove();
+              if(grid&&!grid.querySelector('.favorite-section-card')){
+                grid.remove();
+                if(label?.classList.contains('favorites-label'))label.remove();
+              }
+            }
+          });
+        }
         async function toggleWatchedCard(event,p){
           event.stopPropagation();
           const target=event.currentTarget;
@@ -1079,21 +1284,18 @@
         function updateStopBtn(isPlaying,hasQueue){
           const btn=document.getElementById('stop-btn');
           if(!btn)return;
-          if(!isPlaying&&hasQueue){
-            btn.className='btn btn-nav queue-mode';
-            btn.innerHTML='&#9654; PLAY QUEUE';
-            btn.onclick=playQueueStart;
-          }else{
-            btn.className='btn btn-stop';
-            btn.innerHTML='&#9632; STOP';
-            btn.onclick=stop;
-          }
+          btn.className='btn btn-stop';
+          btn.innerHTML='&#9632; STOP';
+          btn.onclick=stop;
+          btn.disabled=!isPlaying;
         }
         async function playQueueStart(){
           if(!lastQueue.length)return;
           const first=lastQueue[0];
-          await api('/api/play?path='+encodeURIComponent(first.path));
-          await api('/api/queue/remove?path='+encodeURIComponent(first.path));
+          setStatus('Playing next queued: '+(first.title||'Queued video'));
+          startPolling();
+          await api('/api/adjacent?direction=next');
+          await pollStatus();
         }
         async function stop(){
           const stoppedPath=playingPath;
@@ -1120,19 +1322,18 @@
         }
         function markPlayed(p){
           playedVideos.add(p);savePlayedVideos();
-          const card=document.getElementById('card-'+p);
-          if(card){
+          for(const card of getMovieCards(p)){
             card.classList.add('played');
-            const buttons=card.querySelectorAll('.card-actions button');
-            if(buttons.length>=3)buttons[2].textContent='Unwatch';
+            const watchedButton=findWatchedButton(card);
+            if(watchedButton)watchedButton.textContent='Unwatch';
           }
         }
         function unmarkPlayed(p){
           playedVideos.delete(p);savePlayedVideos();
-          for(const card of [document.getElementById('card-'+p),document.getElementById('continue-card-'+p)].filter(Boolean)){
+          for(const card of getMovieCards(p)){
             card.classList.remove('played');
-            const buttons=card.querySelectorAll('.card-actions button');
-            if(buttons.length>=3)buttons[2].textContent='Watched';
+            const watchedButton=findWatchedButton(card);
+            if(watchedButton)watchedButton.textContent='Watched';
             if(card.id.startsWith('continue-card-')){
               const grid=card.closest('.continue-grid');
               const label=grid?.previousElementSibling;
@@ -1144,33 +1345,39 @@
             }
           }
         }
+        function findWatchedButton(card){
+          return Array.from(card.querySelectorAll('.card-actions button'))
+            .find(btn=>String(btn.getAttribute('onclick')||'').includes('toggleWatchedCard'));
+        }
         function updatePlayingCard(newPath,oldPath){
           const paths=[oldPath,playingPath,newPath].filter(Boolean);
-          document.querySelectorAll('.movie-card.playing').forEach(c=>paths.push(c.id.substring(5)));
+          document.querySelectorAll('.movie-card.playing').forEach(c=>{if(c.dataset.path)paths.push(c.dataset.path);});
           for(const p of new Set(paths)){
-            const card=document.getElementById('card-'+p);if(!card)continue;
-            const isActive=p===newPath;
-            card.classList.toggle('playing',isActive);
-            card.classList.remove('actions-open');
-            card.classList.toggle('played',!isActive&&playedVideos.has(p));
-            card.onclick=isActive?null:event=>onCardClick(event,p);
-            const actions=card.querySelector('.card-actions');
-            if(actions)actions.style.display=isActive?'none':'';
-            const existing=card.querySelector('.stop-btn');
-            if(isActive&&!existing){
-              const btn=document.createElement('button');
-              btn.className='stop-btn';
-              btn.innerHTML='&#9632; STOP';
-              btn.onclick=e=>stopPlayingCard(e,p);
-              card.querySelector('.movie-card-inner')?.appendChild(btn);
-            }else if(!isActive&&existing){
-              existing.remove();
+            for(const card of getMovieCards(p)){
+              const isActive=p===newPath;
+              card.classList.toggle('playing',isActive);
+              card.classList.remove('actions-open');
+              card.classList.toggle('played',!isActive&&playedVideos.has(p));
+              card.onclick=isActive?null:event=>onCardClick(event,p);
+              const actions=card.querySelector('.card-actions');
+              if(actions)actions.style.display=isActive?'none':'';
+              const existing=card.querySelector('.stop-btn');
+              if(isActive&&!existing){
+                const btn=document.createElement('button');
+                btn.className='stop-btn';
+                btn.innerHTML='&#9632; STOP';
+                btn.onclick=e=>stopPlayingCard(e,p);
+                card.querySelector('.movie-card-inner')?.appendChild(btn);
+              }else if(!isActive&&existing){
+                existing.remove();
+              }
             }
           }
         }
         function setStatus(m){document.getElementById('status').textContent=m;}
         function dismissInstallHint(){localStorage.setItem('remotePlayInstallHintDismissed','1');installHint.style.display='none';}
         function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+        function cssEscape(s){return window.CSS&&CSS.escape?CSS.escape(String(s)):String(s).replace(/\\/g,'\\\\').replace(/"/g,'\\"');}
         let wakeLock=null;
         async function requestWakeLock(){
           if(wakeLock||!('wakeLock' in navigator))return;
@@ -1206,6 +1413,12 @@
         updateVolumeIcon(parseFloat(document.getElementById('volume').value)||0);
         updateAudioBoostIcon(parseFloat(document.getElementById('audio-boost').value)||0);
         syncSpeedChips(currentPlaybackSpeed);
+        const nowPlayingBar=document.getElementById('now-playing-bar');
+        if(nowPlayingBar){
+          nowPlayingBar.addEventListener('touchstart',onPlayerGestureStart,{passive:true});
+          nowPlayingBar.addEventListener('touchend',onPlayerGestureEnd,{passive:true});
+          nowPlayingBar.addEventListener('touchcancel',()=>{gestureStart=null;},{passive:true});
+        }
         startPolling();
         refreshPeers();
         setInterval(refreshPeers,8000);

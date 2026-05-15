@@ -25,6 +25,7 @@ internal sealed record PlaybackStatus
     public bool IsMuted { get; init; }
     public string LastError { get; init; } = string.Empty;
     public bool CanResume { get; init; }
+    public double ResumePositionSeconds { get; init; }
     public double Brightness { get; init; }
     public double Saturation { get; init; } = 1;
     public double Zoom { get; init; } = 1;
@@ -43,7 +44,7 @@ internal sealed record PlaybackStatus
     public int QueueCount { get; init; }
 }
 
-internal sealed record TrackOption(int Id, string Name);
+internal sealed record TrackOption(int Id, string Name, string Language = "", bool IsForced = false, bool IsDefault = false);
 
 internal sealed record PlaybackQueueItem(string Path, string Title);
 
@@ -65,13 +66,24 @@ internal sealed record LibraryIndexCache
     public LibraryFile[] Files { get; init; } = [];
 }
 
-internal sealed record LibraryFile(string Name, string FilePath, string EncodedPath, string FolderName, string SearchText);
+internal sealed record LibraryFile(
+    string Name,
+    string FilePath,
+    string EncodedPath,
+    string FolderName,
+    string SearchText,
+    long SizeBytes = 0,
+    DateTime LastWriteUtc = default);
 
 internal sealed partial class WebServer
 {
     private const string WebAssetsDirectoryName = "WebAssets";
+    private static readonly string ThumbnailCacheDirectory =
+        Path.Combine(AppContext.BaseDirectory, "thumb-cache");
     private static readonly string LibraryIndexCacheFile =
         Path.Combine(AppContext.BaseDirectory, "library-index.json");
+    private static readonly string FavoritesFile =
+        Path.Combine(AppContext.BaseDirectory, "favorites.json");
 
     private static readonly HashSet<string> VideoExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv" };
@@ -97,11 +109,17 @@ internal sealed partial class WebServer
     private HttpListener _listener = new();
     // Thumbnail cache: base64-encoded path ? JPEG bytes (null = not available)
     private readonly ConcurrentDictionary<string, byte[]?> _thumbCache = new();
+    private readonly object _favoritesGate = new();
+    private HashSet<string> _favorites = new(StringComparer.OrdinalIgnoreCase);
     private readonly Timer _libraryIndexTimer;
+    private readonly Timer _libraryWatcherDebounceTimer;
     private readonly object _libraryIndexGate = new();
+    private FileSystemWatcher? _libraryWatcher;
     private LibraryFile[] _libraryIndex = [];
     private DateTimeOffset _lastRequestUtc = DateTimeOffset.UtcNow;
     private DateTimeOffset? _lastIndexRefreshUtc;
+    private DateTimeOffset _libraryWatcherStartedUtc;
+    private DateTimeOffset? _pendingLibraryRescanUtc;
     private DateTimeOffset? _scanStartedUtc;
     private int _scannedFiles;
     private int _scannedFolders;
@@ -117,13 +135,42 @@ internal sealed partial class WebServer
         _broadcaster = broadcaster;
         _playbackHistory = playbackHistory ?? new PlaybackHistory();
         _activeScheme = config.Scheme;
+        LoadFavorites();
         _libraryIndexTimer = new Timer(_ => RefreshLibraryIndexIfIdle(), null,
             TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
+        _libraryWatcherDebounceTimer = new Timer(_ => RunDelayedLibraryRescan(), null,
+            Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
     }
 
     public string ActiveScheme => _activeScheme;
     public string? StartupWarning => _startupWarning;
     public int LibraryVideoCount => _libraryIndex.Length;
+    public LibraryScanStatus LibraryStatus => GetLibraryScanStatus();
+
+    private bool IsFavorite(string filePath)
+    {
+        lock (_favoritesGate)
+            return _favorites.Contains(filePath);
+    }
+
+    private void SetFavorite(string filePath, bool favorite)
+    {
+        lock (_favoritesGate)
+        {
+            if (favorite)
+                _favorites.Add(filePath);
+            else
+                _favorites.Remove(filePath);
+
+            SaveFavorites();
+        }
+    }
+
+    private string[] GetFavoritePaths()
+    {
+        lock (_favoritesGate)
+            return _favorites.ToArray();
+    }
 
     private LibraryScanStatus GetLibraryScanStatus() => new()
     {
@@ -135,6 +182,26 @@ internal sealed partial class WebServer
         CompletedUtc = _lastIndexRefreshUtc,
         LastError = _lastScanError
     };
+
+    private bool HasFreshLibraryIndex()
+    {
+        try
+        {
+            if (_libraryIndex.Length == 0 || _lastIndexRefreshUtc is null)
+                return false;
+
+            var root = _config.ResolvedMoviesPath;
+            if (!Directory.Exists(root))
+                return false;
+
+            var latestWriteUtc = Directory.GetLastWriteTimeUtc(root);
+            return latestWriteUtc <= _lastIndexRefreshUtc.Value.UtcDateTime;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     private void LoadLibraryIndexCache()
     {
@@ -179,6 +246,35 @@ internal sealed partial class WebServer
         }
     }
 
+    private void LoadFavorites()
+    {
+        try
+        {
+            if (!File.Exists(FavoritesFile))
+                return;
+
+            var favorites = JsonSerializer.Deserialize<string[]>(File.ReadAllText(FavoritesFile), CaseInsensitiveOptions) ?? [];
+            _favorites = new HashSet<string>(favorites, StringComparer.OrdinalIgnoreCase);
+            Logger.Info($"Loaded favorites: {_favorites.Count}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to load favorites", ex);
+        }
+    }
+
+    private void SaveFavorites()
+    {
+        try
+        {
+            File.WriteAllText(FavoritesFile, JsonSerializer.Serialize(_favorites.Order(StringComparer.OrdinalIgnoreCase), IndentedOptions));
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to save favorites", ex);
+        }
+    }
+
     private static string NormalizePath(string path) =>
         Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
@@ -189,7 +285,10 @@ internal sealed partial class WebServer
         _ = Task.Run(() =>
         {
             LoadLibraryIndexCache();
-            StartLibraryIndexRefresh(force: false);
+            if (_libraryIndex.Length == 0)
+                StartLibraryIndexRefresh(force: false);
+            else
+                Logger.Info($"Library index cache ready: {_libraryIndex.Length} videos; background watcher will keep it fresh");
         });
 
         if (_config.UseHttps)
@@ -210,13 +309,92 @@ internal sealed partial class WebServer
         _listener.Prefixes.Add($"{_activeScheme}://*:{_config.Port}/");
         _listener.Start();
         Logger.Info($"Web server listening on {_activeScheme}://*:{_config.Port}");
+        StartLibraryWatcher();
         Task.Run(ListenLoopAsync);
     }
+
+    public void RequestLibraryRescan() => StartLibraryIndexRefresh(force: true);
 
     public void Stop()
     {
         try { _libraryIndexTimer.Dispose(); } catch { }
+        try { _libraryWatcherDebounceTimer.Dispose(); } catch { }
+        try { _libraryWatcher?.Dispose(); } catch { }
         try { _listener.Stop(); } catch { }
+    }
+
+    private void StartLibraryWatcher()
+    {
+        try
+        {
+            _libraryWatcher?.Dispose();
+            var root = _config.ResolvedMoviesPath;
+            if (!Directory.Exists(root))
+                return;
+
+            _libraryWatcher = new FileSystemWatcher(root)
+            {
+                IncludeSubdirectories = true,
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName,
+                EnableRaisingEvents = true
+            };
+            _libraryWatcher.Created += OnLibraryChanged;
+            _libraryWatcher.Deleted += OnLibraryChanged;
+            _libraryWatcher.Renamed += OnLibraryRenamed;
+            _libraryWatcherStartedUtc = DateTimeOffset.UtcNow;
+            Logger.Info($"Library watcher started: {root}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Library watcher failed to start", ex);
+        }
+    }
+
+    private void OnLibraryChanged(object sender, FileSystemEventArgs e)
+    {
+        if (!WebPathHelpers.IsVideoFile(e.FullPath, VideoExtensions) && !Directory.Exists(e.FullPath))
+            return;
+
+        ScheduleLibraryRescan();
+    }
+
+    private void OnLibraryRenamed(object sender, RenamedEventArgs e)
+    {
+        if (!WebPathHelpers.IsVideoFile(e.FullPath, VideoExtensions)
+            && !WebPathHelpers.IsVideoFile(e.OldFullPath, VideoExtensions)
+            && !Directory.Exists(e.FullPath))
+            return;
+
+        ScheduleLibraryRescan();
+    }
+
+    private void ScheduleLibraryRescan()
+    {
+        if (DateTimeOffset.UtcNow - _libraryWatcherStartedUtc < TimeSpan.FromSeconds(10))
+        {
+            Logger.Info("Library change ignored during watcher warm-up");
+            return;
+        }
+
+        if (_config.LibraryRescanDelayMinutes <= 0)
+        {
+            Logger.Info("Library change detected; automatic delayed rescan is disabled");
+            return;
+        }
+
+        var delay = TimeSpan.FromMinutes(_config.LibraryRescanDelayMinutes);
+        var dueUtc = DateTimeOffset.UtcNow.Add(delay);
+        _pendingLibraryRescanUtc = dueUtc;
+        Logger.Info($"Library change detected; delayed rescan scheduled for {dueUtc:u} ({_config.LibraryRescanDelayMinutes} minute(s))");
+        _libraryWatcherDebounceTimer.Change(delay, Timeout.InfiniteTimeSpan);
+    }
+
+    private void RunDelayedLibraryRescan()
+    {
+        var pendingUtc = _pendingLibraryRescanUtc;
+        _pendingLibraryRescanUtc = null;
+        Logger.Info($"Delayed library rescan starting (scheduled for {pendingUtc:u})");
+        StartLibraryIndexRefresh(force: true);
     }
 
     private static void EnsureHttpsBinding(int port)

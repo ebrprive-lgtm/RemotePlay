@@ -88,7 +88,7 @@ public partial class MainWindow
         Dispatcher.Invoke(() =>
         {
             result = _playbackQueue
-                .Select(path => new PlaybackQueueItem(path, Path.GetFileNameWithoutExtension(path)))
+                .Select(path => new PlaybackQueueItem(WebPathHelpers.EncodePath(path), Path.GetFileNameWithoutExtension(path)))
                 .ToArray();
         });
 
@@ -101,6 +101,7 @@ public partial class MainWindow
         {
             try
             {
+                RestoreWindowForPlayback();
                 _isPaused = false;
                 _lastPlaybackError = string.Empty;
                 _currentFilePath = filePath;
@@ -141,6 +142,18 @@ public partial class MainWindow
                 AppendLog($"ERROR playing: {ex.Message}");
             }
         });
+    }
+
+    private void RestoreWindowForPlayback()
+    {
+        if (!IsVisible || WindowState == WindowState.Minimized)
+        {
+            ShowFromTray();
+            return;
+        }
+
+        ShowInTaskbar = true;
+        Activate();
     }
 
     private void ApplyStoredMoviePreferences(string filePath)
@@ -338,8 +351,7 @@ public partial class MainWindow
                 return;
 
             _pendingResumePosition = resumePosition;
-            _mediaPlayer.Time = (long)resumePosition.Value.TotalMilliseconds;
-            AppendLog($"Resumed from {resumePosition.Value:mm\\:ss}");
+            AppendLog($"Resume available from {resumePosition.Value:mm\\:ss}");
         });
     }
 
@@ -547,6 +559,7 @@ public partial class MainWindow
                 IsMuted = _mediaPlayer.Mute,
                 LastError = _lastPlaybackError,
                 CanResume = _pendingResumePosition is not null,
+                ResumePositionSeconds = Math.Max(0, _pendingResumePosition?.TotalSeconds ?? 0),
                 Brightness = _brightness,
                 Saturation = _saturation,
                 AudioBoost = _audioBoost,
@@ -572,7 +585,11 @@ public partial class MainWindow
     {
         Dispatcher.Invoke(() =>
         {
-            try { _mediaPlayer.Time = (long)Math.Max(0, seconds * 1000); }
+            try
+            {
+                _mediaPlayer.Time = (long)Math.Max(0, seconds * 1000);
+                _pendingResumePosition = null;
+            }
             catch (Exception ex) { Logger.Error("Seek failed", ex); }
         });
     }
@@ -1092,7 +1109,12 @@ public partial class MainWindow
 
         var options = tracks
             .Where(t => includeOffTrack || t.Id >= 0)
-            .Select(t => new TrackOption(t.Id, BuildTrackName(t, includeOffTrack)))
+            .Select(t => new TrackOption(
+                t.Id,
+                BuildTrackName(t, includeOffTrack),
+                GuessTrackLanguage(t.Name),
+                TrackNameContains(t.Name, "forced"),
+                TrackNameContains(t.Name, "default")))
             .GroupBy(t => t.Id)
             .Select(g => g.First())
             .OrderBy(t => t.Id)
@@ -1113,6 +1135,25 @@ public partial class MainWindow
             ? $"Track {track.Id}"
             : track.Name;
     }
+
+    private static string GuessTrackLanguage(string? name)
+    {
+        var normalized = NormalizeTrackToken(name);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return string.Empty;
+
+        foreach (var option in LanguageOptions.Skip(1))
+        {
+            if (TrackNameMatchesLanguage(normalized, option.Code))
+                return option.Name;
+        }
+
+        return string.Empty;
+    }
+
+    private static bool TrackNameContains(string? name, string token) =>
+        NormalizeTrackToken(name).Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Any(part => string.Equals(part, token, StringComparison.OrdinalIgnoreCase));
 
     private static string? FindSubtitlePath(string filePath)
     {

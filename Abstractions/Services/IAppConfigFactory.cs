@@ -19,7 +19,10 @@ internal interface IAppConfigFactory
         bool preferForcedSubtitles,
         PlaybackEndMode playbackEndBehavior,
         int playbackHistoryLimit,
-        int preferredDisplayIndex);
+        int libraryRescanDelayMinutes,
+        int preferredDisplayIndex,
+        bool startWithWindows,
+        bool useTrayIcon);
 
     AppConfig CreateForPlaybackPreferences(
         AppConfig currentConfig,
