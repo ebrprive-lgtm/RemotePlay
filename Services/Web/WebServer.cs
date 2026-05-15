@@ -117,7 +117,6 @@ internal sealed partial class WebServer
         _broadcaster = broadcaster;
         _playbackHistory = playbackHistory ?? new PlaybackHistory();
         _activeScheme = config.Scheme;
-        LoadLibraryIndexCache();
         _libraryIndexTimer = new Timer(_ => RefreshLibraryIndexIfIdle(), null,
             TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
     }
@@ -149,9 +148,7 @@ internal sealed partial class WebServer
             if (cache is null || !string.Equals(NormalizePath(cache.RootPath), NormalizePath(_config.ResolvedMoviesPath), StringComparison.OrdinalIgnoreCase))
                 return;
 
-            _libraryIndex = cache.Files
-                .Where(file => File.Exists(file.FilePath))
-                .ToArray();
+            _libraryIndex = cache.Files;
             _lastIndexRefreshUtc = cache.CreatedUtc;
             _scannedFiles = _libraryIndex.Length;
             Logger.Info($"Loaded persistent library index: {_libraryIndex.Length} videos");
@@ -189,6 +186,11 @@ internal sealed partial class WebServer
     {
         _activeScheme = _config.Scheme;
         _startupWarning = null;
+        _ = Task.Run(() =>
+        {
+            LoadLibraryIndexCache();
+            StartLibraryIndexRefresh(force: false);
+        });
 
         if (_config.UseHttps)
         {

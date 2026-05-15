@@ -538,7 +538,13 @@
             <vlc:VideoView x:Name="VideoPlayer"
                            HorizontalAlignment="Stretch"
                            VerticalAlignment="Stretch"
-                           Visibility="Collapsed"/>
+                           Visibility="Visible"/>
+
+            <Border x:Name="VideoTransitionOverlay"
+                    Background="Black"
+                    Visibility="Collapsed"
+                    IsHitTestVisible="False"
+                    Panel.ZIndex="3"/>
 
             <Border x:Name="VideoBrightnessOverlay"
                     Background="White"

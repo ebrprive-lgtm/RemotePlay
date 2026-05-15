@@ -13,6 +13,21 @@ internal static class Logger
     public static void Info(string message) => Write("INFO", message, null);
     public static void Error(string message, Exception? ex = null) => Write("ERROR", message, ex);
 
+    public static void Clear()
+    {
+        try
+        {
+            lock (_lock)
+            {
+                File.WriteAllText(LogFile, string.Empty);
+            }
+        }
+        catch
+        {
+            // Logger must never throw
+        }
+    }
+
     private static void Write(string level, string message, Exception? ex)
     {
         try

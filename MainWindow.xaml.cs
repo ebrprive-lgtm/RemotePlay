@@ -53,6 +53,7 @@ public partial class MainWindow : Window
     private bool _preferredSubtitleApplied;
     private TimeSpan _duration = TimeSpan.Zero;
     private bool _isApplyingMoviePreferences;
+    private CancellationTokenSource? _videoTransitionCts;
     private readonly List<string> _playbackQueue = [];
     private string? _serverUrl;
     private static readonly LanguageOption[] LanguageOptions =
@@ -188,6 +189,9 @@ public partial class MainWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        Logger.Clear();
+        LogBox.Clear();
+
         MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
 
         MoviesFolderBox.Text = _config.ResolvedMoviesPath;
@@ -249,18 +253,32 @@ public partial class MainWindow : Window
     {
         try
         {
+            Logger.Info("Startup: resolving local IP");
+            await Dispatcher.InvokeAsync(() => AppendLog("Startup: resolving local IP…"));
             var ip = GetLocalIp();
+            Logger.Info($"Startup: local IP resolved as {ip}");
 
             // Fire-and-forget: firewall rule setup must not block the server startup path
-            _ = Task.Run(() => EnsureFirewallRule(_config.Port));
+            _ = Task.Run(() =>
+            {
+                Logger.Info("Startup: checking firewall rule in background");
+                EnsureFirewallRule(_config.Port);
+            });
 
+            Logger.Info("Startup: starting presence broadcaster");
+            await Dispatcher.InvokeAsync(() => AppendLog("Startup: starting discovery broadcaster…"));
             _broadcaster?.Stop();
             _broadcaster?.Dispose();
             _broadcaster = new PresenceBroadcaster(_config);
             _broadcaster.Start();
 
-            _webServer = CreateWebServer(_config);
-            _webServer.Start();
+            Logger.Info("Startup: creating web server");
+            await Dispatcher.InvokeAsync(() => AppendLog("Startup: creating web server…"));
+            _webServer = await RunStartupStepWithTimeoutAsync(() => CreateWebServer(_config), "creating web server", TimeSpan.FromSeconds(15));
+            Logger.Info("Startup: starting web listener");
+            await Dispatcher.InvokeAsync(() => AppendLog($"Startup: starting web listener on {_config.Scheme}://*:{_config.Port}…"));
+            await RunStartupStepWithTimeoutAsync(() => _webServer.Start(), "starting web listener", TimeSpan.FromSeconds(15));
+            Logger.Info("Startup: web listener started");
 
             await Dispatcher.InvokeAsync(() =>
             {
@@ -304,6 +322,26 @@ public partial class MainWindow : Window
             new Duration(TimeSpan.FromMilliseconds(success ? 600 : 1800)));
         fade.Completed += (_, _) => StartupOverlay.Visibility = Visibility.Collapsed;
         StartupOverlay.BeginAnimation(OpacityProperty, fade);
+    }
+
+    private static async Task RunStartupStepWithTimeoutAsync(Action action, string description, TimeSpan timeout)
+    {
+        var startupTask = Task.Run(action);
+        var completedTask = await Task.WhenAny(startupTask, Task.Delay(timeout));
+        if (completedTask != startupTask)
+            throw new TimeoutException($"Timed out while {description} after {timeout.TotalSeconds:0} seconds.");
+
+        await startupTask;
+    }
+
+    private static async Task<T> RunStartupStepWithTimeoutAsync<T>(Func<T> action, string description, TimeSpan timeout)
+    {
+        var startupTask = Task.Run(action);
+        var completedTask = await Task.WhenAny(startupTask, Task.Delay(timeout));
+        if (completedTask != startupTask)
+            throw new TimeoutException($"Timed out while {description} after {timeout.TotalSeconds:0} seconds.");
+
+        return await startupTask;
     }
 
     private void RefreshStatusStats()

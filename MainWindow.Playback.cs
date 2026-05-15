@@ -111,11 +111,9 @@ public partial class MainWindow
                 _preferredSubtitleApplied = false;
                 _zoom = 1;
                 ApplyStoredMoviePreferences(filePath);
-                // VideoPlayer must stay Visible so LibVLC can bind its native HWND surface.
-                // The IdleOverlay (ZIndex=2) sits on top and hides the blank VLC surface
-                // until OnMediaPlaying reveals the first real frame.
+                BeginVideoTransition();
                 VideoPlayer.Visibility = Visibility.Visible;
-                // Do NOT hide IdleOverlay here — it stays up until OnMediaPlaying fires.
+                _mediaPlayer.Stop();
                 using var media = new Media(_libVlc, new Uri(filePath, UriKind.Absolute));
                 media.AddOption(":avcodec-hw=none");
                 _hasSubtitles = TryAttachSubtitle(media, filePath);
@@ -123,7 +121,6 @@ public partial class MainWindow
                 _mediaPlayer.SetRate((float)_playbackSpeed);
                 ApplyAudioLevel();
                 ApplyVideoZoom();
-                ApplyBrightnessOverlay();
                 _historyTimer.Start();
                 NowPlayingText.Text = "▶  " + Path.GetFileNameWithoutExtension(filePath);
                 ShowBanner();
@@ -304,9 +301,8 @@ public partial class MainWindow
     {
         Dispatcher.InvokeAsync(() =>
         {
-            HideIdleOverlay();
-            // Reveal the video surface only once a frame is actually being rendered.
             VideoPlayer.Visibility = Visibility.Visible;
+            _ = CompleteVideoTransitionAsync();
 
             if (!_isVideoMode)
                 _miniPreviewTimer.Start();
@@ -411,8 +407,64 @@ public partial class MainWindow
         ApplyBrightnessOverlay();
     }
 
+    private void BeginVideoTransition()
+    {
+        _videoTransitionCts?.Cancel();
+        _videoTransitionCts?.Dispose();
+        _videoTransitionCts = new CancellationTokenSource();
+
+        VideoTransitionOverlay.Visibility = Visibility.Visible;
+        VideoTransitionOverlay.Opacity = 1;
+        VideoTransitionOverlay.IsHitTestVisible = false;
+
+        if (VideoPanel.FindName("VideoBrightnessOverlay") is UIElement brightnessOverlay)
+        {
+            brightnessOverlay.Opacity = 0;
+            brightnessOverlay.Visibility = Visibility.Visible;
+        }
+
+        Logger.Info($"[VideoTransition] Begin: VideoPlayer={VideoPlayer.Visibility}, IdleOverlay={IdleOverlay.Visibility}, Brightness={VideoBrightnessOverlay.Opacity:0.###}");
+    }
+
+    private async Task CompleteVideoTransitionAsync()
+    {
+        var transitionCts = _videoTransitionCts;
+        if (transitionCts is null)
+            return;
+
+        try
+        {
+            await Task.Delay(180, transitionCts.Token).ConfigureAwait(false);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (!ReferenceEquals(_videoTransitionCts, transitionCts) || transitionCts.IsCancellationRequested)
+                    return;
+
+                HideIdleOverlay();
+                VideoTransitionOverlay.Visibility = Visibility.Collapsed;
+                VideoTransitionOverlay.Opacity = 0;
+                ApplyBrightnessOverlay();
+                Logger.Info($"[VideoTransition] Complete: VideoPlayer={VideoPlayer.Visibility}, IdleOverlay={IdleOverlay.Visibility}, Brightness={VideoBrightnessOverlay.Opacity:0.###}");
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private void CancelVideoTransition()
+    {
+        _videoTransitionCts?.Cancel();
+        _videoTransitionCts?.Dispose();
+        _videoTransitionCts = null;
+        VideoTransitionOverlay.Visibility = Visibility.Collapsed;
+        VideoTransitionOverlay.Opacity = 0;
+    }
+
     private void ShowIdleOverlay()
     {
+        CancelVideoTransition();
+
         // Refresh the QR image in case it wasn't loaded yet when UpdateServerUrlDisplay ran.
         if (_serverUrl is not null
             && FindName("FullscreenQrImage") is System.Windows.Controls.Image qrImage
