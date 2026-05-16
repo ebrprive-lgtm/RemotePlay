@@ -1,4 +1,10 @@
 {
   "Port": 9090,
-  "MoviesPath": "Movies"
+  "MoviesPath": "Movies",
+  "LibraryRescanDelayMinutes": 10,
+  "RescanLibraryOnStartup": false,
+  "EnableThumbnailGeneration": true,
+  "IgnoredLibraryFolders": [ "Subs", "Alt" ],
+  "VideoFileExtensions": [ ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv" ],
+  "LibraryPageSize": 200
 }

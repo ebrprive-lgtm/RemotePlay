@@ -14,8 +14,7 @@ namespace RemotePlay;
 /// </summary>
 internal static class ThumbnailHelper
 {
-    private static readonly string ThumbnailCacheDirectory =
-        Path.Combine(AppContext.BaseDirectory, "thumbnail-cache");
+    private static readonly string ThumbnailCacheDirectory = AppPaths.ThumbnailCacheDirectory;
 
     // ── Shell COM interfaces ──────────────────────────────────────────────────
 

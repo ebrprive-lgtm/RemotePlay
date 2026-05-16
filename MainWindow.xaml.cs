@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private readonly MediaPlayer _mediaPlayer;
     private WebServer? _webServer;
     private PresenceBroadcaster? _broadcaster;
+    private RemotePlay.Services.AppUpdater? _appUpdater;
     private System.Windows.Forms.NotifyIcon? _trayIcon;
     private bool _isExiting;
     private readonly DispatcherTimer _bannerTimer;
@@ -43,6 +44,7 @@ public partial class MainWindow : Window
     private bool _isVideoMode;
     private string? _currentFilePath;
     private TimeSpan? _pendingResumePosition;
+    private bool _smartResumeApplied;
     private string _lastPlaybackError = string.Empty;
     private double _brightness;
     private double _saturation = 1;
@@ -186,10 +188,18 @@ public partial class MainWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        var version = System.Reflection.Assembly.GetExecutingAssembly()
+            .GetName().Version;
+        Title = version is not null
+            ? $"RemotePlay v{version.Major}.{version.Minor}.{version.Build}"
+            : "RemotePlay";
+
         Logger.Clear();
         LogBox.Clear();
         InitializeTrayIcon();
         ApplyWindowsAutostart(_config.StartWithWindows);
+
+        UpdateUpdateReadiness();
 
         MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
 
@@ -216,6 +226,10 @@ public partial class MainWindow : Window
             historyLimitBox.Text = _config.PlaybackHistoryLimit.ToString();
         if (FindName("AutoRescanIntervalMinutesBox") is System.Windows.Controls.TextBox rescanIntervalBox)
             rescanIntervalBox.Text = _config.LibraryRescanDelayMinutes.ToString();
+        if (FindName("UpdateSourcePathBox") is System.Windows.Controls.TextBox updateSourcePathBox)
+            updateSourcePathBox.Text = _config.UpdateSourcePath;
+        if (FindName("AutoUpdateIntervalMinutesBox") is System.Windows.Controls.TextBox autoUpdateIntervalBox)
+            autoUpdateIntervalBox.Text = _config.AutoUpdateIntervalMinutes.ToString();
         if (FindName("StartWithWindowsBox") is System.Windows.Controls.CheckBox startWithWindowsBox)
             startWithWindowsBox.IsChecked = _config.StartWithWindows;
         if (FindName("UseTrayIconBox") is System.Windows.Controls.CheckBox useTrayIconBox)
@@ -271,7 +285,7 @@ public partial class MainWindow : Window
             await Dispatcher.InvokeAsync(() => AppendLog($"{actionName}: resolving local IP…"));
             var ip = GetLocalIp();
             Logger.Info($"{actionName}: local IP resolved as {ip}");
-            await CheckPortConflictAsync(config.Port, actionName);
+            await CheckPortConflictAsync(config.Port, actionName, isRestart);
 
             // Fire-and-forget: firewall rule setup must not block the server startup path
             _ = Task.Run(() =>
@@ -303,6 +317,18 @@ public partial class MainWindow : Window
                 ServerStatusText.Text = $"Server running on {_webServer.ActiveScheme}://*:{config.Port}";
                 UpdateServerReadiness(isReady: true, $"Server: ready on {_webServer.ActiveScheme}://*:{config.Port}");
                 UpdateLibraryReadinessFromStatus();
+                UpdateUpdateReadiness();
+                // Poll until the async check completes, then show final result
+                _ = Task.Run(async () =>
+                {
+                    for (var i = 0; i < 30; i++)
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+                        if (_appUpdater is null) break;
+                        await Dispatcher.InvokeAsync(UpdateUpdateReadiness);
+                        if (_appUpdater.HasChecked) break;
+                    }
+                });
                 AppendLog($"Web server listening on {_webServer.ActiveScheme}://*:{config.Port}");
                 if (!string.IsNullOrWhiteSpace(_webServer.StartupWarning))
                     ShowDiag(_webServer.StartupWarning);
@@ -460,8 +486,12 @@ public partial class MainWindow : Window
         return await startupTask;
     }
 
-    private async Task CheckPortConflictAsync(int port, string actionName)
+    private async Task CheckPortConflictAsync(int port, string actionName, bool isRestart)
     {
+        // On restart our own server still holds the port — not a conflict.
+        if (isRestart)
+            return;
+
         try
         {
             var listeners = System.Net.NetworkInformation.IPGlobalProperties
@@ -590,6 +620,57 @@ public partial class MainWindow : Window
             : isBusy
                 ? System.Windows.Media.Color.FromRgb(0xFF, 0xAA, 0x00)
                 : System.Windows.Media.Color.FromRgb(0xFF, 0x59, 0x59));
+    }
+
+    private void UpdateUpdateReadiness()
+    {
+        if (_appUpdater is null || string.IsNullOrWhiteSpace(_config.UpdateSourcePath))
+        {
+            UpdateReadyText.Text = "Auto-update: not configured";
+            UpdateReadyDot.Background = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0x55, 0x55, 0x55));
+            return;
+        }
+
+        if (_appUpdater.IsUpdating)
+        {
+            UpdateReadyText.Text = "Auto-update: applying update…";
+            UpdateReadyDot.Background = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0xFF, 0xAA, 0x00));
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_appUpdater.LastUpdateError))
+        {
+            UpdateReadyText.Text = $"Auto-update: error — {_appUpdater.LastUpdateError}";
+            UpdateReadyDot.Background = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0xFF, 0x59, 0x59));
+            return;
+        }
+
+        if (!_appUpdater.HasChecked)
+        {
+            UpdateReadyText.Text = $"Auto-update: checking… (current {_appUpdater.CurrentVersion})";
+            UpdateReadyDot.Background = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0xFF, 0xAA, 0x00));
+            return;
+        }
+
+        var available = _appUpdater.AvailableVersion;
+        var current = _appUpdater.CurrentVersion;
+
+        if (!string.IsNullOrWhiteSpace(available) &&
+            !string.Equals(available, current, StringComparison.OrdinalIgnoreCase))
+        {
+            UpdateReadyText.Text = $"Auto-update: update available! {current} → {available}";
+            UpdateReadyDot.Background = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0xFF, 0xAA, 0x00));
+            return;
+        }
+
+        UpdateReadyText.Text = $"Auto-update: up to date ({current})";
+        UpdateReadyDot.Background = new System.Windows.Media.SolidColorBrush(
+            System.Windows.Media.Color.FromRgb(0x00, 0xD4, 0xAA));
     }
 
     private void PopulateLanguageCombo(string comboName, string selectedCode)
@@ -918,7 +999,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            var logFile = Path.Combine(AppContext.BaseDirectory, "remoteplay.log");
+            var logFile = AppPaths.LogFile;
             if (File.Exists(logFile))
             {
                 var lines = File.ReadAllLines(logFile);
@@ -1071,6 +1152,19 @@ public partial class MainWindow : Window
             MoviesFolderBox.Text = dialog.FolderName;
     }
 
+    private void OnBrowseUpdateSourceFolder(object sender, RoutedEventArgs e)
+    {
+        var currentPath = FindName("UpdateSourcePathBox") is System.Windows.Controls.TextBox box ? box.Text : string.Empty;
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "Select the folder containing update files",
+            InitialDirectory = currentPath
+        };
+
+        if (dialog.ShowDialog() == true && FindName("UpdateSourcePathBox") is System.Windows.Controls.TextBox pathBox)
+            pathBox.Text = dialog.FolderName;
+    }
+
     private void OnExportCertificate(object sender, RoutedEventArgs e)
     {
         try
@@ -1160,6 +1254,20 @@ public partial class MainWindow : Window
             }
         }
 
+        var updateSourcePath = _config.UpdateSourcePath;
+        if (FindName("UpdateSourcePathBox") is System.Windows.Controls.TextBox updateSourcePathBox2)
+            updateSourcePath = updateSourcePathBox2.Text.Trim();
+
+        var autoUpdateIntervalMinutes = _config.AutoUpdateIntervalMinutes;
+        if (FindName("AutoUpdateIntervalMinutesBox") is System.Windows.Controls.TextBox autoUpdateIntervalBox2)
+        {
+            if (!int.TryParse(autoUpdateIntervalBox2.Text.Trim(), out autoUpdateIntervalMinutes) || autoUpdateIntervalMinutes < 0)
+            {
+                ShowSettingsFeedback("Auto-update interval must be a whole number of 0 or more minutes.", isError: true);
+                return;
+            }
+        }
+
         var preferredDisplayIndex = _config.PreferredDisplayIndex;
         if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo2
             && displayCombo2.SelectedItem is System.Windows.Controls.ComboBoxItem displayItem
@@ -1204,7 +1312,9 @@ public partial class MainWindow : Window
                 libraryRescanDelayMinutes,
                 preferredDisplayIndex,
                 startWithWindows,
-                useTrayIcon);
+                useTrayIcon,
+                updateSourcePath,
+                autoUpdateIntervalMinutes);
 
             _config = _settingsApplyService.ApplyAndReload(updatedConfig);
             ApplyWindowsAutostart(_config.StartWithWindows);
@@ -1337,7 +1447,6 @@ public partial class MainWindow : Window
             if (checkOutput.Contains($"LocalPort", StringComparison.OrdinalIgnoreCase)
                 && checkOutput.Contains(port.ToString(), StringComparison.Ordinal))
             {
-                Logger.Info($"Firewall rule already present for port {port}");
                 return;
             }
 

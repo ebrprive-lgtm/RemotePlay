@@ -5,13 +5,15 @@ namespace RemotePlay;
 internal static class Logger
 {
     private static readonly object _lock = new();
-    private static readonly string LogFile =
-        Path.Combine(AppContext.BaseDirectory, "remoteplay.log");
+    private static readonly string LogFile = AppPaths.LogFile;
 
     public static string FilePath => LogFile;
 
-    public static void Info(string message) => Write("INFO", message, null);
-    public static void Error(string message, Exception? ex = null) => Write("ERROR", message, ex);
+    public static void Info(string message) => Write("INFO", "General", message, null);
+    public static void Info(string category, string message) => Write("INFO", category, message, null);
+    public static void Warning(string category, string message) => Write("WARN", category, message, null);
+    public static void Error(string message, Exception? ex = null) => Write("ERROR", "General", message, ex);
+    public static void Error(string category, string message, Exception? ex = null) => Write("ERROR", category, message, ex);
 
     public static void Clear()
     {
@@ -28,11 +30,12 @@ internal static class Logger
         }
     }
 
-    private static void Write(string level, string message, Exception? ex)
+    private static void Write(string level, string category, string message, Exception? ex)
     {
         try
         {
-            var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{level}] {message}";
+            var safeCategory = string.IsNullOrWhiteSpace(category) ? "General" : category.Trim();
+            var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{level}] [{safeCategory}] {message}";
             if (ex is not null)
                 line += $"{Environment.NewLine}{ex}";
 

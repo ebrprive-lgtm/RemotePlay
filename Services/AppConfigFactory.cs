@@ -24,7 +24,9 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         int libraryRescanDelayMinutes,
         int preferredDisplayIndex,
         bool startWithWindows,
-        bool useTrayIcon)
+        bool useTrayIcon,
+        string updateSourcePath,
+        int autoUpdateIntervalMinutes)
     {
         ArgumentNullException.ThrowIfNull(currentConfig);
         ArgumentException.ThrowIfNullOrWhiteSpace(moviesPath);
@@ -48,9 +50,16 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             PlaybackEndBehavior = playbackEndBehavior,
             PlaybackHistoryLimit = playbackHistoryLimit,
             LibraryRescanDelayMinutes = libraryRescanDelayMinutes,
+            RescanLibraryOnStartup = currentConfig.RescanLibraryOnStartup,
+            EnableThumbnailGeneration = currentConfig.EnableThumbnailGeneration,
+            IgnoredLibraryFolders = currentConfig.IgnoredLibraryFolders,
+            VideoFileExtensions = currentConfig.VideoFileExtensions,
+            LibraryPageSize = currentConfig.LibraryPageSize,
             PreferredDisplayIndex = preferredDisplayIndex,
             StartWithWindows = startWithWindows,
-            UseTrayIcon = useTrayIcon
+            UseTrayIcon = useTrayIcon,
+            UpdateSourcePath = updateSourcePath.Trim(),
+            AutoUpdateIntervalMinutes = Math.Max(0, autoUpdateIntervalMinutes)
         };
     }
 
@@ -83,9 +92,16 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             PlaybackEndBehavior = currentConfig.PlaybackEndBehavior,
             PlaybackHistoryLimit = currentConfig.PlaybackHistoryLimit,
             LibraryRescanDelayMinutes = currentConfig.LibraryRescanDelayMinutes,
+            RescanLibraryOnStartup = currentConfig.RescanLibraryOnStartup,
+            EnableThumbnailGeneration = currentConfig.EnableThumbnailGeneration,
+            IgnoredLibraryFolders = currentConfig.IgnoredLibraryFolders,
+            VideoFileExtensions = currentConfig.VideoFileExtensions,
+            LibraryPageSize = currentConfig.LibraryPageSize,
             PreferredDisplayIndex = currentConfig.PreferredDisplayIndex,
             StartWithWindows = currentConfig.StartWithWindows,
-            UseTrayIcon = currentConfig.UseTrayIcon
+            UseTrayIcon = currentConfig.UseTrayIcon,
+            UpdateSourcePath = currentConfig.UpdateSourcePath,
+            AutoUpdateIntervalMinutes = currentConfig.AutoUpdateIntervalMinutes
         };
     }
 }

@@ -31,7 +31,9 @@ public sealed class AppConfigFactoryTests
             libraryRescanDelayMinutes: 12,
             preferredDisplayIndex: 2,
             startWithWindows: true,
-            useTrayIcon: false);
+            useTrayIcon: false,
+            updateSourcePath: @"C:\Updates",
+            autoUpdateIntervalMinutes: 30);
 
         Assert.Equal(5000, config.Port);
         Assert.True(config.UseHttps);
@@ -53,6 +55,8 @@ public sealed class AppConfigFactoryTests
         Assert.False(config.UseTrayIcon);
         Assert.Equal(0.5, config.Brightness);
         Assert.Equal("Living Room", config.InstanceName);
+        Assert.Equal(@"C:\Updates", config.UpdateSourcePath);
+        Assert.Equal(30, config.AutoUpdateIntervalMinutes);
     }
 
     [Fact]

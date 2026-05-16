@@ -1,6 +1,7 @@
 ﻿using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 
@@ -52,8 +53,22 @@ internal sealed partial class WebServer
                 TrySendResponse(ctx, 200, "text/html; charset=utf-8", GetHtmlPage());
                 break;
 
+            case "/offline.html":
+                TrySendResponse(ctx, 200, "text/html; charset=utf-8", LoadWebAsset("offline.html"));
+                break;
+
             case "/manifest.webmanifest":
                 TrySendResponse(ctx, 200, "application/manifest+json; charset=utf-8", ManifestJson);
+                break;
+
+            case "/styles.css":
+                ctx.Response.AddHeader("Cache-Control", "no-cache");
+                TrySendResponse(ctx, 200, "text/css; charset=utf-8", GetStylesCss());
+                break;
+
+            case "/app.js":
+                ctx.Response.AddHeader("Cache-Control", "no-cache");
+                TrySendResponse(ctx, 200, "application/javascript; charset=utf-8", GetAppJs());
                 break;
 
             case "/service-worker.js":
@@ -75,6 +90,10 @@ internal sealed partial class WebServer
 
             case "/health":
                 HandleHealthPage(ctx);
+                break;
+
+            case "/setup":
+                HandleSetupPage(ctx);
                 break;
 
             case "/remoteplay.log":
@@ -110,6 +129,19 @@ internal sealed partial class WebServer
 
             case "/api/library-status":
                 TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(GetLibraryScanStatus()));
+                break;
+
+            case "/api/thumbnails/status":
+                TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(GetThumbnailQueueStatus()));
+                break;
+
+            case "/api/thumbnails/start":
+                TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(StartThumbnailQueue()));
+                break;
+
+            case "/api/thumbnails/cancel":
+                CancelThumbnailQueue();
+                TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(GetThumbnailQueueStatus()));
                 break;
 
             case "/api/recent":
@@ -233,6 +265,10 @@ internal sealed partial class WebServer
                 HandlePeers(ctx);
                 break;
 
+            case "/api/version":
+                HandleVersion(ctx);
+                break;
+
             default:
                 TrySendResponse(ctx, 404, "text/plain", "Not found");
                 break;
@@ -241,6 +277,12 @@ internal sealed partial class WebServer
 
     private void HandleThumb(HttpListenerContext ctx)
     {
+        if (!_config.EnableThumbnailGeneration)
+        {
+            TrySendResponse(ctx, 204, "text/plain", string.Empty);
+            return;
+        }
+
         var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
         if (string.IsNullOrWhiteSpace(encodedPath))
         {
@@ -331,6 +373,7 @@ internal sealed partial class WebServer
             lastError = s.LastError ?? string.Empty,
             canResume = s.CanResume,
             resumePosition = Math.Round(s.ResumePositionSeconds, 1),
+            smartResumeApplied = s.SmartResumeApplied,
             subtitlesEnabled = s.SubtitlesEnabled,
             hasSubtitles = s.HasSubtitles,
             audioTracks = s.AudioTracks.Select(t => new { id = t.Id, name = t.Name }).ToArray(),
@@ -509,6 +552,17 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 200, "text/plain", "OK");
     }
 
+    private void HandleVersion(HttpListenerContext ctx)
+    {
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new
+        {
+            version = _appUpdater?.CurrentVersion ?? string.Empty,
+            availableVersion = _appUpdater?.AvailableVersion ?? string.Empty,
+            isUpdating = _appUpdater?.IsUpdating ?? false,
+            lastUpdateError = _appUpdater?.LastUpdateError ?? string.Empty
+        }));
+    }
+
     private void HandleHealth(HttpListenerContext ctx)
     {
         var status = _callbacks.GetStatus();
@@ -521,12 +575,18 @@ internal sealed partial class WebServer
             activeScheme = _activeScheme,
             startupWarning = _startupWarning ?? string.Empty,
             port = _config.Port,
+            urls = new
+            {
+                local = $"{_activeScheme}://localhost:{_config.Port}/",
+                listener = $"{_activeScheme}://*:{_config.Port}/"
+            },
             moviesPath = _config.ResolvedMoviesPath,
             isPlaying = status.IsPlaying,
             lastError = status.LastError ?? string.Empty,
             indexedFiles = _libraryIndex.Length,
             isIndexing = _isIndexing,
             lastIndexRefreshUtc = _lastIndexRefreshUtc,
+            thumbnailCache = BuildThumbnailCacheHealth(),
                 scanStatus,
             preferences = new
             {
@@ -556,8 +616,37 @@ internal sealed partial class WebServer
             libVlcFound = File.Exists(libVlcPath),
             libVlcCoreFound = File.Exists(libVlcCorePath),
             logFile = Logger.FilePath,
-            logFileFound = File.Exists(Logger.FilePath)
+            logFileFound = File.Exists(Logger.FilePath),
+            logFileBytes = TryGetFileLength(Logger.FilePath)
         };
+    }
+
+    private static long TryGetFileLength(string path)
+    {
+        try { return File.Exists(path) ? new FileInfo(path).Length : 0; }
+        catch { return 0; }
+    }
+
+    private static object BuildThumbnailCacheHealth()
+    {
+        try
+        {
+            if (!Directory.Exists(ThumbnailCacheDirectory))
+                return new { directory = ThumbnailCacheDirectory, files = 0, bytes = 0L };
+
+            var files = Directory.EnumerateFiles(ThumbnailCacheDirectory, "*.jpg").ToArray();
+            return new
+            {
+                directory = ThumbnailCacheDirectory,
+                files = files.Length,
+                bytes = files.Sum(TryGetFileLength)
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Diagnostics", "Could not read thumbnail cache diagnostics", ex);
+            return new { directory = ThumbnailCacheDirectory, files = 0, bytes = 0L };
+        }
     }
 
     private void HandleHealthPage(HttpListenerContext ctx)
@@ -735,6 +824,63 @@ internal sealed partial class WebServer
         TrySendBytes(ctx, 200, "image/png", BuildSetupCodePng(target));
     }
 
+    private void HandleSetupPage(HttpListenerContext ctx)
+    {
+        var endpoints = GetLocalIpAddresses()
+            .Where(address => address.AddressFamily == AddressFamily.InterNetwork)
+            .Select(address => $"{_activeScheme}://{address}:{_config.Port}/")
+            .Prepend($"{_activeScheme}://localhost:{_config.Port}/")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var localCards = string.Join(Environment.NewLine, endpoints.Select(endpoint => BuildSetupCard(
+            endpoint,
+            "This instance",
+            "Scan from a phone or tablet connected to the same network.",
+            "Local")));
+
+        var peers = _broadcaster?.GetPeers()
+            .Where(peer => !peer.IsSelf && !string.IsNullOrWhiteSpace(peer.Host) && peer.Port > 0)
+            .OrderBy(peer => peer.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray() ?? [];
+
+        var peerCards = peers.Length == 0
+            ? "<p class=\"empty\">No other RemotePlay instances discovered yet. Keep the other instance running on the same LAN and refresh this page.</p>"
+            : string.Join(Environment.NewLine, peers.Select(peer =>
+            {
+                var endpoint = peer.Url.EndsWith("/", StringComparison.Ordinal) ? peer.Url : peer.Url + "/";
+                return BuildSetupCard(
+                    endpoint,
+                    peer.Name,
+                    $"Last seen {Math.Max(0, Math.Round((DateTimeOffset.UtcNow - peer.LastSeenUtc).TotalSeconds))} seconds ago.",
+                    "Peer");
+            }));
+
+        static string BuildSetupCard(string endpoint, string title, string description, string badge) => $$"""
+            <article class="card">
+              <div class="qr-wrap"><span class="badge">{{HtmlEncode(badge)}}</span>
+              <img src="/setup-code.png?url={{Uri.EscapeDataString(endpoint)}}" alt="QR code for {{HtmlEncode(endpoint)}}"/>
+              </div><div><h2>{{HtmlEncode(title)}}</h2><p class="endpoint">{{HtmlEncode(endpoint)}}</p><p>{{HtmlEncode(description)}}</p><a href="{{HtmlEncode(endpoint)}}">Open remote</a></div>
+            </article>
+            """;
+
+        var html = $$"""
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+            <meta charset="utf-8"/>
+            <meta name="viewport" content="width=device-width,initial-scale=1"/>
+            <title>RemotePlay Setup</title>
+            <style>
+            *{box-sizing:border-box}body{margin:0;min-height:100vh;background:#090d18;color:#eef4ff;font-family:Segoe UI,Arial,sans-serif}.page{width:min(1080px,100%);margin:0 auto;padding:1rem}.hero,.section{background:linear-gradient(135deg,#1a203d,#0c1020);border:1px solid rgba(148,163,184,.2);border-radius:22px;padding:1rem;margin-bottom:1rem}h1,h2{margin:.1rem 0;color:#fff}.section h2{font-size:1.1rem;margin-bottom:.75rem}.muted{color:#9aa8c2}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1rem}.card{display:grid;grid-template-columns:112px minmax(0,1fr);gap:.9rem;align-items:center;background:#171c35;border:1px solid rgba(148,163,184,.18);border-radius:18px;padding:.85rem}.qr-wrap{position:relative}.badge{position:absolute;left:.25rem;top:.25rem;background:#e94560;color:#fff;border-radius:999px;padding:.12rem .4rem;font-size:.62rem;font-weight:900}.card img{width:112px;height:112px;background:#fff;border-radius:10px;padding:.35rem}.card h2{font-size:.98rem;word-break:break-word;margin:0 0 .25rem}.card p{color:#9aa8c2;margin:.2rem 0 .6rem}.card .endpoint{font-family:Consolas,ui-monospace,monospace;color:#cfe0ff;word-break:break-all}.card a{display:inline-flex;background:#e94560;color:#fff;text-decoration:none;border-radius:999px;padding:.48rem .75rem;font-weight:800}.actions{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:.75rem}.actions a{color:#00d4aa}.empty{color:#9aa8c2;background:#171c35;border:1px dashed rgba(148,163,184,.25);border-radius:14px;padding:1rem}
+            </style>
+            </head>
+            <body><main class="page"><section class="hero"><h1>RemotePlay setup</h1><p class="muted">Use these QR codes to connect devices. IPv6 addresses are hidden here because most mobile scanners and browsers handle LAN IPv4 links more reliably.</p><div class="actions"><a href="/">Open remote here</a><a href="/health">Health dashboard</a></div></section><section class="section"><h2>This RemotePlay instance</h2><div class="grid">{{localCards}}</div></section><section class="section"><h2>Other discovered instances</h2><div class="grid">{{peerCards}}</div></section></main></body></html>
+            """;
+
+        TrySendResponse(ctx, 200, "text/html; charset=utf-8", html);
+    }
+
     private void HandleSearch(HttpListenerContext ctx)
     {
         var query = (ctx.Request.QueryString["q"] ?? string.Empty).Trim();
@@ -742,18 +888,24 @@ internal sealed partial class WebServer
             StartLibraryIndexRefresh(force: false);
 
         var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var resumeMap = _playbackHistory.GetResumeMap();
+        var resumeMap = _playbackHistory.GetProgressMap();
         var naturalComparer = _naturalComparer;
 
-        // Find files matching the search terms
-        var files = terms.Length == 0
-            ? Array.Empty<object>()
+        var offset = ReadNonNegativeInt(ctx.Request.QueryString["offset"]);
+        var limit = ReadPositiveInt(ctx.Request.QueryString["limit"], _config.EffectiveLibraryPageSize, 1000);
+
+        var matchingFiles = terms.Length == 0
+            ? []
             : _libraryIndex
                 .Where(f => terms.All(t => f.SearchText.Contains(t, StringComparison.OrdinalIgnoreCase)))
                 .OrderBy(f => f.Name)
-                .Take(200)
-                .Select(f => BuildCardFile(Path.GetFileNameWithoutExtension(f.FilePath), f.FilePath, resumeMap, f.FolderName, IsFavorite(f.FilePath)))
-                .ToArray<object>();
+                .ToArray();
+
+        var files = matchingFiles
+            .Skip(offset)
+            .Take(limit)
+            .Select(f => BuildCardFile(Path.GetFileNameWithoutExtension(f.FilePath), f.FilePath, resumeMap, f.FolderName, IsFavorite(f.FilePath)))
+            .ToArray<object>();
 
         // Find unique folders that match the search terms
         var folders = terms.Length == 0
@@ -774,6 +926,10 @@ internal sealed partial class WebServer
             folders,
             files,
             total = folders.Length + files.Length,
+            totalFiles = matchingFiles.Length,
+            offset,
+            limit,
+            hasMoreFiles = offset + files.Length < matchingFiles.Length,
             indexedFiles = _libraryIndex.Length,
             indexing = _isIndexing,
             lastRefreshUtc = _lastIndexRefreshUtc
@@ -805,7 +961,7 @@ internal sealed partial class WebServer
     private void HandleFavorites(HttpListenerContext ctx)
     {
         var root = _config.ResolvedMoviesPath;
-        var resumeMap = _playbackHistory.GetResumeMap();
+        var resumeMap = _playbackHistory.GetProgressMap();
         var files = GetFavoritePaths()
             .Where(path => WebPathHelpers.IsUnderRoot(path, root) && File.Exists(path))
             .OrderBy(path => Path.GetFileNameWithoutExtension(path), _naturalComparer)
@@ -889,7 +1045,7 @@ internal sealed partial class WebServer
 
         var naturalComparer = _naturalComparer;
         var folders = Directory.EnumerateDirectories(targetDir)
-            .Where(d => !HiddenFolderNames.Contains(Path.GetFileName(d)))
+            .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)))
             .OrderBy(d => Path.GetFileName(d), naturalComparer)
             .Select(d => new
             {
@@ -898,10 +1054,17 @@ internal sealed partial class WebServer
             })
             .ToArray();
 
-        var resumeMap = _playbackHistory.GetResumeMap();
-        var files = Directory.EnumerateFiles(targetDir)
-            .Where(f => WebPathHelpers.IsVideoFile(f, VideoExtensions))
+        var resumeMap = _playbackHistory.GetProgressMap();
+        var offset = ReadNonNegativeInt(ctx.Request.QueryString["offset"]);
+        var limit = ReadPositiveInt(ctx.Request.QueryString["limit"], _config.EffectiveLibraryPageSize, 1000);
+        var matchingFiles = Directory.EnumerateFiles(targetDir)
+            .Where(f => WebPathHelpers.IsVideoFile(f, _videoExtensions))
             .OrderBy(f => Path.GetFileNameWithoutExtension(f), naturalComparer)
+            .ToArray();
+
+        var files = matchingFiles
+            .Skip(offset)
+            .Take(limit)
             .Select(f => BuildCardFile(Path.GetFileNameWithoutExtension(f), f, resumeMap, isFavorite: IsFavorite(f)))
             .ToArray();
 
@@ -919,10 +1082,27 @@ internal sealed partial class WebServer
             currentFull = targetDir,
             parent = parentEncoded,
             breadcrumbs = BuildBreadcrumbs(root, targetDir),
-            isRoot = string.Equals(targetDir, root, StringComparison.OrdinalIgnoreCase)
+            isRoot = string.Equals(targetDir, root, StringComparison.OrdinalIgnoreCase),
+            totalFiles = matchingFiles.Length,
+            offset,
+            limit,
+            hasMoreFiles = offset + files.Length < matchingFiles.Length
         });
 
         TrySendResponse(ctx, 200, "application/json", result);
+    }
+
+    private static int ReadNonNegativeInt(string? value)
+    {
+        return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : 0;
+    }
+
+    private static int ReadPositiveInt(string? value, int defaultValue, int maxValue)
+    {
+        if (!int.TryParse(value, out var parsed) || parsed <= 0)
+            return defaultValue;
+
+        return Math.Min(parsed, maxValue);
     }
 
     private void HandlePlay(HttpListenerContext ctx)
@@ -1040,8 +1220,8 @@ internal sealed partial class WebServer
                     return;
                 }
 
-                var files = EnumerateLibraryVideoFiles(root, () => Interlocked.Increment(ref _scannedFolders))
-                    .Where(f => WebPathHelpers.IsVideoFile(f, VideoExtensions))
+                var files = EnumerateLibraryVideoFiles(root, _hiddenFolderNames, () => Interlocked.Increment(ref _scannedFolders))
+                    .Where(f => WebPathHelpers.IsVideoFile(f, _videoExtensions))
                     .Select(f =>
                     {
                         Interlocked.Increment(ref _scannedFiles);
@@ -1099,7 +1279,7 @@ internal sealed partial class WebServer
             lastWriteUtc);
     }
 
-    private static IEnumerable<string> EnumerateLibraryVideoFiles(string root, Action? onFolderScanned = null)
+    private static IEnumerable<string> EnumerateLibraryVideoFiles(string root, IReadOnlySet<string> ignoredFolderNames, Action? onFolderScanned = null)
     {
         var pending = new Stack<string>();
         pending.Push(root);
@@ -1122,7 +1302,7 @@ internal sealed partial class WebServer
 
             foreach (var subdir in subdirs)
             {
-                if (!HiddenFolderNames.Contains(Path.GetFileName(subdir)))
+                if (!ignoredFolderNames.Contains(Path.GetFileName(subdir)))
                     pending.Push(subdir);
             }
         }

@@ -1,6 +1,10 @@
-﻿        const CACHE_NAME = 'remoteplay-shell-v1';
+﻿        const CACHE_NAME = 'remoteplay-shell-__CACHE_VERSION__';
         const SHELL_ASSETS = [
           '/',
+          '/index.html',
+          '/styles.css',
+          '/app.js',
+          '/offline.html',
           '/manifest.webmanifest',
           '/icons/icon-192.png',
           '/icons/icon-512.png',
@@ -24,5 +28,25 @@
             return;
           }
 
-          event.respondWith(fetch(event.request).catch(() => caches.match(event.request).then(r => r || caches.match('/'))));
+          if (event.request.mode === 'navigate') {
+            event.respondWith(fetch(event.request).catch(() => caches.match('/offline.html')));
+            return;
+          }
+
+          if (url.pathname === '/styles.css' || url.pathname === '/app.js' || url.pathname === '/index.html') {
+            event.respondWith(fetch(event.request).then(response => {
+              const copy = response.clone();
+              caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
+              return response;
+            }).catch(() => caches.match(event.request)));
+            return;
+          }
+
+          event.respondWith(
+            caches.match(event.request).then(cached => cached || fetch(event.request).then(response => {
+              const copy = response.clone();
+              caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
+              return response;
+            }).catch(() => caches.match('/offline.html')))
+          );
         });

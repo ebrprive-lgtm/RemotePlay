@@ -10,7 +10,7 @@ internal sealed class PlaybackHistory
     private Dictionary<string, PlaybackHistoryEntry> _entries;
 
     public PlaybackHistory()
-        : this(Path.Combine(AppContext.BaseDirectory, "playback-history.json"))
+        : this(AppPaths.HistoryFile)
     {
     }
 
@@ -79,6 +79,23 @@ internal sealed class PlaybackHistory
         {
             return _entries
                 .Where(e => File.Exists(e.Key) && e.Value.PositionSeconds >= 10 && e.Value.DurationSeconds > 0 && e.Value.DurationSeconds - e.Value.PositionSeconds >= 30)
+                .ToDictionary(
+                    e => e.Key,
+                    e => new RecentPlaybackItem(e.Key, Math.Max(0, e.Value.PositionSeconds), Math.Max(0, e.Value.DurationSeconds), e.Value.UpdatedUtc),
+                    StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    /// <summary>
+    /// Returns all entries with any recorded progress (position > 0 and duration > 0),
+    /// including near-complete files. Used to show the progress bar/badge on cards.
+    /// </summary>
+    public Dictionary<string, RecentPlaybackItem> GetProgressMap()
+    {
+        lock (_gate)
+        {
+            return _entries
+                .Where(e => File.Exists(e.Key) && e.Value.PositionSeconds > 0 && e.Value.DurationSeconds > 0)
                 .ToDictionary(
                     e => e.Key,
                     e => new RecentPlaybackItem(e.Key, Math.Max(0, e.Value.PositionSeconds), Math.Max(0, e.Value.DurationSeconds), e.Value.UpdatedUtc),

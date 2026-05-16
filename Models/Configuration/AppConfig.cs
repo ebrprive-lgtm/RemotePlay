@@ -11,7 +11,7 @@ internal sealed class AppConfig
     public string InstanceId { get; init; } = Guid.NewGuid().ToString("N");
     /// <summary>Friendly display name shown in the peer discovery list. Defaults to the machine hostname.</summary>
     public string InstanceName { get; init; } = System.Net.Dns.GetHostName();
-    public string MoviesPath { get; init; } = Path.Combine(AppContext.BaseDirectory, "Movies");
+    public string MoviesPath { get; init; } = Path.Combine(AppPaths.UserDataDirectory, "Movies");
     public double Volume { get; init; } = 1;
     public double Brightness { get; init; } = 0.5;
     public double Zoom { get; init; } = 1;
@@ -28,9 +28,25 @@ internal sealed class AppConfig
     public bool StartWithWindows { get; init; }
     public bool UseTrayIcon { get; init; } = true;
     public int LibraryRescanDelayMinutes { get; init; } = 10;
+    public bool RescanLibraryOnStartup { get; init; }
+    public bool EnableThumbnailGeneration { get; init; } = true;
+    public string[] IgnoredLibraryFolders { get; init; } = ["Subs", "Alt"];
+    public string[] VideoFileExtensions { get; init; } = [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv"];
+    public int LibraryPageSize { get; init; } = 200;
 
-    private static readonly string ConfigFile =
-        Path.Combine(AppContext.BaseDirectory, "remoteplay.json");
+    /// <summary>
+    /// Path to the folder containing updated application files.
+    /// Leave empty to disable auto-update.
+    /// </summary>
+    public string UpdateSourcePath { get; init; } = string.Empty;
+
+    /// <summary>
+    /// How often (in minutes) to check for updates while the app is running.
+    /// Set to 0 to only check at startup.
+    /// </summary>
+    public int AutoUpdateIntervalMinutes { get; init; } = 60;
+
+    private static readonly string ConfigFile = AppPaths.ConfigFile;
 
     /// <summary>Returns the fully-resolved movies path (relative paths are resolved against the exe directory).</summary>
     public string ResolvedMoviesPath =>
@@ -39,6 +55,12 @@ internal sealed class AppConfig
             : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, MoviesPath));
 
     public string Scheme => UseHttps ? "https" : "http";
+
+    public int EffectiveLibraryPageSize => Math.Clamp(LibraryPageSize, 25, 1000);
+
+    public string[] EffectiveVideoFileExtensions => NormalizeExtensions(VideoFileExtensions).ToArray();
+
+    public string[] EffectiveIgnoredLibraryFolders => NormalizeNames(IgnoredLibraryFolders).ToArray();
 
     public static void Save(AppConfig config)
     {
@@ -71,6 +93,29 @@ internal sealed class AppConfig
         }
 
         return new AppConfig();
+    }
+
+    private static IEnumerable<string> NormalizeExtensions(IEnumerable<string>? values)
+    {
+        var extensions = (values ?? [])
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Select(value => value.StartsWith('.') ? value : "." + value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return extensions.Length > 0 ? extensions : new AppConfig().VideoFileExtensions;
+    }
+
+    private static IEnumerable<string> NormalizeNames(IEnumerable<string>? values)
+    {
+        var names = (values ?? [])
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return names.Length > 0 ? names : new AppConfig().IgnoredLibraryFolders;
     }
 }
 

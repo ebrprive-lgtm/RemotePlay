@@ -106,6 +106,7 @@ public partial class MainWindow
                 _lastPlaybackError = string.Empty;
                 _currentFilePath = filePath;
                 _pendingResumePosition = null;
+                _smartResumeApplied = false;
                 _duration = TimeSpan.Zero;
                 _lastSubtitleTrackId = null;
                 _lastAudioTrackId = null;
@@ -230,6 +231,7 @@ public partial class MainWindow
                 _mediaPlayer.Stop();
                 _currentFilePath = null;
                 _pendingResumePosition = null;
+                _smartResumeApplied = false;
                 _isPaused = false;
                 _duration = TimeSpan.Zero;
                 _hasSubtitles = false;
@@ -560,6 +562,7 @@ public partial class MainWindow
                 LastError = _lastPlaybackError,
                 CanResume = _pendingResumePosition is not null,
                 ResumePositionSeconds = Math.Max(0, _pendingResumePosition?.TotalSeconds ?? 0),
+                SmartResumeApplied = _smartResumeApplied,
                 Brightness = _brightness,
                 Saturation = _saturation,
                 AudioBoost = _audioBoost,
@@ -802,8 +805,13 @@ public partial class MainWindow
         });
     }
 
-    private WebServer CreateWebServer(AppConfig config) =>
-        new(config, new WebServerCallbacks
+    private WebServer CreateWebServer(AppConfig config)
+    {
+        _appUpdater?.Stop();
+        _appUpdater = new RemotePlay.Services.AppUpdater();
+        _appUpdater.Start(config);
+
+        return new WebServer(config, new WebServerCallbacks
         {
             Play = PlayMovie,
             Stop = StopMovie,
@@ -828,7 +836,8 @@ public partial class MainWindow
             ClearQueue = ClearPlaybackQueue,
             ClearPlaybackHistory = _playbackHistory.Clear,
             GetDisplayDiagnostics = GetDisplayDiagnostics
-        }, _broadcaster, _playbackHistory);
+        }, _broadcaster, _playbackHistory, _appUpdater);
+    }
 
     private void ApplyAudioLevel()
     {

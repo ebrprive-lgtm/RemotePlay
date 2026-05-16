@@ -22,7 +22,9 @@ internal interface IAppConfigFactory
         int libraryRescanDelayMinutes,
         int preferredDisplayIndex,
         bool startWithWindows,
-        bool useTrayIcon);
+        bool useTrayIcon,
+        string updateSourcePath,
+        int autoUpdateIntervalMinutes);
 
     AppConfig CreateForPlaybackPreferences(
         AppConfig currentConfig,

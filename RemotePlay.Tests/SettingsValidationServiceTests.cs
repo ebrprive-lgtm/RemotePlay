@@ -42,4 +42,20 @@ public sealed class SettingsValidationServiceTests
         Assert.Equal(5000, result.ParsedPort);
         Assert.Null(result.ErrorMessage);
     }
+
+    [Fact]
+    public void AppConfigNormalizesLibraryPageSize()
+    {
+        var config = new AppConfig { LibraryPageSize = 5000 };
+
+        Assert.Equal(1000, config.EffectiveLibraryPageSize);
+    }
+
+    [Fact]
+    public void AppConfigNormalizesVideoExtensions()
+    {
+        var config = new AppConfig { VideoFileExtensions = ["mp4", ".MKV", "mp4"] };
+
+        Assert.Equal([".mp4", ".MKV"], config.EffectiveVideoFileExtensions);
+    }
 }

@@ -26,6 +26,7 @@ internal sealed record PlaybackStatus
     public string LastError { get; init; } = string.Empty;
     public bool CanResume { get; init; }
     public double ResumePositionSeconds { get; init; }
+    public bool SmartResumeApplied { get; init; }
     public double Brightness { get; init; }
     public double Saturation { get; init; } = 1;
     public double Zoom { get; init; } = 1;
@@ -59,6 +60,19 @@ internal sealed record LibraryScanStatus
     public string LastError { get; init; } = string.Empty;
 }
 
+internal sealed record ThumbnailQueueStatus
+{
+    public bool IsRunning { get; init; }
+    public int Total { get; init; }
+    public int Processed { get; init; }
+    public int Generated { get; init; }
+    public int Cached { get; init; }
+    public string CurrentTitle { get; init; } = string.Empty;
+    public string LastError { get; init; } = string.Empty;
+    public DateTimeOffset? StartedUtc { get; init; }
+    public DateTimeOffset? CompletedUtc { get; init; }
+}
+
 internal sealed record LibraryIndexCache
 {
     public string RootPath { get; init; } = string.Empty;
@@ -78,12 +92,9 @@ internal sealed record LibraryFile(
 internal sealed partial class WebServer
 {
     private const string WebAssetsDirectoryName = "WebAssets";
-    private static readonly string ThumbnailCacheDirectory =
-        Path.Combine(AppContext.BaseDirectory, "thumb-cache");
-    private static readonly string LibraryIndexCacheFile =
-        Path.Combine(AppContext.BaseDirectory, "library-index.json");
-    private static readonly string FavoritesFile =
-        Path.Combine(AppContext.BaseDirectory, "favorites.json");
+    private static readonly string ThumbnailCacheDirectory = AppPaths.ThumbnailCacheDirectory;
+    private static readonly string LibraryIndexCacheFile = AppPaths.LibraryIndexCacheFile;
+    private static readonly string FavoritesFile = AppPaths.FavoritesFile;
 
     private static readonly HashSet<string> VideoExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv" };
@@ -99,13 +110,20 @@ internal sealed partial class WebServer
 
     private static readonly Lazy<string> _cachedHtmlPage =
         new(() => LoadWebAsset("index.html"));
-    private static readonly Lazy<string> _cachedServiceWorkerJs =
+    private static readonly Lazy<string> _cachedStylesCss =
+        new(() => LoadWebAsset("styles.css"));
+    private static readonly Lazy<string> _cachedAppJs =
+        new(() => LoadWebAsset("app.js"));
+    private static readonly Lazy<string> _cachedServiceWorkerJsRaw =
         new(() => LoadWebAsset("service-worker.js"));
+    private static readonly string _appVersion = ReadAppVersion();
 
     private readonly AppConfig _config;
     private readonly WebServerCallbacks _callbacks;
     private readonly PresenceBroadcaster? _broadcaster;
     private readonly PlaybackHistory _playbackHistory;
+    private readonly HashSet<string> _videoExtensions;
+    private readonly HashSet<string> _hiddenFolderNames;
     private HttpListener _listener = new();
     // Thumbnail cache: base64-encoded path ? JPEG bytes (null = not available)
     private readonly ConcurrentDictionary<string, byte[]?> _thumbCache = new();
@@ -125,16 +143,31 @@ internal sealed partial class WebServer
     private int _scannedFolders;
     private string _lastScanError = string.Empty;
     private bool _isIndexing;
+    private readonly object _thumbnailQueueGate = new();
+    private CancellationTokenSource? _thumbnailQueueCancellation;
+    private bool _thumbnailQueueRunning;
+    private int _thumbnailQueueTotal;
+    private int _thumbnailQueueProcessed;
+    private int _thumbnailQueueGenerated;
+    private int _thumbnailQueueCached;
+    private string _thumbnailQueueCurrentTitle = string.Empty;
+    private string _thumbnailQueueLastError = string.Empty;
+    private DateTimeOffset? _thumbnailQueueStartedUtc;
+    private DateTimeOffset? _thumbnailQueueCompletedUtc;
     private string _activeScheme;
     private string? _startupWarning;
+    private readonly RemotePlay.Services.AppUpdater? _appUpdater;
 
-    public WebServer(AppConfig config, WebServerCallbacks callbacks, PresenceBroadcaster? broadcaster = null, PlaybackHistory? playbackHistory = null)
+    public WebServer(AppConfig config, WebServerCallbacks callbacks, PresenceBroadcaster? broadcaster = null, PlaybackHistory? playbackHistory = null, RemotePlay.Services.AppUpdater? appUpdater = null)
     {
         _config = config;
         _callbacks = callbacks;
         _broadcaster = broadcaster;
         _playbackHistory = playbackHistory ?? new PlaybackHistory();
+        _videoExtensions = BuildExtensionSet(config.EffectiveVideoFileExtensions);
+        _hiddenFolderNames = BuildNameSet(config.EffectiveIgnoredLibraryFolders, HiddenFolderNames);
         _activeScheme = config.Scheme;
+        _appUpdater = appUpdater;
         LoadFavorites();
         _libraryIndexTimer = new Timer(_ => RefreshLibraryIndexIfIdle(), null,
             TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
@@ -182,6 +215,114 @@ internal sealed partial class WebServer
         CompletedUtc = _lastIndexRefreshUtc,
         LastError = _lastScanError
     };
+
+    private ThumbnailQueueStatus GetThumbnailQueueStatus()
+    {
+        lock (_thumbnailQueueGate)
+        {
+            return new ThumbnailQueueStatus
+            {
+                IsRunning = _thumbnailQueueRunning,
+                Total = _thumbnailQueueTotal,
+                Processed = _thumbnailQueueProcessed,
+                Generated = _thumbnailQueueGenerated,
+                Cached = _thumbnailQueueCached,
+                CurrentTitle = _thumbnailQueueCurrentTitle,
+                LastError = _thumbnailQueueLastError,
+                StartedUtc = _thumbnailQueueStartedUtc,
+                CompletedUtc = _thumbnailQueueCompletedUtc
+            };
+        }
+    }
+
+    private ThumbnailQueueStatus StartThumbnailQueue()
+    {
+        if (!_config.EnableThumbnailGeneration)
+            return GetThumbnailQueueStatus();
+
+        LibraryFile[] files;
+        lock (_thumbnailQueueGate)
+        {
+            if (_thumbnailQueueRunning)
+                return GetThumbnailQueueStatus();
+
+            files = _libraryIndex.Where(f => File.Exists(f.FilePath)).ToArray();
+            _thumbnailQueueCancellation?.Dispose();
+            _thumbnailQueueCancellation = new CancellationTokenSource();
+            _thumbnailQueueRunning = true;
+            _thumbnailQueueTotal = files.Length;
+            _thumbnailQueueProcessed = 0;
+            _thumbnailQueueGenerated = 0;
+            _thumbnailQueueCached = 0;
+            _thumbnailQueueCurrentTitle = string.Empty;
+            _thumbnailQueueLastError = string.Empty;
+            _thumbnailQueueStartedUtc = DateTimeOffset.UtcNow;
+            _thumbnailQueueCompletedUtc = null;
+        }
+
+        var token = _thumbnailQueueCancellation.Token;
+        _ = Task.Run(() => RunThumbnailQueue(files, token), token);
+        return GetThumbnailQueueStatus();
+    }
+
+    private void CancelThumbnailQueue()
+    {
+        lock (_thumbnailQueueGate)
+            _thumbnailQueueCancellation?.Cancel();
+    }
+
+    private void RunThumbnailQueue(LibraryFile[] files, CancellationToken cancellationToken)
+    {
+        try
+        {
+            foreach (var file in files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                lock (_thumbnailQueueGate)
+                    _thumbnailQueueCurrentTitle = file.Name;
+
+                var cacheFile = GetThumbnailCacheFile(file.FilePath);
+                if (File.Exists(cacheFile))
+                {
+                    lock (_thumbnailQueueGate)
+                    {
+                        _thumbnailQueueCached++;
+                        _thumbnailQueueProcessed++;
+                    }
+                    continue;
+                }
+
+                var jpeg = GenerateAndPersistThumbnail(file.EncodedPath, cacheFile);
+                lock (_thumbnailQueueGate)
+                {
+                    if (jpeg is not null)
+                        _thumbnailQueueGenerated++;
+
+                    _thumbnailQueueProcessed++;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            lock (_thumbnailQueueGate)
+                _thumbnailQueueLastError = "Thumbnail generation canceled.";
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("ThumbnailQueue", "Thumbnail queue failed", ex);
+            lock (_thumbnailQueueGate)
+                _thumbnailQueueLastError = ex.Message;
+        }
+        finally
+        {
+            lock (_thumbnailQueueGate)
+            {
+                _thumbnailQueueRunning = false;
+                _thumbnailQueueCurrentTitle = string.Empty;
+                _thumbnailQueueCompletedUtc = DateTimeOffset.UtcNow;
+            }
+        }
+    }
 
     private bool HasFreshLibraryIndex()
     {
@@ -278,14 +419,54 @@ internal sealed partial class WebServer
     private static string NormalizePath(string path) =>
         Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
+    private void ValidateStartupConfiguration()
+    {
+        if (_config.Port is < 1024 or > 65535)
+            throw new InvalidOperationException($"Configured port {_config.Port} is outside the supported range 1024-65535.");
+
+        if (!Directory.Exists(_config.ResolvedMoviesPath))
+            Logger.Warning("Config", $"Movies folder does not exist and will be created on browse if possible: {_config.ResolvedMoviesPath}");
+
+        if (_videoExtensions.Count == 0)
+            throw new InvalidOperationException("At least one video file extension must be configured.");
+    }
+
+    private static HashSet<string> BuildExtensionSet(IEnumerable<string>? values)
+    {
+        var extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var value in values ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                continue;
+
+            var extension = value.Trim();
+            extensions.Add(extension.StartsWith('.') ? extension : "." + extension);
+        }
+
+        return extensions.Count > 0 ? extensions : new HashSet<string>(VideoExtensions, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static HashSet<string> BuildNameSet(IEnumerable<string>? values, IEnumerable<string> fallback)
+    {
+        var names = values?
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .ToArray() ?? [];
+
+        return names.Length > 0
+            ? new HashSet<string>(names, StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(fallback, StringComparer.OrdinalIgnoreCase);
+    }
+
     public void Start()
     {
+        ValidateStartupConfiguration();
         _activeScheme = _config.Scheme;
         _startupWarning = null;
         _ = Task.Run(() =>
         {
             LoadLibraryIndexCache();
-            if (_libraryIndex.Length == 0)
+            if (_config.RescanLibraryOnStartup || _libraryIndex.Length == 0)
                 StartLibraryIndexRefresh(force: false);
             else
                 Logger.Info($"Library index cache ready: {_libraryIndex.Length} videos; background watcher will keep it fresh");
@@ -297,6 +478,7 @@ internal sealed partial class WebServer
             {
                 EnsureHttpsBinding(_config.Port);
             }
+
             catch (Exception ex) when (ex is InvalidOperationException or PlatformNotSupportedException or CryptographicException)
             {
                 _activeScheme = "http";
@@ -308,7 +490,7 @@ internal sealed partial class WebServer
         _listener = new HttpListener();
         _listener.Prefixes.Add($"{_activeScheme}://*:{_config.Port}/");
         _listener.Start();
-        Logger.Info($"Web server listening on {_activeScheme}://*:{_config.Port}");
+        Logger.Info("WebServer", $"Web server listening on {_activeScheme}://*:{_config.Port}");
         StartLibraryWatcher();
         Task.Run(ListenLoopAsync);
     }
@@ -317,6 +499,8 @@ internal sealed partial class WebServer
 
     public void Stop()
     {
+        try { CancelThumbnailQueue(); } catch { }
+        try { _thumbnailQueueCancellation?.Dispose(); } catch { }
         try { _libraryIndexTimer.Dispose(); } catch { }
         try { _libraryWatcherDebounceTimer.Dispose(); } catch { }
         try { _libraryWatcher?.Dispose(); } catch { }
@@ -352,7 +536,7 @@ internal sealed partial class WebServer
 
     private void OnLibraryChanged(object sender, FileSystemEventArgs e)
     {
-        if (!WebPathHelpers.IsVideoFile(e.FullPath, VideoExtensions) && !Directory.Exists(e.FullPath))
+        if (!WebPathHelpers.IsVideoFile(e.FullPath, _videoExtensions) && !Directory.Exists(e.FullPath))
             return;
 
         ScheduleLibraryRescan();
@@ -360,8 +544,8 @@ internal sealed partial class WebServer
 
     private void OnLibraryRenamed(object sender, RenamedEventArgs e)
     {
-        if (!WebPathHelpers.IsVideoFile(e.FullPath, VideoExtensions)
-            && !WebPathHelpers.IsVideoFile(e.OldFullPath, VideoExtensions)
+        if (!WebPathHelpers.IsVideoFile(e.FullPath, _videoExtensions)
+            && !WebPathHelpers.IsVideoFile(e.OldFullPath, _videoExtensions)
             && !Directory.Exists(e.FullPath))
             return;
 
@@ -535,7 +719,25 @@ internal sealed partial class WebServer
 
     private static string GetHtmlPage() => _cachedHtmlPage.Value;
 
-    private static string GetServiceWorkerJs() => _cachedServiceWorkerJs.Value;
+    private static string GetStylesCss() => _cachedStylesCss.Value;
+
+    private static string GetAppJs() => _cachedAppJs.Value;
+
+    private static string GetServiceWorkerJs() =>
+        _cachedServiceWorkerJsRaw.Value.Replace("__CACHE_VERSION__", _appVersion, StringComparison.Ordinal);
+
+    private static string ReadAppVersion()
+    {
+        var versionFile = Path.Combine(AppContext.BaseDirectory, "version.txt");
+        if (File.Exists(versionFile))
+        {
+            var text = File.ReadAllText(versionFile).Trim();
+            if (!string.IsNullOrWhiteSpace(text))
+                return text.Replace('.', '-');
+        }
+        var v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+        return v is null ? "1-0-0" : $"{v.Major}-{v.Minor}-{v.Build}";
+    }
 
     private static string LoadWebAsset(string fileName, string? fallback = null)
     {

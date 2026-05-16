@@ -9,7 +9,18 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\RemotePlay.ico</ApplicationIcon>
+    <Version>1.0.8</Version>
+    <AssemblyVersion>1.0.8.0</AssemblyVersion>
+    <FileVersion>1.0.8.0</FileVersion>
   </PropertyGroup>
+
+  <Target Name="WriteVersionTxt" AfterTargets="Build">
+    <WriteLinesToFile File="$(OutputPath)version.txt" Lines="$(Version)" Overwrite="true" />
+  </Target>
+
+  <Target Name="WriteVersionTxtOnPublish" AfterTargets="Publish">
+    <WriteLinesToFile File="$(PublishDir)version.txt" Lines="$(Version)" Overwrite="true" />
+  </Target>
 
   <ItemGroup>
     <Compile Remove="RemotePlay.Tests\**\*.cs" />
@@ -21,9 +32,7 @@
   <ItemGroup>
     <Resource Include="Assets\RemotePlay.ico" />
 
-    <Content Include="remoteplay.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
+    <None Include="remoteplay.json" />
 
     <Content Include="Assets\Pwa\*.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
