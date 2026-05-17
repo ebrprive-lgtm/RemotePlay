@@ -112,12 +112,19 @@ public partial class MainWindow
                 _lastAudioTrackId = null;
                 _preferredSubtitleApplied = false;
                 _zoom = 1;
+                _forceSwAudio = false;
                 ApplyStoredMoviePreferences(filePath);
                 BeginVideoTransition();
                 VideoPlayer.Visibility = Visibility.Visible;
                 _mediaPlayer.Stop();
                 using var media = new Media(_libVlc, new Uri(filePath, UriKind.Absolute));
                 media.AddOption(":avcodec-hw=none");
+                if (_forceSwAudio)
+                {
+                    media.AddOption(":audio-resampler=soxr");
+                    media.AddOption(":no-spdif");
+                    AppendLog("[Audio] Software audio decode forced for this file.");
+                }
                 _hasSubtitles = TryAttachSubtitle(media, filePath);
                 _mediaPlayer.Play(media);
                 _mediaPlayer.SetRate((float)_playbackSpeed);
@@ -169,6 +176,7 @@ public partial class MainWindow
             _brightness = Math.Clamp(preferences.Brightness, 0, 1);
             _saturation = Math.Clamp(preferences.Saturation, 0, 2);
             _zoom = Math.Clamp(preferences.Zoom, 1, 2);
+            _forceSwAudio = preferences.ForceSwAudio;
         }
         finally
         {
@@ -322,6 +330,10 @@ public partial class MainWindow
             if (!_isVideoMode)
                 _miniPreviewTimer.Start();
             ApplyVideoZoom();
+
+            // Capture codec/track info while media is active and tracks are populated.
+            _codecInfo = CaptureCodecInfo();
+
             Logger.Info("[Subtitle] OnMediaPlaying: attempting subtitle selection");
             var preferredSubtitleTrack = GetPreferredSubtitleTrackId();
             if (preferredSubtitleTrack is int subtitleTrackId)
@@ -415,6 +427,10 @@ public partial class MainWindow
         IdleOverlay.Visibility = Visibility.Collapsed;
         IdleOverlay.IsHitTestVisible = false;
 
+        // VideoPanel was pre-created Hidden (HWND exists at correct size, just SW_HIDE).
+        // Switching to Visible is SW_SHOW only — no resize, no WM_PAINT white flash.
+        VideoPanel.Visibility = Visibility.Visible;
+
         if (VideoPanel.FindName("VideoBrightnessOverlay") is UIElement brightnessOverlay)
             brightnessOverlay.Visibility = Visibility.Visible;
 
@@ -444,7 +460,20 @@ public partial class MainWindow
     {
         var transitionCts = _videoTransitionCts;
         if (transitionCts is null)
+        {
+            // The transition was cancelled mid-flight (e.g. ShowIdleOverlay was called
+            // during EnterFullscreenCleanAsync while BeginVideoTransition was already
+            // pending). Media is now playing so we still need to reveal the video panel.
+            await Dispatcher.InvokeAsync(() =>
+            {
+                HideIdleOverlay();
+                VideoTransitionOverlay.Visibility = Visibility.Collapsed;
+                VideoTransitionOverlay.Opacity = 0;
+                ApplyBrightnessOverlay();
+                Logger.Info("[VideoTransition] Complete (no-CTS fallback): video panel revealed");
+            });
             return;
+        }
 
         try
         {
@@ -488,9 +517,18 @@ public partial class MainWindow
             catch (Exception ex) { Logger.Error("Failed to refresh idle overlay QR", ex); }
         }
 
+        // IdleOverlay is now in the root Grid (outside VideoPanel) so showing it
+        // never requires the LibVLC HWND to be visible.
         IdleOverlay.Visibility = Visibility.Visible;
         IdleOverlay.IsHitTestVisible = true;
-        // VideoPlayer stays Visible so LibVLC keeps its HWND; IdleOverlay covers it.
+
+        // Collapse VideoPanel only when not in video mode. When in video mode keep
+        // it Hidden so the HWND stays at the correct size and SW_SHOW later won't
+        // cause a resize/repaint white flash.
+        if (!_isVideoMode)
+            VideoPanel.Visibility = Visibility.Collapsed;
+        else if (VideoPanel.Visibility == Visibility.Visible)
+            VideoPanel.Visibility = Visibility.Hidden;
 
         // Keep idle screen dark even when brightness overlay had been raised during playback.
         if (VideoPanel.FindName("VideoBrightnessOverlay") is UIElement brightnessOverlay)
@@ -530,20 +568,31 @@ public partial class MainWindow
             var currentSubtitleTrackId = -1;
             try
             {
-                audioTracks = BuildTrackOptions(_mediaPlayer.AudioTrackDescription, includeOffTrack: false);
-                currentAudioTrackId = _mediaPlayer.AudioTrack;
-                if (currentAudioTrackId >= 0)
-                    _lastAudioTrackId = currentAudioTrackId;
+                // Guard: AudioTrackDescription and SpuDescription call into native
+                // LibVLC memory. Accessing them after Stop/Dispose causes an
+                // AccessViolationException. Only call when media is loaded and active.
+                var isActive = _mediaPlayer.Media is not null
+                    && _mediaPlayer.State is not VLCState.Stopped
+                                          and not VLCState.NothingSpecial
+                                          and not VLCState.Ended
+                                          and not VLCState.Error;
+                if (isActive)
+                {
+                    audioTracks = BuildTrackOptions(_mediaPlayer.AudioTrackDescription, includeOffTrack: false);
+                    currentAudioTrackId = _mediaPlayer.AudioTrack;
+                    if (currentAudioTrackId >= 0)
+                        _lastAudioTrackId = currentAudioTrackId;
 
-                subtitleTracks = BuildTrackOptions(_mediaPlayer.SpuDescription, includeOffTrack: true);
-                if (subtitleTracks.Any(t => t.Id >= 0))
-                    hasSubtitles = true;
+                    subtitleTracks = BuildTrackOptions(_mediaPlayer.SpuDescription, includeOffTrack: true);
+                    if (subtitleTracks.Any(t => t.Id >= 0))
+                        hasSubtitles = true;
 
-                var currentSpu = _mediaPlayer.Spu;
-                currentSubtitleTrackId = currentSpu;
-                subtitlesEnabled = currentSpu != -1;
-                if (currentSpu >= 0)
-                    _lastSubtitleTrackId = currentSpu;
+                    var currentSpu = _mediaPlayer.Spu;
+                    currentSubtitleTrackId = currentSpu;
+                    subtitlesEnabled = currentSpu != -1;
+                    if (currentSpu >= 0)
+                        _lastSubtitleTrackId = currentSpu;
+                }
             }
             catch (Exception ex)
             {
@@ -801,8 +850,21 @@ public partial class MainWindow
         {
             Brightness = _brightness,
             Saturation = _saturation,
-            Zoom = _zoom
+            Zoom = _zoom,
+            ForceSwAudio = _forceSwAudio
         });
+    }
+
+    private void FixAudio()
+    {
+        var filePath = _currentFilePath;
+        if (string.IsNullOrWhiteSpace(filePath))
+            return;
+
+        _forceSwAudio = true;
+        SaveCurrentMoviePreferences();
+        AppendLog("[Audio] Software decode enabled — restarting playback...");
+        PlayMovie(filePath);
     }
 
     private WebServer CreateWebServer(AppConfig config)
@@ -835,7 +897,8 @@ public partial class MainWindow
             MoveQueueItem = MovePlaybackQueueItem,
             ClearQueue = ClearPlaybackQueue,
             ClearPlaybackHistory = _playbackHistory.Clear,
-            GetDisplayDiagnostics = GetDisplayDiagnostics
+            GetDisplayDiagnostics = GetDisplayDiagnostics,
+            FixAudio = FixAudio
         }, _broadcaster, _playbackHistory, _appUpdater);
     }
 
@@ -941,6 +1004,10 @@ public partial class MainWindow
     {
         try
         {
+            if (_mediaPlayer.Media is null || _mediaPlayer.State is VLCState.Stopped
+                    or VLCState.NothingSpecial or VLCState.Ended or VLCState.Error)
+                return;
+
             var audioTracks = _mediaPlayer.AudioTrackDescription;
             if (audioTracks is null || audioTracks.Length == 0)
                 return;
@@ -1188,6 +1255,135 @@ public partial class MainWindow
         }
 
         return null;
+    }
+
+    private MediaCodecInfo? CaptureCodecInfo()
+    {
+        try
+        {
+            var media = _mediaPlayer.Media;
+            if (media is null)
+                return null;
+
+            var tracks = media.Tracks;
+            if (tracks is null || tracks.Length == 0)
+                return null;
+
+            // Codec fourcc → human-readable ASCII string (e.g. "h264", "mp4a").
+            static string FourCc(uint fourcc) =>
+                fourcc == 0 ? "N/A" : new string([
+                    (char)(fourcc & 0xFF),
+                    (char)((fourcc >> 8) & 0xFF),
+                    (char)((fourcc >> 16) & 0xFF),
+                    (char)((fourcc >> 24) & 0xFF)
+                ]).Trim('\0').Trim();
+
+            // Well-known fourcc → friendly display name.
+            static string FourCcDesc(uint fourcc) => FourCc(fourcc) switch
+            {
+                "h264" or "H264" or "avc1" => "H.264 / AVC",
+                "hev1" or "hvc1" or "hevc" or "H265" => "H.265 / HEVC",
+                "av01" or "AV1 " => "AV1",
+                "VP80" or "vp08" => "VP8",
+                "VP90" or "vp09" => "VP9",
+                "XVID" or "xvid" or "divx" or "DIVX" or "DX50" => "MPEG-4 / DivX",
+                "mp4v" or "MP4V" => "MPEG-4 Visual",
+                "mpg1" or "mpg2" or "mp2v" or "MP2V" => "MPEG-2 Video",
+                "WMV3" or "wmv3" => "WMV3 / VC-1",
+                "mp4a" => "AAC / MP4A",
+                "a52 " or "A52 " or "ac-3" or "ac3 " => "AC-3 / Dolby Digital",
+                "eac3" or "EAC3" => "E-AC-3 / Dolby Digital+",
+                "dts " or "DTS " or "dtsc" or "dtsh" or "dtse" => "DTS",
+                "truehd" => "Dolby TrueHD",
+                "flac" or "FLAC" => "FLAC",
+                "mp3 " or "MP3 " or "mpga" => "MP3",
+                "aac " or "AAC " => "AAC",
+                "opus" or "OPUS" => "Opus",
+                "vorb" or "VORB" => "Vorbis",
+                "pcm " or "PCM " or "araw" => "PCM",
+                "subt" or "SUBT" => "Text / SRT",
+                "ass " or "ASS " => "ASS / SSA",
+                "dvbs" or "dvbt" or "DVBS" => "DVD Subtitle",
+                var s => s
+            };
+
+            static string ChannelStr(uint ch) => ch switch
+            {
+                1 => "1.0 (Mono)",
+                2 => "2.0 (Stereo)",
+                6 => "5.1",
+                8 => "7.1",
+                _ => $"{ch} ch"
+            };
+
+            static string FpsStr(uint num, uint den) =>
+                num > 0 && den > 0 ? $"{Math.Round((double)num / den, 3)} fps" : "N/A";
+
+            static string SarStr(uint num, uint den) =>
+                num > 0 && den > 0 ? $"{num}:{den}" : "N/A";
+
+            var videoTracks = tracks
+                .Where(t => t.TrackType == TrackType.Video)
+                .Select(t => new VideoTrackInfo
+                {
+                    Id              = t.Id,
+                    Codec           = FourCc(t.Codec),
+                    CodecDescription = FourCcDesc(t.Codec),
+                    Width           = (int)t.Data.Video.Width,
+                    Height          = (int)t.Data.Video.Height,
+                    FrameRate       = FpsStr(t.Data.Video.FrameRateNum, t.Data.Video.FrameRateDen),
+                    AspectRatio     = SarStr(t.Data.Video.SarNum, t.Data.Video.SarDen),
+                    Orientation     = t.Data.Video.Orientation.ToString(),
+                    Language        = t.Language ?? string.Empty,
+                    Description     = t.Description ?? string.Empty
+                })
+                .ToArray();
+
+            var audioTracks = tracks
+                .Where(t => t.TrackType == TrackType.Audio)
+                .Select(t => new AudioTrackInfo
+                {
+                    Id              = t.Id,
+                    Codec           = FourCc(t.Codec),
+                    CodecDescription = FourCcDesc(t.Codec),
+                    Channels        = (int)t.Data.Audio.Channels,
+                    ChannelLayout   = ChannelStr(t.Data.Audio.Channels),
+                    SampleRate      = (int)t.Data.Audio.Rate,
+                    Language        = t.Language ?? string.Empty,
+                    Description     = t.Description ?? string.Empty
+                })
+                .ToArray();
+
+            var subtitleTracks = tracks
+                .Where(t => t.TrackType == TrackType.Text)
+                .Select(t => new SubtitleTrackInfo
+                {
+                    Id              = t.Id,
+                    Codec           = FourCc(t.Codec),
+                    CodecDescription = FourCcDesc(t.Codec),
+                    Language        = t.Language ?? string.Empty,
+                    Description     = t.Description ?? string.Empty,
+                    Encoding        = t.Data.Subtitle.Encoding ?? string.Empty
+                })
+                .ToArray();
+
+            return new MediaCodecInfo
+            {
+                FilePath        = _currentFilePath ?? string.Empty,
+                FileName        = Path.GetFileName(_currentFilePath ?? string.Empty),
+                ContainerFormat = Path.GetExtension(_currentFilePath ?? string.Empty).TrimStart('.').ToUpperInvariant(),
+                TotalTracks     = tracks.Length,
+                CapturedAtUtc   = DateTime.UtcNow.ToString("u"),
+                VideoTracks     = videoTracks,
+                AudioTracks     = audioTracks,
+                SubtitleTracks  = subtitleTracks
+            };
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Could not capture codec info", ex);
+            return null;
+        }
     }
 
 }

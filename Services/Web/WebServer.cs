@@ -717,7 +717,8 @@ internal sealed partial class WebServer
         }
     });
 
-    private static string GetHtmlPage() => _cachedHtmlPage.Value;
+    private static string GetHtmlPage() =>
+        _cachedHtmlPage.Value.Replace("__ASSET_VERSION__", _appVersion, StringComparison.Ordinal);
 
     private static string GetStylesCss() => _cachedStylesCss.Value;
 

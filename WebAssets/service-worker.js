@@ -29,7 +29,7 @@
           }
 
           if (event.request.mode === 'navigate') {
-            event.respondWith(fetch(event.request).catch(() => caches.match('/offline.html')));
+            event.respondWith(fetch(event.request, {cache:'no-store'}).catch(() => caches.match('/offline.html')));
             return;
           }
 

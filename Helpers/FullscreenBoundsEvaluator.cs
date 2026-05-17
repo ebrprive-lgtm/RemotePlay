@@ -23,7 +23,6 @@ internal static class FullscreenBoundsEvaluator
 
         return !string.Equals(windowStyle, "None", StringComparison.Ordinal)
             || !string.Equals(resizeMode, "NoResize", StringComparison.Ordinal)
-            || !string.Equals(windowState, "Maximized", StringComparison.Ordinal)
             || !topmost
             || Math.Abs(windowLeft - targetLeft) > tolerancePixels
             || Math.Abs(windowTop - targetTop) > tolerancePixels

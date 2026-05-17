@@ -27,4 +27,5 @@ internal sealed class WebServerCallbacks
     public required Action ClearQueue { get; init; }
     public required Action<string> ClearPlaybackHistory { get; init; }
     public required Func<DisplayDiagnostics> GetDisplayDiagnostics { get; init; }
+    public required Action FixAudio { get; init; }
 }

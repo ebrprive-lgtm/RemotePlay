@@ -30,7 +30,14 @@
         function applyPhonePlaybackState(isPlaying){
           if(!isPhoneRemoteOnly)return;
           document.body.classList.toggle('phone-playing',Boolean(isPlaying));
-          document.getElementById('now-playing-bar').style.display=isPlaying?'flex':'none';
+          setPlayerBarVisible(isPlaying);
+        }
+
+        function setPlayerBarVisible(visible){
+          const bar=document.getElementById('now-playing-bar');
+          const hdr=document.querySelector('header');
+          if(bar)bar.style.display=visible?'flex':'none';
+          if(hdr)hdr.classList.toggle('player-visible',Boolean(visible));
         }
 
         function applyDesktopDockedLayout(isPlaying){
@@ -45,7 +52,7 @@
             document.body.classList.remove('phone-playing');
             document.body.classList.remove('landscape-controls');
             applyDesktopDockedLayout(Boolean(playingPath));
-            if(!playingPath)document.getElementById('now-playing-bar').style.display='none';
+            if(!playingPath)setPlayerBarVisible(false);
             return;
           }
 
@@ -107,7 +114,7 @@
             updateStopBtn(s.isPlaying,hasQueue);
             updateAdjacentButtons(s);
             if(s.isPlaying||hasQueue){
-              bar.style.display='flex';
+              setPlayerBarVisible(true);
             }
             if(s.isPlaying){
               if(s.filePath&&s.filePath!==playingPath)setPlayerPoster(s.filePath);
@@ -175,7 +182,7 @@
                 document.body.classList.add('desktop-player-docked');
               }else{
                 applyDesktopDockedLayout(false);
-                bar.style.display='none';
+                setPlayerBarVisible(false);
               }
             }
           }catch(e){statusFailures++;setConnectionStatus(statusFailures>2?'Connection lost - retrying...':'Retrying connection...',true);updateDiagnosticsIndicator('error');}
@@ -259,9 +266,37 @@
           refreshDiagnostics();
         }
         function closeDiagnostics(){document.getElementById('diagnostics-overlay').classList.remove('open');}
+
+        function switchDiagTab(btn, tabName){
+          document.querySelectorAll('.diag-tab').forEach(t=>t.classList.remove('active'));
+          document.querySelectorAll('.diag-pane').forEach(p=>p.classList.remove('active'));
+          btn.classList.add('active');
+          const pane=document.getElementById('diag-pane-'+tabName);
+          if(pane)pane.classList.add('active');
+        }
+
+        function diagRow(label,value){
+          return '<dt>'+esc(label)+'</dt><dd>'+esc(String(value??'N/A'))+'</dd>';
+        }
+        function diagRowHtml(label,html){
+          return '<dt>'+esc(label)+'</dt><dd>'+html+'</dd>';
+        }
+
+        function renderTrackCard(fields){
+          return '<div class="diag-track-card">'+fields.map(([k,v])=>{
+            if(v===undefined||v===null||v==='')return '';
+            return '<div class="diag-track-row"><span class="diag-track-key">'+esc(k)+'</span><span class="diag-track-val">'+esc(String(v))+'</span></div>';
+          }).filter(Boolean).join('')+'</div>';
+        }
+
         async function refreshDiagnostics(){
           const content=document.getElementById('diagnostics-content');
+          if(!content)return;
           content.innerHTML='<dt>Status</dt><dd>Loading...</dd>';
+          ['video','audio','subtitles'].forEach(t=>{
+            const el=document.getElementById('diag-'+t+'-content');
+            if(el)el.innerHTML='<p class="diag-muted">Loading...</p>';
+          });
           try{
             const [statusResponse,healthResponse,displayResponse,libraryResponse]=await Promise.all([
               fetch('/api/status'),fetch('/api/health'),fetch('/api/display-diagnostics'),fetch('/api/library-status')
@@ -270,6 +305,9 @@
             const health=await healthResponse.json();
             const display=await displayResponse.json();
             const library=await libraryResponse.json();
+            const ci=display.codecInfo;
+
+            // ── Overview tab ────────────────────────────────────────────
             const rows=[
               ['Playback',status.isPlaying?'Playing':status.queueCount>0?'Queued':'Idle'],
               ['Title',(status.title||'').replace(/^\s*[▶⏸]\s*/,'')||'N/A'],
@@ -282,9 +320,112 @@
               ['Brightness',Math.round((Number(status.brightness)||0)*100)+'%'],
               ['Last error',status.lastError||health.startupWarning||library.lastError||'None']
             ];
-            content.innerHTML=rows.map(row=>'<dt>'+esc(row[0])+'</dt><dd>'+esc(row[1])+'</dd>').join('');
+            if(ci){
+              rows.push(['─── Media ───','']);
+              rows.push(['File',ci.fileName||'N/A']);
+              rows.push(['Container',ci.containerFormat||'N/A']);
+              rows.push(['Video tracks',String(ci.videoTracks?.length||0)]);
+              rows.push(['Audio tracks',String(ci.audioTracks?.length||0)]);
+              rows.push(['Subtitles',String(ci.subtitleTracks?.length||0)]);
+              if(ci.videoTracks?.length){
+                const vt=ci.videoTracks[0];
+                rows.push(['Video codec',vt.codecDescription+(vt.codec&&vt.codec!==vt.codecDescription?' ('+vt.codec+')':'')]);
+                rows.push(['Resolution',vt.width+'×'+vt.height]);
+                rows.push(['Frame rate',vt.frameRate]);
+              }
+              if(ci.audioTracks?.length){
+                const at=ci.audioTracks[0];
+                rows.push(['Audio codec',at.codecDescription+(at.codec&&at.codec!==at.codecDescription?' ('+at.codec+')':'')]);
+                rows.push(['Channels',at.channelLayout]);
+                rows.push(['Sample rate',at.sampleRate+' Hz']);
+              }
+            }
+            content.innerHTML=rows.map(row=>{
+              if(row[0].startsWith('─')){
+                return '<dt class="diag-section-label">'+esc(row[0])+'</dt><dd></dd>';
+              }
+              return diagRow(row[0],row[1]);
+            }).join('');
+
+            // ── Video tab
+            const videoEl=document.getElementById('diag-video-content');
+            if(videoEl){
+              if(!ci||!ci.videoTracks?.length){
+                videoEl.innerHTML='<p class="diag-muted">No video tracks — start a video first.</p>';
+              } else {
+                videoEl.innerHTML=ci.videoTracks.map((t,i)=>{
+                  const title='<div class="diag-track-title">&#128250; Video track '+(i+1)+(t.description?' · '+t.description:'')+'</div>';
+                  return title+renderTrackCard([
+                    ['Codec',t.codecDescription+(t.codec&&t.codec!==t.codecDescription?' ('+t.codec+')':'')],
+                    ['Resolution',t.width+'×'+t.height],
+                    ['Frame rate',t.frameRate],
+                    ['Aspect ratio (SAR)',t.aspectRatio],
+                    ['Orientation',t.orientation],
+                    ['Language',t.language||''],
+                  ]);
+                }).join('');
+              }
+            }
+
+            // ── Audio tab ───────────────────────────────────────────────
+            const audioEl=document.getElementById('diag-audio-content');
+            if(audioEl){
+              const isPlaying=Boolean(status.isPlaying);
+              const swActive=Boolean(display.forceSwAudio);
+              let audioFixHtml='';
+              if(isPlaying){
+                if(swActive){
+                  audioFixHtml='<div class="diag-audio-fix diag-audio-fix--active">&#10003; Software audio decode is active for this file.</div>';
+                } else {
+                  audioFixHtml='<div class="diag-audio-fix"><button class="btn btn-dim" id="btn-fix-audio">&#128267; Fix silent / broken audio</button><span class="diag-muted"> &nbsp;Forces software decode &amp; restarts playback. Saved for this file.</span></div>';
+                }
+              }
+              if(!ci||!ci.audioTracks?.length){
+                audioEl.innerHTML=audioFixHtml+'<p class="diag-muted">No audio tracks — start a video first.</p>';
+              } else {
+                audioEl.innerHTML=audioFixHtml+ci.audioTracks.map((t,i)=>{
+                  const label=t.description||t.language||('Track '+(i+1));
+                  const title='<div class="diag-track-title">&#127925; Audio track '+(i+1)+' · '+esc(label)+'</div>';
+                  return title+renderTrackCard([
+                    ['Codec',t.codecDescription+(t.codec&&t.codec!==t.codecDescription?' ('+t.codec+')':'')],
+                    ['Channels',t.channelLayout],
+                    ['Sample rate',t.sampleRate?' '+t.sampleRate+' Hz':''],
+                    ['Language',t.language||''],
+                    ['Description',t.description||''],
+                  ]);
+                }).join('');
+              }
+              const btnFix=audioEl.querySelector('#btn-fix-audio');
+              if(btnFix)btnFix.addEventListener('click',async()=>{
+                btnFix.disabled=true;
+                btnFix.textContent='Applying...';
+                try{await api('/api/fix-audio');}catch(e){btnFix.textContent='Error — try again';}
+                setTimeout(()=>refreshDiagnostics(),1500);
+              });
+            }
+
+            // ── Subtitles tab
+            const subsEl=document.getElementById('diag-subtitles-content');
+            if(subsEl){
+              if(!ci||!ci.subtitleTracks?.length){
+                subsEl.innerHTML='<p class="diag-muted">No subtitle tracks in this file.</p>';
+              } else {
+                subsEl.innerHTML=ci.subtitleTracks.map((t,i)=>{
+                  const label=t.description||t.language||('Track '+(i+1));
+                  const title='<div class="diag-track-title">&#128221; Subtitle track '+(i+1)+' · '+esc(label)+'</div>';
+                  return title+renderTrackCard([
+                    ['Codec',t.codecDescription+(t.codec&&t.codec!==t.codecDescription?' ('+t.codec+')':'')],
+                    ['Language',t.language||''],
+                    ['Encoding',t.encoding||''],
+                    ['Description',t.description||''],
+                  ]);
+                }).join('');
+              }
+            }
+
           }catch(e){
-            content.innerHTML='<dt>Error</dt><dd>'+esc(String(e))+'</dd>';
+            console.error('[diag] refreshDiagnostics error:', e);
+            if(content)content.innerHTML='<dt>Error</dt><dd>'+esc(String(e))+'</dd>';
           }
         }
 
@@ -1080,7 +1221,7 @@
           if(isPhoneRemoteOnly)applyPhonePlaybackState(false);
           else{
             applyDesktopDockedLayout(false);
-            document.getElementById('now-playing-bar').style.display='none';
+            setPlayerBarVisible(false);
           }
           setStatus('Stopped.');
           await api('/api/stop');
@@ -1248,6 +1389,26 @@
         setInterval(refreshVersion,30000);
         document.addEventListener('click',e=>{const dd=document.getElementById('peers-dropdown');if(dd.classList.contains('open')&&!e.target.closest('#peers-wrap'))closePeers();});
         document.addEventListener('pointerdown',e=>{if(!e.target.closest('.movie-card'))document.querySelectorAll('.movie-card.actions-open').forEach(c=>c.classList.remove('actions-open'));});
+
+        // Diagnostics panel wiring
+        (function wireDiagnostics(){
+          const overlay=document.getElementById('diagnostics-overlay');
+          const tabs=document.getElementById('diag-tabs');
+          const btnRefresh=document.getElementById('btn-diag-refresh');
+          const btnClose=document.getElementById('btn-diag-close');
+          const btnRescan=document.getElementById('btn-rescan');
+          const btnThumbs=document.getElementById('btn-thumbs');
+          if(overlay)overlay.addEventListener('click',e=>{if(e.target===overlay)closeDiagnostics();});
+          if(tabs)tabs.addEventListener('click',e=>{
+            const btn=e.target.closest('.diag-tab');
+            if(!btn)return;
+            switchDiagTab(btn,btn.dataset.tab);
+          });
+          if(btnRefresh)btnRefresh.addEventListener('click',()=>refreshDiagnostics());
+          if(btnClose)btnClose.addEventListener('click',()=>closeDiagnostics());
+          if(btnRescan)btnRescan.addEventListener('click',()=>rescan());
+          if(btnThumbs)btnThumbs.addEventListener('click',()=>startThumbnailQueue());
+        })();
 
         async function refreshPeers(){
           try{

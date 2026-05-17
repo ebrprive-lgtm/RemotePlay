@@ -31,4 +31,6 @@ internal sealed record DisplayDiagnostics
     public double DpiScaleY { get; init; }
     public bool NeedsFullscreenRepair { get; init; }
     public DisplayInfo[] Displays { get; init; } = [];
+    public MediaCodecInfo? CodecInfo { get; init; }
+    public bool ForceSwAudio { get; init; }
 }

@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.RegularExpressions;
 using System.Net;
 using System.Net.Http;
@@ -32,6 +32,10 @@ public partial class MainWindow : Window
     private RemotePlay.Services.AppUpdater? _appUpdater;
     private System.Windows.Forms.NotifyIcon? _trayIcon;
     private bool _isExiting;
+    private double _windowedLeft = double.NaN;
+    private double _windowedTop  = double.NaN;
+    private double _windowedWidth  = double.NaN;
+    private double _windowedHeight = double.NaN;
     private readonly DispatcherTimer _bannerTimer;
     private readonly DispatcherTimer _overlayTimer;
     private readonly DispatcherTimer _historyTimer;
@@ -57,9 +61,11 @@ public partial class MainWindow : Window
     private int? _lastAudioTrackId;
     private bool _hasSubtitles;
     private bool _preferredSubtitleApplied;
+    private bool _forceSwAudio;
     private TimeSpan _duration = TimeSpan.Zero;
     private bool _isApplyingMoviePreferences;
     private CancellationTokenSource? _videoTransitionCts;
+    private MediaCodecInfo? _codecInfo;
     private bool _serverReady;
     private readonly List<string> _playbackQueue = [];
     private string? _serverUrl;
@@ -186,8 +192,37 @@ public partial class MainWindow : Window
         RefreshCurrentDisplayText();
     }
 
+    private static void PopulateDisplayCombo(System.Windows.Controls.ComboBox combo, int savedIdx)
+    {
+        combo.Items.Clear();
+        combo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = "Primary screen (default)", Tag = -1 });
+        var screens = System.Windows.Forms.Screen.AllScreens;
+        for (int i = 0; i < screens.Length; i++)
+        {
+            var s = screens[i];
+            var label = $"Screen {i + 1}  ({s.Bounds.Width}x{s.Bounds.Height}){(s.Primary ? "  [Primary]" : "")}";
+            combo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = label, Tag = i });
+        }
+        foreach (System.Windows.Controls.ComboBoxItem item in combo.Items)
+            if (item.Tag is int tag && tag == savedIdx)
+                combo.SelectedItem = item;
+        if (combo.SelectedItem is null)
+            combo.SelectedIndex = 0;
+    }
+
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            RefreshCurrentDisplayText();
+            if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox combo)
+                PopulateDisplayCombo(combo, _config.PreferredDisplayIndex);
+        });
+    }
+
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         var version = System.Reflection.Assembly.GetExecutingAssembly()
             .GetName().Version;
         Title = version is not null
@@ -235,23 +270,7 @@ public partial class MainWindow : Window
         if (FindName("UseTrayIconBox") is System.Windows.Controls.CheckBox useTrayIconBox)
             useTrayIconBox.IsChecked = _config.UseTrayIcon;
         if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo)
-        {
-            displayCombo.Items.Clear();
-            displayCombo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = "Primary screen (default)", Tag = -1 });
-            var screens = System.Windows.Forms.Screen.AllScreens;
-            for (int i = 0; i < screens.Length; i++)
-            {
-                var s = screens[i];
-                var label = $"Screen {i + 1}  ({s.Bounds.Width}x{s.Bounds.Height}){(s.Primary ? "  [Primary]" : "")}";
-                displayCombo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = label, Tag = i });
-            }
-            var savedIdx = _config.PreferredDisplayIndex;
-            foreach (System.Windows.Controls.ComboBoxItem item in displayCombo.Items)
-                if (item.Tag is int tag2 && tag2 == savedIdx)
-                    displayCombo.SelectedItem = item;
-            if (displayCombo.SelectedItem is null)
-                displayCombo.SelectedIndex = 0;
-        }
+            PopulateDisplayCombo(displayCombo, _config.PreferredDisplayIndex);
 
         AppendLog($"RemotePlay started");
         AppendLog($"Movies: {_config.ResolvedMoviesPath}");
@@ -334,8 +353,10 @@ public partial class MainWindow : Window
                     ShowDiag(_webServer.StartupWarning);
                 if (!isRestart)
                 {
-                    DismissStartupOverlay(success: true);
                     _ = Task.Run(() => { Console.Beep(880, 120); Console.Beep(1108, 200); });
+                    DismissStartupOverlay(success: true, onComplete: () =>
+                        Dispatcher.InvokeAsync(EnterFullscreenCleanAsync,
+                            System.Windows.Threading.DispatcherPriority.Loaded));
                 }
                 RefreshStatusStats();
                 _statsTimer.Start();
@@ -362,9 +383,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private void DismissStartupOverlay(bool success)
+    private void DismissStartupOverlay(bool success, Action? onComplete = null)
     {
-        if (StartupOverlay.Visibility != Visibility.Visible) return;
+        if (StartupOverlay.Visibility != Visibility.Visible)
+        {
+            onComplete?.Invoke();
+            return;
+        }
 
         if (!success)
         {
@@ -376,7 +401,11 @@ public partial class MainWindow : Window
 
         var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0,
             new Duration(TimeSpan.FromMilliseconds(success ? 600 : 1800)));
-        fade.Completed += (_, _) => StartupOverlay.Visibility = Visibility.Collapsed;
+        fade.Completed += (_, _) =>
+        {
+            StartupOverlay.Visibility = Visibility.Collapsed;
+            onComplete?.Invoke();
+        };
         StartupOverlay.BeginAnimation(OpacityProperty, fade);
     }
 
@@ -420,6 +449,7 @@ public partial class MainWindow : Window
 
     private void OnClosing(object? sender, CancelEventArgs e)
     {
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         if (!_isExiting && _config.UseTrayIcon)
         {
             e.Cancel = true;
@@ -705,43 +735,122 @@ public partial class MainWindow : Window
 
     // -- View toggle ---------------------------------------------------------
 
+    private void OnIdleOverlayClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (_isVideoMode)
+            OnToggleView(this, new RoutedEventArgs());
+    }
+
     private void OnToggleView(object sender, RoutedEventArgs e)
     {
-        _isVideoMode = !_isVideoMode;
+        if (!_isVideoMode)
+        {
+            _ = EnterFullscreenCleanAsync();
+            return;
+        }
 
-        if (_isVideoMode)
+        // Exiting fullscreen.
+        _isVideoMode = false;
+        _fullscreenWatchdogTimer.Stop();
+        _overlayTimer.Stop();
+        HideVideoOverlay(immediate: true);
+        IdleOverlay.Visibility = Visibility.Collapsed;
+        IdleOverlay.IsHitTestVisible = false;
+        VideoPanel.Visibility = Visibility.Collapsed;
+        AppToolbar.Visibility = Visibility.Visible;
+        MainTabs.Visibility = Visibility.Visible;
+        CornerWidget.Visibility = Visibility.Visible;
+        ToggleViewBtn.Content = "\u25B6  Switch to Video";
+        Topmost = false;
+        WindowStyle = WindowStyle.SingleBorderWindow;
+        WindowState = WindowState.Normal;
+        ResizeMode = ResizeMode.CanResize;
+
+        // Move the main window back to where it was before fullscreen.
+        if (!double.IsNaN(_windowedLeft))
         {
-            _miniPreviewTimer.Stop();
-            MiniPreviewBorder.Visibility = Visibility.Collapsed;
-            QrPanel.Visibility = Visibility.Visible;
-            CornerWidget.Visibility = Visibility.Collapsed;
-            MainTabs.Visibility = Visibility.Collapsed;
-            AppToolbar.Visibility = Visibility.Collapsed;
-            ToggleViewBtn.Content = "\uD83E\uDEB5  Switch to Log";
-            EnsureFullscreenWindowBounds(force: true);
-            _fullscreenWatchdogTimer.Start();
-            VideoPanel.Visibility = Visibility.Visible;
-            HideVideoOverlay(immediate: true);
-            if (_currentFilePath is null)
-                ShowIdleOverlay();
+            Left   = _windowedLeft;
+            Top    = _windowedTop;
+            Width  = _windowedWidth;
+            Height = _windowedHeight;
         }
+        if (_currentFilePath is not null && _mediaPlayer.IsPlaying)
+            _miniPreviewTimer.Start();
+    }
+
+    private async Task EnterFullscreenCleanAsync()
+    {
+        // Remember windowed position so we can restore it when exiting fullscreen.
+        _windowedLeft   = Left;
+        _windowedTop    = Top;
+        _windowedWidth  = Width;
+        _windowedHeight = Height;
+
+        _isVideoMode = true;
+        _miniPreviewTimer.Stop();
+        MiniPreviewBorder.Visibility = Visibility.Collapsed;
+        QrPanel.Visibility = Visibility.Visible;
+        CornerWidget.Visibility = Visibility.Collapsed;
+        MainTabs.Visibility = Visibility.Collapsed;
+        AppToolbar.Visibility = Visibility.Collapsed;
+        ToggleViewBtn.Content = "\uD83E\uDEB5  Switch to Log";
+
+        // Black cover hides any resize/render flashes for the duration of the
+        // fullscreen transition. It is faded out smoothly at the end.
+        FlashCover.Opacity = 1;
+        FlashCover.Visibility = Visibility.Visible;
+
+        // Show idle QR — VideoPanel stays Collapsed during resize so the LibVLC
+        // HWND doesn't exist yet and cannot paint white during the window resize.
+        HideVideoOverlay(immediate: true);
+        ShowIdleOverlay();
+
+        // Let WPF render the idle overlay before resizing.
+        await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+        await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+
+        // Resize to fullscreen — VideoPanel is still Collapsed, no HWND yet.
+        EnsureFullscreenWindowBounds(force: true);
+        _fullscreenWatchdogTimer.Start();
+
+        // Flush so the window is fully painted at its new fullscreen size.
+        await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+        await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+
+        // Create the LibVLC HWND at fullscreen size using Visibility.Hidden:
+        // the HWND exists and is measured at the correct dimensions but SW_HIDE
+        // keeps it invisible — no white WM_PAINT flash.  Switching to Visible
+        // later is just SW_SHOW with no resize, so no flash on first Play either.
+        //
+        // Guard: if OnMediaPlaying fired during the awaits above and already
+        // called HideIdleOverlay() → VideoPanel.Visibility = Visible, do not
+        // clobber it back to Hidden or the video will never appear.
+        if (VideoPanel.Visibility == Visibility.Visible)
+        {
+            FadeOutFlashCover();
+            return;
+        }
+
+        // If media is already playing (e.g. re-entering fullscreen from mini-preview
+        // click while a movie is running), OnMediaPlaying won't fire again, so
+        // CompleteVideoTransitionAsync will never be called. Reveal the video directly.
+        if (_mediaPlayer.IsPlaying)
+            HideIdleOverlay();
         else
+            VideoPanel.Visibility = Visibility.Hidden;
+
+        FadeOutFlashCover();
+    }
+
+    private void FadeOutFlashCover()
+    {
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(600))
         {
-            _fullscreenWatchdogTimer.Stop();
-            _overlayTimer.Stop();
-            HideVideoOverlay(immediate: true);
-            VideoPanel.Visibility = Visibility.Collapsed;
-            AppToolbar.Visibility = Visibility.Visible;
-            MainTabs.Visibility = Visibility.Visible;
-            CornerWidget.Visibility = Visibility.Visible;
-            ToggleViewBtn.Content = "\u25B6  Switch to Video";
-            Topmost = false;
-            WindowStyle = WindowStyle.SingleBorderWindow;
-            WindowState = WindowState.Normal;
-            ResizeMode = ResizeMode.CanResize;
-            if (_currentFilePath is not null && _mediaPlayer.IsPlaying)
-                _miniPreviewTimer.Start();
-        }
+            EasingFunction = new System.Windows.Media.Animation.CubicEase
+                { EasingMode = System.Windows.Media.Animation.EasingMode.EaseIn }
+        };
+        fade.Completed += (_, _) => FlashCover.Visibility = Visibility.Collapsed;
+        FlashCover.BeginAnimation(OpacityProperty, fade);
     }
 
     private System.Windows.Forms.Screen GetPreferredFullscreenScreen()
@@ -830,22 +939,31 @@ public partial class MainWindow : Window
             return false;
 
         var targetScreen = GetPreferredFullscreenScreen();
-        var bounds = targetScreen.Bounds;
+        var physBounds = targetScreen.Bounds;
 
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.NoResize;
         Topmost = true;
         WindowStartupLocation = WindowStartupLocation.Manual;
         WindowState = WindowState.Normal;
-        Left = bounds.Left;
-        Top = bounds.Top;
-        Width = bounds.Width;
-        Height = bounds.Height;
-        WindowState = WindowState.Maximized;
+
+        // Set position and size atomically in physical pixels via Win32 SetWindowPos.
+        // Setting WPF Left/Top then Width/Height separately triggers a PerMonitorV2
+        // DPI-change event between the two writes, causing WPF to rescale the old
+        // dimensions before the new ones are applied — resulting in a visible oversized
+        // flash for ~3 seconds until the watchdog corrects it.  A single SetWindowPos
+        // call moves and resizes in one message with no intermediate state.
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        NativeMethods.SetWindowBoundsPhysical(
+            hwnd,
+            physBounds.Left,
+            physBounds.Top,
+            physBounds.Width,
+            physBounds.Height);
 
         if (!force)
         {
-            Logger.Info($"Fullscreen watchdog repaired bounds. Target={bounds.Left},{bounds.Top},{bounds.Width}x{bounds.Height}; Current={diagnostics.WindowLeft},{diagnostics.WindowTop},{diagnostics.WindowWidth}x{diagnostics.WindowHeight}");
+            Logger.Info($"Fullscreen watchdog repaired bounds. Target={physBounds.Left},{physBounds.Top},{physBounds.Width}x{physBounds.Height}px; Current={diagnostics.WindowLeft},{diagnostics.WindowTop},{diagnostics.WindowWidth}x{diagnostics.WindowHeight}px");
             AppendLog("Fullscreen watchdog repaired window bounds.");
         }
 
@@ -938,7 +1056,9 @@ public partial class MainWindow : Window
                 WorkingTop = screen.WorkingArea.Top,
                 WorkingWidth = screen.WorkingArea.Width,
                 WorkingHeight = screen.WorkingArea.Height
-            }).ToArray()
+            }).ToArray(),
+            CodecInfo = _codecInfo,
+            ForceSwAudio = _forceSwAudio
         };
     }
 
@@ -949,6 +1069,16 @@ public partial class MainWindow : Window
             OnToggleView(this, new RoutedEventArgs());
             e.Handled = true;
         }
+        if (e.Key == System.Windows.Input.Key.LeftShift || e.Key == System.Windows.Input.Key.RightShift)
+            if (FindName("ShowExtendedLogBtn") is System.Windows.Controls.Button logBtn)
+                logBtn.Visibility = Visibility.Visible;
+    }
+
+    private void OnWindowPreviewKeyUp(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.LeftShift || e.Key == System.Windows.Input.Key.RightShift)
+            if (FindName("ShowExtendedLogBtn") is System.Windows.Controls.Button logBtn)
+                logBtn.Visibility = Visibility.Collapsed;
     }
     // -- Overlay auto-hide ----------------------------------------------------
 
@@ -1059,50 +1189,10 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnTestPort(object sender, RoutedEventArgs e)
+    private void OnStopAndExit(object sender, RoutedEventArgs e)
     {
-        AppendLog($"Local IP  : {GetLocalIp()}");
-        AppendLog($"Scheme    : {_config.Scheme}");
-        AppendLog($"Port      : {_config.Port}");
-
-        // Check if port is actually listening
-        try
-        {
-            var listeners = System.Net.NetworkInformation.IPGlobalProperties
-                .GetIPGlobalProperties()
-                .GetActiveTcpListeners();
-            var listening = listeners.Any(l => l.Port == _config.Port);
-            AppendLog($"Port {_config.Port} listening: {(listening ? "YES ?" : "NO ?")}");
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"Port check failed: {ex.Message}");
-        }
-
-        // Firewall rule status
-        try
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "netsh",
-                Arguments = "advfirewall firewall show rule name=\"RemotePlay\"",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true
-            };
-            using var proc = System.Diagnostics.Process.Start(psi)!;
-            var output = proc.StandardOutput.ReadToEnd();
-            proc.WaitForExit(3000);
-            var hasRule = output.Contains("RemotePlay");
-            AppendLog($"Firewall rule: {(hasRule ? "EXISTS ?" : "MISSING ? � click 'Test Port' again as Admin")}");
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"Firewall check failed: {ex.Message}");
-        }
-
-        AppendLog($"--- End Diagnostics ---");
-        LogScroller.ScrollToBottom();
+        _webServer?.Stop();
+        System.Windows.Application.Current.Shutdown();
     }
 
 

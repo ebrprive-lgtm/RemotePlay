@@ -12,7 +12,8 @@
         WindowState="Normal"
         Width="900" Height="620"
         ResizeMode="CanResize"
-        PreviewKeyDown="OnWindowPreviewKeyDown">
+        PreviewKeyDown="OnWindowPreviewKeyDown"
+        PreviewKeyUp="OnWindowPreviewKeyUp">
 
     <Window.Resources>
         <!-- Tab header style -->
@@ -171,11 +172,12 @@
                             Click="OnToggleView"
                             Background="#E94560" Foreground="White" BorderThickness="0"
                             Padding="10,4" Margin="4,0" Cursor="Hand"/>
-                    <Button Content="🔄  Refresh Log" Click="OnRefreshLog"
+                    <Button x:Name="ShowExtendedLogBtn" Content="📋  Show extended log" Click="OnRefreshLog"
                             Background="#333" Foreground="White" BorderThickness="0"
-                            Padding="10,4" Margin="4,0" Cursor="Hand"/>
-                    <Button Content="🌐  Test Port" Click="OnTestPort"
-                            Background="#333" Foreground="White" BorderThickness="0"
+                            Padding="10,4" Margin="4,0" Cursor="Hand"
+                            Visibility="Collapsed"/>
+                    <Button Content="⏹  Stop &amp; Exit" Click="OnStopAndExit"
+                            Background="#7a1a1a" Foreground="White" BorderThickness="0"
                             Padding="10,4" Margin="4,0" Cursor="Hand"/>
                 </StackPanel>
             </DockPanel>
@@ -661,7 +663,30 @@
 
                         </TabControl>
 
-        <!-- ── Video Panel (hidden until toggled) ── -->
+        <!-- ── Idle/QR fullscreen overlay — shown when in video mode but nothing is playing.
+                 Lives OUTSIDE VideoPanel so the LibVLC HWND is never needed for the QR screen. ── -->
+        <Grid x:Name="IdleOverlay"
+              Grid.Row="0" Grid.RowSpan="2"
+              Background="Black"
+              Visibility="Collapsed"
+              Panel.ZIndex="50"
+              MouseLeftButtonDown="OnIdleOverlayClick">
+            <StackPanel HorizontalAlignment="Center"
+                        VerticalAlignment="Center">
+                <TextBlock Text="🎬" FontSize="72" HorizontalAlignment="Center"/>
+                <TextBlock Text="RemotePlay" FontSize="32" Foreground="#E94560"
+                           HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                <TextBlock x:Name="IdleIpText" FontSize="16" Foreground="#AAAAAA"
+                           HorizontalAlignment="Center" Margin="0,12,0,0"/>
+                <Border Background="White" Padding="8" CornerRadius="6" HorizontalAlignment="Center" Margin="0,16,0,0">
+                    <Image x:Name="FullscreenQrImage" Width="180" Height="180" Stretch="Uniform"/>
+                </Border>
+                <TextBlock Text="Scan to open RemotePlay" FontSize="13" Foreground="#AAAAAA"
+                           HorizontalAlignment="Center" Margin="0,8,0,0"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- ── Video Panel (hidden until actual playback begins) ── -->
         <Grid x:Name="VideoPanel" Grid.Row="0" Grid.RowSpan="2" Visibility="Collapsed" Background="Black"
               MouseMove="OnVideoMouseMove" ClipToBounds="True">
             <vlc:VideoView x:Name="VideoPlayer"
@@ -680,26 +705,6 @@
                     Opacity="0"
                     IsHitTestVisible="False"
                     Panel.ZIndex="1"/>
-
-            <!-- Idle overlay -->
-            <Grid x:Name="IdleOverlay"
-                  Background="Black"
-                  Visibility="Visible"
-                  Panel.ZIndex="2">
-                <StackPanel HorizontalAlignment="Center"
-                            VerticalAlignment="Center">
-                    <TextBlock Text="🎬" FontSize="72" HorizontalAlignment="Center"/>
-                    <TextBlock Text="RemotePlay" FontSize="32" Foreground="#E94560"
-                               HorizontalAlignment="Center" Margin="0,8,0,0"/>
-                    <TextBlock x:Name="IdleIpText" FontSize="16" Foreground="#AAAAAA"
-                               HorizontalAlignment="Center" Margin="0,12,0,0"/>
-                    <Border Background="White" Padding="8" CornerRadius="6" HorizontalAlignment="Center" Margin="0,16,0,0">
-                        <Image x:Name="FullscreenQrImage" Width="180" Height="180" Stretch="Uniform"/>
-                    </Border>
-                    <TextBlock Text="Scan to open RemotePlay" FontSize="13" Foreground="#AAAAAA"
-                               HorizontalAlignment="Center" Margin="0,8,0,0"/>
-                </StackPanel>
-            </Grid>
 
             <!-- Fullscreen overlay toolbar (auto-hide) — debug access only -->
             <Border x:Name="VideoOverlayToolbar"
@@ -734,6 +739,15 @@
                            TextTrimming="CharacterEllipsis"/>
             </Border>
         </Grid>
+
+        <!-- ── Flash cover: full-window black mask used to hide resize/render flashes
+                 during fullscreen entry. Faded out after the window has settled. ── -->
+        <Border x:Name="FlashCover"
+                Grid.Row="0" Grid.RowSpan="2"
+                Background="Black"
+                Visibility="Collapsed"
+                IsHitTestVisible="False"
+                Panel.ZIndex="100"/>
 
     </Grid>
 </Window>

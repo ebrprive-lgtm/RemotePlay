@@ -259,4 +259,5 @@ internal sealed record MoviePlaybackPreferences
     public double Brightness { get; init; } = 0.5;
     public double Saturation { get; init; } = 1;
     public double Zoom { get; init; } = 1;
+    public bool ForceSwAudio { get; init; } = false;
 }

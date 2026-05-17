@@ -50,6 +50,7 @@ internal sealed partial class WebServer
         switch (urlPath)
         {
             case "/" or "/index.html":
+                ctx.Response.AddHeader("Cache-Control", "no-cache");
                 TrySendResponse(ctx, 200, "text/html; charset=utf-8", GetHtmlPage());
                 break;
 
@@ -162,6 +163,11 @@ internal sealed partial class WebServer
 
             case "/api/play":
                 HandlePlay(ctx);
+                break;
+
+            case "/api/fix-audio":
+                _callbacks.FixAudio();
+                TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
                 break;
 
             case "/api/queue/add":
@@ -397,10 +403,13 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 200, "application/json", json);
     }
 
+    private static readonly JsonSerializerOptions _camelCaseJson =
+        new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
     private void HandleDisplayDiagnostics(HttpListenerContext ctx)
     {
         var diagnostics = _callbacks.GetDisplayDiagnostics();
-        var json = JsonSerializer.Serialize(diagnostics, new JsonSerializerOptions { WriteIndented = true });
+        var json = JsonSerializer.Serialize(diagnostics, _camelCaseJson);
         TrySendResponse(ctx, 200, "application/json; charset=utf-8", json);
     }
 
@@ -732,6 +741,52 @@ internal sealed partial class WebServer
                   <div class="metric"><dt>Audio language</dt><dd>{{{{HtmlEncode(_config.PreferredAudioLanguage)}}}}</dd></div>
                   <div class="metric"><dt>Subtitle language</dt><dd>{{{{HtmlEncode(_config.PreferredSubtitleLanguage)}}}}</dd></div>
                 </dl></section>
+                <section class="card"><h2>Media codec info <span class="pill {{{{(displayDiagnostics.CodecInfo is not null ? "ok" : "warn")}}}}">{{{{(displayDiagnostics.CodecInfo is not null ? "CAPTURED" : "NO DATA")}}}}</span></h2>
+                  {{{{(displayDiagnostics.CodecInfo is null
+                    ? "<p style=\"color:var(--muted);font-size:.88rem\">Codec information is captured when a video starts playing. Start a movie and refresh this page.</p>"
+                    : $"""
+                      <dl class="grid">
+                        <div class="metric wide"><dt>&#127902; File</dt><dd class="mono">{HtmlEncode(displayDiagnostics.CodecInfo.FileName)}</dd></div>
+                        <div class="metric"><dt>Container</dt><dd>{HtmlEncode(displayDiagnostics.CodecInfo.ContainerFormat)}</dd></div>
+                        <div class="metric"><dt>Total tracks</dt><dd>{displayDiagnostics.CodecInfo.TotalTracks}</dd></div>
+                        <div class="metric"><dt>&#128250; Video tracks</dt><dd>{displayDiagnostics.CodecInfo.VideoTracks.Length}</dd></div>
+                        <div class="metric"><dt>&#127925; Audio tracks</dt><dd>{displayDiagnostics.CodecInfo.AudioTracks.Length}</dd></div>
+                        <div class="metric"><dt>&#128221; Subtitle tracks</dt><dd>{displayDiagnostics.CodecInfo.SubtitleTracks.Length}</dd></div>
+                        <div class="metric"><dt>Captured UTC</dt><dd>{HtmlEncode(displayDiagnostics.CodecInfo.CapturedAtUtc)}</dd></div>
+                      </dl>
+                      {string.Join("", displayDiagnostics.CodecInfo.VideoTracks.Select((t, i) => $"""
+                        <h3 style="margin:.8rem 0 .3rem;font-size:.85rem;text-transform:uppercase;letter-spacing:.04em;color:var(--accent)">&#128250; Video track {i + 1}</h3>
+                        <dl class="grid">
+                          <div class="metric"><dt>Codec</dt><dd><strong>{HtmlEncode(t.CodecDescription)}</strong> <span style="color:var(--muted);font-size:.8rem">({HtmlEncode(t.Codec)})</span></dd></div>
+                          <div class="metric"><dt>Resolution</dt><dd>{t.Width}&times;{t.Height}</dd></div>
+                          <div class="metric"><dt>Frame rate</dt><dd>{HtmlEncode(t.FrameRate)}</dd></div>
+                          <div class="metric"><dt>Aspect ratio (SAR)</dt><dd>{HtmlEncode(t.AspectRatio)}</dd></div>
+                          <div class="metric"><dt>Orientation</dt><dd>{HtmlEncode(t.Orientation)}</dd></div>
+                          {(string.IsNullOrEmpty(t.Language) ? "" : $"<div class=\"metric\"><dt>Language</dt><dd>{HtmlEncode(t.Language)}</dd></div>")}
+                          {(string.IsNullOrEmpty(t.Description) ? "" : $"<div class=\"metric\"><dt>Description</dt><dd>{HtmlEncode(t.Description)}</dd></div>")}
+                        </dl>
+                      """))}
+                      {string.Join("", displayDiagnostics.CodecInfo.AudioTracks.Select((t, i) => $"""
+                        <h3 style="margin:.8rem 0 .3rem;font-size:.85rem;text-transform:uppercase;letter-spacing:.04em;color:var(--accent)">&#127925; Audio track {i + 1}</h3>
+                        <dl class="grid">
+                          <div class="metric"><dt>Codec</dt><dd><strong>{HtmlEncode(t.CodecDescription)}</strong> <span style="color:var(--muted);font-size:.8rem">({HtmlEncode(t.Codec)})</span></dd></div>
+                          <div class="metric"><dt>Channels</dt><dd>{HtmlEncode(t.ChannelLayout)}</dd></div>
+                          <div class="metric"><dt>Sample rate</dt><dd>{t.SampleRate} Hz</dd></div>
+                          {(string.IsNullOrEmpty(t.Language) ? "" : $"<div class=\"metric\"><dt>Language</dt><dd>{HtmlEncode(t.Language)}</dd></div>")}
+                          {(string.IsNullOrEmpty(t.Description) ? "" : $"<div class=\"metric\"><dt>Description</dt><dd>{HtmlEncode(t.Description)}</dd></div>")}
+                        </dl>
+                      """))}
+                      {(displayDiagnostics.CodecInfo.SubtitleTracks.Length == 0 ? "" : string.Join("", displayDiagnostics.CodecInfo.SubtitleTracks.Select((t, i) => $"""
+                        <h3 style="margin:.8rem 0 .3rem;font-size:.85rem;text-transform:uppercase;letter-spacing:.04em;color:var(--accent)">&#128221; Subtitle track {i + 1}</h3>
+                        <dl class="grid">
+                          <div class="metric"><dt>Codec</dt><dd><strong>{HtmlEncode(t.CodecDescription)}</strong> <span style="color:var(--muted);font-size:.8rem">({HtmlEncode(t.Codec)})</span></dd></div>
+                          {(string.IsNullOrEmpty(t.Language) ? "" : $"<div class=\"metric\"><dt>Language</dt><dd>{HtmlEncode(t.Language)}</dd></div>")}
+                          {(string.IsNullOrEmpty(t.Description) ? "" : $"<div class=\"metric\"><dt>Description</dt><dd>{HtmlEncode(t.Description)}</dd></div>")}
+                          {(string.IsNullOrEmpty(t.Encoding) ? "" : $"<div class=\"metric\"><dt>Encoding</dt><dd>{HtmlEncode(t.Encoding)}</dd></div>")}
+                        </dl>
+                      """)))}
+                      """
+                  )}}}}</section>
                 <section class="card"><h2>Library index <span class="pill {{{{libraryState}}}}">{{{{HtmlEncode(libraryLabel)}}}}</span></h2><dl class="grid">
                   <div class="metric"><dt>Indexed videos</dt><dd>{{{{_libraryIndex.Length}}}}</dd></div>
                   <div class="metric"><dt>Indexing now</dt><dd>{{{{_isIndexing}}}}</dd></div>
