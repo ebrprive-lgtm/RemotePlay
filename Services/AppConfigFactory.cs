@@ -58,8 +58,10 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             PreferredDisplayIndex = preferredDisplayIndex,
             StartWithWindows = startWithWindows,
             UseTrayIcon = useTrayIcon,
-            UpdateSourcePath = updateSourcePath.Trim(),
-            AutoUpdateIntervalMinutes = Math.Max(0, autoUpdateIntervalMinutes)
+            UpdateSourcePath            = updateSourcePath.Trim(),
+            AutoUpdateIntervalMinutes   = Math.Max(0, autoUpdateIntervalMinutes),
+            LinkBrowserLeftDir          = currentConfig.LinkBrowserLeftDir,
+            LinkBrowserRightDir         = currentConfig.LinkBrowserRightDir,
         };
     }
 
@@ -100,8 +102,10 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             PreferredDisplayIndex = currentConfig.PreferredDisplayIndex,
             StartWithWindows = currentConfig.StartWithWindows,
             UseTrayIcon = currentConfig.UseTrayIcon,
-            UpdateSourcePath = currentConfig.UpdateSourcePath,
-            AutoUpdateIntervalMinutes = currentConfig.AutoUpdateIntervalMinutes
+            UpdateSourcePath            = currentConfig.UpdateSourcePath,
+            AutoUpdateIntervalMinutes   = currentConfig.AutoUpdateIntervalMinutes,
+            LinkBrowserLeftDir          = currentConfig.LinkBrowserLeftDir,
+            LinkBrowserRightDir         = currentConfig.LinkBrowserRightDir,
         };
     }
 }

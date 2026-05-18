@@ -46,6 +46,12 @@ internal sealed class AppConfig
     /// </summary>
     public int AutoUpdateIntervalMinutes { get; init; } = 60;
 
+    /// <summary>Last visited folder in the Links tab left (video) browser.</summary>
+    public string LinkBrowserLeftDir { get; init; } = string.Empty;
+
+    /// <summary>Last visited folder in the Links tab right (link) browser.</summary>
+    public string LinkBrowserRightDir { get; init; } = string.Empty;
+
     private static readonly string ConfigFile = AppPaths.ConfigFile;
 
     /// <summary>Returns the fully-resolved movies path (relative paths are resolved against the exe directory).</summary>
@@ -93,6 +99,45 @@ internal sealed class AppConfig
         }
 
         return new AppConfig();
+    }
+
+    /// <summary>Returns a new <see cref="AppConfig"/> identical to <paramref name="source"/> except with updated browser directory paths.</summary>
+    public static AppConfig WithBrowserDirs(AppConfig source, string leftDir, string rightDir)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return new AppConfig
+        {
+            Port                        = source.Port,
+            UseHttps                    = source.UseHttps,
+            InstanceId                  = source.InstanceId,
+            InstanceName                = source.InstanceName,
+            MoviesPath                  = source.MoviesPath,
+            Volume                      = source.Volume,
+            Brightness                  = source.Brightness,
+            Zoom                        = source.Zoom,
+            AudioBoost                  = source.AudioBoost,
+            PlaybackSpeed               = source.PlaybackSpeed,
+            SubtitlesEnabled            = source.SubtitlesEnabled,
+            PreferredAudioLanguage      = source.PreferredAudioLanguage,
+            PreferredSubtitleLanguage   = source.PreferredSubtitleLanguage,
+            SecondarySubtitleLanguage   = source.SecondarySubtitleLanguage,
+            PreferForcedSubtitles       = source.PreferForcedSubtitles,
+            PlaybackEndBehavior         = source.PlaybackEndBehavior,
+            PlaybackHistoryLimit        = source.PlaybackHistoryLimit,
+            PreferredDisplayIndex       = source.PreferredDisplayIndex,
+            StartWithWindows            = source.StartWithWindows,
+            UseTrayIcon                 = source.UseTrayIcon,
+            LibraryRescanDelayMinutes   = source.LibraryRescanDelayMinutes,
+            RescanLibraryOnStartup      = source.RescanLibraryOnStartup,
+            EnableThumbnailGeneration   = source.EnableThumbnailGeneration,
+            IgnoredLibraryFolders       = source.IgnoredLibraryFolders,
+            VideoFileExtensions         = source.VideoFileExtensions,
+            LibraryPageSize             = source.LibraryPageSize,
+            UpdateSourcePath            = source.UpdateSourcePath,
+            AutoUpdateIntervalMinutes   = source.AutoUpdateIntervalMinutes,
+            LinkBrowserLeftDir          = leftDir,
+            LinkBrowserRightDir         = rightDir,
+        };
     }
 
     private static IEnumerable<string> NormalizeExtensions(IEnumerable<string>? values)

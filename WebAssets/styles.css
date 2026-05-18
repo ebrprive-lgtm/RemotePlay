@@ -247,6 +247,9 @@
         .crumb-current{color:#ddd;font-weight:600}
         #status{padding:.35rem .75rem;background:#0a0a0a;font-size:.74rem;color:#777;border-bottom:1px solid #1a1a1a}
         #browser{padding:.7rem .75rem;flex:1}
+        #browse-loading{display:none;position:fixed;inset:0;z-index:50;align-items:center;justify-content:center;flex-direction:column;gap:.8rem;background:rgba(0,0,0,.45);backdrop-filter:blur(2px);color:#ccc;font-size:.9rem;pointer-events:none}
+        #browse-loading.visible{display:flex}
+        .browse-spinner{width:36px;height:36px;border:3px solid rgba(255,255,255,.15);border-top-color:#00d4aa;border-radius:50%;animation:rp-spin .75s linear infinite}
         #diagnostics-overlay{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;padding:1rem;z-index:99}
         #diagnostics-overlay.open{display:flex}
         #diagnostics-panel{width:min(700px,100%);height:min(600px,88vh);max-height:88vh;overflow:hidden;display:flex;flex-direction:column;background:#151526;border:1px solid #3a3a57;border-radius:14px;padding:1rem;box-shadow:0 20px 45px rgba(0,0,0,.55)}
@@ -281,6 +284,7 @@
                 .folder-list.search-folders{max-height:calc(5 * (2.4rem + .3rem));overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#333355 transparent}
         .folder-row{display:flex;align-items:center;gap:.6rem;background:var(--folder-bg);color:var(--folder-text);border-radius:6px;padding:.55rem .9rem;cursor:pointer;transition:background .15s,color .15s}
         .folder-row:hover{background:var(--folder-hover)}
+        .folder-row.folder-row-active{opacity:.6;pointer-events:none}
         .folder-icon{font-size:1.1rem}
         .folder-name{font-size:.9rem;word-break:break-word;color:var(--folder-text)}
         .movie-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.7rem}
@@ -303,6 +307,8 @@
         .movie-title{font-size:.85rem;line-height:1.3;word-break:break-word;flex:1;color:#fff;text-shadow:1px 1px 0 #000,-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,0 0 6px rgba(0,0,0,.95),0 0 14px rgba(0,0,0,.75)}
         .movie-meta{font-size:.72rem;color:#cfd3e9;text-shadow:0 1px 3px rgba(0,0,0,.8)}
         .queued-badge{align-self:flex-start;background:rgba(255,170,0,.95);color:#1b1300;border-radius:999px;padding:.22rem .5rem;font-size:.7rem;font-weight:800;box-shadow:0 2px 8px rgba(0,0,0,.35)}
+        .link-badge{background:none;color:rgba(168,230,255,.7);border:none;box-shadow:none;padding:.1rem .2rem;font-size:.85rem;align-self:flex-end;margin-top:auto;opacity:.75}
+        .folder-link-badge{font-size:.78rem;margin-left:auto;opacity:.75}
         .progress-overlay{position:absolute;left:0;right:0;bottom:0;height:7px;background:rgba(255,255,255,.13);z-index:3;pointer-events:none}
         .progress-fill{height:100%;background:linear-gradient(90deg,#00d4aa,#2d8cff);box-shadow:0 0 10px rgba(0,212,170,.45)}
         .progress-label{position:absolute;right:.45rem;top:.55rem;z-index:3;background:rgba(0,0,0,.68);color:#dffff8;border-radius:999px;padding:.18rem .45rem;font-size:.68rem;font-weight:800;pointer-events:none}

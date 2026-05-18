@@ -157,6 +157,10 @@ internal sealed partial class WebServer
                 HandleFavorite(ctx);
                 break;
 
+            case "/api/delete-link":
+                HandleDeleteLink(ctx);
+                break;
+
             case "/api/history/clear":
                 HandleHistoryClear(ctx);
                 break;
@@ -959,7 +963,7 @@ internal sealed partial class WebServer
         var files = matchingFiles
             .Skip(offset)
             .Take(limit)
-            .Select(f => BuildCardFile(Path.GetFileNameWithoutExtension(f.FilePath), f.FilePath, resumeMap, f.FolderName, IsFavorite(f.FilePath)))
+            .Select(f => BuildCardFile(f.Name, f.FilePath, resumeMap, f.FolderName, IsFavorite(f.FilePath), f.IsLink, f.LinkSourcePath))
             .ToArray<object>();
 
         // Find unique folders that match the search terms
@@ -1069,6 +1073,38 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 200, "text/plain", "OK");
     }
 
+    /// <summary>Deletes a <c>.rplink</c> file. The <c>path</c> query parameter must be the encoded
+    /// path of the <c>.rplink</c> file itself (returned as <c>linkPath</c> from browse/search).</summary>
+    private void HandleDeleteLink(HttpListenerContext ctx)
+    {
+        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(encodedPath))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing path");
+            return;
+        }
+
+        var rplinkPath = WebPathHelpers.DecodePath(encodedPath);
+        if (!RplinkHelper.IsRplinkFile(rplinkPath)
+            || !WebPathHelpers.IsUnderRoot(rplinkPath, _config.ResolvedMoviesPath))
+        {
+            TrySendResponse(ctx, 403, "text/plain", "Forbidden");
+            return;
+        }
+
+        try
+        {
+            File.Delete(rplinkPath);
+            StartLibraryIndexRefresh(force: true);
+            TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true }));
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("HandleDeleteLink", "Failed to delete .rplink file", ex);
+            TrySendResponse(ctx, 500, "text/plain", "Failed to delete link: " + ex.Message);
+        }
+    }
+
     private void HandleBrowse(HttpListenerContext ctx)
     {
         var root = _config.ResolvedMoviesPath;
@@ -1099,28 +1135,54 @@ internal sealed partial class WebServer
         }
 
         var naturalComparer = _naturalComparer;
-        var folders = Directory.EnumerateDirectories(targetDir)
+
+        // Regular sub-folders
+        var regularFolders = Directory.EnumerateDirectories(targetDir)
             .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)))
-            .OrderBy(d => Path.GetFileName(d), naturalComparer)
-            .Select(d => new
+            .Select(d => (name: Path.GetFileName(d), dir: WebPathHelpers.EncodePath(d), isLink: false));
+
+        // Folder-link .rplink entries (target is a directory)
+        var folderLinkFolders = Directory.EnumerateFiles(targetDir, "*" + RplinkHelper.Extension)
+            .Where(RplinkHelper.IsTargetFolder)
+            .Select(f =>
             {
-                name = Path.GetFileName(d),
-                dir = WebPathHelpers.EncodePath(d)
+                var target = RplinkHelper.TryReadTarget(f);
+                return (name: Path.GetFileNameWithoutExtension(f),
+                        dir: target is not null ? WebPathHelpers.EncodePath(target) : string.Empty,
+                        isLink: true);
             })
+            .Where(x => !string.IsNullOrEmpty(x.dir));
+
+        var folders = regularFolders.Concat(folderLinkFolders)
+            .OrderBy(f => f.name, naturalComparer)
+            .Select(f => new { f.name, f.dir, f.isLink })
             .ToArray();
 
         var resumeMap = _playbackHistory.GetProgressMap();
         var offset = ReadNonNegativeInt(ctx.Request.QueryString["offset"]);
         var limit = ReadPositiveInt(ctx.Request.QueryString["limit"], _config.EffectiveLibraryPageSize, 1000);
-        var matchingFiles = Directory.EnumerateFiles(targetDir)
+
+        // Collect regular video files
+        var videoFiles = Directory.EnumerateFiles(targetDir)
             .Where(f => WebPathHelpers.IsVideoFile(f, _videoExtensions))
-            .OrderBy(f => Path.GetFileNameWithoutExtension(f), naturalComparer)
+            .Select(f => (name: Path.GetFileNameWithoutExtension(f), filePath: f, isLink: false, linkSourcePath: (string?)null));
+
+        // Collect resolved .rplink files (file targets only — folder targets appear as folder rows above)
+        var linkFiles = Directory.EnumerateFiles(targetDir)
+            .Where(RplinkHelper.IsRplinkFile)
+            .Where(f => !RplinkHelper.IsTargetFolder(f))
+            .Select(f => (name: Path.GetFileNameWithoutExtension(f), target: RplinkHelper.TryReadTarget(f), rplinkPath: f))
+            .Where(t => t.target is not null)
+            .Select(t => (name: t.name, filePath: t.target!, isLink: true, linkSourcePath: (string?)t.rplinkPath));
+
+        var matchingFiles = videoFiles.Concat(linkFiles)
+            .OrderBy(f => f.name, naturalComparer)
             .ToArray();
 
         var files = matchingFiles
             .Skip(offset)
             .Take(limit)
-            .Select(f => BuildCardFile(Path.GetFileNameWithoutExtension(f), f, resumeMap, isFavorite: IsFavorite(f)))
+            .Select(f => BuildCardFile(f.name, f.filePath, resumeMap, isFavorite: IsFavorite(f.filePath), isLink: f.isLink, linkSourcePath: f.linkSourcePath))
             .ToArray();
 
         // Parent dir (null if we're already at root)
@@ -1275,14 +1337,35 @@ internal sealed partial class WebServer
                     return;
                 }
 
-                var files = EnumerateLibraryVideoFiles(root, _hiddenFolderNames, () => Interlocked.Increment(ref _scannedFolders))
-                    .Where(f => WebPathHelpers.IsVideoFile(f, _videoExtensions))
+                var allFiles = EnumerateLibraryVideoFiles(root, _hiddenFolderNames, () => Interlocked.Increment(ref _scannedFolders))
                     .Select(f =>
                     {
                         Interlocked.Increment(ref _scannedFiles);
                         return f;
                     })
-                    .Select(f => BuildLibraryFile(root, f))
+                    .ToArray();
+
+                var videoFiles = allFiles
+                    .Where(f => WebPathHelpers.IsVideoFile(f, _videoExtensions))
+                    .Select(f => BuildLibraryFile(root, f));
+
+                var linkFiles = allFiles
+                    .Where(RplinkHelper.IsRplinkFile)
+                    .Select(f => BuildLibraryFileForLink(root, f))
+                    .Where(f => f is not null)
+                    .Select(f => f!);
+
+                // Index videos that live inside folder-linked directories so
+                // search, thumbnail generation, and favourites all work on them.
+                var folderLinkFiles = allFiles
+                    .Where(RplinkHelper.IsRplinkFile)
+                    .SelectMany(f => BuildLibraryFilesForFolderLink(root, f));
+
+                var files = videoFiles.Concat(linkFiles).Concat(folderLinkFiles)
+                    // deduplicate: prefer the link entry over a plain entry for the same real path
+                    .GroupBy(f => f.FilePath, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => g.OrderByDescending(f => f.IsLink).First())
+                    .OrderBy(f => f.SearchText, StringComparer.OrdinalIgnoreCase)
                     .ToArray();
 
                 _libraryIndex = files;
@@ -1332,6 +1415,92 @@ internal sealed partial class WebServer
             BuildSearchText(root, filePath),
             sizeBytes,
             lastWriteUtc);
+    }
+
+    /// <summary>Builds a <see cref="LibraryFile"/> for a <c>.rplink</c> file by resolving its target.
+    /// Returns <c>null</c> when the target cannot be resolved or when the target is a directory
+    /// (folder links are browseable but not indexed as video files).</summary>
+    private static LibraryFile? BuildLibraryFileForLink(string root, string rplinkPath)
+    {
+        var targetPath = RplinkHelper.TryReadTarget(rplinkPath);
+        if (targetPath is null)
+            return null;
+
+        // Folder links are not video files — exclude from the search/play index.
+        if (Directory.Exists(targetPath))
+            return null;
+
+        long sizeBytes = 0;
+        DateTime lastWriteUtc = default;
+        try
+        {
+            var info = new FileInfo(targetPath);
+            sizeBytes = info.Length;
+            lastWriteUtc = info.LastWriteTimeUtc;
+        }
+        catch
+        {
+        }
+
+        return new LibraryFile(
+            Path.GetFileNameWithoutExtension(rplinkPath),
+            targetPath,
+            WebPathHelpers.EncodePath(targetPath),
+            Path.GetFileName(Path.GetDirectoryName(rplinkPath)) ?? string.Empty,
+            BuildSearchText(root, rplinkPath),
+            sizeBytes,
+            lastWriteUtc,
+            IsLink: true,
+            LinkSourcePath: rplinkPath);
+    }
+
+    /// <summary>Enumerates all video files inside the target directory of a folder-type <c>.rplink</c>.
+    /// Each yielded entry is tagged with <see cref="LibraryFile.IsLink"/> and
+    /// <see cref="LibraryFile.LinkSourcePath"/> so all index-driven operations
+    /// (search, thumbnail queue, favourites) work on the linked content.</summary>
+    private IEnumerable<LibraryFile> BuildLibraryFilesForFolderLink(string root, string rplinkPath)
+    {
+        var targetDir = RplinkHelper.TryReadTarget(rplinkPath);
+        if (targetDir is null || !Directory.Exists(targetDir))
+            yield break;
+
+        // Use the link file name as a prefix in the search text so the user can
+        // search by the link name (e.g. "Action Movies") to narrow results.
+        var linkLabel = Path.GetFileNameWithoutExtension(rplinkPath);
+
+        foreach (var file in EnumerateLibraryVideoFiles(targetDir, _hiddenFolderNames))
+        {
+            if (!WebPathHelpers.IsVideoFile(file, _videoExtensions))
+                continue;
+
+            long sizeBytes = 0;
+            DateTime lastWriteUtc = default;
+            try
+            {
+                var info = new FileInfo(file);
+                sizeBytes = info.Length;
+                lastWriteUtc = info.LastWriteTimeUtc;
+            }
+            catch { }
+
+            // SearchText: "<LinkLabel> <relative path within target>" so both the
+            // link name and the movie title are searchable.
+            var relativeInTarget = Path.GetRelativePath(targetDir, file)
+                .Replace(Path.DirectorySeparatorChar, ' ')
+                .Replace(Path.AltDirectorySeparatorChar, ' ');
+            var searchText = $"{linkLabel} {relativeInTarget}";
+
+            yield return new LibraryFile(
+                Path.GetFileNameWithoutExtension(file),
+                file,
+                WebPathHelpers.EncodePath(file),
+                Path.GetFileName(Path.GetDirectoryName(file)) ?? string.Empty,
+                searchText,
+                sizeBytes,
+                lastWriteUtc,
+                IsLink: true,
+                LinkSourcePath: rplinkPath);
+        }
     }
 
     private static IEnumerable<string> EnumerateLibraryVideoFiles(string root, IReadOnlySet<string> ignoredFolderNames, Action? onFolderScanned = null)
@@ -1387,7 +1556,7 @@ internal sealed partial class WebServer
         return crumbs.ToArray();
     }
 
-    private static object BuildCardFile(string name, string filePath, IReadOnlyDictionary<string, RecentPlaybackItem> resumeMap, string folder = "", bool isFavorite = false)
+    private static object BuildCardFile(string name, string filePath, IReadOnlyDictionary<string, RecentPlaybackItem> resumeMap, string folder = "", bool isFavorite = false, bool isLink = false, string? linkSourcePath = null)
     {
         resumeMap.TryGetValue(filePath, out var resume);
         return new
@@ -1400,7 +1569,9 @@ internal sealed partial class WebServer
             position = resume is null ? 0 : Math.Round(resume.PositionSeconds, 1),
             duration = resume is null ? 0 : Math.Round(resume.DurationSeconds, 1),
             progress = resume is null || resume.DurationSeconds <= 0 ? 0 : Math.Round(resume.PositionSeconds / resume.DurationSeconds, 3),
-            resume = resume is null ? string.Empty : FormatTime(resume.PositionSeconds)
+            resume = resume is null ? string.Empty : FormatTime(resume.PositionSeconds),
+            isLink,
+            linkPath = isLink && linkSourcePath is not null ? WebPathHelpers.EncodePath(linkSourcePath) : null
         };
     }
 

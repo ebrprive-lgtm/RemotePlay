@@ -1,4 +1,5 @@
 ﻿let currentDir=null,currentData=null,playingPath=null;
+        let browseHistory=[];
         let pollInterval=null,seekDragging=false,searchTimer=null,lastQueue=[];
         let lastVolumeBeforeMute=.7,lastBoostBeforeMute=.3;
         let seekHoldTimer=null,seekHoldInterval=null,seekHoldTriggered=false,suppressNextSeekTap=false;
@@ -170,12 +171,14 @@
             }else if(isPhoneRemoteOnly){
               releaseWakeLock();
               updateResumePrompt(null);
+              if(playingPath){updatePlayingCard(null,playingPath);playingPath=null;}
               document.getElementById('player-title').textContent=hasQueue?'Queue ready':'Nothing playing';
               document.getElementById('player-meta').textContent=hasQueue?'Next up: '+s.queue.length+' queued video(s)':'';
               applyPhonePlaybackState(false);
             }else{
               releaseWakeLock();
               updateResumePrompt(null);
+              if(playingPath){updatePlayingCard(null,playingPath);playingPath=null;}
               document.getElementById('player-title').textContent=hasQueue?'Queue ready':'Nothing playing';
               document.getElementById('player-meta').textContent=hasQueue?'Next up: '+s.queue.length+' queued video(s)':'';
               if(hasQueue){
@@ -834,13 +837,20 @@
             return files;
           }catch(e){return [];}
         }
-        async function browse(d,offset=0,append=false){
+        let currentIsLinkedDir=false;
+        async function browse(d,offset=0,append=false,pushHistory=true,isLinked=false){
+          // Push the current location onto the back-stack before navigating (not for pagination)
+          if(!append&&pushHistory&&currentDir!==d&&currentDir!==null)
+            browseHistory.push(currentDir);
+          if(!append&&d===null)
+            browseHistory=[];
+          if(!append)currentIsLinkedDir=isLinked;
           setStatus('Loading...');currentDir=d;document.getElementById('search').value='';
-          if(!append)clearPendingThumbnails();
+          if(!append){clearPendingThumbnails();setBrowseLoading(true);}
           try{
             const url=(d?'/api/browse?dir='+encodeURIComponent(d):'/api/browse')+(offset?'&offset='+encodeURIComponent(offset):'');
             const res=await fetch(url);
-            if(!res.ok){setStatus('Server error '+res.status);return;}
+            if(!res.ok){setBrowseLoading(false);setStatus('Server error '+res.status);return;}
             const nextData=await res.json();
             if(append&&currentData){
               currentData.files=[...(currentData.files||[]),...(nextData.files||[])];
@@ -856,6 +866,10 @@
             }
             if(!append)resetCardsScrollTop();
           }catch(e){setStatus('Error: '+e);}
+          finally{setBrowseLoading(false);}
+        }
+        function setBrowseLoading(on){
+          document.getElementById('browse-loading').classList.toggle('visible',on);
         }
         function setSearchBusy(on){
           const inp=document.getElementById('search');
@@ -930,7 +944,8 @@
           const bc=document.getElementById('breadcrumb');
           const countLine=document.getElementById('count-line');
           const back=document.getElementById('back-button');
-          back.style.display=(!data.isRoot&&data.parent!=null&&!searching)?'block':'none';
+          const canGoBack=!searching&&(browseHistory.length>0||(data.parent!=null&&!data.isRoot));
+          back.style.display=canGoBack?'block':'none';
           back.dataset.dir=(!data.isRoot&&data.parent!=null&&!searching)?data.parent:'';
           bc.innerHTML='';
           if(searching){bc.innerHTML+='<a onclick="browse(null)">&#8962; Root</a><span> &rsaquo; </span><span class="crumb-current">Search results</span>';}
@@ -938,10 +953,12 @@
             bc.innerHTML+=data.breadcrumbs.map((c,i)=>{
               const sep=i>0?'<span> &rsaquo; </span>':'';
               const label=i===0?'&#8962; Root':esc(c.name);
-              const cls=i===data.breadcrumbs.length-1?' class="crumb-current"':'';
-              return sep+'<a'+cls+' onclick="browse(\''+c.dir+'\')">'+label+'</a>';
+              const isLast=i===data.breadcrumbs.length-1;
+              const cls=isLast?' class="crumb-current"':'';
+              const linkBadge=isLast&&currentIsLinkedDir?' <span class="folder-link-badge" title="Navigated via library link">\uD83D\uDD17</span>':'';
+              return sep+'<a'+cls+' onclick="browse(\''+c.dir+'\')">'+(isLast?label+linkBadge:label)+'</a>';
             }).join('');
-          }else{bc.innerHTML+='<a onclick="browse(null)">&#8962; Root</a>';}
+          }
           if(searching)countLine.textContent=(data.folders?.length||0)+' folder(s) and '+data.files.length+' result(s)';
           else countLine.textContent=data.folders.length+' folder(s), '+data.files.length+' video(s)';
           let html='';
@@ -950,11 +967,11 @@
               const folderLabel=data.folders.length>5?'Folders ('+data.folders.length+', scroll for more)':'Folders';
               html+='<div class="section-label">'+folderLabel+'</div>';
               html+='<div class="folder-list search-folders">';
-              html+=data.folders.map(f=>'<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" onclick="searchLibrary(\''+esc(f.folder||f.name)+'\')">'+'<span class="folder-icon">&#128193;</span><span class="folder-name">'+esc(f.name||f.folder)+'</span></div>').join('');
+              html+=data.folders.map(f=>'<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" onclick="this.classList.add(\'folder-row-active\');searchLibrary(\''+esc(f.folder||f.name)+'\')">'+'<span class="folder-icon">&#128193;</span><span class="folder-name">'+esc(f.name||f.folder)+'</span></div>').join('');
               html+='</div>';
             }else{
               html+='<div class="folder-list">';
-              html+=data.folders.map(f=>'<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" onclick="browse(\''+f.dir+'\')">'+'<span class="folder-icon">&#128193;</span><span class="folder-name">'+esc(f.name)+'</span></div>').join('');
+              html+=data.folders.map(f=>'<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" onclick="this.classList.add(\'folder-row-active\');browse(\''+f.dir+'\',0,false,true,'+(f.isLink?'true':'false')+')">'+'<span class="folder-icon">&#128193;</span><span class="folder-name">'+esc(f.name)+'</span>'+(f.isLink?'<span class="folder-link-badge" title="Library link">🔗</span>':'')+'</div>').join('');
               html+='</div>';
             }
           }
@@ -978,11 +995,13 @@
               const progressOverlay=progressPct>0?'<div class="progress-label">'+progressPct+'%</div><div class="progress-overlay"><div class="progress-fill" style="width:'+progressPct+'%"></div></div>':'';
               const queuedBadge=queued?'<div class="queue-badge queued-badge">Queued</div>':'';
               const favoriteBadge=favorite?'<div class="favorite-badge queued-badge">Favorite</div>':'';
+              const linkBadge=f.isLink?'<div class="queue-badge link-badge" title="Library link">🔗</div>':'';
               return '<div class="'+cardClass+'" id="'+cardIdFor(f.path)+'" data-path="'+esc(f.path)+'" role="button" tabindex="0" aria-label="Play '+esc(displayName)+'" '+bg+action+' onkeydown="activateKeyboardClick(event,this)" onpointerdown="beginCardHold(event,\''+f.path+'\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">'+
                 '<div class="movie-card-inner">'+
                 '<div class="movie-title">'+esc(displayName)+'</div>'+
                 queuedBadge+
                 favoriteBadge+
+                linkBadge+
                 stopButton+
                 cardActions+
                 '</div>'+
@@ -1050,7 +1069,16 @@
           grid.style.display=open?'':'none';
           if(chevron)chevron.textContent=open?'▼':'▶';
         }
-        function goBack(){const d=document.getElementById('back-button').dataset.dir;if(d)browse(d);}
+        function goBack(){
+          currentIsLinkedDir=false;
+          if(browseHistory.length>0){
+            const prev=browseHistory.pop();
+            browse(prev,0,false,false);
+          }else{
+            const d=document.getElementById('back-button').dataset.dir;
+            if(d)browse(d,0,false,false);
+          }
+        }
         function onCardClick(event,p){
           if(cardHoldOpened){cardHoldOpened=false;event.preventDefault();event.stopPropagation();return;}
           play(p);

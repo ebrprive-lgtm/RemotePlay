@@ -87,7 +87,10 @@ internal sealed record LibraryFile(
     string FolderName,
     string SearchText,
     long SizeBytes = 0,
-    DateTime LastWriteUtc = default);
+    DateTime LastWriteUtc = default,
+    bool IsLink = false,
+    string? LinkSourcePath = null,
+    bool IsFolderLink = false);
 
 internal sealed partial class WebServer
 {
@@ -497,6 +500,35 @@ internal sealed partial class WebServer
 
     public void RequestLibraryRescan() => StartLibraryIndexRefresh(force: true);
 
+    /// <summary>Creates a <c>.rplink</c> file in <paramref name="destinationDirectory"/> pointing to
+    /// <paramref name="targetFilePath"/>. Triggers an immediate library rescan.</summary>
+    public void CreateRplink(string targetPath, string destinationDirectory, string? linkName = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationDirectory);
+
+        var root = _config.ResolvedMoviesPath;
+        if (!WebPathHelpers.IsUnderRoot(destinationDirectory, root))
+            throw new InvalidOperationException("Destination directory must be inside the library root.");
+
+        // For folders use the folder name as the stem; for files strip the extension.
+        var stem = string.IsNullOrWhiteSpace(linkName)
+            ? (Directory.Exists(targetPath)
+                ? Path.GetFileName(targetPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+                : Path.GetFileNameWithoutExtension(targetPath))
+            : linkName.Trim();
+
+        var linkPath = Path.Combine(destinationDirectory, stem + RplinkHelper.Extension);
+
+        // Store a relative path when both the link file and the target are on the same volume,
+        // making the library portable if the entire library root is moved to another drive letter.
+        var storedTarget = RplinkHelper.MakeRelativeIfPossible(linkPath, targetPath);
+
+        RplinkHelper.Create(linkPath, storedTarget);
+        Logger.Info($"Created .rplink: {linkPath} -> {storedTarget} (target: {targetPath})");
+        StartLibraryIndexRefresh(force: true);
+    }
+
     public void Stop()
     {
         try { CancelThumbnailQueue(); } catch { }
@@ -536,7 +568,9 @@ internal sealed partial class WebServer
 
     private void OnLibraryChanged(object sender, FileSystemEventArgs e)
     {
-        if (!WebPathHelpers.IsVideoFile(e.FullPath, _videoExtensions) && !Directory.Exists(e.FullPath))
+        if (!WebPathHelpers.IsVideoFile(e.FullPath, _videoExtensions)
+            && !RplinkHelper.IsRplinkFile(e.FullPath)
+            && !Directory.Exists(e.FullPath))
             return;
 
         ScheduleLibraryRescan();
@@ -546,6 +580,8 @@ internal sealed partial class WebServer
     {
         if (!WebPathHelpers.IsVideoFile(e.FullPath, _videoExtensions)
             && !WebPathHelpers.IsVideoFile(e.OldFullPath, _videoExtensions)
+            && !RplinkHelper.IsRplinkFile(e.FullPath)
+            && !RplinkHelper.IsRplinkFile(e.OldFullPath)
             && !Directory.Exists(e.FullPath))
             return;
 
