@@ -211,6 +211,8 @@
           const el=document.getElementById('scan-status');
           if(!el||!scan)return;
           const indexed=Number(scan.indexedFiles??scan.IndexedFiles)||0;
+          const movies=Number(scan.indexedMovies??scan.IndexedMovies??indexed)||0;
+          const links=Number(scan.indexedLinks??scan.IndexedLinks)||0;
           const scanned=Number(scan.scannedFiles??scan.ScannedFiles)||0;
           const folders=Number(scan.scannedFolders??scan.ScannedFolders)||0;
           const isScanning=Boolean(scan.isScanning??scan.IsScanning);
@@ -220,7 +222,12 @@
           el.classList.toggle('global-scan-status',isScanning);
           if(error){el.textContent='Library scan failed: '+error;return;}
           if(isScanning){el.textContent='Indexing library... '+scanned+' movie(s), '+folders+' folder(s) indexed so far. Normal playback is not interrupted.';return;}
-          el.textContent=indexed>0?'Library ready: '+indexed+' indexed video(s)':'Library index not built yet';
+          if(indexed>0){
+            const linkPart=links>0?' — '+links+' link(s)':'';
+            el.textContent='Library ready: '+movies+' movie(s)'+linkPart;
+          }else{
+            el.textContent='Library index not built yet';
+          }
         }
 
         async function refreshThumbnailStatus(){
@@ -315,7 +322,7 @@
               ['Playback',status.isPlaying?'Playing':status.queueCount>0?'Queued':'Idle'],
               ['Title',(status.title||'').replace(/^\s*[▶⏸]\s*/,'')||'N/A'],
               ['Queue',String(status.queueCount||0)+' item(s)'],
-              ['Library',library.isScanning?'Scanning '+(library.scannedFiles||0)+' video(s)':(library.indexedFiles||0)+' indexed video(s)'],
+              ['Library',library.isScanning?'Scanning '+(library.scannedFiles||0)+' video(s)':((library.indexedMovies||library.indexedFiles||0))+' movie(s)'+(library.indexedLinks>0?' \u2014 '+(library.indexedLinks)+' link(s)':'')],
               ['Server',String(health.activeScheme||'').toUpperCase()+' port '+health.port],
               ['Display',display.targetDisplayName||'N/A'],
               ['Fullscreen repair',String(Boolean(display.needsFullscreenRepair))],
@@ -978,6 +985,7 @@
           if(data.files.length){
             html+='<div class="section-label">Videos</div><div class="movie-grid">';
             html+=data.files.map(f=>{
+              if(f.watched&&!playedVideos.has(f.path)){playedVideos.add(f.path);savePlayedVideos();}
               const played=playedVideos.has(f.path);
               const thumbUrl='/api/thumb?path='+encodeURIComponent(f.path);
               const bg='data-thumb="'+esc(thumbUrl)+'"';
@@ -1047,6 +1055,7 @@
           const queued=queuedVideos.has(f.path);
           const favorite=favoriteVideos.has(f.path)||Boolean(f.favorite);
           if(favorite)favoriteVideos.add(f.path);
+          if(f.watched&&!playedVideos.has(f.path)){playedVideos.add(f.path);savePlayedVideos();}
           return '<div class="movie-card '+(isContinue?'continue-card ':'')+(isFavoriteSection?'favorite-section-card ':'')+(queued?'queued ':'')+(favorite?'favorite ':'')+'played" id="'+continueCardIdFor(f.path)+'" data-path="'+esc(f.path)+'" role="button" tabindex="0" aria-label="Play '+esc(displayName)+'" '+bg+' onclick="onCardClick(event,\''+f.path+'\')" onkeydown="activateKeyboardClick(event,this)" onpointerdown="beginCardHold(event,\''+f.path+'\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">'+
             '<div class="movie-card-inner"><div class="movie-title">'+esc(displayName)+'</div>'+
             (queued?'<div class="queue-badge queued-badge">Queued</div>':'')+
@@ -1266,6 +1275,7 @@
         }
         function markPlayed(p){
           playedVideos.add(p);savePlayedVideos();
+          api('/api/history/watched/set?path='+encodeURIComponent(p)+'&watched=true');
           for(const card of getMovieCards(p)){
             card.classList.add('played');
             const watchedButton=findWatchedButton(card);
@@ -1274,6 +1284,7 @@
         }
         function unmarkPlayed(p){
           playedVideos.delete(p);savePlayedVideos();
+          api('/api/history/watched/set?path='+encodeURIComponent(p)+'&watched=false');
           for(const card of getMovieCards(p)){
             card.classList.remove('played');
             const watchedButton=findWatchedButton(card);

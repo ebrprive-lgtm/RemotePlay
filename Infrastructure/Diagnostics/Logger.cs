@@ -1,7 +1,9 @@
 using System.IO;
+using System.Diagnostics.CodeAnalysis;
 
 namespace RemotePlay;
 
+[ExcludeFromCodeCoverage]
 internal static class Logger
 {
     private static readonly object _lock = new();

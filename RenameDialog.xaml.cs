@@ -1,8 +1,10 @@
 using System.Windows;
 using System.Windows.Input;
+using System.Diagnostics.CodeAnalysis;
 
 namespace RemotePlay;
 
+[ExcludeFromCodeCoverage]
 public partial class RenameDialog : Window
 {
     public string NewName => NameBox.Text;

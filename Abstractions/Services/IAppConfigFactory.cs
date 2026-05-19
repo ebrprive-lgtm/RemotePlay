@@ -29,6 +29,7 @@ internal interface IAppConfigFactory
     AppConfig CreateForPlaybackPreferences(
         AppConfig currentConfig,
         double volume,
+        double brightness,
         double zoom,
         double audioBoost,
         double playbackSpeed,

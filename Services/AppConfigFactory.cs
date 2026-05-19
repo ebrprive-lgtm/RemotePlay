@@ -31,43 +31,36 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         ArgumentNullException.ThrowIfNull(currentConfig);
         ArgumentException.ThrowIfNullOrWhiteSpace(moviesPath);
 
-        return new AppConfig
+        return currentConfig with
         {
-            Port = port,
-            UseHttps = useHttps,
-            MoviesPath = moviesPath,
-            InstanceName = string.IsNullOrWhiteSpace(instanceName) ? currentConfig.InstanceName : instanceName.Trim(),
-            Volume = volume,
-            Brightness = 0.5,
-            Zoom = zoom,
-            AudioBoost = audioBoost,
-            PlaybackSpeed = playbackSpeed,
-            SubtitlesEnabled = subtitlesEnabled,
-            PreferredAudioLanguage = preferredAudioLanguage,
+            Port                      = port,
+            UseHttps                  = useHttps,
+            MoviesPath                = moviesPath,
+            InstanceName              = string.IsNullOrWhiteSpace(instanceName) ? currentConfig.InstanceName : instanceName.Trim(),
+            Volume                    = volume,
+            Zoom                      = zoom,
+            AudioBoost                = audioBoost,
+            PlaybackSpeed             = playbackSpeed,
+            SubtitlesEnabled          = subtitlesEnabled,
+            PreferredAudioLanguage    = preferredAudioLanguage,
             PreferredSubtitleLanguage = preferredSubtitleLanguage,
             SecondarySubtitleLanguage = secondarySubtitleLanguage,
-            PreferForcedSubtitles = preferForcedSubtitles,
-            PlaybackEndBehavior = playbackEndBehavior,
-            PlaybackHistoryLimit = playbackHistoryLimit,
+            PreferForcedSubtitles     = preferForcedSubtitles,
+            PlaybackEndBehavior       = playbackEndBehavior,
+            PlaybackHistoryLimit      = playbackHistoryLimit,
             LibraryRescanDelayMinutes = libraryRescanDelayMinutes,
-            RescanLibraryOnStartup = currentConfig.RescanLibraryOnStartup,
-            EnableThumbnailGeneration = currentConfig.EnableThumbnailGeneration,
-            IgnoredLibraryFolders = currentConfig.IgnoredLibraryFolders,
-            VideoFileExtensions = currentConfig.VideoFileExtensions,
-            LibraryPageSize = currentConfig.LibraryPageSize,
-            PreferredDisplayIndex = preferredDisplayIndex,
-            StartWithWindows = startWithWindows,
-            UseTrayIcon = useTrayIcon,
-            UpdateSourcePath            = updateSourcePath.Trim(),
-            AutoUpdateIntervalMinutes   = Math.Max(0, autoUpdateIntervalMinutes),
-            LinkBrowserLeftDir          = currentConfig.LinkBrowserLeftDir,
-            LinkBrowserRightDir         = currentConfig.LinkBrowserRightDir,
+            PreferredDisplayIndex     = preferredDisplayIndex,
+            StartWithWindows          = startWithWindows,
+            UseTrayIcon               = useTrayIcon,
+            UpdateSourcePath          = updateSourcePath.Trim(),
+            AutoUpdateIntervalMinutes = Math.Max(0, autoUpdateIntervalMinutes),
         };
     }
 
     public AppConfig CreateForPlaybackPreferences(
         AppConfig currentConfig,
         double volume,
+        double brightness,
         double zoom,
         double audioBoost,
         double playbackSpeed,
@@ -75,37 +68,14 @@ internal sealed class AppConfigFactory : IAppConfigFactory
     {
         ArgumentNullException.ThrowIfNull(currentConfig);
 
-        return new AppConfig
+        return currentConfig with
         {
-            Port = currentConfig.Port,
-            UseHttps = currentConfig.UseHttps,
-            MoviesPath = currentConfig.MoviesPath,
-            InstanceName = currentConfig.InstanceName,
-            Volume = volume,
-            Brightness = 0.5,
-            Zoom = zoom,
-            AudioBoost = audioBoost,
-            PlaybackSpeed = playbackSpeed,
+            Volume           = volume,
+            Brightness       = brightness,
+            Zoom             = zoom,
+            AudioBoost       = audioBoost,
+            PlaybackSpeed    = playbackSpeed,
             SubtitlesEnabled = subtitlesEnabled,
-            PreferredAudioLanguage = currentConfig.PreferredAudioLanguage,
-            PreferredSubtitleLanguage = currentConfig.PreferredSubtitleLanguage,
-            SecondarySubtitleLanguage = currentConfig.SecondarySubtitleLanguage,
-            PreferForcedSubtitles = currentConfig.PreferForcedSubtitles,
-            PlaybackEndBehavior = currentConfig.PlaybackEndBehavior,
-            PlaybackHistoryLimit = currentConfig.PlaybackHistoryLimit,
-            LibraryRescanDelayMinutes = currentConfig.LibraryRescanDelayMinutes,
-            RescanLibraryOnStartup = currentConfig.RescanLibraryOnStartup,
-            EnableThumbnailGeneration = currentConfig.EnableThumbnailGeneration,
-            IgnoredLibraryFolders = currentConfig.IgnoredLibraryFolders,
-            VideoFileExtensions = currentConfig.VideoFileExtensions,
-            LibraryPageSize = currentConfig.LibraryPageSize,
-            PreferredDisplayIndex = currentConfig.PreferredDisplayIndex,
-            StartWithWindows = currentConfig.StartWithWindows,
-            UseTrayIcon = currentConfig.UseTrayIcon,
-            UpdateSourcePath            = currentConfig.UpdateSourcePath,
-            AutoUpdateIntervalMinutes   = currentConfig.AutoUpdateIntervalMinutes,
-            LinkBrowserLeftDir          = currentConfig.LinkBrowserLeftDir,
-            LinkBrowserRightDir         = currentConfig.LinkBrowserRightDir,
         };
     }
 }

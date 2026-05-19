@@ -13,10 +13,147 @@
         Width="900" Height="620"
         ResizeMode="CanResize"
         PreviewKeyDown="OnWindowPreviewKeyDown"
-        PreviewKeyUp="OnWindowPreviewKeyUp">
+        PreviewKeyUp="OnWindowPreviewKeyUp"
+        SizeChanged="OnWindowSizeChanged"
+        StateChanged="OnWindowStateChanged">
 
     <Window.Resources>
         <!-- Tab header style -->
+
+        <!-- ── Browser context menu styles ─────────────────────────────── -->
+        <Style x:Key="BrowserContextMenu" TargetType="ContextMenu">
+            <Setter Property="Background" Value="#13131f"/>
+            <Setter Property="BorderBrush" Value="#2e2e4e"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="0,4"/>
+            <Setter Property="Effect">
+                <Setter.Value>
+                    <DropShadowEffect Color="#000000" BlurRadius="18" ShadowDepth="4" Opacity="0.55" Direction="270"/>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ContextMenu">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <Border.Effect>
+                                <DropShadowEffect Color="#000000" BlurRadius="20" ShadowDepth="5" Opacity="0.6" Direction="270"/>
+                            </Border.Effect>
+                            <ItemsPresenter/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="BrowserMenuItem" TargetType="MenuItem">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#CCCCDD"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="14,7,20,7"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <Border x:Name="Bg"
+                                Background="{TemplateBinding Background}"
+                                BorderThickness="0"
+                                Margin="4,1">
+                            <Border x:Name="Accent"
+                                    BorderBrush="Transparent"
+                                    BorderThickness="2,0,0,0"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter ContentSource="Header"
+                                                  VerticalAlignment="Center"/>
+                            </Border>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bg"    Property="Background"    Value="#1e1e38"/>
+                                <Setter TargetName="Accent" Property="BorderBrush"  Value="#E94560"/>
+                                <Setter Property="Foreground" Value="#FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="#444460"/>
+                                <Setter Property="Cursor"     Value="Arrow"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="BrowserMenuItemDestructive" TargetType="MenuItem" BasedOn="{StaticResource BrowserMenuItem}">
+            <Setter Property="Foreground" Value="#E94560"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <Border x:Name="Bg"
+                                Background="{TemplateBinding Background}"
+                                BorderThickness="0"
+                                Margin="4,1">
+                            <Border x:Name="Accent"
+                                    BorderBrush="Transparent"
+                                    BorderThickness="2,0,0,0"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter ContentSource="Header"
+                                                  VerticalAlignment="Center"/>
+                            </Border>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bg"     Property="Background"   Value="#2a0d14"/>
+                                <Setter TargetName="Accent" Property="BorderBrush"  Value="#E94560"/>
+                                <Setter Property="Foreground" Value="#FF6B80"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="#5a2030"/>
+                                <Setter Property="Cursor"     Value="Arrow"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="BrowserMenuSeparator" TargetType="Separator">
+            <Setter Property="Background" Value="#2a2a42"/>
+            <Setter Property="Margin" Value="12,4"/>
+            <Setter Property="Height" Value="1"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Separator">
+                        <Border Height="1" Background="{TemplateBinding Background}" Margin="{TemplateBinding Margin}"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="BrowserMenuGroupLabel" TargetType="MenuItem">
+            <Setter Property="Foreground" Value="#4a4a6a"/>
+            <Setter Property="FontSize" Value="9.5"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Padding" Value="16,6,16,2"/>
+            <Setter Property="IsEnabled" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <TextBlock Text="{TemplateBinding Header}"
+                                   Foreground="{TemplateBinding Foreground}"
+                                   FontSize="{TemplateBinding FontSize}"
+                                   FontWeight="{TemplateBinding FontWeight}"
+                                   Padding="{TemplateBinding Padding}"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- ── End browser context menu styles ─────────────────────────── -->
+
         <Style x:Key="DarkTab" TargetType="TabItem">
             <Setter Property="Background" Value="#1a1a2e"/>
             <Setter Property="Foreground" Value="#AAAAAA"/>
@@ -668,6 +805,11 @@
                         <DockPanel>
                             <TextBlock Text="LIBRARY LINK BROWSER" Foreground="#555" FontSize="10"
                                        FontWeight="Bold" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="StaleLinkBadge"
+                                       Foreground="#E94560" FontSize="11" FontWeight="Bold"
+                                       VerticalAlignment="Center" Margin="10,0,0,0"
+                                       Visibility="Collapsed"
+                                       ToolTip="Broken links detected — use 'Scan broken links' or right-click a link to auto-heal or retarget"/>
                             <Button x:Name="RegisterContextMenuBtn"
                                     Content="📋  Register Explorer context menu"
                                     Click="OnRegisterContextMenu"
@@ -701,18 +843,49 @@
                             </Grid.RowDefinitions>
 
                             <!-- Header -->
-                            <Border Grid.Row="0" Background="#0d0d1a" Padding="10,6" BorderBrush="#2a2a3e" BorderThickness="0,0,0,1">
-                                <TextBlock Text="📁  LIBRARY  —  video files" Foreground="#888" FontSize="10" FontWeight="Bold"/>
+                            <Border Grid.Row="0" Background="#0d0d1a" Padding="10,6" BorderBrush="#2a2a3e" BorderThickness="0,0,0,1" MinHeight="34">
+                                <DockPanel>
+                                    <Button Content="→"
+                                            DockPanel.Dock="Right"
+                                            Click="OnSyncLeftToRight"
+                                            Background="#1e1e2e" Foreground="#00D4AA"
+                                            BorderThickness="0" Padding="8,2"
+                                            FontSize="14" FontWeight="Bold"
+                                            Cursor="Hand"
+                                            ToolTip="Navigate right browser to the same folder as the left browser"/>
+                                    <TextBlock Text="📁  LIBRARY" Foreground="#888" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
+                                </DockPanel>
                             </Border>
 
                             <!-- Current path breadcrumb -->
-                            <Border Grid.Row="1" Background="#0a0a14" Padding="8,4" BorderBrush="#2a2a3e" BorderThickness="0,0,0,1">
-                                <TextBlock x:Name="LeftBrowserPath" Foreground="#00D4AA" FontSize="11"
-                                           TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                            <Border Grid.Row="1" Background="#0a0a14" Padding="4,2" BorderBrush="#2a2a3e" BorderThickness="0,0,0,1">
+                                <ItemsControl x:Name="LeftBreadcrumbs"
+                                              VerticalAlignment="Center">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal"/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Content="{Binding Name}"
+                                                        Tag="{Binding Dir}"
+                                                        Click="OnLeftBreadcrumbClick"
+                                                        Background="Transparent" BorderThickness="0"
+                                                        Foreground="#00D4AA" FontSize="11"
+                                                        Padding="4,2" Cursor="Hand"
+                                                        ToolTip="{Binding Dir}"/>
+                                                <TextBlock Text=" › " Foreground="#555" FontSize="11" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
                             </Border>
 
                             <!-- File list -->
-                            <ListView x:Name="LeftBrowser" Grid.Row="2"
+                            <ListView x:Name="LeftBrowser"
+                                      Grid.Row="2"
                                       Background="#0d0d1a" Foreground="#CCC"
                                       BorderThickness="0"
                                       SelectionMode="Extended"
@@ -723,88 +896,15 @@
                                         <Setter Property="Foreground" Value="#CCC"/>
                                         <Setter Property="FontSize" Value="12"/>
                                         <Setter Property="Padding" Value="4,3"/>
-                                        <Style.Triggers>
-                                            <Trigger Property="IsSelected" Value="True">
-                                                <Setter Property="Background" Value="#2d2d4e"/>
-                                            </Trigger>
-                                            <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter Property="Background" Value="#1a1a3e"/>
-                                            </Trigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </ListView.ItemContainerStyle>
-                                <ListView.View>
-                                    <GridView>
-                                        <GridViewColumn Width="360">
-                                            <GridViewColumn.Header>
-                                                <TextBlock Text="Name" Foreground="#888" FontSize="11"/>
-                                            </GridViewColumn.Header>
-                                            <GridViewColumn.CellTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding DisplayName}" FontSize="12"/>
-                                                </DataTemplate>
-                                            </GridViewColumn.CellTemplate>
-                                        </GridViewColumn>
-                                        <GridViewColumn Width="80">
-                                            <GridViewColumn.Header>
-                                                <TextBlock Text="Type" Foreground="#888" FontSize="11"/>
-                                            </GridViewColumn.Header>
-                                            <GridViewColumn.CellTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding TypeLabel}" Foreground="#666" FontSize="11"/>
-                                                </DataTemplate>
-                                            </GridViewColumn.CellTemplate>
-                                        </GridViewColumn>
-                                    </GridView>
-                                </ListView.View>
-                                <ListView.ContextMenu>
-                                    <ContextMenu Opened="OnLeftContextMenuOpened">
-                                        <MenuItem Header="🔗  Create Link(s)" Click="OnCreateLinks"/>
-                                        <MenuItem Header="🔎  Find links for this file" Click="OnFindLinksForFile"/>
-                                        <MenuItem Header="✏️  Rename file" Click="OnRenameLeftItem"/>
-                                    </ContextMenu>
-                                </ListView.ContextMenu>
-                            </ListView>
-                        </Grid>
-
-                        <!-- Splitter -->
-                        <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
-                                      Background="#2a2a3e" ResizeBehavior="PreviousAndNext"/>
-
-                        <!-- ── RIGHT browser: folders + rplink files ── -->
-                        <Grid Grid.Column="2">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="*"/>
-                            </Grid.RowDefinitions>
-
-                            <!-- Header -->
-                            <Border Grid.Row="0" Background="#0d0d1a" Padding="10,6" BorderBrush="#2a2a3e" BorderThickness="0,0,0,1">
-                                <TextBlock Text="🔗  LIBRARY  —  link files (.rplink)" Foreground="#888" FontSize="10" FontWeight="Bold"/>
-                            </Border>
-
-                            <!-- Current path breadcrumb -->
-                            <Border Grid.Row="1" Background="#0a0a14" Padding="8,4" BorderBrush="#2a2a3e" BorderThickness="0,0,0,1">
-                                <TextBlock x:Name="RightBrowserPath" Foreground="#00D4AA" FontSize="11"
-                                           TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
-                            </Border>
-
-                            <!-- File list -->
-                            <ListView x:Name="RightBrowser" Grid.Row="2"
-                                      Background="#0d0d1a" Foreground="#CCC"
-                                      BorderThickness="0"
-                                      SelectionMode="Extended"
-                                      MouseDoubleClick="OnRightBrowserDoubleClick">
-                                <ListView.ItemContainerStyle>
-                                    <Style TargetType="ListViewItem">
-                                        <Setter Property="Background" Value="Transparent"/>
-                                        <Setter Property="Foreground" Value="#CCC"/>
-                                        <Setter Property="FontSize" Value="12"/>
-                                        <Setter Property="Padding" Value="4,3"/>
                                         <Setter Property="ToolTip" Value="{Binding TargetTooltip}"/>
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding IsBroken}" Value="True">
+                                                <Setter Property="Foreground" Value="#E94560"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IndexStateLabel}" Value="InIndex">
+                                                <Setter Property="Foreground" Value="#00D4AA"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IndexStateLabel}" Value="NotInIndex">
                                                 <Setter Property="Foreground" Value="#E94560"/>
                                             </DataTrigger>
                                             <Trigger Property="IsSelected" Value="True">
@@ -818,7 +918,7 @@
                                 </ListView.ItemContainerStyle>
                                 <ListView.View>
                                     <GridView>
-                                         <GridViewColumn Width="220">
+                                        <GridViewColumn x:Name="LeftColName" Width="220">
                                             <GridViewColumn.Header>
                                                 <TextBlock Text="Name" Foreground="#888" FontSize="11"/>
                                             </GridViewColumn.Header>
@@ -842,7 +942,7 @@
                                                 </DataTemplate>
                                             </GridViewColumn.CellTemplate>
                                         </GridViewColumn>
-                                        <GridViewColumn Width="60">
+                                        <GridViewColumn x:Name="LeftColType" Width="60">
                                             <GridViewColumn.Header>
                                                 <TextBlock Text="Type" Foreground="#888" FontSize="11"/>
                                             </GridViewColumn.Header>
@@ -852,24 +952,285 @@
                                                 </DataTemplate>
                                             </GridViewColumn.CellTemplate>
                                         </GridViewColumn>
-                                        <GridViewColumn Width="260">
-                                           <GridViewColumn.Header>
-                                               <TextBlock Text="Target" Foreground="#888" FontSize="11"/>
-                                           </GridViewColumn.Header>
+                                        <GridViewColumn x:Name="LeftColTarget" Width="260">
+                                            <GridViewColumn.Header>
+                                                <TextBlock Text="Target" Foreground="#888" FontSize="11"/>
+                                            </GridViewColumn.Header>
                                             <GridViewColumn.CellTemplate>
                                                 <DataTemplate>
-                                                    <TextBlock Text="{Binding TargetFolder}" FontSize="11"
+                                                    <TextBlock Text="{Binding TargetDisplay}" FontSize="11"
                                                                TextTrimming="CharacterEllipsis"
-                                                               ToolTip="{Binding TargetFolder}"/>
+                                                               ToolTip="{Binding TargetDisplay}"/>
                                                 </DataTemplate>
                                             </GridViewColumn.CellTemplate>
                                         </GridViewColumn>
                                     </GridView>
                                 </ListView.View>
                                 <ListView.ContextMenu>
-                                    <ContextMenu Opened="OnRightContextMenuOpened">
-                                        <MenuItem Header="🗑️  Delete link(s)" Click="OnDeleteLinks"/>
-                                        <MenuItem Header="✏️  Rename link" Click="OnRenameRightItem"/>
+                                    <ContextMenu Opened="OnBrowserContextMenuOpened"
+                                                Style="{StaticResource BrowserContextMenu}"
+                                                Tag="Left">
+
+                                       <!-- ── File actions (video files only) ── -->
+                                       <MenuItem Tag="CreateLinks"
+                                                 Style="{StaticResource BrowserMenuItem}"
+                                                 Click="OnBrowserCreateLinks"/>
+                                       <MenuItem Tag="FindLinks"
+                                                 Style="{StaticResource BrowserMenuItem}"
+                                                 Click="OnBrowserFindLinks"/>
+                                       <MenuItem Tag="RenameFile"
+                                                 Style="{StaticResource BrowserMenuItem}"
+                                                 Click="OnBrowserRename"/>
+                                       <MenuItem Tag="MoveFiles"
+                                                 Style="{StaticResource BrowserMenuItem}"
+                                                 Click="OnBrowserMoveFiles"/>
+                                       <MenuItem Tag="DeleteFiles"
+                                                 Style="{StaticResource BrowserMenuItemDestructive}"
+                                                 Click="OnBrowserDeleteFiles"/>
+
+                                        <Separator Tag="SepFileFolder" Style="{StaticResource BrowserMenuSeparator}"/>
+
+                                        <!-- ── Link actions (.rplink files only) ── -->
+                                        <MenuItem Tag="RenameLink"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserRename"/>
+                                        <MenuItem Tag="MoveLink"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserMoveLink"/>
+                                        <MenuItem Tag="BulkRetarget"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserBulkRetarget"/>
+                                        <MenuItem Tag="AutoHeal"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserAutoHeal"/>
+                                        <MenuItem Tag="DeleteLinks"
+                                                  Style="{StaticResource BrowserMenuItemDestructive}"
+                                                  Click="OnBrowserDeleteLinks"/>
+
+                                        <Separator Tag="SepLinkFolder" Style="{StaticResource BrowserMenuSeparator}"/>
+
+                                        <!-- ── Folder actions (folders only) ── -->
+                                        <MenuItem Tag="CreateFolderLink"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserCreateFolderLink"/>
+                                        <MenuItem Tag="MoveFolder"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserMoveFolder"/>
+                                        <MenuItem Tag="CreateFolder"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserCreateFolder"/>
+                                        <MenuItem Tag="RenameFolder"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserRename"/>
+                                        <MenuItem Tag="DeleteFolder"
+                                                  Style="{StaticResource BrowserMenuItemDestructive}"
+                                                  Click="OnBrowserDeleteFolder"/>
+
+                                        <Separator Tag="SepCheckIndex" Style="{StaticResource BrowserMenuSeparator}"/>
+
+                                        <!-- ── Index diagnostic (always visible) ── -->
+                                        <MenuItem Tag="CheckIndex"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserCheckIndex"/>
+
+                                    </ContextMenu>
+                                </ListView.ContextMenu>
+                            </ListView>
+                        </Grid>
+
+                        <!-- Splitter -->
+                        <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
+                                      Background="#2a2a3e" ResizeBehavior="PreviousAndNext"/>
+
+                        <!-- ── RIGHT browser: folders + rplink files ── -->
+                        <Grid Grid.Column="2">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- Header -->
+                            <Border Grid.Row="0" Background="#0d0d1a" Padding="10,6" BorderBrush="#2a2a3e" BorderThickness="0,0,0,1" MinHeight="34">
+                                <TextBlock Text="🔗  LIBRARY" Foreground="#888" FontSize="10" FontWeight="Bold"/>
+                            </Border>
+
+                            <!-- Current path breadcrumb -->
+                            <Border Grid.Row="1" Background="#0a0a14" Padding="4,2" BorderBrush="#2a2a3e" BorderThickness="0,0,0,1">
+                                <ItemsControl x:Name="RightBreadcrumbs"
+                                              VerticalAlignment="Center">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal"/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Content="{Binding Name}"
+                                                        Tag="{Binding Dir}"
+                                                        Click="OnRightBreadcrumbClick"
+                                                        Background="Transparent" BorderThickness="0"
+                                                        Foreground="#00D4AA" FontSize="11"
+                                                        Padding="4,2" Cursor="Hand"
+                                                        ToolTip="{Binding Dir}"/>
+                                                <TextBlock Text=" › " Foreground="#555" FontSize="11" VerticalAlignment="Center"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Border>
+
+                            <!-- File list -->
+                            <ListView x:Name="RightBrowser"
+                                      Grid.Row="2"
+                                      Background="#0d0d1a" Foreground="#CCC"
+                                      BorderThickness="0"
+                                      SelectionMode="Extended"
+                                      MouseDoubleClick="OnRightBrowserDoubleClick">
+                                <ListView.ItemContainerStyle>
+                                    <Style TargetType="ListViewItem">
+                                        <Setter Property="Background" Value="Transparent"/>
+                                        <Setter Property="Foreground" Value="#CCC"/>
+                                        <Setter Property="FontSize" Value="12"/>
+                                        <Setter Property="Padding" Value="4,3"/>
+                                        <Setter Property="ToolTip" Value="{Binding TargetTooltip}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsBroken}" Value="True">
+                                                <Setter Property="Foreground" Value="#E94560"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IndexStateLabel}" Value="InIndex">
+                                                <Setter Property="Foreground" Value="#00D4AA"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding IndexStateLabel}" Value="NotInIndex">
+                                                <Setter Property="Foreground" Value="#E94560"/>
+                                            </DataTrigger>
+                                            <Trigger Property="IsSelected" Value="True">
+                                                <Setter Property="Background" Value="#2d2d4e"/>
+                                            </Trigger>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter Property="Background" Value="#1a1a3e"/>
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ListView.ItemContainerStyle>
+                                <ListView.View>
+                                    <GridView>
+                                         <GridViewColumn x:Name="RightColName" Width="220">
+                                            <GridViewColumn.Header>
+                                                <TextBlock Text="Name" Foreground="#888" FontSize="11"/>
+                                            </GridViewColumn.Header>
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock FontSize="12" Margin="0,0,4,0">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Text" Value=""/>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsFolderLink}" Value="True">
+                                                                            <Setter Property="Text" Value="📁 "/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                        <TextBlock Text="{Binding DisplayName}" FontSize="12"/>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn x:Name="RightColType" Width="60">
+                                            <GridViewColumn.Header>
+                                                <TextBlock Text="Type" Foreground="#888" FontSize="11"/>
+                                            </GridViewColumn.Header>
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding TypeLabel}" Foreground="#666" FontSize="11"/>
+                                                </DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn x:Name="RightColTarget" Width="260">
+                                           <GridViewColumn.Header>
+                                               <TextBlock Text="Target" Foreground="#888" FontSize="11"/>
+                                           </GridViewColumn.Header>
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding TargetDisplay}" FontSize="11"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding TargetDisplay}"/>
+                                                </DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                    </GridView>
+                                </ListView.View>
+                                <ListView.ContextMenu>
+                                    <ContextMenu Opened="OnBrowserContextMenuOpened"
+                                                Style="{StaticResource BrowserContextMenu}"
+                                                Tag="Right">
+
+                                       <!-- ── File actions (video files only) ── -->
+                                       <MenuItem Tag="CreateLinks"
+                                                 Style="{StaticResource BrowserMenuItem}"
+                                                 Click="OnBrowserCreateLinks"/>
+                                       <MenuItem Tag="FindLinks"
+                                                 Style="{StaticResource BrowserMenuItem}"
+                                                 Click="OnBrowserFindLinks"/>
+                                       <MenuItem Tag="RenameFile"
+                                                 Style="{StaticResource BrowserMenuItem}"
+                                                 Click="OnBrowserRename"/>
+                                       <MenuItem Tag="MoveFiles"
+                                                 Style="{StaticResource BrowserMenuItem}"
+                                                 Click="OnBrowserMoveFiles"/>
+                                       <MenuItem Tag="DeleteFiles"
+                                                 Style="{StaticResource BrowserMenuItemDestructive}"
+                                                 Click="OnBrowserDeleteFiles"/>
+
+                                        <Separator Tag="SepFileFolder" Style="{StaticResource BrowserMenuSeparator}"/>
+
+                                        <!-- ── Link actions (.rplink files only) ── -->
+                                        <MenuItem Tag="RenameLink"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserRename"/>
+                                        <MenuItem Tag="MoveLink"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserMoveLink"/>
+                                        <MenuItem Tag="BulkRetarget"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserBulkRetarget"/>
+                                        <MenuItem Tag="AutoHeal"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserAutoHeal"/>
+                                        <MenuItem Tag="DeleteLinks"
+                                                  Style="{StaticResource BrowserMenuItemDestructive}"
+                                                  Click="OnBrowserDeleteLinks"/>
+
+                                        <Separator Tag="SepLinkFolder" Style="{StaticResource BrowserMenuSeparator}"/>
+
+                                        <!-- ── Folder actions (folders only) ── -->
+                                        <MenuItem Tag="CreateFolderLink"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserCreateFolderLink"/>
+                                        <MenuItem Tag="MoveFolder"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserMoveFolder"/>
+                                        <MenuItem Tag="CreateFolder"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserCreateFolder"/>
+                                        <MenuItem Tag="RenameFolder"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserRename"/>
+                                        <MenuItem Tag="DeleteFolder"
+                                                  Style="{StaticResource BrowserMenuItemDestructive}"
+                                                  Click="OnBrowserDeleteFolder"/>
+
+                                        <Separator Tag="SepCheckIndex" Style="{StaticResource BrowserMenuSeparator}"/>
+
+                                        <!-- ── Index diagnostic (always visible) ── -->
+                                        <MenuItem Tag="CheckIndex"
+                                                  Style="{StaticResource BrowserMenuItem}"
+                                                  Click="OnBrowserCheckIndex"/>
+
                                     </ContextMenu>
                                 </ListView.ContextMenu>
                             </ListView>

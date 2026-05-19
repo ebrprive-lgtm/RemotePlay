@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Windows;
 using System.Windows.Media.Imaging;
+using System.Diagnostics.CodeAnalysis;
 
 namespace RemotePlay;
 
@@ -12,6 +13,7 @@ namespace RemotePlay;
 /// Extracts video thumbnails using the Windows Shell thumbnail cache
 /// (the same images Explorer shows). No external tools required.
 /// </summary>
+[ExcludeFromCodeCoverage]
 internal static class ThumbnailHelper
 {
     private static readonly string ThumbnailCacheDirectory = AppPaths.ThumbnailCacheDirectory;

@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace RemotePlay;
 
-internal sealed class AppConfig
+internal sealed record AppConfig
 {
     public int Port { get; init; } = 9090;
     public bool UseHttps { get; init; }
@@ -28,7 +28,6 @@ internal sealed class AppConfig
     public bool StartWithWindows { get; init; }
     public bool UseTrayIcon { get; init; } = true;
     public int LibraryRescanDelayMinutes { get; init; } = 10;
-    public bool RescanLibraryOnStartup { get; init; }
     public bool EnableThumbnailGeneration { get; init; } = true;
     public string[] IgnoredLibraryFolders { get; init; } = ["Subs", "Alt"];
     public string[] VideoFileExtensions { get; init; } = [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv"];
@@ -52,6 +51,18 @@ internal sealed class AppConfig
     /// <summary>Last visited folder in the Links tab right (link) browser.</summary>
     public string LinkBrowserRightDir { get; init; } = string.Empty;
 
+    // ── Window geometry ──────────────────────────────────────────────
+    public double WindowWidth  { get; init; } = 900;
+    public double WindowHeight { get; init; } = 620;
+    public double WindowLeft   { get; init; } = double.NaN;
+    public double WindowTop    { get; init; } = double.NaN;
+    public bool   WindowMaximized { get; init; }
+
+    // ── Browser column widths (Name / Type / Target) ─────────────────
+    public double BrowserColNameWidth   { get; init; } = 220;
+    public double BrowserColTypeWidth   { get; init; } = 60;
+    public double BrowserColTargetWidth { get; init; } = 260;
+
     private static readonly string ConfigFile = AppPaths.ConfigFile;
 
     /// <summary>Returns the fully-resolved movies path (relative paths are resolved against the exe directory).</summary>
@@ -73,8 +84,21 @@ internal sealed class AppConfig
         ArgumentNullException.ThrowIfNull(config);
 
         var json = JsonSerializer.Serialize(config,
-            new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(ConfigFile, json);
+            new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
+            });
+
+        // Write to a temp file first, then atomically replace the real config file.
+        // This prevents a crash mid-write from corrupting the config and silently resetting all settings.
+        var tmp = ConfigFile + ".tmp";
+        File.WriteAllText(tmp, json);
+
+        if (File.Exists(ConfigFile))
+            File.Replace(tmp, ConfigFile, destinationBackupFileName: null);
+        else
+            File.Move(tmp, ConfigFile);
     }
 
     public static AppConfig Load()
@@ -85,7 +109,11 @@ internal sealed class AppConfig
             {
                 var json = File.ReadAllText(ConfigFile);
                 var config = JsonSerializer.Deserialize<AppConfig>(json,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                    new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true,
+                        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
+                    });
                 if (config is not null)
                 {
                     Logger.Info($"Config loaded — Scheme: {config.Scheme}, Port: {config.Port}, MoviesPath: {config.ResolvedMoviesPath}");
@@ -105,38 +133,25 @@ internal sealed class AppConfig
     public static AppConfig WithBrowserDirs(AppConfig source, string leftDir, string rightDir)
     {
         ArgumentNullException.ThrowIfNull(source);
-        return new AppConfig
+        return source with { LinkBrowserLeftDir = leftDir, LinkBrowserRightDir = rightDir };
+    }
+
+    /// <summary>Returns a new <see cref="AppConfig"/> identical to <paramref name="source"/> except with updated window geometry and browser column widths.</summary>
+    public static AppConfig WithWindowLayout(AppConfig source,
+        double width, double height, double left, double top, bool maximized,
+        double colName, double colType, double colTarget)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return source with
         {
-            Port                        = source.Port,
-            UseHttps                    = source.UseHttps,
-            InstanceId                  = source.InstanceId,
-            InstanceName                = source.InstanceName,
-            MoviesPath                  = source.MoviesPath,
-            Volume                      = source.Volume,
-            Brightness                  = source.Brightness,
-            Zoom                        = source.Zoom,
-            AudioBoost                  = source.AudioBoost,
-            PlaybackSpeed               = source.PlaybackSpeed,
-            SubtitlesEnabled            = source.SubtitlesEnabled,
-            PreferredAudioLanguage      = source.PreferredAudioLanguage,
-            PreferredSubtitleLanguage   = source.PreferredSubtitleLanguage,
-            SecondarySubtitleLanguage   = source.SecondarySubtitleLanguage,
-            PreferForcedSubtitles       = source.PreferForcedSubtitles,
-            PlaybackEndBehavior         = source.PlaybackEndBehavior,
-            PlaybackHistoryLimit        = source.PlaybackHistoryLimit,
-            PreferredDisplayIndex       = source.PreferredDisplayIndex,
-            StartWithWindows            = source.StartWithWindows,
-            UseTrayIcon                 = source.UseTrayIcon,
-            LibraryRescanDelayMinutes   = source.LibraryRescanDelayMinutes,
-            RescanLibraryOnStartup      = source.RescanLibraryOnStartup,
-            EnableThumbnailGeneration   = source.EnableThumbnailGeneration,
-            IgnoredLibraryFolders       = source.IgnoredLibraryFolders,
-            VideoFileExtensions         = source.VideoFileExtensions,
-            LibraryPageSize             = source.LibraryPageSize,
-            UpdateSourcePath            = source.UpdateSourcePath,
-            AutoUpdateIntervalMinutes   = source.AutoUpdateIntervalMinutes,
-            LinkBrowserLeftDir          = leftDir,
-            LinkBrowserRightDir         = rightDir,
+            WindowWidth       = width,
+            WindowHeight      = height,
+            WindowLeft        = left,
+            WindowTop         = top,
+            WindowMaximized   = maximized,
+            BrowserColNameWidth   = colName,
+            BrowserColTypeWidth   = colType,
+            BrowserColTargetWidth = colTarget,
         };
     }
 

@@ -83,6 +83,7 @@ public sealed class AppConfigFactoryTests
         var config = factory.CreateForPlaybackPreferences(
             current,
             volume: 0.6,
+            brightness: 0.7,
             zoom: 1.35,
             audioBoost: 1.5,
             playbackSpeed: 1.25,
@@ -105,6 +106,79 @@ public sealed class AppConfigFactoryTests
         Assert.Equal(1, config.PreferredDisplayIndex);
         Assert.True(config.StartWithWindows);
         Assert.False(config.UseTrayIcon);
-        Assert.Equal(0.5, config.Brightness);
+        Assert.Equal(0.7, config.Brightness);
+    }
+
+    // ── Guard clauses
+
+    [Fact]
+    public void CreateForSettingsApply_ThrowsArgumentNullException_WhenCurrentConfigIsNull()
+    {
+        var factory = new AppConfigFactory();
+
+        Assert.Throws<ArgumentNullException>(() =>
+            factory.CreateForSettingsApply(
+                null!, 5000, false, @"C:\Movies", "Test", 1, 1, 1, 1,
+                true, "eng", "eng", string.Empty, true,
+                PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 60));
+    }
+
+    [Fact]
+    public void CreateForSettingsApply_ThrowsArgumentException_WhenMoviesPathIsWhitespace()
+    {
+        var factory = new AppConfigFactory();
+        var current = new AppConfig();
+
+        Assert.Throws<ArgumentException>(() =>
+            factory.CreateForSettingsApply(
+                current, 5000, false, "   ", "Test", 1, 1, 1, 1,
+                true, "eng", "eng", string.Empty, true,
+                PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 60));
+    }
+
+    // ── InstanceName fallback ────────────────────────────────────────────────
+
+    [Fact]
+    public void CreateForSettingsApply_UsesCurrentInstanceName_WhenInstanceNameIsBlankOrWhitespace()
+    {
+        var factory = new AppConfigFactory();
+        var current = new AppConfig { InstanceName = "My Server" };
+
+        var config = factory.CreateForSettingsApply(
+            current, 5000, false, @"C:\Movies", "   ", 1, 1, 1, 1,
+            true, "eng", "eng", string.Empty, true,
+            PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 60);
+
+        Assert.Equal("My Server", config.InstanceName);
+    }
+
+    // ── autoUpdateIntervalMinutes clamp ──────────────────────────────────────
+
+    [Fact]
+    public void CreateForSettingsApply_ClampsAutoUpdateIntervalMinutesToZero_WhenNegative()
+    {
+        var factory = new AppConfigFactory();
+        var current = new AppConfig();
+
+        var config = factory.CreateForSettingsApply(
+            current, 5000, false, @"C:\Movies", "Test", 1, 1, 1, 1,
+            true, "eng", "eng", string.Empty, true,
+            PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, -99);
+
+        Assert.Equal(0, config.AutoUpdateIntervalMinutes);
+    }
+
+    [Fact]
+    public void CreateForSettingsApply_KeepsAutoUpdateIntervalMinutesAtZero_WhenPassedZero()
+    {
+        var factory = new AppConfigFactory();
+        var current = new AppConfig();
+
+        var config = factory.CreateForSettingsApply(
+            current, 5000, false, @"C:\Movies", "Test", 1, 1, 1, 1,
+            true, "eng", "eng", string.Empty, true,
+            PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 0);
+
+        Assert.Equal(0, config.AutoUpdateIntervalMinutes);
     }
 }

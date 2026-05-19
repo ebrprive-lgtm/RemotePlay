@@ -1,0 +1,44 @@
+<Window x:Class="RemotePlay.DarkMessageBox"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="RemotePlay" SizeToContent="WidthAndHeight"
+        ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
+        Topmost="True"
+        Background="#111111" Foreground="#CCC"
+        MinWidth="340" MaxWidth="600"
+        ShowInTaskbar="False">
+    <Grid Margin="20,18,20,16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Title bar -->
+        <TextBlock x:Name="TitleText" Grid.Row="0"
+                   FontSize="13" FontWeight="SemiBold"
+                   Foreground="#E94560" Margin="0,0,0,10"/>
+
+        <!-- Message body -->
+        <TextBlock x:Name="MessageText" Grid.Row="1"
+                   FontSize="12" Foreground="#DDD"
+                   TextWrapping="Wrap" LineHeight="20"
+                   Margin="0,0,0,18"/>
+
+        <!-- Buttons -->
+        <StackPanel x:Name="ButtonPanel" Grid.Row="2"
+                    Orientation="Horizontal" HorizontalAlignment="Right">
+            <!-- Confirm mode: OK + Cancel -->
+            <Button x:Name="OkButton" Content="OK"
+                    Click="OnOk"
+                    Background="#E94560" Foreground="White"
+                    BorderThickness="0" Padding="22,7" Cursor="Hand"
+                    Margin="0,0,8,0"/>
+            <Button x:Name="CancelButton" Content="Cancel"
+                    Click="OnCancel"
+                    Background="#2a2a3e" Foreground="#CCC"
+                    BorderThickness="0" Padding="14,7" Cursor="Hand"
+                    Visibility="Collapsed"/>
+        </StackPanel>
+    </Grid>
+</Window>

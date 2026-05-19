@@ -1,7 +1,9 @@
 using RemotePlay.Models;
+using System.Diagnostics.CodeAnalysis;
 
 namespace RemotePlay;
 
+[ExcludeFromCodeCoverage]
 internal sealed class WebServerCallbacks
 {
     public required Action<string> Play { get; init; }
@@ -26,6 +28,7 @@ internal sealed class WebServerCallbacks
     public required Action<string, int> MoveQueueItem { get; init; }
     public required Action ClearQueue { get; init; }
     public required Action<string> ClearPlaybackHistory { get; init; }
+    public required Action<string, bool> MarkWatchedHistory { get; init; }
     public required Func<DisplayDiagnostics> GetDisplayDiagnostics { get; init; }
     public required Action FixAudio { get; init; }
 }

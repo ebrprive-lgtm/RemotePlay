@@ -3,12 +3,14 @@ using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using RemotePlay.DependencyInjection;
 using WpfApplication = System.Windows.Application;
+using System.Diagnostics.CodeAnalysis;
 
 namespace RemotePlay
 {
     /// <summary>
     /// Interaction logic for App.xaml
     /// </summary>
+    [ExcludeFromCodeCoverage]
     public partial class App : WpfApplication
     {
         public ServiceProvider? Services { get; private set; }

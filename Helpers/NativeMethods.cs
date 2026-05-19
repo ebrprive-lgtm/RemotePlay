@@ -1,7 +1,9 @@
 using System.Runtime.InteropServices;
+using System.Diagnostics.CodeAnalysis;
 
 namespace RemotePlay.Helpers;
 
+[ExcludeFromCodeCoverage]
 internal static class NativeMethods
 {
     private const int SWP_NOZORDER      = 0x0004;

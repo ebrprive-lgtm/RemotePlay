@@ -5,6 +5,7 @@ using System.Windows.Media.Animation;
 using LibVLCSharp.Shared;
 using LibVLCSharp.Shared.Structures;
 using RemotePlay.Models;
+using System.Diagnostics.CodeAnalysis;
 
 namespace RemotePlay;
 
@@ -184,46 +185,50 @@ public partial class MainWindow
         }
     }
 
-    private void SetAudioTrack(int trackId)
+    /// <summary>Runs <paramref name="apply"/> on the UI thread, guarded by a media-null check and a try/catch.</summary>
+    private void SetTrackSafe(string label, Action apply)
     {
         Dispatcher.Invoke(() =>
         {
             if (_mediaPlayer.Media is null)
                 return;
-
-            try
-            {
-                _mediaPlayer.SetAudioTrack(trackId);
-                _lastAudioTrackId = trackId;
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("Could not set audio track", ex);
-            }
+            try { apply(); }
+            catch (Exception ex) { Logger.Error($"Could not set {label}", ex); }
         });
     }
 
-    private void SetSubtitleTrack(int trackId)
-    {
-        Dispatcher.Invoke(() =>
+    private void SetAudioTrack(int trackId) =>
+        SetTrackSafe("audio track", () =>
         {
-            if (_mediaPlayer.Media is null)
-                return;
-
-            try
-            {
-                _mediaPlayer.SetSpu(trackId);
-                _subtitlesEnabled = trackId != -1;
-                if (trackId >= 0)
-                    _lastSubtitleTrackId = trackId;
-                _preferredSubtitleApplied = true;
-                SavePlaybackPreferences();
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("Could not set subtitle track", ex);
-            }
+            _mediaPlayer.SetAudioTrack(trackId);
+            _lastAudioTrackId = trackId;
         });
+
+    private void SetSubtitleTrack(int trackId) =>
+        SetTrackSafe("subtitle track", () =>
+        {
+            _mediaPlayer.SetSpu(trackId);
+            _subtitlesEnabled = trackId != -1;
+            if (trackId >= 0)
+                _lastSubtitleTrackId = trackId;
+            _preferredSubtitleApplied = true;
+            SavePlaybackPreferences();
+        });
+
+    /// <summary>Resets all in-flight playback state. Must be called on the UI thread.</summary>
+    private void ResetPlaybackState()
+    {
+        _historyTimer.Stop();
+        _miniPreviewTimer.Stop();
+        MiniPreviewBorder.Visibility = Visibility.Collapsed;
+        _currentFilePath = null;
+        _pendingResumePosition = null;
+        _smartResumeApplied = false;
+        _isPaused = false;
+        _duration = TimeSpan.Zero;
+        _hasSubtitles = false;
+        ShowIdleOverlay();
+        HideBanner();
     }
 
     private void StopMovie()
@@ -233,18 +238,8 @@ public partial class MainWindow
             try
             {
                 SaveCurrentPlaybackPosition();
-                _historyTimer.Stop();
-                _miniPreviewTimer.Stop();
-                MiniPreviewBorder.Visibility = Visibility.Collapsed;
                 _mediaPlayer.Stop();
-                _currentFilePath = null;
-                _pendingResumePosition = null;
-                _smartResumeApplied = false;
-                _isPaused = false;
-                _duration = TimeSpan.Zero;
-                _hasSubtitles = false;
-                ShowIdleOverlay();
-                HideBanner();
+                ResetPlaybackState();
                 AppendLog("Playback stopped");
                 Logger.Info("Playback stopped");
             }
@@ -296,14 +291,7 @@ public partial class MainWindow
             if (!string.IsNullOrWhiteSpace(_currentFilePath))
                 _playbackHistory.Clear(_currentFilePath);
 
-            _historyTimer.Stop();
-            _currentFilePath = null;
-            _pendingResumePosition = null;
-            _isPaused = false;
-            _duration = TimeSpan.Zero;
-            _hasSubtitles = false;
-            ShowIdleOverlay();
-            HideBanner();
+            ResetPlaybackState();
             AppendLog("Playback finished");
             Logger.Info("Playback finished");
 
@@ -320,6 +308,29 @@ public partial class MainWindow
         });
     }
 
+    /// <summary>
+    /// Resolves the preferred subtitle track and applies it to the player.
+    /// Sets <c>_preferredSubtitleApplied</c> on success. Must be called on the UI thread.
+    /// </summary>
+    /// <param name="caller">Label used in log messages to identify the call site.</param>
+    private void ApplySubtitleSelection(string caller)
+    {
+        Logger.Info($"[Subtitle] {caller}: attempting subtitle selection");
+        var trackId = GetPreferredSubtitleTrackId();
+        if (trackId is not int id)
+        {
+            Logger.Info($"[Subtitle] {caller}: no track selected — will retry via ESAdded");
+            return;
+        }
+
+        _hasSubtitles = true;
+        _mediaPlayer.SetSpu(_subtitlesEnabled || id >= 0 ? id : -1);
+        _lastSubtitleTrackId = id;
+        _subtitlesEnabled = id >= 0;
+        _preferredSubtitleApplied = true;
+        Logger.Info($"[Subtitle] {caller}: applied track id={id}");
+    }
+
     private void OnMediaPlaying(object? sender, EventArgs e)
     {
         Dispatcher.InvokeAsync(() =>
@@ -334,28 +345,7 @@ public partial class MainWindow
             // Capture codec/track info while media is active and tracks are populated.
             _codecInfo = CaptureCodecInfo();
 
-            Logger.Info("[Subtitle] OnMediaPlaying: attempting subtitle selection");
-            var preferredSubtitleTrack = GetPreferredSubtitleTrackId();
-            if (preferredSubtitleTrack is int subtitleTrackId)
-            {
-                _hasSubtitles = true;
-                if (_subtitlesEnabled || subtitleTrackId >= 0)
-                {
-                    _mediaPlayer.SetSpu(subtitleTrackId);
-                    _lastSubtitleTrackId = subtitleTrackId;
-                    _subtitlesEnabled = subtitleTrackId >= 0;
-                }
-                else
-                {
-                    _mediaPlayer.SetSpu(-1);
-                }
-                _preferredSubtitleApplied = true;
-                Logger.Info($"[Subtitle] OnMediaPlaying: applied track id={subtitleTrackId}");
-            }
-            else
-            {
-                Logger.Info("[Subtitle] OnMediaPlaying: no track selected — will retry via ESAdded");
-            }
+            ApplySubtitleSelection("OnMediaPlaying");
 
             if (string.IsNullOrWhiteSpace(_currentFilePath) || _duration <= TimeSpan.Zero)
                 return;
@@ -386,26 +376,7 @@ public partial class MainWindow
             if (_preferredSubtitleApplied)
                 return;
 
-            var preferredTrack = GetPreferredSubtitleTrackId();
-            if (preferredTrack is not int trackId)
-            {
-                Logger.Info("[Subtitle] ESAdded: GetPreferredSubtitleTrackId returned null");
-                return;
-            }
-
-            _hasSubtitles = true;
-            if (_subtitlesEnabled || trackId >= 0)
-            {
-                _mediaPlayer.SetSpu(trackId);
-                _lastSubtitleTrackId = trackId;
-                _subtitlesEnabled = trackId >= 0;
-            }
-            else
-            {
-                _mediaPlayer.SetSpu(-1);
-            }
-            _preferredSubtitleApplied = true;
-            Logger.Info($"[Subtitle] ESAdded: applied track id={trackId}");
+            ApplySubtitleSelection("ESAdded");
         });
     }
 
@@ -897,6 +868,7 @@ public partial class MainWindow
             MoveQueueItem = MovePlaybackQueueItem,
             ClearQueue = ClearPlaybackQueue,
             ClearPlaybackHistory = _playbackHistory.Clear,
+            MarkWatchedHistory = _playbackHistory.MarkWatched,
             GetDisplayDiagnostics = GetDisplayDiagnostics,
             FixAudio = FixAudio
         }, _broadcaster, _playbackHistory, _appUpdater);
@@ -980,6 +952,7 @@ public partial class MainWindow
         var updatedConfig = _appConfigFactory.CreateForPlaybackPreferences(
             _config,
             _volume,
+            _brightness,
             _zoom,
             _audioBoost,
             _playbackSpeed,
@@ -1238,23 +1211,15 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName))
             return null;
 
-        foreach (var extension in SubtitleExtensions)
-        {
-            var exactPath = Path.Combine(directory, fileName + extension);
-            if (File.Exists(exactPath))
-                return exactPath;
-        }
-
-        foreach (var extension in SubtitleExtensions)
-        {
-            var match = Directory.EnumerateFiles(directory, fileName + ".*" + extension)
-                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                .FirstOrDefault();
-            if (match is not null)
-                return match;
-        }
-
-        return null;
+        // Prefer exact name match (e.g. Movie.srt), then any file with the same stem (e.g. Movie.en.srt).
+        return SubtitleExtensions
+            .Select(ext => Path.Combine(directory, fileName + ext))
+            .FirstOrDefault(File.Exists)
+            ?? SubtitleExtensions
+                .Select(ext => Directory.EnumerateFiles(directory, fileName + ".*" + ext)
+                    .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                    .FirstOrDefault())
+                .FirstOrDefault(p => p is not null);
     }
 
     private MediaCodecInfo? CaptureCodecInfo()

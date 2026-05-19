@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using System.Diagnostics.CodeAnalysis;
 
 namespace RemotePlay;
 
@@ -163,6 +164,10 @@ internal sealed partial class WebServer
 
             case "/api/history/clear":
                 HandleHistoryClear(ctx);
+                break;
+
+            case "/api/history/watched/set":
+                HandleHistoryWatchedSet(ctx);
                 break;
 
             case "/api/play":
@@ -947,7 +952,9 @@ internal sealed partial class WebServer
             StartLibraryIndexRefresh(force: false);
 
         var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        var resumeMap = _playbackHistory.GetProgressMap();
+        var history = GetHistoryForIp(GetClientIp(ctx));
+        var resumeMap = history.GetProgressMap();
+        var watchedSet = history.GetWatchedSet();
         var naturalComparer = _naturalComparer;
 
         var offset = ReadNonNegativeInt(ctx.Request.QueryString["offset"]);
@@ -963,7 +970,7 @@ internal sealed partial class WebServer
         var files = matchingFiles
             .Skip(offset)
             .Take(limit)
-            .Select(f => BuildCardFile(f.Name, f.FilePath, resumeMap, f.FolderName, IsFavorite(f.FilePath), f.IsLink, f.LinkSourcePath))
+            .Select(f => BuildCardFile(f.Name, f.FilePath, resumeMap, f.FolderName, IsFavorite(f.FilePath), f.IsLink, f.LinkSourcePath, watchedSet))
             .ToArray<object>();
 
         // Find unique folders that match the search terms
@@ -998,7 +1005,7 @@ internal sealed partial class WebServer
     private void HandleRecent(HttpListenerContext ctx)
     {
         var root = _config.ResolvedMoviesPath;
-        var files = _playbackHistory.GetRecent(_config.PlaybackHistoryLimit)
+        var files = GetHistoryForIp(GetClientIp(ctx)).GetRecent(_config.PlaybackHistoryLimit)
             .Where(item => WebPathHelpers.IsUnderRoot(item.FilePath, root))
             .Select(item => new
             {
@@ -1020,11 +1027,13 @@ internal sealed partial class WebServer
     private void HandleFavorites(HttpListenerContext ctx)
     {
         var root = _config.ResolvedMoviesPath;
-        var resumeMap = _playbackHistory.GetProgressMap();
+        var history = GetHistoryForIp(GetClientIp(ctx));
+        var resumeMap = history.GetProgressMap();
+        var watchedSet = history.GetWatchedSet();
         var files = GetFavoritePaths()
             .Where(path => WebPathHelpers.IsUnderRoot(path, root) && File.Exists(path))
             .OrderBy(path => Path.GetFileNameWithoutExtension(path), _naturalComparer)
-            .Select(path => BuildCardFile(Path.GetFileNameWithoutExtension(path), path, resumeMap, Path.GetFileName(Path.GetDirectoryName(path)) ?? string.Empty, isFavorite: true))
+            .Select(path => BuildCardFile(Path.GetFileNameWithoutExtension(path), path, resumeMap, Path.GetFileName(Path.GetDirectoryName(path)) ?? string.Empty, isFavorite: true, watchedSet: watchedSet))
             .ToArray();
 
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { files }));
@@ -1053,6 +1062,28 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true, favorite }));
     }
 
+    private void HandleHistoryWatchedSet(HttpListenerContext ctx)
+    {
+        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(encodedPath))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing path");
+            return;
+        }
+
+        var filePath = WebPathHelpers.DecodePath(encodedPath);
+        if (!WebPathHelpers.IsUnderRoot(filePath, _config.ResolvedMoviesPath))
+        {
+            TrySendResponse(ctx, 403, "text/plain", "Forbidden");
+            return;
+        }
+
+        var watchedParam = ctx.Request.QueryString["watched"] ?? "true";
+        var watched = !string.Equals(watchedParam, "false", StringComparison.OrdinalIgnoreCase);
+        GetHistoryForIp(GetClientIp(ctx)).MarkWatched(filePath, watched);
+        TrySendResponse(ctx, 200, "text/plain", "OK");
+    }
+
     private void HandleHistoryClear(HttpListenerContext ctx)
     {
         var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
@@ -1069,11 +1100,11 @@ internal sealed partial class WebServer
             return;
         }
 
-        _callbacks.ClearPlaybackHistory(filePath);
+        GetHistoryForIp(GetClientIp(ctx)).Clear(filePath);
         TrySendResponse(ctx, 200, "text/plain", "OK");
     }
 
-    /// <summary>Deletes a <c>.rplink</c> file. The <c>path</c> query parameter must be the encoded
+    /// <summary>Deletes a <c>.rplink</c> file.
     /// path of the <c>.rplink</c> file itself (returned as <c>linkPath</c> from browse/search).</summary>
     private void HandleDeleteLink(HttpListenerContext ctx)
     {
@@ -1158,7 +1189,9 @@ internal sealed partial class WebServer
             .Select(f => new { f.name, f.dir, f.isLink })
             .ToArray();
 
-        var resumeMap = _playbackHistory.GetProgressMap();
+        var history = GetHistoryForIp(GetClientIp(ctx));
+        var resumeMap = history.GetProgressMap();
+        var watchedSet = history.GetWatchedSet();
         var offset = ReadNonNegativeInt(ctx.Request.QueryString["offset"]);
         var limit = ReadPositiveInt(ctx.Request.QueryString["limit"], _config.EffectiveLibraryPageSize, 1000);
 
@@ -1182,7 +1215,7 @@ internal sealed partial class WebServer
         var files = matchingFiles
             .Skip(offset)
             .Take(limit)
-            .Select(f => BuildCardFile(f.name, f.filePath, resumeMap, isFavorite: IsFavorite(f.filePath), isLink: f.isLink, linkSourcePath: f.linkSourcePath))
+            .Select(f => BuildCardFile(f.name, f.filePath, resumeMap, isFavorite: IsFavorite(f.filePath), isLink: f.isLink, linkSourcePath: f.linkSourcePath, watchedSet: watchedSet))
             .ToArray();
 
         // Parent dir (null if we're already at root)
@@ -1209,18 +1242,9 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 200, "application/json", result);
     }
 
-    private static int ReadNonNegativeInt(string? value)
-    {
-        return int.TryParse(value, out var parsed) && parsed > 0 ? parsed : 0;
-    }
+    private static int ReadNonNegativeInt(string? value) => MediaControlValueParser.ReadNonNegativeInt(value);
 
-    private static int ReadPositiveInt(string? value, int defaultValue, int maxValue)
-    {
-        if (!int.TryParse(value, out var parsed) || parsed <= 0)
-            return defaultValue;
-
-        return Math.Min(parsed, maxValue);
-    }
+    private static int ReadPositiveInt(string? value, int defaultValue, int maxValue) => MediaControlValueParser.ReadPositiveInt(value, defaultValue, maxValue);
 
     private void HandlePlay(HttpListenerContext ctx)
     {
@@ -1359,7 +1383,13 @@ internal sealed partial class WebServer
                 // search, thumbnail generation, and favourites all work on them.
                 var folderLinkFiles = allFiles
                     .Where(RplinkHelper.IsRplinkFile)
-                    .SelectMany(f => BuildLibraryFilesForFolderLink(root, f));
+                    .SelectMany(f =>
+                    {
+                        var items = BuildLibraryFilesForFolderLink(root, f).ToList();
+                        if (items.Count > 0)
+                            Interlocked.Add(ref _scannedFiles, items.Count);
+                        return items;
+                    });
 
                 var files = videoFiles.Concat(linkFiles).Concat(folderLinkFiles)
                     // deduplicate: prefer the link entry over a plain entry for the same real path
@@ -1386,73 +1416,14 @@ internal sealed partial class WebServer
         });
     }
 
-    private static string BuildSearchText(string root, string filePath)
-    {
-        var relative = Path.GetRelativePath(root, filePath);
-        return relative.Replace(Path.DirectorySeparatorChar, ' ')
-            .Replace(Path.AltDirectorySeparatorChar, ' ');
-    }
+    private static string BuildSearchText(string root, string filePath) =>
+        LibraryIndexHelpers.BuildSearchText(root, filePath);
 
-    private static LibraryFile BuildLibraryFile(string root, string filePath)
-    {
-        long sizeBytes = 0;
-        DateTime lastWriteUtc = default;
-        try
-        {
-            var info = new FileInfo(filePath);
-            sizeBytes = info.Length;
-            lastWriteUtc = info.LastWriteTimeUtc;
-        }
-        catch
-        {
-        }
+    private static LibraryFile BuildLibraryFile(string root, string filePath) =>
+        LibraryIndexHelpers.BuildLibraryFile(root, filePath);
 
-        return new LibraryFile(
-            Path.GetFileNameWithoutExtension(filePath),
-            filePath,
-            WebPathHelpers.EncodePath(filePath),
-            Path.GetFileName(Path.GetDirectoryName(filePath)) ?? string.Empty,
-            BuildSearchText(root, filePath),
-            sizeBytes,
-            lastWriteUtc);
-    }
-
-    /// <summary>Builds a <see cref="LibraryFile"/> for a <c>.rplink</c> file by resolving its target.
-    /// Returns <c>null</c> when the target cannot be resolved or when the target is a directory
-    /// (folder links are browseable but not indexed as video files).</summary>
-    private static LibraryFile? BuildLibraryFileForLink(string root, string rplinkPath)
-    {
-        var targetPath = RplinkHelper.TryReadTarget(rplinkPath);
-        if (targetPath is null)
-            return null;
-
-        // Folder links are not video files — exclude from the search/play index.
-        if (Directory.Exists(targetPath))
-            return null;
-
-        long sizeBytes = 0;
-        DateTime lastWriteUtc = default;
-        try
-        {
-            var info = new FileInfo(targetPath);
-            sizeBytes = info.Length;
-            lastWriteUtc = info.LastWriteTimeUtc;
-        }
-        catch
-        {
-        }
-
-        return new LibraryFile(
-            Path.GetFileNameWithoutExtension(rplinkPath),
-            targetPath,
-            WebPathHelpers.EncodePath(targetPath),
-            Path.GetFileName(Path.GetDirectoryName(rplinkPath)) ?? string.Empty,
-            BuildSearchText(root, rplinkPath),
-            sizeBytes,
-            lastWriteUtc,
-            IsLink: true,
-            LinkSourcePath: rplinkPath);
-    }
+    private static LibraryFile? BuildLibraryFileForLink(string root, string rplinkPath) =>
+        LibraryIndexHelpers.BuildLibraryFileForLink(root, rplinkPath);
 
     /// <summary>Enumerates all video files inside the target directory of a folder-type <c>.rplink</c>.
     /// Each yielded entry is tagged with <see cref="LibraryFile.IsLink"/> and
@@ -1464,11 +1435,9 @@ internal sealed partial class WebServer
         if (targetDir is null || !Directory.Exists(targetDir))
             yield break;
 
-        // Use the link file name as a prefix in the search text so the user can
-        // search by the link name (e.g. "Action Movies") to narrow results.
         var linkLabel = Path.GetFileNameWithoutExtension(rplinkPath);
 
-        foreach (var file in EnumerateLibraryVideoFiles(targetDir, _hiddenFolderNames))
+        foreach (var file in LibraryIndexHelpers.EnumerateLibraryVideoFiles(targetDir, _hiddenFolderNames))
         {
             if (!WebPathHelpers.IsVideoFile(file, _videoExtensions))
                 continue;
@@ -1483,8 +1452,6 @@ internal sealed partial class WebServer
             }
             catch { }
 
-            // SearchText: "<LinkLabel> <relative path within target>" so both the
-            // link name and the movie title are searchable.
             var relativeInTarget = Path.GetRelativePath(targetDir, file)
                 .Replace(Path.DirectorySeparatorChar, ' ')
                 .Replace(Path.AltDirectorySeparatorChar, ' ');
@@ -1503,62 +1470,17 @@ internal sealed partial class WebServer
         }
     }
 
-    private static IEnumerable<string> EnumerateLibraryVideoFiles(string root, IReadOnlySet<string> ignoredFolderNames, Action? onFolderScanned = null)
-    {
-        var pending = new Stack<string>();
-        pending.Push(root);
+    private static IEnumerable<string> EnumerateLibraryVideoFiles(string root, IReadOnlySet<string> ignoredFolderNames, Action? onFolderScanned = null) =>
+        LibraryIndexHelpers.EnumerateLibraryVideoFiles(root, ignoredFolderNames, onFolderScanned);
 
-        while (pending.Count > 0)
-        {
-            var dir = pending.Pop();
-            onFolderScanned?.Invoke();
+    private static object[] BuildBreadcrumbs(string root, string targetDir) =>
+        LibraryIndexHelpers.BuildBreadcrumbs(root, targetDir);
 
-            IEnumerable<string> files;
-            try { files = Directory.EnumerateFiles(dir); }
-            catch { continue; }
-
-            foreach (var file in files)
-                yield return file;
-
-            IEnumerable<string> subdirs;
-            try { subdirs = Directory.EnumerateDirectories(dir); }
-            catch { continue; }
-
-            foreach (var subdir in subdirs)
-            {
-                if (!ignoredFolderNames.Contains(Path.GetFileName(subdir)))
-                    pending.Push(subdir);
-            }
-        }
-    }
-
-    private static object[] BuildBreadcrumbs(string root, string targetDir)
-    {
-        var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var normalizedTarget = Path.GetFullPath(targetDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-        var crumbs = new List<object>
-        {
-            new { name = Path.GetFileName(normalizedRoot), dir = WebPathHelpers.EncodePath(normalizedRoot) }
-        };
-
-        var relative = Path.GetRelativePath(normalizedRoot, normalizedTarget);
-        if (relative == ".")
-            return crumbs.ToArray();
-
-        var current = normalizedRoot;
-        foreach (var part in relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries))
-        {
-            current = Path.Combine(current, part);
-            crumbs.Add(new { name = part, dir = WebPathHelpers.EncodePath(current) });
-        }
-
-        return crumbs.ToArray();
-    }
-
-    private static object BuildCardFile(string name, string filePath, IReadOnlyDictionary<string, RecentPlaybackItem> resumeMap, string folder = "", bool isFavorite = false, bool isLink = false, string? linkSourcePath = null)
+    private static object BuildCardFile(string name, string filePath, IReadOnlyDictionary<string, RecentPlaybackItem> resumeMap, string folder = "", bool isFavorite = false, bool isLink = false, string? linkSourcePath = null, IReadOnlySet<string>? watchedSet = null)
     {
         resumeMap.TryGetValue(filePath, out var resume);
+        var progress = resume is null || resume.DurationSeconds <= 0 ? 0 : Math.Round(resume.PositionSeconds / resume.DurationSeconds, 3);
+        var watched = (watchedSet?.Contains(filePath) ?? false) || progress >= 0.95;
         return new
         {
             name,
@@ -1568,97 +1490,19 @@ internal sealed partial class WebServer
             favorite = isFavorite,
             position = resume is null ? 0 : Math.Round(resume.PositionSeconds, 1),
             duration = resume is null ? 0 : Math.Round(resume.DurationSeconds, 1),
-            progress = resume is null || resume.DurationSeconds <= 0 ? 0 : Math.Round(resume.PositionSeconds / resume.DurationSeconds, 3),
+            progress,
             resume = resume is null ? string.Empty : FormatTime(resume.PositionSeconds),
+            watched,
             isLink,
             linkPath = isLink && linkSourcePath is not null ? WebPathHelpers.EncodePath(linkSourcePath) : null
         };
     }
 
-    private static string CleanDisplayTitle(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            return string.Empty;
+    private static string CleanDisplayTitle(string name) => DisplayFormatHelpers.CleanDisplayTitle(name);
 
-        var cleaned = name.Replace('.', ' ').Replace('_', ' ');
-        cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"\b(19|20)\d{2}\b", string.Empty);
-        cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"\b(1080p|720p|2160p|4k|x264|x265|h264|h265|web[- ]?dl|webrip|bluray|brrip|dvdrip|hdrip|aac|dts)\b", string.Empty, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-        cleaned = System.Text.RegularExpressions.Regex.Replace(cleaned, @"\s+", " ").Trim(' ', '-', '.');
-        return string.IsNullOrWhiteSpace(cleaned) ? name : cleaned;
-    }
-
-    private static string FormatTime(double seconds)
-    {
-        var time = TimeSpan.FromSeconds(Math.Max(0, seconds));
-        return time.TotalHours >= 1
-            ? $"{(int)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}"
-            : $"{time.Minutes}:{time.Seconds:00}";
-    }
-
-    private static object[] GetNaturalSortKey(string path)
-    {
-        var name = Path.GetFileName(path);
-        var parts = System.Text.RegularExpressions.Regex.Split(name, @"(\d+)");
-        var result = new List<object>();
-
-        foreach (var part in parts)
-        {
-            if (string.IsNullOrEmpty(part))
-                continue;
-
-            if (int.TryParse(part, out var num))
-                result.Add(num);
-            else
-                result.Add(part);
-        }
-
-        return result.ToArray();
-    }
+    private static string FormatTime(double seconds) => DisplayFormatHelpers.FormatTime(seconds);
 
     private static readonly NaturalStringComparer _naturalComparer = new();
-
-    private class NaturalStringComparer : IComparer<string>
-    {
-        private static readonly System.Text.RegularExpressions.Regex DigitSplitRegex =
-            new(@"(\d+)", System.Text.RegularExpressions.RegexOptions.Compiled);
-
-        public int Compare(string? x, string? y)
-        {
-            if (x == null && y == null) return 0;
-            if (x == null) return -1;
-            if (y == null) return 1;
-
-            var xParts = DigitSplitRegex.Split(x);
-            var yParts = DigitSplitRegex.Split(y);
-
-            var maxLen = Math.Max(xParts.Length, yParts.Length);
-            for (int i = 0; i < maxLen; i++)
-            {
-                var xPart = i < xParts.Length ? xParts[i] : string.Empty;
-                var yPart = i < yParts.Length ? yParts[i] : string.Empty;
-
-                if (string.IsNullOrEmpty(xPart) && string.IsNullOrEmpty(yPart))
-                    continue;
-                if (string.IsNullOrEmpty(xPart))
-                    return -1;
-                if (string.IsNullOrEmpty(yPart))
-                    return 1;
-
-                if (int.TryParse(xPart, out var xNum) && int.TryParse(yPart, out var yNum))
-                {
-                    var numCmp = xNum.CompareTo(yNum);
-                    if (numCmp != 0) return numCmp;
-                }
-                else
-                {
-                    var strCmp = string.Compare(xPart, yPart, StringComparison.OrdinalIgnoreCase);
-                    if (strCmp != 0) return strCmp;
-                }
-            }
-
-            return 0;
-        }
-    }
 
     private void HandlePeers(HttpListenerContext ctx)
     {
@@ -1679,6 +1523,16 @@ internal sealed partial class WebServer
         });
 
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(peers));
+    }
+
+    /// <summary>Extracts the client's IP address as a plain string, stripping the IPv4-mapped
+    /// IPv6 prefix (<c>::ffff:</c>) so IPv4 clients always resolve to their dotted-decimal address.</summary>
+    private static string GetClientIp(HttpListenerContext ctx)
+    {
+        var addr = ctx.Request.RemoteEndPoint?.Address?.ToString() ?? string.Empty;
+        if (addr.StartsWith("::ffff:", StringComparison.OrdinalIgnoreCase))
+            addr = addr["::ffff:".Length..];
+        return addr;
     }
 
 }

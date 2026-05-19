@@ -2,9 +2,11 @@ using Microsoft.Extensions.DependencyInjection;
 using RemotePlay.Abstractions.Services;
 using RemotePlay.Services;
 using RemotePlay.ViewModels;
+using System.Diagnostics.CodeAnalysis;
 
 namespace RemotePlay.DependencyInjection;
 
+[ExcludeFromCodeCoverage]
 internal static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddRemotePlayApplication(this IServiceCollection services)

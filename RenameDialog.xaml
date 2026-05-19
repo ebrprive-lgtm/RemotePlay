@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Rename" SizeToContent="WidthAndHeight"
         ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
+        Topmost="True"
         Background="#111111" Foreground="#CCC"
         MinWidth="380">
     <Grid Margin="16">

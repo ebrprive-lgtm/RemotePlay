@@ -10,10 +10,12 @@ using System.Text.Json;
 using QRCoder;
 using RemotePlay.Models;
 using RemotePlay.Services.Discovery;
+using System.Diagnostics.CodeAnalysis;
 using Timer = System.Threading.Timer;
 
 namespace RemotePlay;
 
+[ExcludeFromCodeCoverage]
 internal sealed record PlaybackStatus
 {
     public bool IsPlaying { get; init; }
@@ -45,21 +47,29 @@ internal sealed record PlaybackStatus
     public int QueueCount { get; init; }
 }
 
+[ExcludeFromCodeCoverage]
 internal sealed record TrackOption(int Id, string Name, string Language = "", bool IsForced = false, bool IsDefault = false);
 
+[ExcludeFromCodeCoverage]
 internal sealed record PlaybackQueueItem(string Path, string Title);
 
+[ExcludeFromCodeCoverage]
 internal sealed record LibraryScanStatus
 {
     public bool IsScanning { get; init; }
     public int IndexedFiles { get; init; }
+    public int IndexedMovies { get; init; }
+    public int IndexedLinks { get; init; }
     public int ScannedFiles { get; init; }
     public int ScannedFolders { get; init; }
     public DateTimeOffset? StartedUtc { get; init; }
     public DateTimeOffset? CompletedUtc { get; init; }
     public string LastError { get; init; } = string.Empty;
+    /// <summary>Number of .rplink files found to have missing targets during the last stale-link background check.</summary>
+    public int StaleLinkCount { get; init; }
 }
 
+[ExcludeFromCodeCoverage]
 internal sealed record ThumbnailQueueStatus
 {
     public bool IsRunning { get; init; }
@@ -73,6 +83,7 @@ internal sealed record ThumbnailQueueStatus
     public DateTimeOffset? CompletedUtc { get; init; }
 }
 
+[ExcludeFromCodeCoverage]
 internal sealed record LibraryIndexCache
 {
     public string RootPath { get; init; } = string.Empty;
@@ -80,6 +91,7 @@ internal sealed record LibraryIndexCache
     public LibraryFile[] Files { get; init; } = [];
 }
 
+[ExcludeFromCodeCoverage]
 internal sealed record LibraryFile(
     string Name,
     string FilePath,
@@ -92,6 +104,7 @@ internal sealed record LibraryFile(
     string? LinkSourcePath = null,
     bool IsFolderLink = false);
 
+[ExcludeFromCodeCoverage]
 internal sealed partial class WebServer
 {
     private const string WebAssetsDirectoryName = "WebAssets";
@@ -125,6 +138,8 @@ internal sealed partial class WebServer
     private readonly WebServerCallbacks _callbacks;
     private readonly PresenceBroadcaster? _broadcaster;
     private readonly PlaybackHistory _playbackHistory;
+    // Per-IP histories: keyed on sanitized client IP string, lazy-created on first request.
+    private readonly ConcurrentDictionary<string, PlaybackHistory> _perIpHistories = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _videoExtensions;
     private readonly HashSet<string> _hiddenFolderNames;
     private HttpListener _listener = new();
@@ -146,6 +161,8 @@ internal sealed partial class WebServer
     private int _scannedFolders;
     private string _lastScanError = string.Empty;
     private bool _isIndexing;
+    private int _staleLinkCount;
+    private readonly Timer _staleLinkTimer;
     private readonly object _thumbnailQueueGate = new();
     private CancellationTokenSource? _thumbnailQueueCancellation;
     private bool _thumbnailQueueRunning;
@@ -176,12 +193,210 @@ internal sealed partial class WebServer
             TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
         _libraryWatcherDebounceTimer = new Timer(_ => RunDelayedLibraryRescan(), null,
             Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        _staleLinkTimer = new Timer(_ => RunStaleLinkCheck(), null,
+            TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15));
     }
 
     public string ActiveScheme => _activeScheme;
     public string? StartupWarning => _startupWarning;
     public int LibraryVideoCount => _libraryIndex.Length;
+
+    /// <summary>Returns (or lazily creates) the <see cref="PlaybackHistory"/> for the given client IP.
+    /// Uses the shared local history for <c>127.0.0.1</c> / <c>::1</c> so the WPF player and
+    /// localhost browser clients share a single history file.</summary>
+    internal PlaybackHistory GetHistoryForIp(string clientIp)
+    {
+        if (string.IsNullOrWhiteSpace(clientIp)
+            || clientIp == "127.0.0.1"
+            || clientIp == "::1"
+            || clientIp == "localhost")
+            return _playbackHistory;
+
+        return _perIpHistories.GetOrAdd(clientIp,
+            ip => new PlaybackHistory(AppPaths.HistoryFileForIp(ip)));
+    }
     public LibraryScanStatus LibraryStatus => GetLibraryScanStatus();
+
+    /// <summary>
+    /// Returns the number of indexed link entries whose resolved target is inside
+    /// (or equal to) <paramref name="folderPath"/>. Uses the in-memory index — O(n) with no disk I/O.
+    /// </summary>
+    public int CountIndexedLinksPointingIntoFolder(string folderPath)
+    {
+        var index = _libraryIndex; // snapshot — array reference is replaced atomically on rescan
+        var prefix = folderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                     + Path.DirectorySeparatorChar;
+        return index.Count(f =>
+            f.IsLink &&
+            (string.Equals(f.FilePath, folderPath, StringComparison.OrdinalIgnoreCase) ||
+             f.FilePath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    /// <summary>
+    /// Returns the .rplink file paths from the index whose resolved target equals
+    /// <paramref name="targetFilePath"/>. Uses the in-memory index — no disk I/O.
+    /// Returns <c>null</c> when the index is empty or not yet built.
+    /// </summary>
+    public string[]? GetIndexedLinkSourcesForFile(string targetFilePath)
+    {
+        var index = _libraryIndex;
+        if (index.Length == 0) return null;
+
+        return index
+            .Where(f => f.IsLink &&
+                        f.LinkSourcePath is not null &&
+                        string.Equals(f.FilePath, targetFilePath, StringComparison.OrdinalIgnoreCase))
+            .Select(f => f.LinkSourcePath!)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Returns a set of all paths tracked by the current index: for regular files this is
+    /// the file path; for links this is the .rplink file path. Used by the Check Index command.
+    /// Returns an empty set when the index has not been built yet.
+    /// </summary>
+    public HashSet<string> GetIndexedPathSet()
+    {
+        var index = _libraryIndex;
+        var set = new HashSet<string>(index.Length * 2, StringComparer.OrdinalIgnoreCase);
+        foreach (var f in index)
+        {
+            // Always add FilePath (the video file path) so browser movie-rows can be matched
+            // regardless of whether the index entry is a direct file or a deduplicated link entry.
+            set.Add(Path.GetFullPath(f.FilePath));
+
+            // Also add the .rplink file path so browser link-rows can be matched.
+            if (f.IsLink && f.LinkSourcePath is not null)
+                set.Add(Path.GetFullPath(f.LinkSourcePath));
+        }
+        return set;
+    }
+
+    /// <summary>
+    /// Returns the set of folder names that the library scanner ignores (e.g. "Subs", "Alt").
+    /// Files inside these folders are intentionally excluded from the index.
+    /// </summary>
+    public IReadOnlySet<string> GetIgnoredFolderNames() => _hiddenFolderNames;
+
+    /// <summary>
+    /// Prevents the <see cref="FileSystemWatcher"/> from scheduling a rescan for
+    /// <paramref name="duration"/> by advancing the watcher-started timestamp.
+    /// Call this before making file-system changes that you want to handle via targeted index updates.
+    /// </summary>
+    public void SuppressWatcher(TimeSpan duration)
+    {
+        // By moving _libraryWatcherStartedUtc into the future, any watcher event that fires
+        // while we are making changes will be dropped by the warm-up guard in ScheduleLibraryRescan.
+        _libraryWatcherStartedUtc = DateTimeOffset.UtcNow.Add(duration);
+    }
+
+    /// <summary>Removes all index entries whose <see cref="LibraryFile.FilePath"/> or
+    /// <see cref="LibraryFile.LinkSourcePath"/> starts with <paramref name="prefix"/> (folder delete/move).</summary>
+    public void IndexRemoveUnderPath(string prefix)
+    {
+        var normalPrefix = Path.GetFullPath(prefix).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                           + Path.DirectorySeparatorChar;
+        // Also match an exact path (single file / link)
+        var exact = Path.GetFullPath(prefix);
+
+        lock (_libraryIndexGate)
+        {
+            _libraryIndex = _libraryIndex.Where(f =>
+            {
+                var fp  = Path.GetFullPath(f.FilePath);
+                var lsp = f.LinkSourcePath is not null ? Path.GetFullPath(f.LinkSourcePath) : null;
+                bool matchFile = string.Equals(fp, exact, StringComparison.OrdinalIgnoreCase)
+                                 || fp.StartsWith(normalPrefix, StringComparison.OrdinalIgnoreCase);
+                bool matchLink = lsp is not null && (
+                                 string.Equals(lsp, exact, StringComparison.OrdinalIgnoreCase)
+                                 || lsp.StartsWith(normalPrefix, StringComparison.OrdinalIgnoreCase));
+                return !matchFile && !matchLink;
+            }).ToArray();
+        }
+        Logger.Info($"IndexRemoveUnderPath: removed entries under '{prefix}'; index now has {_libraryIndex.Length} entries");
+        SaveLibraryIndexCache();
+    }
+
+    /// <summary>Adds or replaces the index entry for a single video file or .rplink file.</summary>
+    public void IndexAddOrUpdateFile(string filePath)
+    {
+        var root = _config.ResolvedMoviesPath;
+        LibraryFile? entry = RplinkHelper.IsRplinkFile(filePath)
+            ? LibraryIndexHelpers.BuildLibraryFileForLink(root, filePath)
+            : WebPathHelpers.IsVideoFile(filePath, _videoExtensions)
+                ? LibraryIndexHelpers.BuildLibraryFile(root, filePath)
+                : null;
+
+        if (entry is null) return;
+
+        lock (_libraryIndexGate)
+        {
+            // Remove any existing entry for the same FilePath/LinkSourcePath, then add the new one.
+            var without = _libraryIndex.Where(f =>
+                !string.Equals(f.FilePath, entry.FilePath, StringComparison.OrdinalIgnoreCase) &&
+                !(f.LinkSourcePath is not null && entry.LinkSourcePath is not null &&
+                  string.Equals(f.LinkSourcePath, entry.LinkSourcePath, StringComparison.OrdinalIgnoreCase)))
+                .ToArray();
+            _libraryIndex = [.. without, entry];
+        }
+        Logger.Info($"IndexAddOrUpdateFile: upserted '{filePath}'; index now has {_libraryIndex.Length} entries");
+        SaveLibraryIndexCache();
+    }
+
+    /// <summary>Updates every entry whose <see cref="LibraryFile.FilePath"/> or
+    /// <see cref="LibraryFile.LinkSourcePath"/> begins with <paramref name="oldPrefix"/>
+    /// by replacing that prefix with <paramref name="newPrefix"/> (folder rename).</summary>
+    public void IndexRenamePrefix(string oldPrefix, string newPrefix)
+    {
+        var normOld = Path.GetFullPath(oldPrefix).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                      + Path.DirectorySeparatorChar;
+        var normNew = Path.GetFullPath(newPrefix).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                      + Path.DirectorySeparatorChar;
+
+        static string Reprefix(string path, string oldP, string newP) =>
+            newP + path.Substring(oldP.Length);
+
+        lock (_libraryIndexGate)
+        {
+            _libraryIndex = _libraryIndex.Select(f =>
+            {
+                var fp  = Path.GetFullPath(f.FilePath);
+                var lsp = f.LinkSourcePath is not null ? Path.GetFullPath(f.LinkSourcePath) : null;
+
+                bool fpMatch  = fp.StartsWith(normOld, StringComparison.OrdinalIgnoreCase);
+                bool lspMatch = lsp is not null && lsp.StartsWith(normOld, StringComparison.OrdinalIgnoreCase);
+
+                if (!fpMatch && !lspMatch) return f;
+
+                var newFp  = fpMatch  ? Reprefix(fp,  normOld, normNew) : fp;
+                var newLsp = lspMatch ? Reprefix(lsp!, normOld, normNew) : f.LinkSourcePath;
+
+                return f with { FilePath = newFp, LinkSourcePath = newLsp };
+            }).ToArray();
+        }
+        Logger.Info($"IndexRenamePrefix: '{oldPrefix}' -> '{newPrefix}'; index now has {_libraryIndex.Length} entries");
+        SaveLibraryIndexCache();
+    }
+
+    /// <summary>Renames a single file entry in the index (file rename, not folder).</summary>
+    public void IndexRenameFile(string oldPath, string newPath)
+    {
+        lock (_libraryIndexGate)
+        {
+            _libraryIndex = _libraryIndex.Select(f =>
+            {
+                bool fpMatch  = string.Equals(Path.GetFullPath(f.FilePath),      Path.GetFullPath(oldPath), StringComparison.OrdinalIgnoreCase);
+                bool lspMatch = f.LinkSourcePath is not null &&
+                                string.Equals(Path.GetFullPath(f.LinkSourcePath), Path.GetFullPath(oldPath), StringComparison.OrdinalIgnoreCase);
+
+                if (fpMatch)  return f with { FilePath = newPath };
+                if (lspMatch) return f with { LinkSourcePath = newPath };
+                return f;
+            }).ToArray();
+        }
+        Logger.Info($"IndexRenameFile: '{oldPath}' -> '{newPath}'");
+        SaveLibraryIndexCache();
+    }
 
     private bool IsFavorite(string filePath)
     {
@@ -208,16 +423,25 @@ internal sealed partial class WebServer
             return _favorites.ToArray();
     }
 
-    private LibraryScanStatus GetLibraryScanStatus() => new()
+    private LibraryScanStatus GetLibraryScanStatus()
     {
-        IsScanning = _isIndexing,
-        IndexedFiles = _libraryIndex.Length,
-        ScannedFiles = _scannedFiles,
-        ScannedFolders = _scannedFolders,
-        StartedUtc = _scanStartedUtc,
-        CompletedUtc = _lastIndexRefreshUtc,
-        LastError = _lastScanError
-    };
+        var index = _libraryIndex;
+        var indexedLinks  = index.Count(f => f.IsLink);
+        var indexedMovies = index.Length - indexedLinks;
+        return new()
+        {
+            IsScanning    = _isIndexing,
+            IndexedFiles  = index.Length,
+            IndexedMovies = indexedMovies,
+            IndexedLinks  = indexedLinks,
+            ScannedFiles  = _scannedFiles,
+            ScannedFolders = _scannedFolders,
+            StartedUtc    = _scanStartedUtc,
+            CompletedUtc  = _lastIndexRefreshUtc,
+            LastError     = _lastScanError,
+            StaleLinkCount = _staleLinkCount
+        };
+    }
 
     private ThumbnailQueueStatus GetThumbnailQueueStatus()
     {
@@ -327,6 +551,36 @@ internal sealed partial class WebServer
         }
     }
 
+    /// <summary>
+    /// Scans all .rplink files in the library and counts those whose resolved target no longer exists.
+    /// Updates <c>_staleLinkCount</c> which is exposed through <see cref="LibraryStatus"/>.
+    /// Runs on the thread-pool timer thread — should never throw or block.
+    /// </summary>
+    private void RunStaleLinkCheck()
+    {
+        try
+        {
+            var root = _config.ResolvedMoviesPath;
+            if (!Directory.Exists(root)) return;
+
+            int stale = 0;
+            foreach (var f in Directory.EnumerateFiles(root, "*" + RplinkHelper.Extension, SearchOption.AllDirectories))
+            {
+                var target = RplinkHelper.TryReadTarget(f);
+                if (target is null)
+                    stale++;
+            }
+
+            Interlocked.Exchange(ref _staleLinkCount, stale);
+            if (stale > 0)
+                Logger.Info($"Stale-link check: {stale} broken link(s) found in '{root}'");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Stale-link check failed", ex);
+        }
+    }
+
     private bool HasFreshLibraryIndex()
     {
         try
@@ -407,6 +661,11 @@ internal sealed partial class WebServer
         }
     }
 
+    /// <summary>Persists the current in-memory library index to disk. Safe to call from any thread.
+    /// Browser operations that mutate the index (add/remove/rename) call this so the cache
+    /// stays consistent between application restarts without waiting for a full rescan.</summary>
+    public void PersistIndexCache() => SaveLibraryIndexCache();
+
     private void SaveFavorites()
     {
         try
@@ -434,32 +693,11 @@ internal sealed partial class WebServer
             throw new InvalidOperationException("At least one video file extension must be configured.");
     }
 
-    private static HashSet<string> BuildExtensionSet(IEnumerable<string>? values)
-    {
-        var extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var value in values ?? [])
-        {
-            if (string.IsNullOrWhiteSpace(value))
-                continue;
+    private static HashSet<string> BuildExtensionSet(IEnumerable<string>? values) =>
+        WebServerConfigHelpers.BuildExtensionSet(values, VideoExtensions);
 
-            var extension = value.Trim();
-            extensions.Add(extension.StartsWith('.') ? extension : "." + extension);
-        }
-
-        return extensions.Count > 0 ? extensions : new HashSet<string>(VideoExtensions, StringComparer.OrdinalIgnoreCase);
-    }
-
-    private static HashSet<string> BuildNameSet(IEnumerable<string>? values, IEnumerable<string> fallback)
-    {
-        var names = values?
-            .Where(value => !string.IsNullOrWhiteSpace(value))
-            .Select(value => value.Trim())
-            .ToArray() ?? [];
-
-        return names.Length > 0
-            ? new HashSet<string>(names, StringComparer.OrdinalIgnoreCase)
-            : new HashSet<string>(fallback, StringComparer.OrdinalIgnoreCase);
-    }
+    private static HashSet<string> BuildNameSet(IEnumerable<string>? values, IEnumerable<string> fallback) =>
+        WebServerConfigHelpers.BuildNameSet(values, fallback);
 
     public void Start()
     {
@@ -469,10 +707,7 @@ internal sealed partial class WebServer
         _ = Task.Run(() =>
         {
             LoadLibraryIndexCache();
-            if (_config.RescanLibraryOnStartup || _libraryIndex.Length == 0)
-                StartLibraryIndexRefresh(force: false);
-            else
-                Logger.Info($"Library index cache ready: {_libraryIndex.Length} videos; background watcher will keep it fresh");
+            StartLibraryIndexRefresh(force: true);
         });
 
         if (_config.UseHttps)
@@ -526,7 +761,8 @@ internal sealed partial class WebServer
 
         RplinkHelper.Create(linkPath, storedTarget);
         Logger.Info($"Created .rplink: {linkPath} -> {storedTarget} (target: {targetPath})");
-        StartLibraryIndexRefresh(force: true);
+        SuppressWatcher(TimeSpan.FromSeconds(10));
+        IndexAddOrUpdateFile(linkPath);
     }
 
     public void Stop()
@@ -535,6 +771,7 @@ internal sealed partial class WebServer
         try { _thumbnailQueueCancellation?.Dispose(); } catch { }
         try { _libraryIndexTimer.Dispose(); } catch { }
         try { _libraryWatcherDebounceTimer.Dispose(); } catch { }
+        try { _staleLinkTimer.Dispose(); } catch { }
         try { _libraryWatcher?.Dispose(); } catch { }
         try { _listener.Stop(); } catch { }
     }

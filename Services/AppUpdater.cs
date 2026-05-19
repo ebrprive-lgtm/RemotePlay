@@ -1,7 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.Reflection;
-using System.Security.Cryptography;
 
 namespace RemotePlay.Services;
 
@@ -27,8 +25,8 @@ internal sealed class AppUpdater
 
     public AppUpdater()
     {
-        _currentVersion = ReadVersionFile(AppContext.BaseDirectory)
-            ?? GetAssemblyVersion();
+        _currentVersion = UpdateFileHelper.ReadVersionFile(AppContext.BaseDirectory)
+            ?? UpdateFileHelper.GetAssemblyVersion();
     }
 
     /// <summary>Starts the periodic update check based on the provided config.</summary>
@@ -74,7 +72,7 @@ internal sealed class AppUpdater
 
         try
         {
-            var sourceVersion = ReadVersionFile(sourcePath);
+            var sourceVersion = UpdateFileHelper.ReadVersionFile(sourcePath);
             if (sourceVersion is null)
             {
                 Logger.Info("AppUpdater: No version.txt found in update source, skipping check.");
@@ -118,7 +116,7 @@ internal sealed class AppUpdater
         var exeName = Path.GetFileName(Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule?.FileName ?? string.Empty);
         var tempBatchPath = Path.Combine(Path.GetTempPath(), "remoteplay_update.bat");
 
-        var changedFiles = await Task.Run(() => CollectChangedFiles(sourcePath, targetPath)).ConfigureAwait(false);
+        var changedFiles = await Task.Run(() => UpdateFileHelper.CollectChangedFiles(sourcePath, targetPath)).ConfigureAwait(false);
 
         if (changedFiles.Count == 0)
         {
@@ -168,61 +166,4 @@ internal sealed class AppUpdater
         System.Windows.Application.Current.Dispatcher.Invoke(() => System.Windows.Application.Current.Shutdown());
     }
 
-    private static List<(string Source, string Destination)> CollectChangedFiles(string sourcePath, string targetPath)
-    {
-        var changed = new List<(string, string)>();
-
-        foreach (var srcFile in Directory.EnumerateFiles(sourcePath, "*", SearchOption.AllDirectories))
-        {
-            var relative = Path.GetRelativePath(sourcePath, srcFile);
-            var dstFile = Path.Combine(targetPath, relative);
-
-            if (!File.Exists(dstFile) || !FilesAreIdentical(srcFile, dstFile))
-                changed.Add((srcFile, dstFile));
-        }
-
-        return changed;
     }
-
-    private static bool FilesAreIdentical(string pathA, string pathB)
-    {
-        try
-        {
-            var infoA = new FileInfo(pathA);
-            var infoB = new FileInfo(pathB);
-
-            // Quick check: different size = definitely different.
-            if (infoA.Length != infoB.Length)
-                return false;
-
-            // Same size: compare SHA-256.
-            using var sha = SHA256.Create();
-            using var streamA = File.OpenRead(pathA);
-            using var streamB = File.OpenRead(pathB);
-            var hashA = sha.ComputeHash(streamA);
-            sha.Initialize();
-            var hashB = sha.ComputeHash(streamB);
-            return hashA.AsSpan().SequenceEqual(hashB);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static string? ReadVersionFile(string directory)
-    {
-        var versionFile = Path.Combine(directory, "version.txt");
-        if (!File.Exists(versionFile))
-            return null;
-
-        var text = File.ReadAllText(versionFile).Trim();
-        return string.IsNullOrWhiteSpace(text) ? null : text;
-    }
-
-    private static string GetAssemblyVersion()
-    {
-        var version = Assembly.GetExecutingAssembly().GetName().Version;
-        return version is null ? "1.0.0" : $"{version.Major}.{version.Minor}.{version.Build}";
-    }
-}

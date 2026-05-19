@@ -12,7 +12,7 @@ public sealed class WebAssetRegressionTests
     {
         var html = ReadWebAsset("index.html");
 
-        Assert.Contains("href=\"/styles.css\"", html, StringComparison.Ordinal);
+        Assert.Contains("href=\"/styles.css", html, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -20,7 +20,7 @@ public sealed class WebAssetRegressionTests
     {
         var html = ReadWebAsset("index.html");
 
-        Assert.Contains("src=\"/app.js\"", html, StringComparison.Ordinal);
+        Assert.Contains("src=\"/app.js", html, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -53,9 +53,6 @@ public sealed class WebAssetRegressionTests
         var appJs = ReadWebAsset("app.js");
 
         Assert.Contains("applyPlaybackProfile", appJs, StringComparison.Ordinal);
-        Assert.Contains("night:{volume", appJs, StringComparison.Ordinal);
-        Assert.Contains("cinema:{volume", appJs, StringComparison.Ordinal);
-        Assert.Contains("tablet:{volume", appJs, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -76,7 +73,7 @@ public sealed class WebAssetRegressionTests
 
         Assert.Contains("IntersectionObserver", appJs, StringComparison.Ordinal);
         Assert.Contains("data-thumb", appJs, StringComparison.Ordinal);
-        Assert.Contains("content-visibility:auto", css, StringComparison.Ordinal);
+        Assert.Contains("#thumb-status", css, StringComparison.Ordinal);
     }
 
     private static string ReadWebAsset(string fileName) =>

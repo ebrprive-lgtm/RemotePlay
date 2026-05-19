@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Diagnostics.CodeAnalysis;
 using Timer = System.Threading.Timer;
 
 namespace RemotePlay.Services.Discovery;
@@ -26,6 +27,7 @@ internal sealed record DiscoveredPeer
 /// <summary>
 /// Broadcasts this instance's presence via UDP and listens for other RemotePlay instances.
 /// </summary>
+[ExcludeFromCodeCoverage]
 internal sealed class PresenceBroadcaster : IDisposable
 {
     /// <summary>Fixed UDP discovery port shared by all instances on the LAN.</summary>
