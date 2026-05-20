@@ -22,6 +22,16 @@
             <button id="back-button" class="crumb-back" onclick="goBack()" style="display:none">&#8592; Back</button>
           </div>
           <div id="search-wrap">
+            <div id="mode-tabs">
+              <button id="tab-video" class="mode-tab active" onclick="switchMode('video')">&#127916; Video</button>
+              <button id="tab-music" class="mode-tab" onclick="switchMode('music')">&#127925; Music</button>
+              <button id="tab-radio" class="mode-tab" onclick="switchMode('radio')">&#128251; Radio</button>
+            </div>
+            <div id="radio-tab-bar-header" style="display:none;gap:.35rem;flex-wrap:wrap">
+              <button id="header-tab-stations" class="radio-tab active" onclick="radioShowTab('top')">&#128251; Stations</button>
+              <button id="header-tab-favorites" class="radio-tab" onclick="radioShowTab('favorites')">&#10084; Favorites</button>
+            </div>
+            <div id="radio-station-count" style="display:none;font-size:.75rem;color:var(--muted,#9aa8c2)"></div>
             <div id="search-row">
               <input id="search" type="search" placeholder="Search entire library..." oninput="onSearch()" aria-label="Search entire library"/>
               <div id="search-spinner" aria-label="Searching" title="Searching..."></div>
@@ -99,6 +109,83 @@
         </header>
         <div id="status" style="display:none">Loading...</div>
         <div id="browser"></div>
+        <div id="music-browser" style="display:none"></div>
+        <div id="radio-browser" style="display:none"></div>
+        <div id="radio-player-bar" style="display:none" aria-label="Radio player">
+          <div class="player-top">
+              <div id="radio-player-summary">
+              <div id="radio-bar-favicon-wrap" style="flex-shrink:0;display:none"><img id="radio-bar-favicon" src="" alt="" style="width:36px;height:36px;border-radius:5px;object-fit:contain" /></div>
+              <div id="radio-bar-info">
+                <div id="radio-bar-title">—</div>
+                <div id="radio-bar-meta" style="font-size:.75rem;color:var(--muted,#9aa8c2)"></div>
+                <div id="radio-bar-tech" style="font-size:.72rem;color:var(--muted,#9aa8c2);margin-top:.1rem"></div>
+                <div id="radio-bar-tags" style="font-size:.72rem;color:var(--muted,#9aa8c2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+                <div id="radio-bar-pop" style="font-size:.72rem;color:var(--muted,#9aa8c2)"></div>
+                <div id="radio-bar-homepage" style="font-size:.72rem;margin-top:.15rem"></div>
+              </div>
+            </div>
+            <div class="transport-controls">
+              <div class="button-group transport-main-group">
+                <button id="radio-btn-play" class="btn btn-red" onclick="radioToggle()">&#9654; Play</button>
+                <button id="radio-btn-stop" class="btn btn-stop" onclick="radioStop()">&#9632; STOP</button>
+              </div>
+            </div>
+          </div>
+          <div id="radio-media-controls" style="display:grid;grid-template-columns:minmax(150px,1fr);gap:.55rem;margin-top:.1rem;padding-top:.55rem;border-top:1px solid var(--player-card-border,#292941)">
+            <div class="control-card">
+              <div class="control-title">Volume</div>
+              <span class="slider-wrap">
+                <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3c0-1.8-1-3.3-2.5-4.1v8.2c1.5-.8 2.5-2.3 2.5-4.1zm-2.5-8.7v2.1c2.9 1 5 3.6 5 6.6s-2.1 5.6-5 6.6v2.1c4-1.1 7-4.7 7-8.7s-3-7.6-7-8.7z"/></svg>
+                <input id="radio-bar-volume" type="range" min="0" max="1" step="0.02" value="0.8"
+                       oninput="radioVolume(this.value)" aria-label="Radio volume"/>
+                <span id="radio-volume-label">80%</span>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div id="music-player-bar" style="display:none" aria-label="Music player">
+          <div class="player-top">
+            <div id="music-player-summary">
+              <div id="music-bar-info">
+                <div id="music-bar-title">—</div>
+                <div id="music-bar-meta"></div>
+              </div>
+            </div>
+            <div class="transport-controls">
+              <div class="button-group transport-nav-group">
+                <button id="music-btn-prev" class="btn btn-nav" onclick="musicPrev()" title="Previous"><span class="nav-main">&#9664;&#9664; Prev</span><span class="nav-title" id="music-prev-title"></span></button>
+                <button id="music-btn-next" class="btn btn-nav" onclick="musicNext()" title="Next"><span class="nav-main">Next &#9654;&#9654;</span><span class="nav-title" id="music-next-title"></span></button>
+              </div>
+              <div class="button-group transport-main-group">
+                <button id="music-btn-play" class="btn btn-red" onclick="musicToggle()">&#9654; Play</button>
+                <button id="music-btn-stop" class="btn btn-stop" onclick="musicStop()">&#9632; STOP</button>
+              </div>
+            </div>
+          </div>
+          <div id="music-progress-row" style="display:grid">
+            <input id="music-seek" type="range" min="0" max="0" value="0" step="0.1"
+                   onpointerdown="onMusicSeekDrag()" onpointerup="onMusicSeekCommit()" ontouchend="onMusicSeekCommit()" aria-label="Music position"/>
+            <span id="music-time-label">0:00 / 0:00</span>
+          </div>
+          <div id="music-media-controls" style="display:grid;grid-template-columns:minmax(150px,1fr);gap:.55rem;margin-top:.1rem;padding-top:.55rem;border-top:1px solid var(--player-card-border,#292941)">
+            <div class="control-card">
+              <div class="control-title">Options</div>
+              <div id="music-option-btns" style="display:flex;gap:.45rem;flex-wrap:wrap;margin-bottom:.45rem">
+                <button id="music-btn-autoplay" class="btn music-opt-btn active" onclick="toggleMusicAutoPlay()" title="Auto Play Next track when current ends">&#9193; Auto Play Next</button>
+                <button id="music-btn-shuffle"  class="btn music-opt-btn"        onclick="toggleMusicShuffle()"  title="Shuffle songs in current folder">&#128256; Shuffle</button>
+              </div>
+            </div>
+            <div class="control-card">
+              <div class="control-title">Volume</div>
+              <span class="slider-wrap">
+                <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3c0-1.8-1-3.3-2.5-4.1v8.2c1.5-.8 2.5-2.3 2.5-4.1zm-2.5-8.7v2.1c2.9 1 5 3.6 5 6.6s-2.1 5.6-5 6.6v2.1c4-1.1 7-4.7 7-8.7s-3-7.6-7-8.7z"/></svg>
+                <input id="music-bar-volume" type="range" min="0" max="1" step="0.02" value="0.8"
+                       oninput="musicVolume(this.value)" aria-label="Volume"/>
+                <span id="music-volume-label">80%</span>
+              </span>
+            </div>
+          </div>
+        </div>
         <div id="browse-loading" aria-hidden="true"><div class="browse-spinner"></div><span>Loading…</span></div>
         <div id="diagnostics-overlay">
           <div id="diagnostics-panel">

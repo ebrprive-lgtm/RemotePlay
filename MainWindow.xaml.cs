@@ -31,6 +31,9 @@ public partial class MainWindow : Window
     private readonly PlaybackHistory _playbackHistory = new();
     private readonly LibVLC _libVlc;
     private readonly MediaPlayer _mediaPlayer;
+    private readonly RemotePlay.Services.MusicPlayer _musicPlayer;
+    private readonly RemotePlay.Services.RadioPlayer _radioPlayer;
+    private readonly RemotePlay.Services.RadioBrowserClient _radioBrowser;
     private WebServer? _webServer;
     private PresenceBroadcaster? _broadcaster;
     private RemotePlay.Services.AppUpdater? _appUpdater;
@@ -155,6 +158,12 @@ public partial class MainWindow : Window
             _libVlc = new LibVLC();
             _mediaPlayer = new MediaPlayer(_libVlc);
             VideoPlayer.MediaPlayer = _mediaPlayer;
+            _musicPlayer = new RemotePlay.Services.MusicPlayer();
+            _musicPlayer.SetDevice(_config.MusicAudioDeviceId);
+            _radioPlayer  = new RemotePlay.Services.RadioPlayer();
+            _radioPlayer.SetDevice(_config.MusicAudioDeviceId);
+            _radioBrowser = new RemotePlay.Services.RadioBrowserClient(AppPaths.RadioFavoritesFile);
+            _ = _radioBrowser.ResolveServerAsync();
 
             _bannerTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
             _bannerTimer.Tick += (_, _) => HideBanner();
@@ -214,6 +223,22 @@ public partial class MainWindow : Window
             combo.SelectedIndex = 0;
     }
 
+    private void PopulateMusicAudioDeviceCombo(string savedDeviceId)
+    {
+        MusicAudioDeviceCombo.Items.Clear();
+        foreach (var (num, name) in Services.MusicPlayer.EnumerateDevices())
+            MusicAudioDeviceCombo.Items.Add(new MusicAudioDevice(num, name));
+
+        // Select saved device
+        foreach (MusicAudioDevice item in MusicAudioDeviceCombo.Items)
+        {
+            if (item.DeviceNumber == -1 && string.IsNullOrWhiteSpace(savedDeviceId)) { MusicAudioDeviceCombo.SelectedItem = item; break; }
+            if (!string.IsNullOrWhiteSpace(savedDeviceId) && item.Name.Contains(savedDeviceId, StringComparison.OrdinalIgnoreCase)) { MusicAudioDeviceCombo.SelectedItem = item; break; }
+        }
+        if (MusicAudioDeviceCombo.SelectedItem is null && MusicAudioDeviceCombo.Items.Count > 0)
+            MusicAudioDeviceCombo.SelectedIndex = 0;
+    }
+
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
         Dispatcher.Invoke(() =>
@@ -243,6 +268,7 @@ public partial class MainWindow : Window
         MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
 
         MoviesFolderBox.Text = _config.ResolvedMoviesPath;
+        MusicFolderBox.Text = _config.ResolvedMusicPath;
         PortBox.Text = _config.Port.ToString();
         if (FindName("InstanceNameBox") is System.Windows.Controls.TextBox instanceNameBox)
             instanceNameBox.Text = _config.InstanceName;
@@ -275,6 +301,7 @@ public partial class MainWindow : Window
             useTrayIconBox.IsChecked = _config.UseTrayIcon;
         if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo)
             PopulateDisplayCombo(displayCombo, _config.PreferredDisplayIndex);
+        PopulateMusicAudioDeviceCombo(_config.MusicAudioDeviceId);
 
         AppendLog($"RemotePlay started");
         AppendLog($"Movies: {_config.ResolvedMoviesPath}");
@@ -394,6 +421,11 @@ public partial class MainWindow : Window
             Logger.Info($"{actionName}: starting presence broadcaster");
             await Dispatcher.InvokeAsync(() => AppendLog($"{actionName}: starting discovery broadcaster…"));
             _webServer?.Stop();
+            // Ensure all playback is stopped before the server restarts so the new
+            // server instance always starts in a clean, idle state.
+            _musicPlayer.Stop();
+            _radioPlayer.Stop();
+            await Dispatcher.InvokeAsync(() => StopMovie());
             _broadcaster?.Stop();
             _broadcaster?.Dispose();
             _broadcaster = new PresenceBroadcaster(config);
@@ -544,6 +576,9 @@ public partial class MainWindow : Window
         _broadcaster?.Dispose();
         _trayIcon?.Dispose();
         _mediaPlayer.Dispose();
+        _musicPlayer.Dispose();
+        _radioPlayer.Dispose();
+        _radioBrowser.Dispose();
         _libVlc.Dispose();
     }
 
@@ -1318,6 +1353,18 @@ public partial class MainWindow : Window
             MoviesFolderBox.Text = dialog.FolderName;
     }
 
+    private void OnBrowseMusicFolder(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "Select the root folder for your music library",
+            InitialDirectory = MusicFolderBox.Text
+        };
+
+        if (dialog.ShowDialog() == true)
+            MusicFolderBox.Text = dialog.FolderName;
+    }
+
     private void OnBrowseUpdateSourceFolder(object sender, RoutedEventArgs e)
     {
         var currentPath = FindName("UpdateSourcePathBox") is System.Windows.Controls.TextBox box ? box.Text : string.Empty;
@@ -1380,6 +1427,7 @@ public partial class MainWindow : Window
     private void OnApplySettings(object sender, RoutedEventArgs e)
     {
         var folder = MoviesFolderBox.Text.Trim();
+        var musicFolder = MusicFolderBox.Text.Trim();
         var portText = PortBox.Text.Trim();
         var instanceName = FindName("InstanceNameBox") is System.Windows.Controls.TextBox instanceNameBox2
             ? instanceNameBox2.Text.Trim()
@@ -1447,6 +1495,10 @@ public partial class MainWindow : Window
             ? useTrayIconBox2.IsChecked == true
             : _config.UseTrayIcon;
 
+        var musicAudioDeviceId = _config.MusicAudioDeviceId;
+        if (MusicAudioDeviceCombo.SelectedItem is MusicAudioDevice selectedDev)
+            musicAudioDeviceId = selectedDev.DeviceNumber == -1 ? string.Empty : selectedDev.Name;
+
         var validation = _settingsValidationService.Validate(folder, portText);
         if (!validation.IsValid)
         {
@@ -1463,6 +1515,7 @@ public partial class MainWindow : Window
                 port,
                 useHttps,
                 folder,
+                musicFolder,
                 instanceName,
                 _volume,
                 _zoom,
@@ -1480,7 +1533,8 @@ public partial class MainWindow : Window
                 startWithWindows,
                 useTrayIcon,
                 updateSourcePath,
-                autoUpdateIntervalMinutes);
+                autoUpdateIntervalMinutes,
+                musicAudioDeviceId);
 
             _config = _settingsApplyService.ApplyAndReload(updatedConfig);
             ApplyWindowsAutostart(_config.StartWithWindows);
@@ -1488,6 +1542,7 @@ public partial class MainWindow : Window
             if (!_config.UseTrayIcon)
                 ShowInTaskbar = true;
             _playbackHistory.Trim(_config.PlaybackHistoryLimit);
+            _musicPlayer.SetDevice(_config.MusicAudioDeviceId);
 
             MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
             RefreshDisplaySettings();
@@ -3093,4 +3148,10 @@ public partial class MainWindow : Window
         var dlg = new FindLinksDialog(entry.FullPath, _config.ResolvedMoviesPath, indexLookup) { Owner = this };
         dlg.ShowDialog();
     }
+}
+
+/// <summary>Item model for the music audio output device ComboBox.</summary>
+internal sealed record MusicAudioDevice(int DeviceNumber, string Name)
+{
+    public override string ToString() => Name;
 }

@@ -200,6 +200,7 @@
         }
 
         async function refreshLibraryStatus(){
+          if(currentMode!=='video')return;
           try{
             const res=await fetch('/api/library-status');
             if(!res.ok)return;
@@ -208,6 +209,7 @@
         }
 
         function updateLibraryStatus(scan){
+          if(currentMode!=='video')return;
           const el=document.getElementById('scan-status');
           if(!el||!scan)return;
           const indexed=Number(scan.indexedFiles??scan.IndexedFiles)||0;
@@ -887,6 +889,12 @@
         function onSearch(){
           const q=document.getElementById('search').value.toLowerCase().trim();
           clearTimeout(searchTimer);
+          if(currentMode==='music'){
+            if(!q){if(currentMusicData)renderMusic(currentMusicData);else browseMusic(null);return;}
+            searchTimer=setTimeout(()=>searchMusicLibrary(q),300);
+            return;
+          }
+          if(currentMode==='radio')return;
           if(!q){setSearchBusy(false);if(currentData)render(currentData);return;}
           clearPendingThumbnails();
           setSearchBusy(true);
@@ -924,7 +932,585 @@
           },{rootMargin:'420px 0px',threshold:.01});
           cards.forEach(card=>thumbnailObserver.observe(card));
         }
-        async function searchLibrary(q,offset=0,append=false){
+        let currentMode='video';
+                let musicBrowseHistory=[];
+                let currentMusicFolder=null;
+                let currentMusicData=null;
+                let musicStatusPollTimer=null;
+                let musicPlaybackPollTimer=null;
+                let musicCurrentPath=null;
+                let musicIsPlaying=false;
+                let musicCurrentVolume=0.8;
+                // Track list for prev/next
+                let musicTrackList=[];
+                let musicTrackIndex=-1;
+                // Playback options
+                let _musicAutoPlay=true;
+                let _musicShuffle=false;
+                let _musicShuffleOrder=[];  // shuffled indices into musicTrackList
+                let _musicShufflePos=-1;
+
+                // ── Music playback ─────────────────────────────────────────────────────
+                let _musicTrackListFolder=null;  // folder the current musicTrackList was built from
+                async function playMusic(path,name){
+                  musicCurrentPath=path;
+                  // Update the .playing highlight immediately on click
+                  document.querySelectorAll('.music-track-card').forEach(card=>{
+                    card.classList.toggle('playing',card.dataset.path===path);
+                  });
+                  // Build/update track list from current browse data for prev/next.
+                  // Only rebuild shuffle order when the folder (track list) changes.
+                  if(currentMusicData&&currentMusicData.files&&currentMusicData.files.length){
+                    const newFolder=currentMusicData.folder||currentMusicFolder||null;
+                    const folderChanged=newFolder!==_musicTrackListFolder;
+                    _musicTrackListFolder=newFolder;
+                    musicTrackList=currentMusicData.files.map(f=>({path:f.path,name:f.name||pathToName(f.path)}));
+                    musicTrackIndex=musicTrackList.findIndex(t=>t.path===path);
+                    if(_musicShuffle&&folderChanged)_buildShuffleOrder();
+                    else if(_musicShuffle&&_musicShuffleOrder.length){
+                      // update shuffle position to match the new track
+                      const pos=_musicShuffleOrder.indexOf(musicTrackIndex);
+                      if(pos>=0)_musicShufflePos=pos;
+                    }
+                  }
+                  await fetch('/api/music/play?path='+encodeURIComponent(path));
+                  musicIsPlaying=true;
+                  const displayName=name||(musicTrackIndex>=0?musicTrackList[musicTrackIndex].name:null)||pathToName(path);
+                  updateMusicBar({isPlaying:true,isPaused:false,title:displayName,position:0,duration:0});
+                  startMusicPlaybackPoll();
+                }
+
+                async function musicToggle(){
+                  await fetch('/api/music/pause');
+                  // state updated by next poll tick
+                }
+
+                async function musicStop(){
+                  await fetch('/api/music/stop');
+                  musicIsPlaying=false;
+                  musicCurrentPath=null;
+                  const bar=document.getElementById('music-player-bar');
+                  if(bar)bar.style.display='none';
+                  document.body.classList.remove('music-player-docked');
+                  stopMusicPlaybackPoll();
+                }
+
+                async function musicPrev(){
+                  if(musicTrackList.length===0)return;
+                  let t;
+                  if(_musicShuffle&&_musicShuffleOrder.length){
+                    _musicShufflePos=Math.max(0,_musicShufflePos-1);
+                    t=musicTrackList[_musicShuffleOrder[_musicShufflePos]];
+                  }else{
+                    const idx=Math.max(0,musicTrackIndex-1);
+                    t=musicTrackList[idx];
+                  }
+                  if(t)await playMusic(t.path,t.name);
+                }
+
+                async function musicNext(){
+                  if(musicTrackList.length===0)return;
+                  const t=_musicNextTrack();
+                  if(t)await playMusic(t.path,t.name);
+                }
+
+                async function musicVolume(v){
+                  musicCurrentVolume=Number(v);
+                  const lbl=document.getElementById('music-volume-label');
+                  if(lbl)lbl.textContent=Math.round(Number(v)*100)+'%';
+                  await fetch('/api/music/volume?v='+encodeURIComponent(v));
+                }
+
+                function pathToName(p){
+                  if(!p)return '';
+                  const parts=p.replace(/\\/g,'/').split('/');
+                  const file=parts[parts.length-1]||'';
+                  return file.replace(/\.[^.]+$/,'');
+                }
+
+                function updateMusicBar(s){
+                  const bar=document.getElementById('music-player-bar');
+                  if(!bar)return;
+                  const active=s.isPlaying||s.isPaused;
+                  bar.style.display=active?'flex':'none';
+                  // Dock/undock alongside browser (mirrors desktop-player-docked for video)
+                  const isDocked=active&&window.matchMedia('(min-width:900px)').matches;
+                  document.body.classList.toggle('music-player-docked',isDocked);
+
+                  // Title & meta
+                  const title=document.getElementById('music-bar-title');
+                  if(title)title.textContent=s.title||'—';
+                  const meta=document.getElementById('music-bar-meta');
+                  if(meta)meta.textContent=s.artist||(s.albumArtist?s.albumArtist:'')||'';
+
+                  // Prev / Next nav titles (shuffle-aware)
+                  _refreshMusicNavLabels();
+
+                  // Seek bar
+                  const seek=document.getElementById('music-seek');
+                  if(seek&&!_musicSeekDragging){
+                    seek.max=s.duration>0?s.duration:0;
+                    seek.value=s.position||0;
+                  }
+
+                  // Time label
+                  const timeEl=document.getElementById('music-time-label');
+                  if(timeEl)timeEl.textContent=s.duration>0?fmtSec(s.position)+' / '+fmtSec(s.duration):'0:00 / 0:00';
+
+                  // Play button label
+                  const btn=document.getElementById('music-btn-play');
+                  if(btn)btn.innerHTML=s.isPaused?'&#9654; Play':'&#9646;&#9646; Pause';
+
+                  if(s.lastError&&!active)bar.style.display='none';
+                }
+
+                let _musicSeekDragging=false;
+                function onMusicSeekDrag(){_musicSeekDragging=true;}
+                async function onMusicSeekCommit(){
+                  if(!_musicSeekDragging)return;  // ignore programmatic value changes
+                  _musicSeekDragging=false;
+                  const seek=document.getElementById('music-seek');
+                  if(!seek)return;
+                  const pos=parseFloat(seek.value);
+                  if(Number.isNaN(pos))return;
+                  try{await fetch('/api/music/seek?pos='+pos.toFixed(2),{method:'POST'});}catch(e){}
+                }
+
+                function toggleMusicAutoPlay(){
+                  _musicAutoPlay=!_musicAutoPlay;
+                  const btn=document.getElementById('music-btn-autoplay');
+                  if(btn)btn.classList.toggle('active',_musicAutoPlay);
+                }
+                function _buildShuffleOrder(){
+                  const n=musicTrackList.length;
+                  const arr=Array.from({length:n},(_,i)=>i);
+                  for(let i=n-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];}
+                  // Put current track first so shuffle starts from the current song
+                  const cur=arr.indexOf(musicTrackIndex);
+                  if(cur>0){const tmp=arr[0];arr[0]=arr[cur];arr[cur]=tmp;}
+                  _musicShuffleOrder=arr; _musicShufflePos=0;
+                }
+                function toggleMusicShuffle(){
+                  _musicShuffle=!_musicShuffle;
+                  const btn=document.getElementById('music-btn-shuffle');
+                  if(btn)btn.classList.toggle('active',_musicShuffle);
+                  if(_musicShuffle){
+                    // Load ALL tracks in the current folder before building shuffle order so
+                    // the shuffle pool is the full folder, not just the first page.
+                    _loadAllMusicTracksForShuffle().then(()=>{
+                      _buildShuffleOrder();
+                      // Refresh nav-label display without touching server state
+                      _refreshMusicNavLabels();
+                    });
+                  }else{
+                    _refreshMusicNavLabels();
+                  }
+                }
+                // Silently fetches remaining pages until hasMore is false; merges into musicTrackList.
+                async function _loadAllMusicTracksForShuffle(){
+                  if(!currentMusicData)return;
+                  // If we already have all tracks (or it's a search result) nothing to do
+                  while(currentMusicData.hasMore){
+                    const offset=currentMusicData.files?currentMusicData.files.length:0;
+                    try{
+                      const folder=currentMusicData.folder||currentMusicFolder||null;
+                      const url='/api/music/browse'+(folder?'?folder='+encodeURIComponent(folder):'?')+'&offset='+encodeURIComponent(offset);
+                      const res=await fetch(url);
+                      if(!res.ok)break;
+                      const page=await res.json();
+                      currentMusicData.files=[...(currentMusicData.files||[]),...(page.files||[])];
+                      currentMusicData.offset=page.offset;
+                      currentMusicData.hasMore=page.hasMore;
+                    }catch(e){break;}
+                  }
+                  // Rebuild the in-memory track list from the now-complete file list
+                  musicTrackList=currentMusicData.files.map(f=>({path:f.path,name:f.name||pathToName(f.path)}));
+                  musicTrackIndex=musicTrackList.findIndex(t=>t.path===(musicCurrentPath||''));
+                  // Re-render cards so load-more button disappears
+                  renderMusicCards(currentMusicData);
+                }
+                // Refresh the Prev/Next label display without mutating positions
+                function _refreshMusicNavLabels(){
+                  const prevTitleEl=document.getElementById('music-prev-title');
+                  const prevTrack=_musicPeekPrev();
+                  if(prevTitleEl)prevTitleEl.textContent=prevTrack?prevTrack.name:'';
+                  const nextTitleEl=document.getElementById('music-next-title');
+                  const nextTrack=_musicPeekNext();
+                  if(nextTitleEl)nextTitleEl.textContent=nextTrack?nextTrack.name:'';
+                }
+                function _musicNextTrack(){
+                  if(!musicTrackList.length)return null;
+                  if(_musicShuffle){
+                    if(!_musicShuffleOrder.length)_buildShuffleOrder();
+                    _musicShufflePos=(_musicShufflePos+1)%_musicShuffleOrder.length;
+                    const idx=_musicShuffleOrder[_musicShufflePos];
+                    return musicTrackList[idx]||null;
+                  }
+                  const next=musicTrackIndex+1;
+                  return next<musicTrackList.length?musicTrackList[next]:null;
+                }
+                // Peek at the previous/next track WITHOUT advancing position (for label display)
+                function _musicPeekPrev(){
+                  if(!musicTrackList.length)return null;
+                  if(_musicShuffle&&_musicShuffleOrder.length){
+                    const pos=_musicShufflePos-1;
+                    if(pos<0)return null;
+                    return musicTrackList[_musicShuffleOrder[pos]]||null;
+                  }
+                  const idx=musicTrackIndex-1;
+                  return idx>=0?musicTrackList[idx]:null;
+                }
+                function _musicPeekNext(){
+                  if(!musicTrackList.length)return null;
+                  if(_musicShuffle&&_musicShuffleOrder.length){
+                    const pos=(_musicShufflePos+1)%_musicShuffleOrder.length;
+                    // Don't wrap-peek if we're at the last unique position
+                    if(_musicShufflePos===_musicShuffleOrder.length-1)return null;
+                    return musicTrackList[_musicShuffleOrder[pos]]||null;
+                  }
+                  const idx=musicTrackIndex+1;
+                  return idx<musicTrackList.length?musicTrackList[idx]:null;
+                }
+                function fmtSec(sec){
+                  const s=Math.floor(sec);
+                  return Math.floor(s/60)+':'+(s%60).toString().padStart(2,'0');
+                }
+
+                let _musicKnownSessionId=null;  // last server session ID seen; null = unknown
+
+                function startMusicPlaybackPoll(){
+                  if(musicPlaybackPollTimer)return;
+                  musicPlaybackPollTimer=setInterval(async()=>{
+                    let s;
+                    try{
+                      const res=await fetch('/api/music/status');
+                      if(!res.ok)return;
+                      s=await res.json();
+                    }catch(e){ return; }
+
+                    // Detect server restart via the per-process session ID.
+                    // If the ID changed (or we didn't have one yet) the server is a fresh process
+                    // with no active playback – sync local state and do NOT auto-advance.
+                    if(s.sessionId&&s.sessionId!==_musicKnownSessionId){
+                      _musicKnownSessionId=s.sessionId;
+                      musicIsPlaying=s.isPlaying||s.isPaused;
+                      musicCurrentPath=s.currentPath||null;
+                      updateMusicBar(s);
+                      if(!musicIsPlaying)stopMusicPlaybackPoll();
+                      return;
+                    }
+
+                    const wasPlaying=musicIsPlaying;
+                    musicIsPlaying=s.isPlaying||s.isPaused;
+                    updateMusicBar(s);
+
+                    // auto-advance when track ends naturally
+                    if(!s.isPlaying&&!s.isPaused&&wasPlaying&&musicCurrentPath&&!s.currentPath){
+                      musicCurrentPath=null;
+                      if(_musicAutoPlay||_musicShuffle){
+                        const nextT=_musicNextTrack();
+                        if(nextT){
+                          await playMusic(nextT.path,nextT.name);
+                          // playMusic restarts the poll; skip the stop-check below
+                          return;
+                        }
+                      }
+                    }
+
+                    // Stop polling only when truly idle (nothing playing and we didn't just advance)
+                    if(!s.isPlaying&&!s.isPaused&&!s.currentPath&&!musicCurrentPath)stopMusicPlaybackPoll();
+                  },1500);
+                }
+
+                function stopMusicPlaybackPoll(){
+                  if(musicPlaybackPollTimer){clearInterval(musicPlaybackPollTimer);musicPlaybackPollTimer=null;}
+                }
+
+                function switchMode(mode){
+                  currentMode=mode;
+                  // Remove music dock when leaving music mode
+                  if(mode!=='music')document.body.classList.remove('music-player-docked');
+                  if(mode!=='radio'&&!_radioIsPlaying)document.body.classList.remove('radio-player-docked');
+                  document.body.classList.toggle('radio-mode',mode==='radio');
+                  ['video','music','radio'].forEach(m=>{
+                    const tab=document.getElementById('tab-'+m);
+                    const browser=document.getElementById(m==='video'?'browser':m+'-browser');
+                    const active=m===mode;
+                    if(tab)tab.classList.toggle('active',active);
+                    if(browser)browser.style.display=active?'':'none';
+                  });
+                  // Show/hide the radio sub-tab bar and count in the header
+                  const radioTabHdr=document.getElementById('radio-tab-bar-header');
+                  const radioCountHdr=document.getElementById('radio-station-count');
+                  if(radioTabHdr)radioTabHdr.style.display=(mode==='radio'?'flex':'none');
+                  if(radioCountHdr)radioCountHdr.style.display=(mode==='radio'?'':'none');
+                  const searchEl=document.getElementById('search');
+                  const searchRow=document.getElementById('search-row');
+                  if(mode==='video'){
+                    if(searchRow)searchRow.style.display='';
+                    searchEl.placeholder='Search entire library...';
+                    stopMusicStatusPoll();
+                    stopRadioStatusPoll();
+                    const back=document.getElementById('back-button');
+                    if(back)back.onclick=goBack;
+                    refreshLibraryStatus();
+                    if(currentData)render(currentData);
+                    else browse(null);
+                  }else if(mode==='music'){
+                    if(searchRow)searchRow.style.display='';
+                    searchEl.placeholder='Search music library...';
+                    stopRadioStatusPoll();
+                    document.body.classList.remove('radio-player-docked');
+                    // clear any video scan-status left-overs
+                    const el=document.getElementById('scan-status');
+                    if(el){el.textContent='';el.className='';}
+                    // restore music bar if already playing
+                    if(musicIsPlaying)startMusicPlaybackPoll();
+                    if(!currentMusicData)browseMusic(null);
+                    else renderMusicHeader(currentMusicData,false);
+                  }else if(mode==='radio'){
+                    if(searchRow)searchRow.style.display='none';
+                    stopMusicStatusPoll();
+                    setMusicHeaderForMode('radio');
+                    radioInit();
+                  }
+                }
+
+                function setMusicHeaderForMode(mode){
+                  const bc=document.getElementById('breadcrumb');
+                  const countLine=document.getElementById('count-line');
+                  const scanStatus=document.getElementById('scan-status');
+                  const back=document.getElementById('back-button');
+                  if(back)back.style.display='none';
+                  if(bc)bc.innerHTML='';
+                  if(countLine)countLine.textContent='';
+                  if(scanStatus){scanStatus.textContent='';scanStatus.className='';}
+                }
+
+                function renderMusicHeader(data,searching){
+                  const bc=document.getElementById('breadcrumb');
+                  const countLine=document.getElementById('count-line');
+                  const scanStatus=document.getElementById('scan-status');
+                  const back=document.getElementById('back-button');
+
+                  // Breadcrumb
+                  if(bc){
+                    bc.innerHTML='';
+                    if(searching){
+                      bc.innerHTML='<a onclick="browseMusic(null)">&#128193; Music Root</a><span> &rsaquo; </span><span class="crumb-current">Search results</span>';
+                    }else{
+                      const root=data.musicRoot||'';
+                      const folder=data.folder||root;
+                      let html='<a onclick="browseMusic(null)">&#128193; Music Root</a>';
+                      if(folder&&root&&folder.toLowerCase()!==root.toLowerCase()){
+                        // Build segments relative to music root
+                        const rel=folder.startsWith(root)?folder.slice(root.length):'';
+                        const sep=rel.indexOf('/')!==-1?'/':'\\';
+                        const parts=rel.split(sep).filter(p=>p.length>0);
+                        let cumulative=root;
+                        parts.forEach((part,i)=>{
+                          cumulative+=sep+part;
+                          const captured=cumulative;
+                          if(i===parts.length-1){
+                            html+='<span> &rsaquo; </span><span class="crumb-current">'+esc(part)+'</span>';
+                          }else{
+                            html+='<span> &rsaquo; </span><a onclick="browseMusic(\''+jsStr(captured)+'\')">'+esc(part)+'</a>';
+                          }
+                        });
+                      }
+                      bc.innerHTML=html;
+                    }
+                  }
+
+                  // Back button
+                  if(back){
+                    const canGoBack=searching||(musicBrowseHistory.length>0)||(data.folder!=null&&data.folder!==(data.musicRoot||''));
+                    back.style.display=canGoBack?'block':'none';
+                    back.dataset.dir='';
+                    back.onclick=()=>{
+                      if(currentMode==='music'){
+                        if(searching){browseMusic(currentMusicFolder);return;}
+                        const prev=musicBrowseHistory.length>0?musicBrowseHistory.pop():null;
+                        // Navigate directly without re-pushing to history
+                        currentMusicFolder=prev;
+                        const mb=document.getElementById('music-browser');
+                        if(mb)mb.innerHTML='<div style="padding:.75rem;color:var(--muted,#9aa8c2)">Loading\u2026</div>';
+                        const url='/api/music/browse'+(prev?'?folder='+encodeURIComponent(prev):'');
+                        fetch(url).then(r=>r.ok?r.json():null).then(data=>{
+                          if(!data)return;
+                          currentMusicData=data;currentMusicData.folder=prev;
+                          if(currentMode==='music')renderMusicHeader(currentMusicData,false);
+                          renderMusicCards(currentMusicData);
+                        }).catch(()=>{});
+                      }else goBack();
+                    };
+                  }
+
+                  // Count line
+                  if(countLine){
+                    if(searching){
+                      const fc=data.folders?.length||0;
+                      const tc=data.files?.length||0;
+                      countLine.textContent=fc+' folder(s) and '+tc+' result(s)';
+                    }else{
+                      const fc=data.folders?.length||0;
+                      const loaded=data.files?.length||0;
+                      const total=data.totalInFolder||loaded;
+                      if(total>loaded){
+                        countLine.textContent=fc+' folder(s), '+loaded+' of '+total+' track(s) loaded';
+                      }else{
+                        countLine.textContent=fc+' folder(s), '+total+' track(s)';
+                      }
+                    }
+                  }
+
+                  // Scan status line
+                  if(scanStatus&&currentMode==='music'){
+                    scanStatus.classList.remove('scanning','error','global-scan-status');
+                    const total=Number(data.indexedFiles)||0;
+                    const isScanning=Boolean(data.indexing);
+                    const err=(data.lastError||'').trim();
+                    if(err){
+                      scanStatus.classList.add('error');
+                      scanStatus.textContent='Music scan failed: '+err;
+                    }else if(isScanning){
+                      scanStatus.classList.add('scanning','global-scan-status');
+                      scanStatus.textContent='Scanning music library… '+total+' track(s) indexed so far.';
+                      startMusicStatusPoll();
+                    }else if(total>0){
+                      scanStatus.textContent='Music Library Ready: '+total+' song(s)';
+                    }else{
+                      scanStatus.textContent='Music library index not built yet';
+                    }
+                  }
+                }
+
+                function startMusicStatusPoll(){
+                  if(musicStatusPollTimer)return;
+                  musicStatusPollTimer=setInterval(async()=>{
+                    try{
+                      const res=await fetch('/api/music/status');
+                      if(!res.ok)return;
+                      const s=await res.json();
+                      if(currentMode!=='music')return stopMusicStatusPoll();
+                      if(!s.isScanning){
+                        stopMusicStatusPoll();
+                        browseMusic(currentMusicFolder);
+                      }else{
+                        // Update live count directly in the scan status element
+                        const scanStatus=document.getElementById('scan-status');
+                        if(scanStatus&&currentMode==='music'){
+                          scanStatus.classList.add('scanning','global-scan-status');
+                          scanStatus.textContent='Scanning music library… '+(s.indexedFiles||0)+' track(s) indexed so far.';
+                        }
+                        if(currentMusicData){
+                          currentMusicData.indexing=true;
+                          currentMusicData.indexedFiles=s.indexedFiles||0;
+                        }
+                      }
+                    }catch(e){}
+                  },2000);
+                }
+
+                function stopMusicStatusPoll(){
+                  if(musicStatusPollTimer){clearInterval(musicStatusPollTimer);musicStatusPollTimer=null;}
+                }
+
+                async function browseMusic(folder,offset=0,append=false){
+                  if(!append){
+                    // Push current folder to history before navigating
+                    if(currentMusicFolder!==folder){
+                      if(currentMusicFolder!==null) musicBrowseHistory.push(currentMusicFolder);
+                      // Going to root resets history
+                      if(folder===null||folder===undefined) musicBrowseHistory=[];
+                    }
+                    currentMusicFolder=folder;
+                  }
+                  const mb=document.getElementById('music-browser');
+                  if(!mb)return;
+                  if(!append)mb.innerHTML='<div style="padding:.75rem;color:var(--muted,#9aa8c2)">Loading…</div>';
+                  try{
+                    const url='/api/music/browse'+(folder?'?folder='+encodeURIComponent(folder):'')+(offset?'&offset='+encodeURIComponent(offset):'');
+                    const res=await fetch(url);
+                    if(!res.ok){mb.innerHTML='<div style="padding:.75rem">Error '+res.status+'</div>';return;}
+                    const data=await res.json();
+                    if(append&&currentMusicData){
+                      currentMusicData.files=[...(currentMusicData.files||[]),...(data.files||[])];
+                      currentMusicData.offset=data.offset;
+                      currentMusicData.hasMore=data.hasMore;
+                      // totalInFolder comes from the first page; don't overwrite it
+                      if(data.totalInFolder)currentMusicData.totalInFolder=data.totalInFolder;
+                    }else{
+                      currentMusicData=data;
+                      currentMusicData.folder=folder;
+                    }
+                    if(currentMode==='music')renderMusicHeader(currentMusicData,false);
+                    renderMusicCards(currentMusicData);
+                  }catch(e){mb.innerHTML='<div style="padding:.75rem">Error: '+e+'</div>';}
+                }
+
+                async function searchMusicLibrary(q,offset=0,append=false){
+                  const mb=document.getElementById('music-browser');
+                  if(!mb)return;
+                  try{
+                    const res=await fetch('/api/music/search?q='+encodeURIComponent(q)+(offset?'&offset='+encodeURIComponent(offset):''));
+                    if(!res.ok){setSearchBusy(false);return;}
+                    const data=await res.json();
+                    if(append&&currentMusicData){
+                      currentMusicData.files=[...(currentMusicData.files||[]),...(data.files||[])];
+                      currentMusicData.hasMore=data.hasMore;
+                    }else currentMusicData={...data,folders:[],query:q};
+                    setSearchBusy(false);
+                    if(currentMode==='music')renderMusicHeader(currentMusicData,true);
+                    renderMusicCards(currentMusicData,true);
+                  }catch(e){setSearchBusy(false);}
+                }
+
+                function renderMusicCards(data,searching){
+                  const mb=document.getElementById('music-browser');
+                  if(!mb)return;
+                  let html='';
+                  if(!searching&&data.folders&&data.folders.length){
+                    html+='<div class="folder-list">';
+                    data.folders.forEach(f=>{
+                      html+='<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" onclick="browseMusic(\''+jsStr(f.folder)+'\')">'
+                          +'<span class="folder-icon">&#128193;</span><span class="folder-name">'+esc(f.name)+'</span></div>';
+                    });
+                    html+='</div>';
+                  }
+                  if(data.files&&data.files.length){
+                    html+='<div class="section-label">Tracks</div><div class="music-grid">';
+                    data.files.forEach(f=>{
+                      const isPlaying=musicCurrentPath&&f.path===musicCurrentPath;
+                      html+='<div class="music-track-card'+(isPlaying?' playing':'')+'" data-path="'+esc(f.path)+'" onclick="playMusic(\''+jsStr(f.path)+'\',\''+jsStr(f.name)+'\')">'  
+                          +'<div class="track-name">'+esc(f.name)+'</div>'
+                          +'<div class="track-folder">'+esc(f.folder)+'</div></div>';
+                    });
+                    html+='</div>';
+                    if(data.hasMore){
+                      const shown=data.files.length;
+                      const total=data.totalInFolder||shown;
+                      html+='<button class="load-more-btn" onclick="loadMoreMusic()">Load more tracks ('+shown+' of '+total+' loaded)</button>';
+                    }
+                  }else if(data.folder&&!data.indexing){
+                    html+='<div style="padding:1rem;color:var(--muted,#9aa8c2)">No tracks found.</div>';
+                  }
+                  mb.innerHTML=html||'<div style="padding:1rem;color:var(--muted,#9aa8c2)">Select a folder to browse tracks.</div>';
+                }
+
+                function loadMoreMusic(){
+                  if(!currentMusicData)return;
+                  const offset=(currentMusicData.files||[]).length;
+                  if(currentMusicData.query!==undefined)
+                    searchMusicLibrary(currentMusicData.query||'',offset,true);
+                  else
+                    browseMusic(currentMusicData.folder||currentMusicFolder,offset,true);
+                }
+
+                // kept for compatibility — routes to the card renderer
+                function renderMusic(data,searching){renderMusicCards(data,searching);}
+
+                async function searchLibrary(q,offset=0,append=false){
           setStatus('Searching library...');
           if(!append)clearPendingThumbnails();
           pendingSearchAbort=new AbortController();
@@ -1371,6 +1957,8 @@
           banner.style.display='flex';
         }
         function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+        // Escape a value for embedding inside a single-quoted JS string literal in an HTML attribute.
+        function jsStr(s){return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");}
         function cssEscape(s){return window.CSS&&CSS.escape?CSS.escape(String(s)):String(s).replace(/\\/g,'\\\\').replace(/"/g,'\\"');}
         let wakeLock=null;
         async function requestWakeLock(){
@@ -1532,6 +2120,505 @@
                 location.reload(true);
                 return;
               }
+            }
+          }catch{}
+        }
+
+        // ── Radio ────────────────────────────────────────────────────────────
+        let _radioInited=false;
+        let _radioStations=[];
+        let _radioFavorites=[];
+        let _radioFavCountries=[]; // country codes marked as favorites (localStorage)
+        let _radioFavTags=[]; // genre tags marked as favorites (localStorage)
+        let _radioCurrentUrl='';
+        let _radioCurrentName='';
+        let _radioCurrentCountry='';
+        let _radioCurrentTag='';
+        let _radioCurrentStation=null; // full station object for player display
+        let _radioIsPlaying=false;
+        let _radioStatusPoll=null;
+        let _radioCountries=[];
+        let _radioTags=[];
+        let _radioTab='top'; // 'top'|'favorites'
+        let _radioPage=0; // current page (0-based), each page = 80 stations
+        const _radioPageSize=80;
+        let _radioFilterQ='';
+        let _radioFilterCountry='';
+        let _radioFilterTag='';
+
+        const _radioFavCountriesKey='rp_radio_fav_countries';
+        const _radioFavTagsKey='rp_radio_fav_tags';
+        function radioLoadFavCountries(){
+          try{_radioFavCountries=JSON.parse(localStorage.getItem(_radioFavCountriesKey)||'[]');}catch{_radioFavCountries=[];}
+          try{_radioFavTags=JSON.parse(localStorage.getItem(_radioFavTagsKey)||'[]');}catch{_radioFavTags=[];}
+        }
+        function radioSaveFavCountries(){
+          try{localStorage.setItem(_radioFavCountriesKey,JSON.stringify(_radioFavCountries));}catch{}
+        }
+        function radioSaveFavTags(){
+          try{localStorage.setItem(_radioFavTagsKey,JSON.stringify(_radioFavTags));}catch{}
+        }
+        function radioIsCountryFav(code){return _radioFavCountries.includes(code);}
+        function radioIsTagFav(tag){return _radioFavTags.includes(tag);}
+        function radioToggleCountryFav(code,evt){
+          if(evt){evt.stopPropagation();}
+          if(!code)return;
+          const i=_radioFavCountries.indexOf(code);
+          if(i>=0)_radioFavCountries.splice(i,1); else _radioFavCountries.push(code);
+          radioSaveFavCountries();
+          _rebuildSelectOptions('radio-country',_radioCountries.map(c=>({value:c.code,label:c.name})),_radioFavCountries,'radioToggleCountryFav');
+          radioFetch();
+        }
+        function radioToggleTagFav(tag,evt){
+          if(evt){evt.stopPropagation();}
+          if(!tag)return;
+          const i=_radioFavTags.indexOf(tag);
+          if(i>=0)_radioFavTags.splice(i,1); else _radioFavTags.push(tag);
+          radioSaveFavTags();
+          _rebuildSelectOptions('radio-tag',_radioTags.map(t=>({value:t,label:t})),_radioFavTags,'radioToggleTagFav');
+          radioFetch();
+        }
+
+        // Build a custom-styled select wrapper with heart-toggle buttons per option.
+        // Renders as a native <select> for value, with an overlay list for the hearts.
+        // Build a native <select> with favorites grouped at top + divider,
+        // plus a heart button beside it to toggle the currently selected value as a favorite.
+        function _buildFavSelect(id,items,favList,toggleFn,allLabel){
+          const favSet=new Set(favList);
+          const favItems=[...items].filter(it=>favSet.has(it.value)).sort((a,b)=>a.label.localeCompare(b.label));
+          const restItems=[...items].filter(it=>!favSet.has(it.value)).sort((a,b)=>a.label.localeCompare(b.label));
+          let h=`<div class="radio-fav-select-wrap"><select id="${id}" onchange="${id==='radio-country'?'radioOnCountryChange()':"_syncFavSelectHeart('"+id+"','"+toggleFn+"')"}">`;
+          h+=`<option value="">${allLabel}</option>`;
+          if(favItems.length&&restItems.length){
+            h+='<optgroup label="\u2764 Favorites">';
+            for(const it of favItems)h+=`<option value="${escHtml(it.value)}">${escHtml(it.label)}</option>`;
+            h+='</optgroup><optgroup label="\u2500\u2500\u2500\u2500\u2500">';
+            for(const it of restItems)h+=`<option value="${escHtml(it.value)}">${escHtml(it.label)}</option>`;
+            h+='</optgroup>';
+          }else{
+            for(const it of [...favItems,...restItems])h+=`<option value="${escHtml(it.value)}">${escHtml(it.label)}</option>`;
+          }
+          h+='</select>';
+          h+=`<button class="radio-fav-select-heart-inline" id="${id}-heart" onclick="${toggleFn}(document.getElementById('${id}').value,event)" title="Toggle as favorite">\u2665</button>`;
+          h+='</div>';
+          return h;
+        }
+
+        function _syncFavSelectHeart(selectId,toggleFn){
+          _radioPage=0;
+          radioFetch();
+          const sel=document.getElementById(selectId);
+          const btn=document.getElementById(selectId+'-heart');
+          if(!sel||!btn)return;
+          const isCountry=(toggleFn==='radioToggleCountryFav');
+          const isFav=sel.value?(isCountry?radioIsCountryFav(sel.value):radioIsTagFav(sel.value)):false;
+          btn.classList.toggle('active',isFav);
+        }
+
+        async function radioOnCountryChange(){
+          const cc=(document.getElementById('radio-country')||{}).value||'';
+          const url='/api/radio/tags'+(cc?'?country='+encodeURIComponent(cc):'');
+          try{
+            const r=await fetch(url);
+            if(r.ok){
+              const newTags=await r.json();
+              const prevTag=(document.getElementById('radio-tag')||{}).value||'';
+              _radioTags=newTags;
+              _rebuildSelectOptions('radio-tag',_radioTags.map(t=>({value:t,label:t})),_radioFavTags,'radioToggleTagFav');
+              const tagSel=document.getElementById('radio-tag');
+              if(tagSel)tagSel.value=newTags.includes(prevTag)?prevTag:'';
+            }
+          }catch(e){console.warn('tags refresh failed',e);}
+          _syncFavSelectHeart('radio-country','radioToggleCountryFav');
+        }
+
+        // Rebuild just the options of an existing fav select after a heart toggle.
+        function _rebuildSelectOptions(id,items,favList,toggleFn){
+          const sel=document.getElementById(id);
+          if(!sel)return;
+          const curVal=sel.value;
+          const favSet=new Set(favList);
+          const favItems=[...items].filter(it=>favSet.has(it.value)).sort((a,b)=>a.label.localeCompare(b.label));
+          const restItems=[...items].filter(it=>!favSet.has(it.value)).sort((a,b)=>a.label.localeCompare(b.label));
+          const allLabel=sel.options[0]?sel.options[0].text:'All';
+          sel.innerHTML=`<option value="">${allLabel}</option>`;
+          if(favItems.length&&restItems.length){
+            let og=document.createElement('optgroup');og.label='\u2764 Favorites';
+            for(const it of favItems){const o=document.createElement('option');o.value=it.value;o.textContent=it.label;og.appendChild(o);}
+            sel.appendChild(og);
+            let og2=document.createElement('optgroup');og2.label='\u2500\u2500\u2500\u2500\u2500';
+            for(const it of restItems){const o=document.createElement('option');o.value=it.value;o.textContent=it.label;og2.appendChild(o);}
+            sel.appendChild(og2);
+          }else{
+            const all=[...favItems,...restItems];
+            for(const it of all){const o=document.createElement('option');o.value=it.value;o.textContent=it.label;sel.appendChild(o);}
+          }
+          sel.value=curVal;
+          const btn=document.getElementById(id+'-heart');
+          if(btn)btn.classList.toggle('active',!!curVal&&new Set(favList).has(curVal));
+        }
+
+        async function radioInit(){
+          const rb=document.getElementById('radio-browser');
+          if(!rb)return;
+          rb.innerHTML='<div style="color:var(--muted,#9aa8c2);padding:.5rem">Loading stations\u2026</div>';
+          radioLoadFavCountries();
+          // Load countries/tags in parallel
+          if(!_radioCountries.length||!_radioTags.length){
+            try{
+              const [cr,tr]=await Promise.all([fetch('/api/radio/countries').then(r=>r.json()),fetch('/api/radio/tags').then(r=>r.json())]);
+              _radioCountries=cr||[];
+              _radioTags=tr||[];
+            }catch{}
+          }
+          await radioLoadFavorites();
+          await radioShowTab(_radioTab);
+          startRadioStatusPoll();
+          _radioInited=true;
+        }
+
+        async function radioLoadFavorites(){
+          try{
+            const r=await fetch('/api/radio/favorites');
+            _radioFavorites=r.ok?await r.json():[];
+          }catch{_radioFavorites=[];}
+        }
+
+        async function radioShowTab(tab){
+          // Persist current filter values before rebuilding the DOM
+          const prevQ=_radioFilterQ;
+          const prevCountry=_radioFilterCountry;
+          const prevTag=_radioFilterTag;
+          const sameTab=(tab===_radioTab);
+          _radioTab=tab;
+          _radioPage=0;
+          const rb=document.getElementById('radio-browser');
+          if(!rb)return;
+          rb.style.display='';
+          let html='';
+          // Sync header tab buttons active state
+          const hts=document.getElementById('header-tab-stations');
+          const htf=document.getElementById('header-tab-favorites');
+          if(hts)hts.classList.toggle('active',tab==='top');
+          if(htf)htf.classList.toggle('active',tab==='favorites');
+          // Filters (only for top/search)
+          if(tab!=='favorites'){
+            html+='<div class="radio-filter-row" id="radio-filters">';
+            html+='<input id="radio-search-box" type="search" placeholder="Station name\u2026" style="background:var(--input-bg);color:var(--input-text);border:1px solid var(--input-border);padding:.55rem .6rem;border-radius:4px;font-size:.9rem;min-width:143px;width:208px;min-height:2.2rem" oninput="radioOnSearchInput()" />';
+            html+=_buildFavSelect('radio-country',_radioCountries.map(c=>({value:c.code,label:c.name})),_radioFavCountries,'radioToggleCountryFav','All countries');
+            html+=_buildFavSelect('radio-tag',_radioTags.map(t=>({value:t,label:t})),_radioFavTags,'radioToggleTagFav','All genres');
+            html+='</div>';
+          }
+          html+='<div id="radio-cards"></div>';
+          rb.innerHTML=html;
+          // Restore filter state
+          if(tab!=='favorites'){
+            const sb=document.getElementById('radio-search-box');
+            const sc=document.getElementById('radio-country');
+            const st=document.getElementById('radio-tag');
+            if(sb)sb.value=prevQ;
+            if(sc)sc.value=prevCountry;
+            if(st)st.value=prevTag;
+            // Sync heart states after restoring selection
+            const bhc=document.getElementById('radio-country-heart');
+            if(bhc)bhc.classList.toggle('active',!!prevCountry&&radioIsCountryFav(prevCountry));
+            const bht=document.getElementById('radio-tag-heart');
+            if(bht)bht.classList.toggle('active',!!prevTag&&radioIsTagFav(prevTag));
+          }
+          if(tab==='favorites'){
+            renderRadioCards(_radioFavorites,false);
+          }else{
+            await radioFetch();
+          }
+        }
+
+        let _radioSearchTimer=null;
+        function radioOnSearchInput(){
+          clearTimeout(_radioSearchTimer);
+          _radioPage=0;
+          _radioSearchTimer=setTimeout(()=>radioFetch(),420);
+        }
+
+        async function radioFetch(append=false){
+          const tab=_radioTab;
+          const q=(document.getElementById('radio-search-box')||{}).value||'';
+          const country=(document.getElementById('radio-country')||{}).value||'';
+          const tag=(document.getElementById('radio-tag')||{}).value||'';
+          // Persist filter state so switching tabs and back restores them
+          _radioFilterQ=q;
+          _radioFilterCountry=country;
+          _radioFilterTag=tag;
+          if(!append)_radioPage=0;
+          const offset=_radioPage*_radioPageSize;
+          const cards=document.getElementById('radio-cards');
+          if(cards&&!append)cards.innerHTML='<div style="color:var(--muted,#9aa8c2);padding:.4rem">Loading\u2026</div>';
+          try{
+            let newStations;
+            if(!q&&!country&&!tag&&tab==='top'){
+              const r=await fetch(`/api/radio/top?limit=${_radioPageSize}&offset=${offset}`);
+              newStations=r.ok?await r.json():[];
+            }else{
+              const params=new URLSearchParams({q,country,tag,limit:String(_radioPageSize),offset:String(offset)});
+              const r=await fetch('/api/radio/search?'+params);
+              newStations=r.ok?await r.json():[];
+            }
+            if(append){
+              _radioStations=[..._radioStations,...newStations];
+            }else{
+              _radioStations=newStations;
+            }
+            renderRadioCards(_radioStations,newStations.length===_radioPageSize);
+          }catch{
+            if(cards&&!append)cards.innerHTML='<div style="color:#ff7777;padding:.4rem">Failed to load stations.</div>';
+          }
+        }
+
+        async function radioLoadMore(){
+          _radioPage++;
+          await radioFetch(true);
+        }
+
+        function radioIsFav(uuid){
+          return _radioFavorites.some(f=>(f.stationuuid||f.uuid||f.Uuid)===uuid);
+        }
+
+        function _sortStationsAlpha(arr){
+          return [...arr].sort((a,b)=>{
+            const na=(a.name||a.Name||'').toLowerCase();
+            const nb=(b.name||b.Name||'').toLowerCase();
+            return na<nb?-1:na>nb?1:0;
+          });
+        }
+
+        function _buildStationCard(s){
+          const uuid=s.stationuuid||s.uuid||s.Uuid||'';
+          const name=s.name||s.Name||'';
+          const url=s.streamUrl||s.StreamUrl||s.url_resolved||'';
+          const country=s.country||s.Country||'';
+          const state=s.state||s.State||'';
+          const language=s.language||s.Language||'';
+          const tags=(s.tags||s.Tags||'').split(',').filter(Boolean).slice(0,4).join(', ');
+          const bitrate=s.bitrate||s.Bitrate||0;
+          const codec=(s.codec||s.Codec||'').toUpperCase();
+          const votes=s.votes||s.Votes||0;
+          const clicks=s.clickcount||s.ClickCount||0;
+          const hls=s.hls||s.Hls||0;
+          const homepage=s.homepage||s.Homepage||'';
+          // location line: country + state
+          const location=[country,state].filter(Boolean).join(' – ');
+          // tech line: codec + bitrate + HLS badge
+          const techParts=[codec,bitrate?bitrate+'kbps':'',hls?'HLS':''].filter(Boolean);
+          const tech=techParts.join(' · ');
+          // popularity: votes + clicks
+          const pop=[votes?'▲ '+votes.toLocaleString():'',clicks?'▶ '+clicks.toLocaleString():''].filter(Boolean).join('  ');
+          const favIcon=radioIsFav(uuid)?'&#10084;':'&#9825;';
+          const isPlaying=_radioCurrentUrl&&url&&_radioCurrentUrl===url;
+          const stationJson=encodeURIComponent(JSON.stringify({stationuuid:uuid,name,url_resolved:url,country,countrycode:s.countryCode||s.CountryCode||s.countrycode||'',state:s.state||s.State||'',language,tags:s.tags||s.Tags||'',codec,bitrate,votes,clickcount:clicks,hls,favicon:s.favicon||s.Favicon||'',homepage}));
+          const encCountry=encodeURIComponent(country);
+          const encTagFirst=encodeURIComponent((s.tags||s.Tags||'').split(',').filter(Boolean)[0]||'');
+          let h=`<div class="radio-station-card${isPlaying?' playing':''}" data-url="${escHtml(url)}" onclick="radioPlayStation('${encodeURIComponent(url)}','${encodeURIComponent(name)}','${encCountry}','${encTagFirst}','${stationJson}')">`;
+          // header row: favicon + name + fav button
+          h+='<div style="display:flex;gap:.4rem;align-items:flex-start">';
+          if(s.favicon||s.Favicon)h+=`<img src="${escHtml(s.favicon||s.Favicon||'')}" alt="" style="width:24px;height:24px;border-radius:3px;object-fit:contain;flex-shrink:0;margin-top:.1rem" onerror="this.style.display='none'" />`;
+          h+=`<span class="station-name" style="flex:1">${escHtml(name)}</span>`;
+          h+=`<button class="radio-fav-btn${radioIsFav(uuid)?' active':''}" onclick="event.stopPropagation();radioToggleFav(this,'${stationJson}')" title="Favorite">${favIcon}</button>`;
+          h+='</div>';
+          // location + tags
+          if(location||tags)h+=`<div class="station-meta">${escHtml([location,tags].filter(Boolean).join(' · '))}</div>`;
+          // tech + language + popularity
+          const detailParts=[tech,language?'🗣️ '+language:'',pop].filter(Boolean);
+          if(detailParts.length)h+=`<div class="station-detail">${escHtml(detailParts.join('  ·  '))}</div>`;
+          // homepage link
+          if(homepage)h+=`<div style="margin-top:.2rem"><a href="${escHtml(homepage)}" target="_blank" rel="noopener" class="station-homepage" onclick="event.stopPropagation()">${escHtml(homepage.replace(/^https?:\/\//,'').split('/')[0])}</a></div>`;
+          h+='</div>';
+          return h;
+        }
+
+        function renderRadioCards(stations,hasMore=false){
+          const cards=document.getElementById('radio-cards');
+          if(!cards)return;
+          if(!stations.length){
+            const countEl=document.getElementById('radio-station-count');
+            if(countEl)countEl.textContent='0 stations';
+            cards.innerHTML='<div style="color:var(--muted,#9aa8c2);padding:.5rem">No stations found.</div>';
+            return;
+          }
+          const favCodes=new Set(_radioFavCountries.map(c=>c.toUpperCase()));
+          const pinned=_sortStationsAlpha(stations.filter(s=>{const cc=(s.countryCode||s.CountryCode||'').toUpperCase();return favCodes.has(cc);}));
+          const rest=_sortStationsAlpha(stations.filter(s=>{const cc=(s.countryCode||s.CountryCode||'').toUpperCase();return !favCodes.has(cc);}));
+          let html='';
+          const countEl=document.getElementById('radio-station-count');
+          if(countEl){
+            if(hasMore){
+              countEl.textContent=`${stations.length} loaded \u00b7 more available`;
+              countEl.title='Radio Browser API does not provide total counts \u2014 use filters to narrow results';
+            }else{
+              countEl.textContent=`${stations.length} station${stations.length===1?'':'s'}`;
+              countEl.title='';
+            }
+          }
+          if(pinned.length&&rest.length){
+            html+='<div class="radio-section-header">&#11088; Favorite countries</div>';
+            html+='<div class="music-grid">';
+            for(const s of pinned)html+=_buildStationCard(s);
+            html+='</div><div class="radio-section-header">All stations</div>';
+            html+='<div class="music-grid">';
+            for(const s of rest)html+=_buildStationCard(s);
+            html+='</div>';
+          }else{
+            html+='<div class="music-grid">';
+            for(const s of _sortStationsAlpha(stations))html+=_buildStationCard(s);
+            html+='</div>';
+          }
+          if(hasMore){
+            html+=`<div style="text-align:center;padding:.6rem 0"><button class="btn btn-dim" onclick="radioLoadMore()" style="min-width:120px">Load more\u2026</button></div>`;
+          }
+          cards.innerHTML=html;
+        }
+
+        function escHtml(s){
+          return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
+        async function radioPlayStation(encUrl,encName,encCountry,encTag,encStation){
+          const url=decodeURIComponent(encUrl);
+          const name=decodeURIComponent(encName||'');
+          // Stop current stream first so the server reinitialises cleanly
+          await fetch('/api/radio/stop');
+          _radioCurrentUrl=url;
+          _radioCurrentName=name;
+          _radioCurrentCountry=decodeURIComponent(encCountry||'');
+          _radioCurrentTag=decodeURIComponent(encTag||'');
+          try{_radioCurrentStation=encStation?JSON.parse(decodeURIComponent(encStation)):null;}catch{_radioCurrentStation=null;}
+          _radioIsPlaying=true;
+          document.body.classList.add('radio-player-docked');
+          updateRadioBar(name,_radioCurrentCountry,_radioCurrentTag,true,_radioCurrentStation);
+          // Update playing highlight without full re-render
+          document.querySelectorAll('.radio-station-card').forEach(el=>{
+            el.classList.toggle('playing',el.dataset.url===url);
+          });
+          await fetch('/api/radio/play?'+new URLSearchParams({url,name}));
+        }
+
+        async function radioToggle(){
+          if(_radioIsPlaying){
+            await radioStop();
+          }else if(_radioCurrentUrl){
+            await radioPlayStation(encodeURIComponent(_radioCurrentUrl),encodeURIComponent(_radioCurrentName));
+          }
+        }
+
+        async function radioStop(){
+          await fetch('/api/radio/stop');
+          _radioIsPlaying=false;
+          document.body.classList.remove('radio-player-docked');
+          updateRadioBar(_radioCurrentName,_radioCurrentCountry,_radioCurrentTag,false,_radioCurrentStation);
+        }
+
+        function radioVolume(v){
+          const vol=parseFloat(v);
+          if(isNaN(vol))return;
+          fetch('/api/radio/volume?v='+vol.toFixed(3));
+          const lbl=document.getElementById('radio-volume-label');
+          if(lbl)lbl.textContent=Math.round(vol*100)+'%';
+        }
+
+        function updateRadioBar(title,country,tag,playing,station){
+          _radioIsPlaying=playing;
+          const t=document.getElementById('radio-bar-title');
+          const m=document.getElementById('radio-bar-meta');
+          const techEl=document.getElementById('radio-bar-tech');
+          const tagsEl=document.getElementById('radio-bar-tags');
+          const popEl=document.getElementById('radio-bar-pop');
+          const hpEl=document.getElementById('radio-bar-homepage');
+          const favWrap=document.getElementById('radio-bar-favicon-wrap');
+          const favImg=document.getElementById('radio-bar-favicon');
+          const btn=document.getElementById('radio-btn-play');
+          if(t)t.textContent=title||'\u2014';
+          if(m){
+            const parts=[country,tag].filter(Boolean);
+            m.textContent=parts.length?parts.join(' \u00b7 '):'';
+          }
+          // Extra detail from full station object
+          if(station){
+            const codec=(station.codec||station.Codec||'').toUpperCase();
+            const bitrate=station.bitrate||station.Bitrate||0;
+            const hls=station.hls||station.Hls||0;
+            const language=station.language||station.Language||'';
+            const tags=(station.tags||station.Tags||'').split(',').map(s=>s.trim()).filter(Boolean).slice(0,5).join(', ');
+            const votes=station.votes||station.Votes||0;
+            const clicks=station.clickcount||station.ClickCount||0;
+            const homepage=station.homepage||station.Homepage||'';
+            const favicon=station.favicon||station.Favicon||'';
+            const techParts=[codec,bitrate?bitrate+'kbps':'',hls?'HLS':'',language?'\uD83D\uDDE3\uFE0F '+language:''].filter(Boolean);
+            if(techEl)techEl.textContent=techParts.join(' · ');
+            if(tagsEl)tagsEl.textContent=tags;
+            const popParts=[votes?'\u25B2 '+votes.toLocaleString():'',clicks?'\u25B6 '+clicks.toLocaleString():''].filter(Boolean);
+            if(popEl)popEl.textContent=popParts.join('  ');
+            if(hpEl){
+              if(homepage){
+                const label=homepage.replace(/^https?:\/\//,'').split('/')[0];
+                hpEl.innerHTML=`<a href="${escHtml(homepage)}" target="_blank" rel="noopener" class="station-homepage">${escHtml(label)}</a>`;
+              }else{hpEl.textContent='';}
+            }
+            if(favImg&&favWrap){
+              if(favicon){
+                favWrap.style.display='none';
+                favImg.onload=()=>{favWrap.style.display='';};
+                favImg.onerror=()=>{favWrap.style.display='none';};
+                favImg.src=favicon;
+              }else{favWrap.style.display='none';}
+            }
+          }else{
+            if(techEl)techEl.textContent='';
+            if(tagsEl)tagsEl.textContent='';
+            if(popEl)popEl.textContent='';
+            if(hpEl)hpEl.textContent='';
+            if(favWrap)favWrap.style.display='none';
+          }
+          if(btn)btn.innerHTML=playing?'\u23F8 Pause':'\u25B6 Play';
+        }
+
+        let _radioStatusPollId=null;
+        function startRadioStatusPoll(){
+          stopRadioStatusPoll();
+          _radioStatusPollId=setInterval(radioStatusTick,2500);
+        }
+        function stopRadioStatusPoll(){
+          if(_radioStatusPollId){clearInterval(_radioStatusPollId);_radioStatusPollId=null;}
+        }
+        async function radioStatusTick(){
+          try{
+            const r=await fetch('/api/radio/playback-status');
+            if(!r.ok)return;
+            const s=await r.json();
+            const playing=s.isPlaying||s.IsPlaying||false;
+            const name=s.stationName||s.StationName||_radioCurrentName||'';
+            const url=s.stationUrl||s.StationUrl||'';
+            if(url)_radioCurrentUrl=url;
+            updateRadioBar(name,_radioCurrentCountry,_radioCurrentTag,playing,_radioCurrentStation);
+            // Sync volume slider
+            const vol=s.volume??s.Volume??0.8;
+            const vSlider=document.getElementById('radio-bar-volume');
+            const vLabel=document.getElementById('radio-volume-label');
+            if(vSlider&&Math.abs(parseFloat(vSlider.value)-vol)>0.02)vSlider.value=vol;
+            if(vLabel)vLabel.textContent=Math.round(vol*100)+'%';
+          }catch{}
+        }
+
+        async function radioToggleFav(btn,encStation){
+          try{
+            const station=JSON.parse(decodeURIComponent(encStation));
+            const r=await fetch('/api/radio/favorite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(station)});
+            if(!r.ok)return;
+            const resp=await r.json();
+            const isFav=resp.isFavorite||false;
+            await radioLoadFavorites();
+            // Re-render so removed favorites disappear from favorites tab, and hearts update elsewhere
+            if(_radioTab==='favorites'){
+              renderRadioCards(_radioFavorites,false);
+            }else{
+              renderRadioCards(_radioStations,_radioStations.length===_radioPageSize*(_radioPage+1));
             }
           }catch{}
         }

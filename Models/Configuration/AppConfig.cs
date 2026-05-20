@@ -12,6 +12,8 @@ internal sealed record AppConfig
     /// <summary>Friendly display name shown in the peer discovery list. Defaults to the machine hostname.</summary>
     public string InstanceName { get; init; } = System.Net.Dns.GetHostName();
     public string MoviesPath { get; init; } = Path.Combine(AppPaths.UserDataDirectory, "Movies");
+    /// <summary>Root folder that contains the music library (MP3, FLAC, etc.).</summary>
+    public string MusicPath { get; init; } = Path.Combine(AppPaths.UserDataDirectory, "Music");
     public double Volume { get; init; } = 1;
     public double Brightness { get; init; } = 0.5;
     public double Zoom { get; init; } = 1;
@@ -31,6 +33,14 @@ internal sealed record AppConfig
     public bool EnableThumbnailGeneration { get; init; } = true;
     public string[] IgnoredLibraryFolders { get; init; } = ["Subs", "Alt"];
     public string[] VideoFileExtensions { get; init; } = [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv"];
+    /// <summary>Audio file extensions recognised by the music library scanner.</summary>
+    public string[] MusicFileExtensions { get; init; } = [".mp3", ".flac", ".aac", ".ogg", ".wav", ".m4a", ".wma"];
+
+    /// <summary>
+    /// Friendly name of the audio output device to use for music playback.
+    /// Empty string means use the Windows default output device.
+    /// </summary>
+    public string MusicAudioDeviceId { get; init; } = string.Empty;
     public int LibraryPageSize { get; init; } = 200;
 
     /// <summary>
@@ -71,11 +81,19 @@ internal sealed record AppConfig
             ? MoviesPath
             : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, MoviesPath));
 
+    /// <summary>Returns the fully-resolved music library path (relative paths are resolved against the exe directory).</summary>
+    public string ResolvedMusicPath =>
+        Path.IsPathRooted(MusicPath)
+            ? MusicPath
+            : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, MusicPath));
+
     public string Scheme => UseHttps ? "https" : "http";
 
     public int EffectiveLibraryPageSize => Math.Clamp(LibraryPageSize, 25, 1000);
 
-    public string[] EffectiveVideoFileExtensions => NormalizeExtensions(VideoFileExtensions).ToArray();
+    public string[] EffectiveVideoFileExtensions => NormalizeExtensions(VideoFileExtensions, () => new AppConfig().VideoFileExtensions).ToArray();
+
+    public string[] EffectiveMusicFileExtensions => NormalizeExtensions(MusicFileExtensions, () => new AppConfig().MusicFileExtensions).ToArray();
 
     public string[] EffectiveIgnoredLibraryFolders => NormalizeNames(IgnoredLibraryFolders).ToArray();
 
@@ -116,7 +134,7 @@ internal sealed record AppConfig
                     });
                 if (config is not null)
                 {
-                    Logger.Info($"Config loaded — Scheme: {config.Scheme}, Port: {config.Port}, MoviesPath: {config.ResolvedMoviesPath}");
+                    Logger.Info($"Config loaded — Scheme: {config.Scheme}, Port: {config.Port}, MoviesPath: {config.ResolvedMoviesPath}, MusicPath: {config.ResolvedMusicPath}");
                     return config;
                 }
             }
@@ -155,7 +173,7 @@ internal sealed record AppConfig
         };
     }
 
-    private static IEnumerable<string> NormalizeExtensions(IEnumerable<string>? values)
+    private static IEnumerable<string> NormalizeExtensions(IEnumerable<string>? values, Func<string[]> getDefaults)
     {
         var extensions = (values ?? [])
             .Where(value => !string.IsNullOrWhiteSpace(value))
@@ -164,7 +182,7 @@ internal sealed record AppConfig
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        return extensions.Length > 0 ? extensions : new AppConfig().VideoFileExtensions;
+        return extensions.Length > 0 ? extensions : getDefaults();
     }
 
     private static IEnumerable<string> NormalizeNames(IEnumerable<string>? values)

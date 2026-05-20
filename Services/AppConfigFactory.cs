@@ -9,6 +9,7 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         int port,
         bool useHttps,
         string moviesPath,
+        string musicPath,
         string instanceName,
         double volume,
         double zoom,
@@ -26,7 +27,8 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         bool startWithWindows,
         bool useTrayIcon,
         string updateSourcePath,
-        int autoUpdateIntervalMinutes)
+        int autoUpdateIntervalMinutes,
+        string musicAudioDeviceId)
     {
         ArgumentNullException.ThrowIfNull(currentConfig);
         ArgumentException.ThrowIfNullOrWhiteSpace(moviesPath);
@@ -36,6 +38,7 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             Port                      = port,
             UseHttps                  = useHttps,
             MoviesPath                = moviesPath,
+            MusicPath                 = string.IsNullOrWhiteSpace(musicPath) ? currentConfig.MusicPath : musicPath.Trim(),
             InstanceName              = string.IsNullOrWhiteSpace(instanceName) ? currentConfig.InstanceName : instanceName.Trim(),
             Volume                    = volume,
             Zoom                      = zoom,
@@ -54,6 +57,7 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             UseTrayIcon               = useTrayIcon,
             UpdateSourcePath          = updateSourcePath.Trim(),
             AutoUpdateIntervalMinutes = Math.Max(0, autoUpdateIntervalMinutes),
+            MusicAudioDeviceId        = musicAudioDeviceId ?? string.Empty,
         };
     }
 

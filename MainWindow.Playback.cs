@@ -870,7 +870,26 @@ public partial class MainWindow
             ClearPlaybackHistory = _playbackHistory.Clear,
             MarkWatchedHistory = _playbackHistory.MarkWatched,
             GetDisplayDiagnostics = GetDisplayDiagnostics,
-            FixAudio = FixAudio
+            FixAudio = FixAudio,
+            // Music — backed by WPF MediaPlayer, not VLC
+            PlayMusic      = _musicPlayer.Play,
+            PauseMusic     = _musicPlayer.Pause,
+            StopMusic      = _musicPlayer.Stop,
+            GetMusicStatus = _musicPlayer.GetStatus,
+            SeekMusic      = _musicPlayer.Seek,
+            SetMusicVolume = _musicPlayer.SetVolume,
+            // Radio — backed by RadioPlayer + RadioBrowserClient
+            RadioSearch         = (q, c, t, l, o) => _radioBrowser.SearchAsync(q, c, t, l, o),
+            RadioTopStations    = (l, o) => _radioBrowser.TopStationsAsync(l, o),
+            RadioGetTags        = (cc) => _radioBrowser.GetTagsAsync(cc),
+            RadioGetCountries   = () => _radioBrowser.GetCountriesAsync(),
+            RadioPlay           = _radioPlayer.Play,
+            RadioStop           = _radioPlayer.Stop,
+            RadioSetVolume      = _radioPlayer.SetVolume,
+            RadioGetStatus      = _radioPlayer.GetStatus,
+            RadioGetFavorites   = _radioBrowser.GetFavorites,
+            RadioToggleFavorite = _radioBrowser.ToggleFavorite,
+            RadioIsFavorite     = _radioBrowser.IsFavorite
         }, _broadcaster, _playbackHistory, _appUpdater);
     }
 

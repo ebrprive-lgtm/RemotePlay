@@ -7,6 +7,7 @@ internal interface IAppConfigFactory
         int port,
         bool useHttps,
         string moviesPath,
+        string musicPath,
         string instanceName,
         double volume,
         double zoom,
@@ -24,7 +25,8 @@ internal interface IAppConfigFactory
         bool startWithWindows,
         bool useTrayIcon,
         string updateSourcePath,
-        int autoUpdateIntervalMinutes);
+        int autoUpdateIntervalMinutes,
+        string musicAudioDeviceId);
 
     AppConfig CreateForPlaybackPreferences(
         AppConfig currentConfig,

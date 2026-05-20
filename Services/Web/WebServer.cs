@@ -92,6 +92,14 @@ internal sealed record LibraryIndexCache
 }
 
 [ExcludeFromCodeCoverage]
+internal sealed record MusicIndexCache
+{
+    public string RootPath { get; init; } = string.Empty;
+    public DateTimeOffset CreatedUtc { get; init; }
+    public MusicFile[] Files { get; init; } = [];
+}
+
+[ExcludeFromCodeCoverage]
 internal sealed record LibraryFile(
     string Name,
     string FilePath,
@@ -110,6 +118,7 @@ internal sealed partial class WebServer
     private const string WebAssetsDirectoryName = "WebAssets";
     private static readonly string ThumbnailCacheDirectory = AppPaths.ThumbnailCacheDirectory;
     private static readonly string LibraryIndexCacheFile = AppPaths.LibraryIndexCacheFile;
+    private static readonly string MusicIndexCacheFile   = AppPaths.MusicIndexCacheFile;
     private static readonly string FavoritesFile = AppPaths.FavoritesFile;
 
     private static readonly HashSet<string> VideoExtensions =
@@ -141,6 +150,7 @@ internal sealed partial class WebServer
     // Per-IP histories: keyed on sanitized client IP string, lazy-created on first request.
     private readonly ConcurrentDictionary<string, PlaybackHistory> _perIpHistories = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _videoExtensions;
+    private readonly HashSet<string> _musicExtensions;
     private readonly HashSet<string> _hiddenFolderNames;
     private HttpListener _listener = new();
     // Thumbnail cache: base64-encoded path ? JPEG bytes (null = not available)
@@ -150,17 +160,26 @@ internal sealed partial class WebServer
     private readonly Timer _libraryIndexTimer;
     private readonly Timer _libraryWatcherDebounceTimer;
     private readonly object _libraryIndexGate = new();
+    private readonly object _musicIndexGate = new();
     private FileSystemWatcher? _libraryWatcher;
     private LibraryFile[] _libraryIndex = [];
+    private MusicFile[] _musicIndex = [];
     private DateTimeOffset _lastRequestUtc = DateTimeOffset.UtcNow;
     private DateTimeOffset? _lastIndexRefreshUtc;
+    private DateTimeOffset? _lastMusicIndexRefreshUtc;
     private DateTimeOffset _libraryWatcherStartedUtc;
     private DateTimeOffset? _pendingLibraryRescanUtc;
     private DateTimeOffset? _scanStartedUtc;
     private int _scannedFiles;
     private int _scannedFolders;
     private string _lastScanError = string.Empty;
+    // A unique token generated once per process lifetime; clients use it to detect server restarts.
+    private static readonly string _serverSessionId = Guid.NewGuid().ToString("N");
     private bool _isIndexing;
+    private bool _isMusicIndexing;
+    private string _lastMusicScanError = string.Empty;
+    private int _musicScanProgress;
+    private CancellationTokenSource? _musicScanCts;
     private int _staleLinkCount;
     private readonly Timer _staleLinkTimer;
     private readonly object _thumbnailQueueGate = new();
@@ -185,6 +204,7 @@ internal sealed partial class WebServer
         _broadcaster = broadcaster;
         _playbackHistory = playbackHistory ?? new PlaybackHistory();
         _videoExtensions = BuildExtensionSet(config.EffectiveVideoFileExtensions);
+        _musicExtensions = BuildExtensionSet(config.EffectiveMusicFileExtensions);
         _hiddenFolderNames = BuildNameSet(config.EffectiveIgnoredLibraryFolders, HiddenFolderNames);
         _activeScheme = config.Scheme;
         _appUpdater = appUpdater;
@@ -644,6 +664,58 @@ internal sealed partial class WebServer
         }
     }
 
+    private void LoadMusicIndexCache()
+    {
+        try
+        {
+            if (!File.Exists(MusicIndexCacheFile))
+                return;
+
+            var json = File.ReadAllText(MusicIndexCacheFile);
+            var cache = JsonSerializer.Deserialize<MusicIndexCache>(json, CaseInsensitiveOptions);
+            if (cache is null || !string.Equals(NormalizePath(cache.RootPath), NormalizePath(_config.ResolvedMusicPath), StringComparison.OrdinalIgnoreCase))
+                return;
+
+            lock (_musicIndexGate)
+            {
+                _musicIndex = cache.Files;
+                _lastMusicIndexRefreshUtc = cache.CreatedUtc;
+            }
+            Logger.Info($"Loaded persistent music index: {cache.Files.Length} tracks");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to load music index cache", ex);
+        }
+    }
+
+    private void SaveMusicIndexCache()
+    {
+        try
+        {
+            MusicFile[] snapshot;
+            DateTimeOffset ts;
+            lock (_musicIndexGate)
+            {
+                snapshot = _musicIndex;
+                ts = _lastMusicIndexRefreshUtc ?? DateTimeOffset.UtcNow;
+            }
+            var cache = new MusicIndexCache
+            {
+                RootPath = _config.ResolvedMusicPath,
+                CreatedUtc = ts,
+                Files = snapshot
+            };
+            var json = JsonSerializer.Serialize(cache, IndentedOptions);
+            File.WriteAllText(MusicIndexCacheFile, json);
+            Logger.Info($"Saved music index cache: {snapshot.Length} tracks");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to save music index cache", ex);
+        }
+    }
+
     private void LoadFavorites()
     {
         try
@@ -708,6 +780,8 @@ internal sealed partial class WebServer
         {
             LoadLibraryIndexCache();
             StartLibraryIndexRefresh(force: true);
+            LoadMusicIndexCache();
+            StartMusicIndexRefresh();
         });
 
         if (_config.UseHttps)

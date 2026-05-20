@@ -547,6 +547,24 @@
                                             Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
                                 </Grid>
 
+                                <TextBlock Text="Music Folder" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <Grid Margin="0,0,0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="MusicFolderBox" Grid.Column="0"
+                                             Background="#1e1e2e" Foreground="#EEE"
+                                             BorderBrush="#444" BorderThickness="1"
+                                             Padding="8,6" FontSize="13"
+                                             VerticalContentAlignment="Center"/>
+                                    <Button Grid.Column="1" Content="Browse…" Click="OnBrowseMusicFolder"
+                                            Background="#333" Foreground="White" BorderThickness="0"
+                                            Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
+                                </Grid>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
+                                           Text="Root folder scanned for music files (.mp3 .flac .aac .ogg .wav .m4a .wma). All subfolders are included."/>
+
                                 <TextBlock Text="Delayed auto-rescan interval" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
                                 <Grid Margin="0,0,0,20">
                                     <Grid.ColumnDefinitions>
@@ -740,6 +758,23 @@
                                 <CheckBox x:Name="PreferForcedSubtitlesBox"
                                           Content="Prefer forced subtitle tracks (dialogue subtitles for foreign language portions)"
                                           Foreground="#EEE" FontSize="13" Margin="0,0,0,24"/>
+
+                                <TextBlock Text="Music Output" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="160"/>
+                                        <ColumnDefinition Width="280"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Audio output device" Foreground="#888" FontSize="12" VerticalAlignment="Center"/>
+                                    <ComboBox x:Name="MusicAudioDeviceCombo" Grid.Column="1"
+                                              Style="{StaticResource DarkComboBox}"
+                                              DisplayMemberPath="Name"/>
+                                    <TextBlock Grid.Column="2" Foreground="#555" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
+                                               Text="Select the audio device used for music playback on this server machine."/>
+                                </Grid>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="160,0,0,16" TextWrapping="Wrap"
+                                           Text="'(Default)' uses the current Windows default output. Choose a specific device to route music independently (e.g. audio via video cable vs. audio driver)."/>
 
                                 <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
                                         Background="#E94560" Foreground="White" BorderThickness="0"

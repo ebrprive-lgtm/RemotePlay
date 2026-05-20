@@ -1,4 +1,5 @@
 using RemotePlay.Models;
+using RemotePlay.Services;
 using System.Diagnostics.CodeAnalysis;
 
 namespace RemotePlay;
@@ -31,4 +32,25 @@ internal sealed class WebServerCallbacks
     public required Action<string, bool> MarkWatchedHistory { get; init; }
     public required Func<DisplayDiagnostics> GetDisplayDiagnostics { get; init; }
     public required Action FixAudio { get; init; }
+
+    // ── Music (WPF MediaPlayer, not VLC) ─────────────────────────────────────
+    public required Action<string>        PlayMusic      { get; init; }
+    public required Action                PauseMusic     { get; init; }
+    public required Action                StopMusic      { get; init; }
+    public required Func<MusicStatus>     GetMusicStatus { get; init; }
+    public required Action<double>        SeekMusic      { get; init; }
+    public required Action<double>        SetMusicVolume { get; init; }
+
+    // ── Radio ─────────────────────────────────────────────────────────────────
+    public required Func<string, string, string, int, int, Task<List<RadioStation>>> RadioSearch        { get; init; }
+    public required Func<int, int, Task<List<RadioStation>>>                          RadioTopStations   { get; init; }
+    public required Func<string, Task<List<string>>>                           RadioGetTags       { get; init; }
+    public required Func<Task<List<(string Code, string Name)>>>                RadioGetCountries  { get; init; }
+    public required Action<string, string>                                      RadioPlay          { get; init; }
+    public required Action                                                      RadioStop          { get; init; }
+    public required Action<double>                                              RadioSetVolume     { get; init; }
+    public required Func<RadioStatus>                                           RadioGetStatus     { get; init; }
+    public required Func<List<RadioStation>>                                    RadioGetFavorites  { get; init; }
+    public required Action<RadioStation>                                        RadioToggleFavorite{ get; init; }
+    public required Func<string, bool>                                          RadioIsFavorite    { get; init; }
 }

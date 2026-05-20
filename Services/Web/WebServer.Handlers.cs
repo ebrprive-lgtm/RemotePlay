@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Diagnostics.CodeAnalysis;
+using RemotePlay.Services;
 
 namespace RemotePlay;
 
@@ -282,6 +283,88 @@ internal sealed partial class WebServer
 
             case "/api/version":
                 HandleVersion(ctx);
+                break;
+
+            case "/api/music/browse":
+                HandleMusicBrowse(ctx);
+                break;
+
+            case "/api/music/search":
+                HandleMusicSearch(ctx);
+                break;
+
+            case "/api/music/rescan":
+                StartMusicIndexRefresh();
+                TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true }));
+                break;
+
+            case "/api/music/status":
+                TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(GetMusicScanStatus()));
+                break;
+
+            case "/api/music/play":
+                HandleMusicPlay(ctx);
+                break;
+
+            case "/api/music/pause":
+                _callbacks.PauseMusic();
+                TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+                break;
+
+            case "/api/music/stop":
+                _callbacks.StopMusic();
+                TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+                break;
+
+            case "/api/music/seek":
+                HandleMusicSeek(ctx);
+                break;
+
+            case "/api/music/volume":
+                HandleMusicVolume(ctx);
+                break;
+
+            // ── Radio ─────────────────────────────────────────────────────
+            case "/api/radio/search":
+                HandleRadioSearch(ctx);
+                break;
+
+            case "/api/radio/top":
+                HandleRadioTop(ctx);
+                break;
+
+            case "/api/radio/tags":
+                HandleRadioTags(ctx);
+                break;
+
+            case "/api/radio/countries":
+                HandleRadioCountries(ctx);
+                break;
+
+            case "/api/radio/play":
+                HandleRadioPlay(ctx);
+                break;
+
+            case "/api/radio/stop":
+                _callbacks.RadioStop();
+                TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+                break;
+
+            case "/api/radio/volume":
+                HandleRadioVolume(ctx);
+                break;
+
+            case "/api/radio/playback-status":
+                TrySendResponse(ctx, 200, "application/json",
+                    JsonSerializer.Serialize(_callbacks.RadioGetStatus()));
+                break;
+
+            case "/api/radio/favorites":
+                HandleRadioFavorites(ctx);
+                break;
+
+            case "/api/radio/favorite":
+                HandleRadioFavoriteToggle(ctx);
                 break;
 
             default:
@@ -945,6 +1028,203 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 200, "text/html; charset=utf-8", html);
     }
 
+    private void HandleMusicBrowse(HttpListenerContext ctx)
+    {
+        if (_musicIndex.Length == 0 && !_isMusicIndexing)
+            StartMusicIndexRefresh();
+
+        var folderParam = (ctx.Request.QueryString["folder"] ?? string.Empty).Trim();
+        var offset = ReadNonNegativeInt(ctx.Request.QueryString["offset"]);
+        var limit = ReadPositiveInt(ctx.Request.QueryString["limit"], _config.EffectiveLibraryPageSize, 1000);
+
+        var allTracks = _musicIndex;
+        var musicRoot = _config.ResolvedMusicPath;
+
+        // Files are only returned when a specific subfolder path is requested,
+        // and only direct children of that folder (not nested subdirectories).
+        var filteredAll = string.IsNullOrEmpty(folderParam)
+            ? []
+            : allTracks.Where(f =>
+                string.Equals(Path.GetDirectoryName(f.FullPath), folderParam, StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+
+        var page = filteredAll.Skip(offset).Take(limit).ToArray();
+
+        // At root: show direct subdirectories of the music root.
+        // Inside a subfolder: no nested folders shown (flat file list).
+        object[] folders;
+        if (string.IsNullOrEmpty(folderParam))
+        {
+            try
+            {
+                folders = Directory.Exists(musicRoot)
+                    ? Directory.GetDirectories(musicRoot)
+                        .OrderBy(d => d, _naturalComparer)
+                        .Select(d => (object)new { name = Path.GetFileName(d), folder = d })
+                        .ToArray()
+                    : [];
+            }
+            catch
+            {
+                folders = [];
+            }
+        }
+        else
+        {
+            // Show direct sub-directories of the requested folder
+            try
+            {
+                folders = Directory.Exists(folderParam)
+                    ? Directory.GetDirectories(folderParam)
+                        .OrderBy(d => d, _naturalComparer)
+                        .Select(d => (object)new { name = Path.GetFileName(d), folder = d })
+                        .ToArray()
+                    : [];
+            }
+            catch
+            {
+                folders = [];
+            }
+        }
+
+        var files = page
+            .Select(f => new
+            {
+                name = f.Name,
+                path = WebPathHelpers.EncodePath(f.FullPath),
+                folder = Path.GetFileName(Path.GetDirectoryName(f.FullPath)) ?? string.Empty
+            })
+            .ToArray<object>();
+
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new
+        {
+            folders,
+            files,
+            total = files.Length,
+            totalInFolder = filteredAll.Length,
+            offset,
+            limit,
+            hasMore = offset + files.Length < filteredAll.Length,
+            indexedFiles = allTracks.Length,
+            indexing = _isMusicIndexing,
+            lastError = _lastMusicScanError,
+            lastRefreshUtc = _lastMusicIndexRefreshUtc,
+            musicRoot = musicRoot,
+            folder = string.IsNullOrEmpty(folderParam) ? musicRoot : folderParam
+        }));
+    }
+
+    private void HandleMusicSearch(HttpListenerContext ctx)
+    {
+        var query = (ctx.Request.QueryString["q"] ?? string.Empty).Trim();
+        if (_musicIndex.Length == 0 && !_isMusicIndexing)
+            StartMusicIndexRefresh();
+
+        var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var offset = ReadNonNegativeInt(ctx.Request.QueryString["offset"]);
+        var limit = ReadPositiveInt(ctx.Request.QueryString["limit"], _config.EffectiveLibraryPageSize, 1000);
+
+        var matching = terms.Length == 0
+            ? []
+            : _musicIndex
+                .Where(f => terms.All(t =>
+                    f.Name.Contains(t, StringComparison.OrdinalIgnoreCase) ||
+                    (Path.GetFileName(Path.GetDirectoryName(f.FullPath)) ?? string.Empty).Contains(t, StringComparison.OrdinalIgnoreCase)))
+                .OrderBy(f => f.Name)
+                .ToArray();
+
+        var files = matching
+            .Skip(offset)
+            .Take(limit)
+            .Select(f => new
+            {
+                name = f.Name,
+                path = WebPathHelpers.EncodePath(f.FullPath),
+                folder = Path.GetFileName(Path.GetDirectoryName(f.FullPath)) ?? string.Empty
+            })
+            .ToArray<object>();
+
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new
+        {
+            files,
+            total = matching.Length,
+            offset,
+            limit,
+            hasMore = offset + files.Length < matching.Length,
+            indexedFiles = _musicIndex.Length,
+            indexing = _isMusicIndexing
+        }));
+    }
+
+    private object GetMusicScanStatus()
+    {
+        var pb = _callbacks.GetMusicStatus();
+        return new
+        {
+            sessionId     = _serverSessionId,
+            isScanning    = _isMusicIndexing,
+            indexedFiles  = _isMusicIndexing ? _musicScanProgress : _musicIndex.Length,
+            lastRefreshUtc = _lastMusicIndexRefreshUtc,
+            lastError     = _lastMusicScanError,
+            // playback fields
+            isPlaying     = pb.IsPlaying,
+            isPaused      = pb.IsPaused,
+            currentPath   = pb.CurrentPath,
+            title         = pb.Title,
+            position      = pb.Position,
+            duration      = pb.Duration,
+            playbackError = pb.LastError
+        };
+    }
+
+    private void HandleMusicPlay(HttpListenerContext ctx)
+    {
+        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(encodedPath))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing path");
+            return;
+        }
+        var filePath = WebPathHelpers.DecodePath(encodedPath);
+        if (!File.Exists(filePath))
+        {
+            TrySendResponse(ctx, 404, "text/plain", "File not found");
+            return;
+        }
+        _callbacks.Stop();
+        _callbacks.RadioStop();
+        _callbacks.PlayMusic(filePath);
+        TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+    }
+
+    private void HandleMusicSeek(HttpListenerContext ctx)
+    {
+        if (!double.TryParse(ctx.Request.QueryString["pos"],
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var pos))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing pos");
+            return;
+        }
+        _callbacks.SeekMusic(pos);
+        TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+    }
+
+    private void HandleMusicVolume(HttpListenerContext ctx)
+    {
+        if (!double.TryParse(ctx.Request.QueryString["v"],
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var vol))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing v");
+            return;
+        }
+        _callbacks.SetMusicVolume(Math.Clamp(vol, 0, 1));
+        TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+    }
+
     private void HandleSearch(HttpListenerContext ctx)
     {
         var query = (ctx.Request.QueryString["q"] ?? string.Empty).Trim();
@@ -1262,6 +1542,8 @@ internal sealed partial class WebServer
             return;
         }
 
+        _callbacks.StopMusic();
+        _callbacks.RadioStop();
         _callbacks.Play(filePath);
         TrySendResponse(ctx, 200, "text/plain", "OK");
     }
@@ -1416,6 +1698,61 @@ internal sealed partial class WebServer
         });
     }
 
+    private void StartMusicIndexRefresh()
+    {
+        CancellationTokenSource cts;
+        lock (_musicIndexGate)
+        {
+            if (_isMusicIndexing)
+            {
+                // Cancel the existing scan and start a fresh one
+                _musicScanCts?.Cancel();
+            }
+            _musicScanCts?.Dispose();
+            cts = _musicScanCts = new CancellationTokenSource(TimeSpan.FromMinutes(30));
+            _isMusicIndexing = true;
+            _musicScanProgress = 0;
+            _lastMusicScanError = string.Empty;
+        }
+
+        Task.Run(() =>
+        {
+            try
+            {
+                var root = _config.ResolvedMusicPath;
+                var progress = new Progress<int>(count =>
+                {
+                    lock (_musicIndexGate)
+                        _musicScanProgress = count;
+                });
+                var files = MusicScanner.Scan(root, _musicExtensions, progress, cts.Token);
+                lock (_musicIndexGate)
+                {
+                    _musicIndex = [.. files];
+                    _musicScanProgress = _musicIndex.Length;
+                    _lastMusicIndexRefreshUtc = DateTimeOffset.UtcNow;
+                }
+                Logger.Info($"Music index refreshed: {files.Count} tracks");
+                SaveMusicIndexCache();
+            }
+            catch (OperationCanceledException)
+            {
+                Logger.Info("Music scan was cancelled");
+            }
+            catch (Exception ex)
+            {
+                lock (_musicIndexGate)
+                    _lastMusicScanError = ex.Message;
+                Logger.Error("Music index refresh failed", ex);
+            }
+            finally
+            {
+                lock (_musicIndexGate)
+                    _isMusicIndexing = false;
+            }
+        }, cts.Token);
+    }
+
     private static string BuildSearchText(string root, string filePath) =>
         LibraryIndexHelpers.BuildSearchText(root, filePath);
 
@@ -1533,6 +1870,101 @@ internal sealed partial class WebServer
         if (addr.StartsWith("::ffff:", StringComparison.OrdinalIgnoreCase))
             addr = addr["::ffff:".Length..];
         return addr;
+    }
+
+    // ── Radio handlers ───────────────────────────────────────────────────────
+
+    private void HandleRadioSearch(HttpListenerContext ctx)
+    {
+        var q       = ctx.Request.QueryString["q"]       ?? string.Empty;
+        var country = ctx.Request.QueryString["country"] ?? string.Empty;
+        var tag     = ctx.Request.QueryString["tag"]     ?? string.Empty;
+        _ = int.TryParse(ctx.Request.QueryString["limit"]  ?? "40", out var limit);
+        _ = int.TryParse(ctx.Request.QueryString["offset"] ?? "0",  out var offset);
+        limit = Math.Clamp(limit, 1, 100);
+        offset = Math.Max(offset, 0);
+
+        var stations = _callbacks.RadioSearch(q, country, tag, limit, offset).GetAwaiter().GetResult();
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(stations));
+    }
+
+    private void HandleRadioTop(HttpListenerContext ctx)
+    {
+        _ = int.TryParse(ctx.Request.QueryString["limit"]  ?? "40", out var limit);
+        _ = int.TryParse(ctx.Request.QueryString["offset"] ?? "0",  out var offset);
+        limit = Math.Clamp(limit, 1, 100);
+        offset = Math.Max(offset, 0);
+        var stations = _callbacks.RadioTopStations(limit, offset).GetAwaiter().GetResult();
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(stations));
+    }
+
+    private void HandleRadioTags(HttpListenerContext ctx)
+    {
+        var countryCode = (ctx.Request.QueryString["country"] ?? string.Empty).Trim();
+        var tags = _callbacks.RadioGetTags(countryCode).GetAwaiter().GetResult();
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(tags));
+    }
+
+    private void HandleRadioCountries(HttpListenerContext ctx)
+    {
+        var countries = _callbacks.RadioGetCountries().GetAwaiter().GetResult()
+            .Select(c => new { code = c.Code, name = c.Name });
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(countries));
+    }
+
+    private void HandleRadioPlay(HttpListenerContext ctx)
+    {
+        var url  = ctx.Request.QueryString["url"]  ?? string.Empty;
+        var name = ctx.Request.QueryString["name"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"missing url\"}");
+            return;
+        }
+        _callbacks.Stop();
+        _callbacks.StopMusic();
+        _callbacks.RadioPlay(url, name);
+        TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+    }
+
+    private void HandleRadioVolume(HttpListenerContext ctx)
+    {
+        var raw = ctx.Request.QueryString["v"] ?? "0.8";
+        if (!double.TryParse(raw, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var vol))
+            vol = 0.8;
+        _callbacks.RadioSetVolume(Math.Clamp(vol, 0.0, 1.0));
+        TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+    }
+
+    private void HandleRadioFavorites(HttpListenerContext ctx)
+    {
+        var favs = _callbacks.RadioGetFavorites();
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(favs));
+    }
+
+    private void HandleRadioFavoriteToggle(HttpListenerContext ctx)
+    {
+        try
+        {
+            using var sr = new System.IO.StreamReader(ctx.Request.InputStream);
+            var body = sr.ReadToEnd();
+            var station = System.Text.Json.JsonSerializer.Deserialize<RadioStation>(body);
+            if (station is null)
+            {
+                TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid body\"}");
+                return;
+            }
+            _callbacks.RadioToggleFavorite(station);
+            var isFav = _callbacks.RadioIsFavorite(station.Uuid);
+            TrySendResponse(ctx, 200, "application/json",
+                JsonSerializer.Serialize(new { ok = true, isFavorite = isFav }));
+        }
+        catch (Exception ex)
+        {
+            TrySendResponse(ctx, 500, "application/json",
+                JsonSerializer.Serialize(new { error = ex.Message }));
+        }
     }
 
 }
