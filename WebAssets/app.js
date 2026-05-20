@@ -2307,6 +2307,7 @@
             html+='<input id="radio-search-box" type="search" placeholder="Station name\u2026" style="background:var(--input-bg);color:var(--input-text);border:1px solid var(--input-border);padding:.55rem .6rem;border-radius:4px;font-size:.9rem;min-width:143px;width:208px;min-height:2.2rem" oninput="radioOnSearchInput()" />';
             html+=_buildFavSelect('radio-country',_radioCountries.map(c=>({value:c.code,label:c.name})),_radioFavCountries,'radioToggleCountryFav','All countries');
             html+=_buildFavSelect('radio-tag',_radioTags.map(t=>({value:t,label:t})),_radioFavTags,'radioToggleTagFav','All genres');
+            html+='<button class="radio-reset-btn" onclick="radioResetFilters()" title="Reset all filters">&#10005; Reset</button>';
             html+='</div>';
           }
           html+='<div id="radio-cards"></div>';
@@ -2337,6 +2338,22 @@
           clearTimeout(_radioSearchTimer);
           _radioPage=0;
           _radioSearchTimer=setTimeout(()=>radioFetch(),420);
+        }
+
+        function radioResetFilters(){
+          const sb=document.getElementById('radio-search-box');
+          const sc=document.getElementById('radio-country');
+          const st=document.getElementById('radio-tag');
+          if(sb)sb.value='';
+          if(sc)sc.value='';
+          if(st)st.value='';
+          _radioFilterQ='';_radioFilterCountry='';_radioFilterTag='';
+          const bhc=document.getElementById('radio-country-heart');
+          if(bhc)bhc.classList.remove('active');
+          const bht=document.getElementById('radio-tag-heart');
+          if(bht)bht.classList.remove('active');
+          _radioPage=0;
+          radioFetch();
         }
 
         async function radioFetch(append=false){
@@ -2450,7 +2467,7 @@
           const countEl=document.getElementById('radio-station-count');
           if(countEl){
             if(hasMore){
-              countEl.textContent=`${stations.length} loaded \u00b7 more available`;
+              countEl.innerHTML=`${stations.length} loaded \u00b7 <a href="#" class="count-load-more" onclick="event.preventDefault();radioLoadMore()">more available</a>`;
               countEl.title='Radio Browser API does not provide total counts \u2014 use filters to narrow results';
             }else{
               countEl.textContent=`${stations.length} station${stations.length===1?'':'s'}`;
