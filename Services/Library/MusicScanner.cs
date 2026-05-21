@@ -5,89 +5,168 @@ namespace RemotePlay;
 
 internal sealed record MusicFile(string Name, string FullPath);
 
+/// <summary>
+/// A live scan job whose directory queue can be reprioritised at any time.
+/// When the user navigates to a folder that is still pending, that folder is
+/// moved to the front so it is scanned immediately, after which normal BFS
+/// order resumes.
+/// </summary>
+internal sealed class MusicScanJob
+{
+    private readonly LinkedList<string> _queue = new();
+    // Directories already scanned (or force-injected and being scanned) so BFS
+    // can skip them when it naturally enqueues the same path later.
+    private readonly HashSet<string> _scanned = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _lock = new();
+
+    internal MusicScanJob(string rootDirectory)
+    {
+        _queue.AddLast(rootDirectory);
+    }
+
+    /// <summary>
+    /// Returns the next pending directory, or null when the queue is empty.
+    /// Marks the returned directory as scanned so duplicates are skipped.
+    /// </summary>
+    internal string? Dequeue()
+    {
+        lock (_lock)
+        {
+            while (_queue.Count > 0)
+            {
+                var dir = _queue.First!.Value;
+                _queue.RemoveFirst();
+                // Skip if already scanned (can happen after a Prioritize injection)
+                if (_scanned.Add(dir))
+                    return dir;
+            }
+            return null;
+        }
+    }
+
+    /// <summary>Enqueues <paramref name="directory"/> at the back (normal BFS order), unless already scanned.</summary>
+    internal void Enqueue(string directory)
+    {
+        lock (_lock)
+        {
+            if (!_scanned.Contains(directory))
+                _queue.AddLast(directory);
+        }
+    }
+
+    /// <summary>
+    /// Promotes <paramref name="directory"/> (and any of its subdirectories already
+    /// in the queue) to the front so they are processed immediately.
+    /// <para>
+    /// If the directory is not yet in the queue (BFS hasn't reached its parent yet),
+    /// it is injected at the front anyway so the user sees results without waiting
+    /// for the BFS wave to arrive naturally.
+    /// </para>
+    /// </summary>
+    internal void Prioritize(string directory)
+    {
+        lock (_lock)
+        {
+            // Already done — nothing to promote.
+            if (_scanned.Contains(directory))
+                return;
+
+            var toFront = new List<string>();
+            var node = _queue.First;
+            while (node is not null)
+            {
+                var next = node.Next;
+                if (node.Value.StartsWith(directory, StringComparison.OrdinalIgnoreCase))
+                {
+                    toFront.Add(node.Value);
+                    _queue.Remove(node);
+                }
+                node = next;
+            }
+
+            // If the directory was not in the queue at all (BFS hasn't reached the
+            // parent yet), inject it directly so it is scanned right now.
+            if (toFront.Count == 0)
+                toFront.Add(directory);
+
+            // Re-insert at the front in original relative order.
+            for (int i = toFront.Count - 1; i >= 0; i--)
+                _queue.AddFirst(toFront[i]);
+        }
+    }
+
+    internal bool HasWork
+    {
+        get { lock (_lock) return _queue.Count > 0; }
+    }
+}
+
 internal static class MusicScanner
 {
     /// <summary>
-    /// Scans <paramref name="directory"/> for audio files, walking the tree folder-by-folder so
-    /// that a single slow or inaccessible subfolder cannot stall the entire scan.
-    /// Progress is reported every 100 tracks found.
+    /// Scans <paramref name="job"/>'s directory queue for audio files using BFS.
+    /// <para>
+    /// After each directory is fully scanned, discovered files are delivered via
+    /// <paramref name="onFolderComplete"/> so the caller can update the live index
+    /// incrementally without waiting for the full scan to finish.
+    /// </para>
+    /// <para>
+    /// Call <see cref="MusicScanJob.Prioritize"/> from any thread at any time to
+    /// promote a folder to the front of the queue.
+    /// </para>
     /// </summary>
-    public static IReadOnlyList<MusicFile> Scan(
-        string directory,
+    public static void Scan(
+        MusicScanJob job,
         IEnumerable<string> extensions,
+        Action<IReadOnlyList<MusicFile>>? onFolderComplete = null,
+        Action<string>? onFolder = null,
         IProgress<int>? progress = null,
         CancellationToken cancellationToken = default)
     {
         var extSet = new HashSet<string>(extensions, StringComparer.OrdinalIgnoreCase);
-        try
+        int total = 0;
+
+        while (job.HasWork)
         {
-            if (!Directory.Exists(directory))
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var dir = job.Dequeue();
+            if (dir is null) break;
+
+            onFolder?.Invoke(dir);
+
+            // Scan files in this directory
+            var folderFiles = new List<MusicFile>();
+            try
             {
-                Logger.Info($"Music directory not found, creating: {directory}");
-                Directory.CreateDirectory(directory);
-                return [];
+                foreach (var f in Directory.EnumerateFiles(dir, "*.*", SearchOption.TopDirectoryOnly))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!extSet.Contains(Path.GetExtension(f))) continue;
+                    folderFiles.Add(new MusicFile(Name: Path.GetFileNameWithoutExtension(f), FullPath: f));
+                    total++;
+                    progress?.Report(total);
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Logger.Warning("MusicScanner", $"Skipping inaccessible folder '{dir}': {ex.Message}");
             }
 
-            var results = new List<MusicFile>();
-            ScanDirectory(directory, extSet, results, progress, cancellationToken);
-            results.Sort((a, b) => string.Compare(a.FullPath, b.FullPath, StringComparison.OrdinalIgnoreCase));
-            return results;
-        }
-        catch (OperationCanceledException)
-        {
-            Logger.Info("Music scan cancelled");
-            return [];
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Failed to scan music directory", ex);
-            return [];
-        }
-    }
+            if (folderFiles.Count > 0)
+                onFolderComplete?.Invoke(folderFiles);
 
-    private static void ScanDirectory(
-        string directory,
-        HashSet<string> extSet,
-        List<MusicFile> results,
-        IProgress<int>? progress,
-        CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-
-        // Enumerate files in this directory — if this folder is inaccessible, log and skip it
-        try
-        {
-            foreach (var f in Directory.EnumerateFiles(directory, "*.*", SearchOption.TopDirectoryOnly))
+            // Enqueue subdirectories at the back (BFS)
+            try
             {
-                ct.ThrowIfCancellationRequested();
-                if (!extSet.Contains(Path.GetExtension(f))) continue;
-                results.Add(new MusicFile(Name: Path.GetFileNameWithoutExtension(f), FullPath: f));
-                if (results.Count % 100 == 0)
-                    progress?.Report(results.Count);
+                foreach (var sub in Directory.EnumerateDirectories(dir, "*", SearchOption.TopDirectoryOnly))
+                    job.Enqueue(sub);
             }
-        }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
-        {
-            Logger.Warning("MusicScanner", $"Skipping inaccessible folder '{directory}': {ex.Message}");
-        }
-
-        // Recurse into subdirectories individually so one bad folder doesn't abort everything
-        IEnumerable<string> subdirs;
-        try
-        {
-            subdirs = Directory.EnumerateDirectories(directory, "*", SearchOption.TopDirectoryOnly);
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning("MusicScanner", $"Cannot list subdirectories of '{directory}': {ex.Message}");
-            return;
-        }
-
-        foreach (var sub in subdirs)
-        {
-            ct.ThrowIfCancellationRequested();
-            ScanDirectory(sub, extSet, results, progress, ct);
+            catch (Exception ex)
+            {
+                Logger.Warning("MusicScanner", $"Cannot list subdirectories of '{dir}': {ex.Message}");
+            }
         }
     }
 }

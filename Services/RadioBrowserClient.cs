@@ -24,6 +24,8 @@ internal sealed class RadioStation
     [JsonPropertyName("clickcount")]   public int    ClickCount  { get; set; }
     [JsonPropertyName("hls")]          public int    Hls         { get; set; }
     [JsonPropertyName("favicon")]      public string Favicon     { get; set; } = "";
+    [JsonPropertyName("geo_lat")]      public double? GeoLat     { get; set; }
+    [JsonPropertyName("geo_long")]     public double? GeoLong    { get; set; }
 }
 
 /// <summary>
@@ -256,4 +258,26 @@ internal sealed class RadioBrowserClient : IDisposable
     }
 
     public void Dispose() => _http.Dispose();
+
+    /// <summary>
+    /// Calls the Radio Browser click endpoint for the given UUID, which increments the
+    /// station's listen-count and returns the currently-resolved stream URL.
+    /// Falls back to <paramref name="fallbackUrl"/> on any error.
+    /// </summary>
+    public async Task<string> ResolveStationUrlAsync(string uuid, string fallbackUrl, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(uuid)) return fallbackUrl;
+        try
+        {
+            var url = $"{Base}/json/url/{Uri.EscapeDataString(uuid)}";
+            var result = await _http.GetFromJsonAsync<System.Text.Json.JsonElement>(url, ct).ConfigureAwait(false);
+            if (result.TryGetProperty("url", out var urlProp))
+            {
+                var resolved = urlProp.GetString();
+                if (!string.IsNullOrWhiteSpace(resolved)) return resolved;
+            }
+        }
+        catch { /* non-fatal, use fallback */ }
+        return fallbackUrl;
+    }
 }

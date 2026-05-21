@@ -1370,23 +1370,25 @@
                     const total=Number(data.indexedFiles)||0;
                     const isScanning=Boolean(data.indexing);
                     const err=(data.lastError||'').trim();
+                    const root=(data.musicRoot||'').trim();
                     if(err){
                       scanStatus.classList.add('error');
-                      scanStatus.textContent='Music scan failed: '+err;
+                      scanStatus.textContent='Music scan failed: '+err+(root?' (path: '+root+')':'');
                     }else if(isScanning){
                       scanStatus.classList.add('scanning','global-scan-status');
-                      scanStatus.textContent='Scanning music library… '+total+' track(s) indexed so far.';
+                      scanStatus.textContent='Scanning music library\u2026 '+total+' track(s) indexed so far.';
                       startMusicStatusPoll();
                     }else if(total>0){
-                      scanStatus.textContent='Music Library Ready: '+total+' song(s)';
+                      scanStatus.textContent='Music Library Ready: '+total+' song(s)'+(root?' \u2014 '+root:'');
                     }else{
-                      scanStatus.textContent='Music library index not built yet';
+                      scanStatus.textContent='Music library empty or path not configured'+(root?' \u2014 path: '+root:'');
                     }
                   }
                 }
 
                 function startMusicStatusPoll(){
                   if(musicStatusPollTimer)return;
+                  let pollCount=0;
                   musicStatusPollTimer=setInterval(async()=>{
                     try{
                       const res=await fetch('/api/music/status');
@@ -1401,12 +1403,17 @@
                         const scanStatus=document.getElementById('scan-status');
                         if(scanStatus&&currentMode==='music'){
                           scanStatus.classList.add('scanning','global-scan-status');
-                          scanStatus.textContent='Scanning music library… '+(s.indexedFiles||0)+' track(s) indexed so far.';
+                          const folder=(s.currentScanFolder||'').replace(/.*[/\\]/,'');
+                          const folderHint=folder?' \u2014 '+folder:'';
+                          scanStatus.textContent='Scanning music library\u2026 '+(s.indexedFiles||0)+' track(s) indexed'+folderHint;
                         }
                         if(currentMusicData){
                           currentMusicData.indexing=true;
                           currentMusicData.indexedFiles=s.indexedFiles||0;
                         }
+                        // Re-browse every ~10s during scan so tracks appear progressively
+                        pollCount++;
+                        if(pollCount%5===0)browseMusic(currentMusicFolder,0,false);
                       }
                     }catch(e){}
                   },2000);
@@ -1492,6 +1499,8 @@
                       const total=data.totalInFolder||shown;
                       html+='<button class="load-more-btn" onclick="loadMoreMusic()">Load more tracks ('+shown+' of '+total+' loaded)</button>';
                     }
+                  }else if(data.folder&&data.indexing){
+                    html+='<div style="padding:1rem;color:var(--muted,#9aa8c2)">&#128197; Still indexing \u2014 tracks will appear here when the scan reaches this folder.</div>';
                   }else if(data.folder&&!data.indexing){
                     html+='<div style="padding:1rem;color:var(--muted,#9aa8c2)">No tracks found.</div>';
                   }
@@ -2145,6 +2154,8 @@
         let _radioFilterQ='';
         let _radioFilterCountry='';
         let _radioFilterTag='';
+        let _radioSortBy='votes'; // 'votes'|'name'|'bitrate'
+        let _radioMinBitrate=0; // 0=all, else minimum kbps
 
         const _radioFavCountriesKey='rp_radio_fav_countries';
         const _radioFavTagsKey='rp_radio_fav_tags';
@@ -2307,6 +2318,18 @@
             html+='<input id="radio-search-box" type="search" placeholder="Station name\u2026" style="background:var(--input-bg);color:var(--input-text);border:1px solid var(--input-border);padding:.55rem .6rem;border-radius:4px;font-size:.9rem;min-width:143px;width:208px;min-height:2.2rem" oninput="radioOnSearchInput()" />';
             html+=_buildFavSelect('radio-country',_radioCountries.map(c=>({value:c.code,label:c.name})),_radioFavCountries,'radioToggleCountryFav','All countries');
             html+=_buildFavSelect('radio-tag',_radioTags.map(t=>({value:t,label:t})),_radioFavTags,'radioToggleTagFav','All genres');
+            html+=`<select id="radio-sort" class="radio-sort-select" onchange="radioOnSortChange()" title="Sort by" aria-label="Sort stations by">
+              <option value="votes"${_radioSortBy==='votes'?' selected':''}>↑ Votes</option>
+              <option value="name"${_radioSortBy==='name'?' selected':''}>A–Z Name</option>
+              <option value="bitrate"${_radioSortBy==='bitrate'?' selected':''}>↑ Bitrate</option>
+            </select>`;
+            html+=`<select id="radio-minbitrate" class="radio-bitrate-select" onchange="radioOnBitrateChange()" title="Min bitrate" aria-label="Minimum bitrate">
+              <option value="0"${_radioMinBitrate===0?' selected':''}>Any kbps</option>
+              <option value="64"${_radioMinBitrate===64?' selected':''}>64+ kbps</option>
+              <option value="128"${_radioMinBitrate===128?' selected':''}>128+ kbps</option>
+              <option value="192"${_radioMinBitrate===192?' selected':''}>192+ kbps</option>
+              <option value="320"${_radioMinBitrate===320?' selected':''}>320+ kbps</option>
+            </select>`;
             html+='<button class="radio-reset-btn" onclick="radioResetFilters()" title="Reset all filters">&#10005; Reset</button>';
             html+='</div>';
           }
@@ -2333,6 +2356,17 @@
           }
         }
 
+        function radioOnSortChange(){
+          const sel=document.getElementById('radio-sort');
+          if(sel)_radioSortBy=sel.value;
+          renderRadioCards(_radioStations,_radioStations.length===_radioPageSize*(_radioPage+1));
+        }
+        function radioOnBitrateChange(){
+          const sel=document.getElementById('radio-minbitrate');
+          if(sel)_radioMinBitrate=parseInt(sel.value)||0;
+          renderRadioCards(_radioStations,_radioStations.length===_radioPageSize*(_radioPage+1));
+        }
+
         let _radioSearchTimer=null;
         function radioOnSearchInput(){
           clearTimeout(_radioSearchTimer);
@@ -2344,10 +2378,15 @@
           const sb=document.getElementById('radio-search-box');
           const sc=document.getElementById('radio-country');
           const st=document.getElementById('radio-tag');
+          const ss=document.getElementById('radio-sort');
+          const sb2=document.getElementById('radio-minbitrate');
           if(sb)sb.value='';
           if(sc)sc.value='';
           if(st)st.value='';
+          if(ss)ss.value='votes';
+          if(sb2)sb2.value='0';
           _radioFilterQ='';_radioFilterCountry='';_radioFilterTag='';
+          _radioSortBy='votes';_radioMinBitrate=0;
           const bhc=document.getElementById('radio-country-heart');
           if(bhc)bhc.classList.remove('active');
           const bht=document.getElementById('radio-tag-heart');
@@ -2407,6 +2446,26 @@
           });
         }
 
+        function _sortAndFilterStations(arr){
+          let list=arr;
+          // Bitrate filter
+          if(_radioMinBitrate>0)list=list.filter(s=>(s.bitrate||s.Bitrate||0)>=_radioMinBitrate);
+          // Sort
+          if(_radioSortBy==='name'){
+            list=[...list].sort((a,b)=>{
+              const na=(a.name||a.Name||'').toLowerCase();
+              const nb=(b.name||b.Name||'').toLowerCase();
+              return na<nb?-1:na>nb?1:0;
+            });
+          }else if(_radioSortBy==='bitrate'){
+            list=[...list].sort((a,b)=>((b.bitrate||b.Bitrate||0)-(a.bitrate||a.Bitrate||0)));
+          }else{
+            // votes (default)
+            list=[...list].sort((a,b)=>((b.votes||b.Votes||0)-(a.votes||a.Votes||0)));
+          }
+          return list;
+        }
+
         function _buildStationCard(s){
           const uuid=s.stationuuid||s.uuid||s.Uuid||'';
           const name=s.name||s.Name||'';
@@ -2430,14 +2489,17 @@
           const pop=[votes?'▲ '+votes.toLocaleString():'',clicks?'▶ '+clicks.toLocaleString():''].filter(Boolean).join('  ');
           const favIcon=radioIsFav(uuid)?'&#10084;':'&#9825;';
           const isPlaying=_radioCurrentUrl&&url&&_radioCurrentUrl===url;
-          const stationJson=encodeURIComponent(JSON.stringify({stationuuid:uuid,name,url_resolved:url,country,countrycode:s.countryCode||s.CountryCode||s.countrycode||'',state:s.state||s.State||'',language,tags:s.tags||s.Tags||'',codec,bitrate,votes,clickcount:clicks,hls,favicon:s.favicon||s.Favicon||'',homepage}));
+          const stationJson=encodeURIComponent(JSON.stringify({stationuuid:uuid,name,url_resolved:url,country,countrycode:s.countryCode||s.CountryCode||s.countrycode||'',state:s.state||s.State||'',language,tags:s.tags||s.Tags||'',codec,bitrate,votes,clickcount:clicks,hls,favicon:s.favicon||s.Favicon||'',homepage,geo_lat:s.geo_lat??s.GeoLat??null,geo_long:s.geo_long??s.GeoLong??null}));
           const encCountry=encodeURIComponent(country);
           const encTagFirst=encodeURIComponent((s.tags||s.Tags||'').split(',').filter(Boolean)[0]||'');
           let h=`<div class="radio-station-card${isPlaying?' playing':''}" data-url="${escHtml(url)}" onclick="radioPlayStation('${encodeURIComponent(url)}','${encodeURIComponent(name)}','${encCountry}','${encTagFirst}','${stationJson}')">`;
-          // header row: favicon + name + fav button
+          // header row: favicon + name + quality badge + fav button
           h+='<div style="display:flex;gap:.4rem;align-items:flex-start">';
           if(s.favicon||s.Favicon)h+=`<img src="${escHtml(s.favicon||s.Favicon||'')}" alt="" style="width:24px;height:24px;border-radius:3px;object-fit:contain;flex-shrink:0;margin-top:.1rem" onerror="this.style.display='none'" />`;
           h+=`<span class="station-name" style="flex:1">${escHtml(name)}</span>`;
+          // Quality badge (codec + bitrate)
+          const badgeParts=[codec,bitrate?bitrate+'k':''].filter(Boolean);
+          if(badgeParts.length)h+=`<span class="radio-quality-badge">${escHtml(badgeParts.join(' '))}</span>`;
           h+=`<button class="radio-fav-btn${radioIsFav(uuid)?' active':''}" onclick="event.stopPropagation();radioToggleFav(this,'${stationJson}')" title="Favorite">${favIcon}</button>`;
           h+='</div>';
           // location + tags
@@ -2477,14 +2539,14 @@
           if(pinned.length&&rest.length){
             html+='<div class="radio-section-header">&#11088; Favorite countries</div>';
             html+='<div class="music-grid">';
-            for(const s of pinned)html+=_buildStationCard(s);
+            for(const s of _sortAndFilterStations(pinned))html+=_buildStationCard(s);
             html+='</div><div class="radio-section-header">All stations</div>';
             html+='<div class="music-grid">';
-            for(const s of rest)html+=_buildStationCard(s);
+            for(const s of _sortAndFilterStations(rest))html+=_buildStationCard(s);
             html+='</div>';
           }else{
             html+='<div class="music-grid">';
-            for(const s of _sortStationsAlpha(stations))html+=_buildStationCard(s);
+            for(const s of _sortAndFilterStations(stations))html+=_buildStationCard(s);
             html+='</div>';
           }
           if(hasMore){
@@ -2500,36 +2562,75 @@
         async function radioPlayStation(encUrl,encName,encCountry,encTag,encStation){
           const url=decodeURIComponent(encUrl);
           const name=decodeURIComponent(encName||'');
+          let station=null;
+          try{station=encStation?JSON.parse(decodeURIComponent(encStation)):null;}catch{station=null;}
           // Stop current stream first so the server reinitialises cleanly
           await fetch('/api/radio/stop');
           _radioCurrentUrl=url;
           _radioCurrentName=name;
           _radioCurrentCountry=decodeURIComponent(encCountry||'');
           _radioCurrentTag=decodeURIComponent(encTag||'');
-          try{_radioCurrentStation=encStation?JSON.parse(decodeURIComponent(encStation)):null;}catch{_radioCurrentStation=null;}
+          _radioCurrentStation=station;
           _radioIsPlaying=true;
+          _radioRetryCount=0;
           document.body.classList.add('radio-player-docked');
           updateRadioBar(name,_radioCurrentCountry,_radioCurrentTag,true,_radioCurrentStation);
           // Update playing highlight without full re-render
           document.querySelectorAll('.radio-station-card').forEach(el=>{
             el.classList.toggle('playing',el.dataset.url===url);
           });
-          await fetch('/api/radio/play?'+new URLSearchParams({url,name}));
+          // Prefetch geo pool for the station's country so dots are populated
+          if(_globeDotsEnabled&&station){
+            const country=station.countrycode||station.CountryCode
+              ||station.country||station.Country||'';
+            _refreshGeoPool(country).catch(()=>{});
+          }
+          // Pre-resolve stream URL via Radio Browser click endpoint (feature 15)
+          let playUrl=url;
+          try{
+            const uuid=station&&(station.stationuuid||station.uuid||station.Uuid)||'';
+            if(uuid){
+              const r=await fetch('/api/radio/resolve?'+new URLSearchParams({uuid,url}));
+              if(r.ok){const j=await r.json();if(j.resolvedUrl)playUrl=j.resolvedUrl;}
+            }
+          }catch{}
+          await fetch('/api/radio/play?'+new URLSearchParams({url:playUrl,name}));
         }
 
         async function radioToggle(){
           if(_radioIsPlaying){
-            await radioStop();
+            await radioStop();   // pauses — bar stays open
           }else if(_radioCurrentUrl){
-            await radioPlayStation(encodeURIComponent(_radioCurrentUrl),encodeURIComponent(_radioCurrentName));
+            // Resume: restart the stream at the same URL
+            _radioIsPlaying=true;
+            updateRadioBar(_radioCurrentName,_radioCurrentCountry,_radioCurrentTag,true,_radioCurrentStation);
+            await fetch('/api/radio/play?'+new URLSearchParams({url:_radioCurrentUrl,name:_radioCurrentName}));
           }
         }
 
         async function radioStop(){
           await fetch('/api/radio/stop');
           _radioIsPlaying=false;
-          document.body.classList.remove('radio-player-docked');
+          // Keep radio-player-docked so the bar stays visible — the user can resume from here.
           updateRadioBar(_radioCurrentName,_radioCurrentCountry,_radioCurrentTag,false,_radioCurrentStation);
+        }
+
+        async function radioDismiss(){
+          await radioStop();
+          _radioCurrentUrl='';
+          _radioCurrentName='';
+          _radioCurrentCountry='';
+          _radioCurrentTag='';
+          _radioCurrentStation=null;
+          _radioRetryCount=0;
+          stopElapsedTick();
+          stopWaveform();
+          setRadioHealthDot('warn');
+          const el=document.getElementById('radio-bar-elapsed');if(el)el.style.display='none';
+          const songEl=document.getElementById('radio-bar-song');if(songEl)songEl.style.display='none';
+          document.body.classList.remove('radio-player-docked');
+          stopGlobeAnim();
+          _globeHasStation=false;
         }
 
         function radioVolume(v){
@@ -2544,7 +2645,8 @@
           _radioIsPlaying=playing;
           const t=document.getElementById('radio-bar-title');
           const m=document.getElementById('radio-bar-meta');
-          const techEl=document.getElementById('radio-bar-tech');
+          const techText=document.getElementById('radio-bar-tech-text');
+          const qBadge=document.getElementById('radio-bar-quality-badge');
           const tagsEl=document.getElementById('radio-bar-tags');
           const popEl=document.getElementById('radio-bar-pop');
           const hpEl=document.getElementById('radio-bar-homepage');
@@ -2567,8 +2669,14 @@
             const clicks=station.clickcount||station.ClickCount||0;
             const homepage=station.homepage||station.Homepage||'';
             const favicon=station.favicon||station.Favicon||'';
-            const techParts=[codec,bitrate?bitrate+'kbps':'',hls?'HLS':'',language?'\uD83D\uDDE3\uFE0F '+language:''].filter(Boolean);
-            if(techEl)techEl.textContent=techParts.join(' · ');
+            // Quality badge: codec + bitrate
+            if(qBadge){
+              const badgeParts=[codec,bitrate?bitrate+'k':''].filter(Boolean);
+              if(badgeParts.length){qBadge.textContent=badgeParts.join(' ');qBadge.style.display='';}
+              else{qBadge.style.display='none';}
+            }
+            const techParts=[hls?'HLS':'',language?'\uD83D\uDDE3\uFE0F '+language:''].filter(Boolean);
+            if(techText)techText.textContent=techParts.join(' · ');
             if(tagsEl)tagsEl.textContent=tags;
             const popParts=[votes?'\u25B2 '+votes.toLocaleString():'',clicks?'\u25B6 '+clicks.toLocaleString():''].filter(Boolean);
             if(popEl)popEl.textContent=popParts.join('  ');
@@ -2586,33 +2694,964 @@
                 favImg.src=favicon;
               }else{favWrap.style.display='none';}
             }
+            renderRadioGlobeAsync(station).catch(()=>{});
           }else{
-            if(techEl)techEl.textContent='';
+            if(qBadge)qBadge.style.display='none';
+            if(techText)techText.textContent='';
             if(tagsEl)tagsEl.textContent='';
             if(popEl)popEl.textContent='';
             if(hpEl)hpEl.textContent='';
             if(favWrap)favWrap.style.display='none';
+            renderRadioGlobeAsync(null).catch(()=>{});
           }
+          if(!playing){stopWaveform();stopElapsedTick();const el=document.getElementById('radio-bar-elapsed');if(el)el.style.display='none';}
           if(btn)btn.innerHTML=playing?'\u23F8 Pause':'\u25B6 Play';
         }
 
+        // Country centroid lookup [lat, lon] keyed by ISO 3166-1 alpha-2 code.
+        // Used as a fallback when a station has no exact geo_lat/geo_long.
+        const _countryCentroids={
+          AD:[42.55,1.57],AE:[23.42,53.85],AF:[33.94,67.71],AG:[17.06,-61.80],AL:[41.15,20.17],
+          AM:[40.07,45.04],AO:[-11.20,17.87],AR:[-38.42,-63.62],AT:[47.52,14.55],AU:[-25.27,133.78],
+          AZ:[40.14,47.58],BA:[43.92,17.68],BB:[13.19,-59.54],BD:[23.68,90.36],BE:[50.50,4.47],
+          BF:[12.36,-1.56],BG:[42.73,25.49],BH:[26.02,50.55],BI:[-3.37,29.92],BJ:[9.31,2.32],
+          BN:[4.54,114.73],BO:[-16.29,-63.59],BR:[-14.24,-51.93],BS:[25.03,-77.40],BT:[27.51,90.43],
+          BW:[-22.33,24.68],BY:[53.71,27.95],BZ:[17.19,-88.50],CA:[56.13,-106.35],CD:[-4.04,21.76],
+          CF:[6.61,20.94],CG:[-0.23,15.83],CH:[46.82,8.23],CI:[7.54,-5.55],CL:[-35.68,-71.54],
+          CM:[3.85,11.50],CN:[35.86,104.20],CO:[4.57,-74.30],CR:[9.75,-83.75],CU:[21.52,-77.78],
+          CV:[16.54,-23.04],CY:[35.13,33.43],CZ:[49.82,15.47],DE:[51.17,10.45],DJ:[11.83,42.59],
+          DK:[56.26,9.50],DM:[15.41,-61.37],DO:[18.74,-70.16],DZ:[28.03,1.66],EC:[-1.83,-78.18],
+          EE:[58.60,25.01],EG:[26.82,30.80],EH:[24.22,-12.89],ER:[15.18,39.78],ES:[40.46,-3.75],
+          ET:[9.15,40.49],FI:[61.92,25.75],FJ:[-16.58,179.41],FK:[-51.80,-59.52],FR:[46.23,2.21],
+          GA:[-0.80,11.61],GB:[55.38,-3.44],GD:[12.11,-61.68],GE:[42.32,43.36],GH:[7.95,-1.02],
+          GM:[13.44,-15.31],GN:[9.95,-11.81],GQ:[1.65,10.27],GR:[39.07,21.82],GT:[15.78,-90.23],
+          GW:[11.80,-15.18],GY:[4.86,-58.93],HN:[15.20,-86.24],HR:[45.10,15.20],HT:[18.97,-72.29],
+          HU:[47.16,19.50],ID:[-0.79,113.92],IE:[53.41,-8.24],IL:[31.05,34.85],IN:[20.59,78.96],
+          IQ:[33.22,43.68],IR:[32.43,53.69],IS:[64.96,-19.02],IT:[41.87,12.57],JM:[18.11,-77.30],
+          JO:[30.59,36.24],JP:[36.20,138.25],KE:[-0.02,37.91],KG:[41.20,74.77],KH:[12.57,104.99],
+          KI:[-3.37,-168.73],KM:[-11.64,43.33],KN:[17.36,-62.78],KP:[40.34,127.51],KR:[35.91,127.77],
+          KW:[29.31,47.48],KZ:[48.02,66.92],LA:[19.86,102.50],LB:[33.85,35.86],LC:[13.91,-60.98],
+          LI:[47.14,9.55],LK:[7.87,80.77],LR:[6.43,-9.43],LS:[-29.61,28.23],LT:[55.17,23.88],
+          LU:[49.82,6.13],LV:[56.88,24.60],LY:[26.34,17.23],MA:[31.79,-7.09],MC:[43.75,7.40],
+          MD:[47.41,28.37],ME:[42.71,19.37],MG:[-18.77,46.87],MH:[7.13,171.18],MK:[41.61,21.75],
+          ML:[17.57,-3.99],MM:[16.87,96.08],MN:[46.86,103.85],MR:[21.01,-10.94],MT:[35.94,14.38],
+          MU:[-20.35,57.55],MV:[3.20,73.22],MW:[-13.25,34.30],MX:[23.63,-102.55],MY:[4.21,108.03],
+          MZ:[-18.67,35.53],NA:[-22.96,18.49],NE:[17.61,8.08],NG:[9.08,8.68],NI:[12.87,-85.21],
+          NL:[52.13,5.29],NO:[60.47,8.47],NP:[28.39,84.12],NR:[-0.52,166.93],NZ:[-40.90,174.89],
+          OM:[21.51,55.92],PA:[8.54,-80.78],PE:[-9.19,-75.02],PG:[-6.31,143.96],PH:[12.88,121.77],
+          PK:[30.38,69.35],PL:[51.92,19.15],PT:[39.40,-8.22],PW:[7.51,134.58],PY:[-23.44,-58.44],
+          QA:[25.35,51.18],RO:[45.94,24.97],RS:[44.02,21.01],RU:[61.52,105.32],RW:[-1.94,29.87],
+          SA:[23.89,45.08],SB:[-9.64,160.16],SC:[-4.68,55.49],SD:[12.86,30.22],SE:[60.13,18.64],
+          SG:[1.35,103.82],SI:[46.15,14.99],SK:[48.67,19.70],SL:[8.46,-11.78],SM:[43.94,12.46],
+          SN:[14.50,-14.45],SO:[5.15,46.20],SR:[3.92,-56.03],SS:[6.88,31.57],ST:[0.19,6.61],
+          SV:[13.79,-88.90],SY:[34.80,38.99],SZ:[-26.52,31.47],TD:[15.45,18.73],TG:[8.62,0.82],
+          TH:[15.87,100.99],TJ:[38.86,71.28],TL:[-8.87,125.73],TM:[38.97,59.56],TN:[33.89,9.54],
+          TO:[-21.18,-175.20],TR:[38.96,35.24],TT:[10.69,-61.22],TV:[-7.11,177.65],TW:[23.70,120.96],
+          TZ:[-6.37,34.89],UA:[48.38,31.17],UG:[1.37,32.29],US:[37.09,-95.71],UY:[-32.52,-55.77],
+          UZ:[41.38,64.59],VA:[41.90,12.45],VC:[12.98,-61.29],VE:[6.42,-66.59],VN:[14.06,108.28],
+          VU:[-15.38,166.96],WS:[-13.76,-172.10],XK:[42.60,20.90],YE:[15.55,48.52],ZA:[-30.56,22.94],
+          ZM:[-13.13,27.85],ZW:[-19.02,29.15]
+        };
+
+        // ---------------------------------------------------------------------------
+        // ─── Radio Globe — ray-cast 3D sphere renderer ────────────────────────────
+        // Land polygons + country border arcs decoded once from /world-110m.json.
+        // Two equirectangular textures are baked (land fill, border lines) using the
+        // browser's own Canvas 2D engine for correct winding/concavity handling.
+        // Each frame ray-casts with a zoom factor that animates from 1→4 so the
+        // globe starts as a whole-world view then zooms into the station's region.
+        // -------------------------------------------------------------------------
+
+        let _topoLandPolys    = null;   // [[lon,lat],...] rings for land fill
+        let _topoCountryLines = null;   // [[lon,lat],...] polylines for country borders
+        let _usStateLines     = null;   // [[lon,lat],...] polylines for US state borders
+        let _topoFetching     = false;
+        let _usStateFetching  = false;
+
+        async function ensureTopoLand(){
+          if(_topoLandPolys)return _topoLandPolys;
+          if(_topoFetching)return null;
+          _topoFetching=true;
+          try{
+            const [topoData]=await Promise.all([
+              fetch('/world-110m.json').then(r=>{ if(!r.ok)throw new Error('fetch failed'); return r.json(); }),
+              ensureUsStates()
+            ]);
+            const topo=topoData;
+            _topoLandPolys    = decodeTopoLand(topo);
+            _topoCountryLines = decodeCountryLines(topo);
+            _globeTextureDirty=true;
+          }catch(e){
+            console.warn('Globe TopoJSON load failed',e);
+            _topoLandPolys=[];
+            _topoCountryLines=[];
+            _topoFetching=false;
+          }
+          return _topoLandPolys;
+        }
+
+        // Decode GeoJSON FeatureCollection of US state polygons into polylines for border rendering.
+        async function ensureUsStates(){
+          if(_usStateLines)return;
+          if(_usStateFetching)return;
+          _usStateFetching=true;
+          try{
+            const r=await fetch('/us-states.json');
+            if(!r.ok)throw new Error('us-states fetch failed');
+            const geojson=await r.json();
+            const lines=[];
+            for(const feature of (geojson.features||[])){
+              const geom=feature.geometry;
+              if(!geom)continue;
+              const polys=geom.type==='Polygon'?[geom.coordinates]
+                          :geom.type==='MultiPolygon'?geom.coordinates:[];
+              for(const poly of polys){
+                for(const ring of poly){
+                  if(ring.length>=2)lines.push(ring);  // ring: [[lon,lat],...]
+                }
+              }
+            }
+            _usStateLines=lines;
+            _globeTextureDirty=true;
+          }catch(e){
+            console.warn('US states load failed',e);
+            _usStateLines=[];
+          }
+        }
+
+        function decodeTopoLand(topo){
+          const {scale,translate}=topo.transform;
+          const arcs=topo.arcs.map(arc=>{
+            let x=0,y=0;
+            return arc.map(pt=>{
+              x+=pt[0]; y+=pt[1];
+              // Keep raw floating-point coords; normalisation happens in splitRingAtAntimeridian
+              return[x*scale[0]+translate[0], y*scale[1]+translate[1]];
+            });
+          });
+          function getArc(i){return i>=0?arcs[i]:arcs[~i].slice().reverse();}
+          function decodeRing(indices){
+            const ring=[];
+            for(const i of indices){const pts=getArc(i);for(let j=0;j<pts.length-1;j++)ring.push(pts[j]);}
+            return ring;
+          }
+          const polys=[];
+          function processGeom(geom){
+            if(!geom)return;
+            if(geom.type==='Polygon'){for(const ring of geom.arcs)polys.push(decodeRing(ring));}
+            else if(geom.type==='MultiPolygon'){for(const poly of geom.arcs)for(const ring of poly)polys.push(decodeRing(ring));}
+            else if(geom.type==='GeometryCollection'){for(const g of geom.geometries)processGeom(g);}
+          }
+          processGeom(topo.objects.land);
+          return polys;
+        }
+
+        // Decode every raw arc from the TopoJSON as a polyline — these are the
+        // segments that make up country borders (shared edges between countries).
+        function decodeCountryLines(topo){
+          const {scale,translate}=topo.transform;
+          const lines=[];
+          for(const arc of topo.arcs){
+            let x=0,y=0;
+            const line=arc.map(pt=>{x+=pt[0];y+=pt[1];return[x*scale[0]+translate[0],y*scale[1]+translate[1]];});
+            if(line.length>=2)lines.push(line);
+          }
+          return lines;
+        }
+
+        // ── Equirectangular textures ──────────────────────────────────────────────
+        const TEX_W=1024, TEX_H=512;
+        let _globeTex      = null;   // Uint8Array: 1=land
+        let _globeBorderTex= null;   // Uint8Array: 1=country border pixel
+        let _globeStateTex = null;   // Uint8Array: 1=US state border pixel
+        let _globeTextureDirty=true;
+
+        /**
+         * Normalise longitude to [-180, 180].
+         */
+        function normLon(lon){ return ((lon+180)%360+360)%360-180; }
+
+        /**
+         * Split a ring of [lon,lat] pairs into sub-rings at the antimeridian.
+         *
+         * Handles two cases:
+         *  a) A decoded TopoJSON ring whose coordinates have drifted outside ±180
+         *     (e.g. Russia goes up to lon≈190) — normalise first.
+         *  b) A single step that jumps more than 180° (legacy seam crossing).
+         *
+         * Each output sub-ring is clean: all points inside [-180,180] with no
+         * edge that crosses the seam.
+         */
+        function splitRingAtAntimeridian(ring){
+          if(ring.length<2)return[ring];
+
+          // 1. Normalise all longitudes to [-180,180]
+          const norm=ring.map(([lon,lat])=>[normLon(lon),lat]);
+
+          // 2. Walk the normalised ring; wherever a segment crosses the antimeridian
+          //    (detected by the sign-of-largest-magnitude heuristic), split it.
+          const subRings=[];
+          let cur=[norm[0]];
+
+          for(let i=1;i<norm.length;i++){
+            const [lon0,lat0]=norm[i-1];
+            const [lon1,lat1]=norm[i];
+            const dLon=lon1-lon0;
+
+            if(Math.abs(dLon)>180){
+              // Interpolate the latitude at the antimeridian crossing
+              const sign=dLon>0?-1:1;
+              const lonA=sign*180;
+              const lonB=-sign*180;
+              const t=Math.abs((lonA-lon0)/dLon);
+              const latX=lat0+(lat1-lat0)*t;
+              cur.push([lonA,latX]);
+              subRings.push(cur);
+              cur=[[lonB,latX],[lon1,lat1]];
+            }else{
+              cur.push([lon1,lat1]);
+            }
+          }
+          if(cur.length>1)subRings.push(cur);
+          return subRings.length?subRings:[norm];
+        }
+
+        // Draw rings as filled paths with evenodd winding → land texture
+        function buildGlobeTexture(polys){
+          const oc=document.createElement('canvas');
+          oc.width=TEX_W; oc.height=TEX_H;
+          const ctx=oc.getContext('2d');
+          ctx.clearRect(0,0,TEX_W,TEX_H);
+          ctx.fillStyle='#fff';
+          ctx.beginPath();
+          for(const ring of polys){
+            if(ring.length<2)continue;
+            for(const sub of splitRingAtAntimeridian(ring)){
+              if(sub.length<2)continue;
+              const [lon0,lat0]=sub[0];
+              ctx.moveTo((lon0+180)/360*TEX_W,(90-lat0)/180*TEX_H);
+              for(let i=1;i<sub.length;i++){
+                const [lon,lat]=sub[i];
+                ctx.lineTo((lon+180)/360*TEX_W,(90-lat)/180*TEX_H);
+              }
+              ctx.closePath();
+            }
+          }
+          ctx.fill('evenodd');
+          const imgData=ctx.getImageData(0,0,TEX_W,TEX_H).data;
+          const tex=new Uint8Array(TEX_W*TEX_H);
+          for(let i=0;i<tex.length;i++)tex[i]=imgData[i*4+3]>128?1:0;
+          return tex;
+        }
+
+        // Draw arc polylines as 1px strokes → border texture
+        function buildBorderTexture(lines){
+          const oc=document.createElement('canvas');
+          oc.width=TEX_W; oc.height=TEX_H;
+          const ctx=oc.getContext('2d');
+          ctx.clearRect(0,0,TEX_W,TEX_H);
+          ctx.strokeStyle='#fff';
+          ctx.lineWidth=1;
+          for(const line of lines){
+            if(line.length<2)continue;
+            // Split each polyline at the antimeridian the same way as land rings
+            for(const sub of splitRingAtAntimeridian(line)){
+              if(sub.length<2)continue;
+              ctx.beginPath();
+              const [lon0,lat0]=sub[0];
+              ctx.moveTo((lon0+180)/360*TEX_W,(90-lat0)/180*TEX_H);
+              for(let i=1;i<sub.length;i++){
+                const [lon,lat]=sub[i];
+                ctx.lineTo((lon+180)/360*TEX_W,(90-lat)/180*TEX_H);
+              }
+              ctx.stroke();
+            }
+          }
+          const imgData=ctx.getImageData(0,0,TEX_W,TEX_H).data;
+          const tex=new Uint8Array(TEX_W*TEX_H);
+          for(let i=0;i<tex.length;i++)tex[i]=imgData[i*4+3]>64?1:0;
+          return tex;
+        }
+
+        function globeTexLookup(latRad,lonRad){
+          if(!_globeTex)return 0;
+          let lo=lonRad*180/Math.PI;
+          lo=((lo+180)%360+360)%360-180;
+          const u=(lo+180)/360*(TEX_W-1);
+          const la=latRad*180/Math.PI;
+          const v=(90-la)/180*(TEX_H-1);
+          const px=Math.min(TEX_W-1,Math.max(0,Math.round(u)));
+          const py=Math.min(TEX_H-1,Math.max(0,Math.round(v)));
+          return _globeTex[py*TEX_W+px];
+        }
+
+        function borderTexLookup(latRad,lonRad){
+          if(!_globeBorderTex)return 0;
+          let lo=lonRad*180/Math.PI;
+          lo=((lo+180)%360+360)%360-180;
+          const u=(lo+180)/360*(TEX_W-1);
+          const la=latRad*180/Math.PI;
+          const v=(90-la)/180*(TEX_H-1);
+          const px=Math.min(TEX_W-1,Math.max(0,Math.round(u)));
+          const py=Math.min(TEX_H-1,Math.max(0,Math.round(v)));
+          return _globeBorderTex[py*TEX_W+px];
+        }
+
+        function stateTexLookup(latRad,lonRad){
+          if(!_globeStateTex)return 0;
+          let lo=lonRad*180/Math.PI;
+          lo=((lo+180)%360+360)%360-180;
+          const u=(lo+180)/360*(TEX_W-1);
+          const la=latRad*180/Math.PI;
+          const v=(90-la)/180*(TEX_H-1);
+          const px=Math.min(TEX_W-1,Math.max(0,Math.round(u)));
+          const py=Math.min(TEX_H-1,Math.max(0,Math.round(v)));
+          return _globeStateTex[py*TEX_W+px];
+        }
+
+        // ── Globe animation state ─────────────────────────────────────────────────
+        let _globeAnimId     =null;
+        let _globeTargetLat  =0, _globeTargetLon=0;
+        let _globeCurrentLat =0, _globeCurrentLon=0;
+        let _globeIdleLon    =0;
+        let _globeHasStation =false;
+        let _globeLastTime   =0;
+        let _globeZoom       =1.0;   // current zoom (1=whole globe, 4=zoomed in)
+        let _globeZoomTarget =1.0;   // animated toward this
+        let _globePingPhase  =0;     // 0..1 drives the station-dot ping ring
+        // Transition state machine: 'steady' | 'zoomout'
+        // When a new station arrives while zoomed in, zoom out first then rotate.
+        let _globeTransitState  ='steady';
+        let _globePendingLat    =0;
+        let _globePendingLon    =0;
+        let _globePendingRegion ='';  // 'europe' | 'usa' | ''
+        let _globeCurrentRegion ='';  // active region for renderer
+        const GLOBE_SNAP_SPEED       = 2.5;
+        const GLOBE_ZOOM_TARGET      = 4.0;
+        const GLOBE_ZOOM_SPEED       = 0.6;  // exponential approach rate
+
+        function startGlobeAnim(canvas){
+          if(_globeAnimId)return;
+          _globeLastTime=performance.now();
+          function frame(now){
+            const dt=Math.min((now-_globeLastTime)/1000,0.1);
+            _globeLastTime=now;
+            if(_globeHasStation){
+                if(_globeTransitState==='zoomout'){
+                  // Phase 1: zoom back out to globe view before rotating
+                  _globeZoomTarget=1.0;
+                  const kz=1-Math.exp(-GLOBE_ZOOM_SPEED*dt);
+                  _globeZoom+=(_globeZoomTarget-_globeZoom)*kz;
+                  // Phase 2: once nearly at zoom=1, apply pending station and start zoom-in
+                  if(_globeZoom<1.12){
+                    _globeZoom=1.0;
+                    _globeTargetLat=_globePendingLat;
+                    _globeTargetLon=_globePendingLon;
+                    _globeZoomTarget=_globePendingRegion?GLOBE_ZOOM_TARGET:1.0;
+                    _globeCurrentRegion=_globePendingRegion;
+                    _globePingPhase=0;
+                    _globeTransitState='steady';
+                  }
+                  // Keep globe centred on old location during zoom-out
+                } else {
+                  // Normal: rotate toward target then zoom
+                  const k=1-Math.exp(-GLOBE_SNAP_SPEED*dt);
+                  _globeCurrentLat+=(_globeTargetLat-_globeCurrentLat)*k;
+                  let dLon=_globeTargetLon-_globeCurrentLon;
+                  if(dLon>Math.PI)dLon-=2*Math.PI;
+                  else if(dLon<-Math.PI)dLon+=2*Math.PI;
+                  _globeCurrentLon+=dLon*k;
+                  const kz=1-Math.exp(-GLOBE_ZOOM_SPEED*dt);
+                  _globeZoom+=(_globeZoomTarget-_globeZoom)*kz;
+                }
+              } else {
+                _globeIdleLon+=GLOBE_IDLE_DEG_PER_SEC*Math.PI/180*dt;
+                _globeZoom=1.0;
+                _globeZoomTarget=1.0;
+                _globeTransitState='steady';
+              }
+            _globePingPhase=(_globePingPhase+dt*0.7)%1;
+            drawGlobeFrame(canvas);
+            _globeAnimId=requestAnimationFrame(frame);
+          }
+          _globeAnimId=requestAnimationFrame(frame);
+        }
+
+        function stopGlobeAnim(){
+          if(_globeAnimId){cancelAnimationFrame(_globeAnimId);_globeAnimId=null;}
+        }
+
+        // ── Frame renderer ────────────────────────────────────────────────────────
+        function drawGlobeFrame(canvas){
+          const W=canvas.width, H=canvas.height;
+          const ctx=canvas.getContext('2d');
+          if(!ctx)return;
+
+          if(_globeTextureDirty&&_topoLandPolys){
+            _globeTex      =buildGlobeTexture(_topoLandPolys);
+            _globeBorderTex=_topoCountryLines?buildBorderTexture(_topoCountryLines):null;
+            _globeStateTex =_usStateLines?buildBorderTexture(_usStateLines):null;
+            _globeTextureDirty=false;
+          }
+
+          const img=ctx.createImageData(W,H);
+          const d=img.data;
+
+          const cx=W/2, cy=H/2;
+          const R=W/2-1;
+
+          // Light: upper-left, slightly in front
+          const lx=-0.55, ly=0.55, lz=0.63;
+          const lLen=Math.sqrt(lx*lx+ly*ly+lz*lz);
+          const Lx=lx/lLen, Ly=ly/lLen, Lz=lz/lLen;
+          const hLen=Math.sqrt(Lx*Lx+Ly*Ly+(Lz+1)*(Lz+1));
+          const Hx=Lx/hLen, Hy=Ly/hLen, Hz=(Lz+1)/hLen;
+
+          const viewLat=_globeHasStation ? _globeCurrentLat : 0;
+          const viewLon=_globeHasStation ? _globeCurrentLon : _globeIdleLon;
+          const cosLat=Math.cos(viewLat), sinLat=Math.sin(viewLat);
+
+          // Zoom: shrink the projected (nx,ny) so fewer degrees are visible.
+          // At zoom=1 the full hemisphere is visible; at zoom=4 only 1/4 is shown.
+          const zoom=Math.max(1, _globeZoom);
+
+          // Grid spacing adapts to zoom: coarse at zoom≈1, fine at zoom≥3
+          const gridDeg = zoom < 1.8 ? 30 : zoom < 3 ? 15 : 10;
+
+          // Border opacity: 0 below zoom 1.5, ramps to 1 at zoom 2.5
+          const borderAlpha=Math.max(0, Math.min(1, (_globeZoom-1.5)/1.0));
+
+          // Smoothly morph border-radius: circle (50%) at zoom=1, square (0%) when fully zoomed
+          const brPct=Math.max(0,Math.round(50*(1-(_globeZoom-1)/(GLOBE_ZOOM_TARGET-1))));
+          canvas.style.borderRadius=brPct+'%';
+
+          // Background colour for corners outside the sphere disk
+          const BG_R=3,BG_G=8,BG_B=5;
+
+          for(let py=0;py<H;py++){
+            const dy=(py-cy)/R;
+            for(let px=0;px<W;px++){
+              const dx=(px-cx)/R;
+              const off=(py*W+px)*4;
+
+              // Project through zoom: a corner pixel maps to a much closer-to-centre
+              // sphere point when zoomed in, allowing the full canvas square to be filled.
+              const sx=dx/zoom, sy=dy/zoom;
+              const sz2=sx*sx+sy*sy;
+              if(sz2>1){
+                // Outside the zoomed geographic window — dark background
+                d[off+0]=BG_R; d[off+1]=BG_G; d[off+2]=BG_B; d[off+3]=255;
+                continue;
+              }
+
+              // Use zoomed sphere coordinates for both normals and geographic projection.
+              // This is correct: the sphere normal at the hit point is (sx, -sy, sqrt(1-sz2)).
+              const nx= sx;
+              const ny=-sy;
+              const nz= Math.sqrt(1-sz2);
+
+              // Alias for clarity (same values)
+              const hnx=nx, hny=ny, hnz=nz;
+
+              // Inverse orthographic projection → geographic lat/lon
+              const geoLat=Math.asin(Math.max(-1,Math.min(1, hnz*sinLat + hny*cosLat)));
+              const geoLon=viewLon + Math.atan2(hnx, cosLat*hnz - sinLat*hny);
+
+              const isLand  =globeTexLookup(geoLat,geoLon);
+              const isBorder=borderAlpha>0 && borderTexLookup(geoLat,geoLon);
+              const isState =borderAlpha>0 && _globeCurrentRegion==='usa' && stateTexLookup(geoLat,geoLon);
+
+              // Base colours
+              let br=isLand?40:7, bg=isLand?88:25, bb=isLand?38:14;
+
+              // Grid lines
+              const gLat=geoLat*180/Math.PI, gLon=geoLon*180/Math.PI;
+              const modLat=((gLat%gridDeg)+gridDeg)%gridDeg;
+              const modLon=((gLon%gridDeg)+gridDeg)%gridDeg;
+              const gridThr=Math.max(0.5, 0.8/zoom);
+              const onGrid=(modLat<gridThr||modLat>gridDeg-gridThr)||(modLon<gridThr||modLon>gridDeg-gridThr);
+              if(onGrid){br+=8;bg+=11;bb+=8;}
+
+              // Country borders (faded in as zoom increases)
+              if(isBorder){
+                const bStr=borderAlpha*0.85;
+                br=Math.round(br*(1-bStr)+(isLand?90:40)*bStr);
+                bg=Math.round(bg*(1-bStr)+(isLand?160:80)*bStr);
+                bb=Math.round(bb*(1-bStr)+(isLand?75:50)*bStr);
+              }
+
+              // US state borders — slightly subtler than country borders
+              if(isState){
+                const sStr=borderAlpha*0.65;
+                br=Math.round(br*(1-sStr)+(isLand?75:35)*sStr);
+                bg=Math.round(bg*(1-sStr)+(isLand?135:65)*sStr);
+                bb=Math.round(bb*(1-sStr)+(isLand?60:40)*sStr);
+              }
+
+              // Phong lighting
+              const diff =Math.max(0, nx*Lx+ny*Ly+nz*Lz);
+              const nDotH=Math.max(0, nx*Hx+ny*Hy+nz*Hz);
+              const spec =Math.pow(nDotH,80)*(isLand?0.04:0.18);
+              const light=0.20+0.75*diff;
+
+              d[off+0]=Math.min(255, br*light+spec*230);
+              d[off+1]=Math.min(255, bg*light+spec*255);
+              d[off+2]=Math.min(255, bb*light+spec*200);
+              d[off+3]=255;
+            }
+          }
+
+          ctx.putImageData(img,0,0);
+
+          // Atmosphere rim — only visible when near globe view (fades out with zoom)
+          const rimOpacity = Math.max(0, 1 - (_globeZoom - 1) / 0.8);
+          if (rimOpacity > 0.01) {
+            const rim=ctx.createRadialGradient(cx,cy,R*0.82,cx,cy,R);
+            rim.addColorStop(0,'rgba(0,0,0,0)');
+            rim.addColorStop(1,`rgba(0,30,10,${(0.55*rimOpacity).toFixed(3)})`);
+            ctx.fillStyle=rim;
+            ctx.beginPath();ctx.arc(cx,cy,R,0,2*Math.PI);ctx.fill();
+          }
+
+          // Station dot + animated ping ring at canvas centre
+          if(_globeHasStation){
+            // Ping ring: expands from radius 5 to 18, fades out
+            const pingR=5+_globePingPhase*13;
+            const pingOpacity=Math.max(0,1-_globePingPhase)*0.75;
+            ctx.save();
+            ctx.globalAlpha=pingOpacity;
+            ctx.strokeStyle='#e94560';
+            ctx.lineWidth=1.5;
+            ctx.beginPath();ctx.arc(cx,cy,pingR,0,2*Math.PI);ctx.stroke();
+            ctx.restore();
+
+            // Solid dot
+            ctx.save();
+            ctx.shadowColor='#e94560';
+            ctx.shadowBlur=8;
+            ctx.fillStyle='#e94560';
+            ctx.beginPath();ctx.arc(cx,cy,4,0,2*Math.PI);ctx.fill();
+            ctx.restore();
+          }
+
+          // Additional station dots for all visible stations (feature 10)
+          _drawGlobeStationDots(canvas);
+        }
+
+        // ── Public entry point (called from updateRadioBar) ───────────────────────
+        async function renderRadioGlobeAsync(station){
+          await ensureTopoLand();
+          renderRadioGlobe(station);
+        }
+
+        // ── Globe station dots (feature 10/11/12) ─────────────────────────────────
+        let _globeDotsEnabled=false;
+        let _globeGeoStations=[];    // full country geo-pool for dot rendering
+        let _globeGeoCountry='';    // which country the pool was fetched for
+        let _globeGeoFetching=false;
+
+        /** Fetch up to 500 geo-located stations for `country`; fills _globeGeoStations. */
+        async function _refreshGeoPool(country){
+          if(!country||_globeGeoFetching)return;
+          if(country===_globeGeoCountry&&_globeGeoStations.length)return; // already loaded
+          _globeGeoFetching=true;
+          try{
+            const params=new URLSearchParams({country,limit:'500',offset:'0',q:'',tag:''});
+            const r=await fetch('/api/radio/search?'+params);
+            if(r.ok){
+              const arr=await r.json();
+              _globeGeoStations=arr;
+              _globeGeoCountry=country;
+            }
+          }catch{}
+          _globeGeoFetching=false;
+        }
+
+        function radioToggleGlobeDots(){
+          _globeDotsEnabled=!_globeDotsEnabled;
+          const btn=document.getElementById('radio-globe-dots-btn');
+          if(btn)btn.classList.toggle('active',_globeDotsEnabled);
+          // Prefetch geo pool for current station's country when enabling
+          if(_globeDotsEnabled&&_radioCurrentStation){
+            const country=_radioCurrentStation.countrycode||_radioCurrentStation.CountryCode
+              ||_radioCurrentStation.country||_radioCurrentStation.Country||'';
+            _refreshGeoPool(country).catch(()=>{});
+          }
+          // Re-render immediately with current station
+          if(_radioCurrentStation)renderRadioGlobeAsync(_radioCurrentStation).catch(()=>{});
+        }
+
+        /**
+         * Project geographic [lonDeg,latDeg] onto the globe canvas pixel coordinates.
+         * This is the exact forward inverse of the pixel-shader's orthographic projection:
+         *   shader inverse: geoLat = asin(nz*sinViewLat + ny*cosViewLat)
+         *                   geoLon = viewLon + atan2(nx, cosViewLat*nz - sinViewLat*ny)
+         * So forward (geo→view) is: rotation around X by +viewLat, then orthographic project.
+         */
+        function _globeProject(lonDeg,latDeg,canvas){
+          const W=canvas.width, H=canvas.height;
+          const R=W/2-1;                     // must match drawGlobeFrame exactly
+          const cx=W/2, cy=H/2;
+          const relLon=lonDeg*Math.PI/180-_globeCurrentLon;
+          const geoLat=latDeg*Math.PI/180;
+          const viewLat=_globeCurrentLat;    // already in radians
+          // Unit-sphere point in geographic frame
+          const x=Math.cos(geoLat)*Math.sin(relLon);
+          const y=Math.sin(geoLat);
+          const z=Math.cos(geoLat)*Math.cos(relLon);
+          // Rotate around X axis by +viewLat (forward transform)
+          const cosVL=Math.cos(viewLat);
+          const sinVL=Math.sin(viewLat);
+          const nx=x;
+          const ny=y*cosVL-z*sinVL;
+          const nz=y*sinVL+z*cosVL;
+          if(nz<=0)return null; // behind the globe
+          const zoom=Math.max(1,_globeZoom);
+          return{
+            px:cx+nx*zoom*R,
+            py:cy-ny*zoom*R
+          };
+        }
+
+        /** Normalise a raw lat/lon value (number or string) to float or null. */
+        function _parseCoord(v){
+          if(v===null||v===undefined||v==='')return null;
+          const n=typeof v==='number'?v:parseFloat(v);
+          return isNaN(n)?null:n;
+        }
+
+        /** Draw station dots for all currently loaded stations on the globe canvas. */
+        function _drawGlobeStationDots(canvas){
+          if(!_globeDotsEnabled)return;
+          const ctx=canvas.getContext('2d');
+          // Merge browser page + geo pool + favorites; deduplicate by uuid
+          const stations=[..._globeGeoStations,..._radioStations,..._radioFavorites];
+          const seen=new Set();
+          const accent=getComputedStyle(document.body).getPropertyValue('--player-accent').trim()||'#e94560';
+          for(const s of stations){
+            const uuid=s.stationuuid||s.uuid||s.Uuid||'';
+            if(uuid&&seen.has(uuid))continue;
+            if(uuid)seen.add(uuid);
+            const lat=_parseCoord(s.geo_lat??s.GeoLat);
+            const lon=_parseCoord(s.geo_long??s.GeoLong);
+            if(lat===null||lon===null||(lat===0&&lon===0))continue;
+            const pt=_globeProject(lon,lat,canvas);
+            if(!pt)continue;
+            const isPlaying=_radioCurrentUrl&&(s.url_resolved||s.streamUrl||s.StreamUrl||s.url||s.Url)===_radioCurrentUrl;
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(pt.px,pt.py,isPlaying?5:3,0,2*Math.PI);
+            ctx.fillStyle=isPlaying?accent:'rgba(255,255,255,0.75)';
+            ctx.shadowColor=isPlaying?accent:'rgba(0,0,0,0.6)';
+            ctx.shadowBlur=isPlaying?8:3;
+            ctx.fill();
+            ctx.restore();
+          }
+        }
+
+        /** Hit-test globe canvas for a mouse position; return station or null. */
+        function _globeHitTest(canvas,offsetX,offsetY){
+          if(!_globeDotsEnabled)return null;
+          const stations=[..._globeGeoStations,..._radioStations,..._radioFavorites];
+          const seen=new Set();
+          for(const s of stations){
+            const uuid=s.stationuuid||s.uuid||s.Uuid||'';
+            if(uuid&&seen.has(uuid))continue;
+            if(uuid)seen.add(uuid);
+            const lat=_parseCoord(s.geo_lat??s.GeoLat);
+            const lon=_parseCoord(s.geo_long??s.GeoLong);
+            if(lat===null||lon===null||(lat===0&&lon===0))continue;
+            const pt=_globeProject(lon,lat,canvas);
+            if(!pt)continue;
+            const dx=offsetX-pt.px,dy=offsetY-pt.py;
+            if(dx*dx+dy*dy<=100)return{station:s,px:pt.px,py:pt.py}; // 10px radius
+          }
+          return null;
+        }
+
+        function radioGlobeMouseMove(event){
+          const canvas=document.getElementById('radio-globe-canvas');
+          const tooltip=document.getElementById('radio-globe-tooltip');
+          if(!canvas||!tooltip)return;
+          const hit=_globeHitTest(canvas,event.offsetX,event.offsetY);
+          if(!hit){tooltip.style.display='none';return;}
+          const s=hit.station;
+          const name=s.name||s.Name||'?';
+          const bitrate=s.bitrate||s.Bitrate||0;
+          const codec=(s.codec||s.Codec||'').toUpperCase();
+          let tip=escHtml(name);
+          if(codec||bitrate)tip+=`<br><small>${escHtml([codec,bitrate?bitrate+'k':''].filter(Boolean).join(' '))}</small>`;
+          tooltip.innerHTML=tip;
+          tooltip.style.display='block';
+          tooltip.style.left=(hit.px+6)+'px';
+          tooltip.style.top=(hit.py-24)+'px';
+        }
+
+        function radioGlobeMouseLeave(){
+          const tooltip=document.getElementById('radio-globe-tooltip');
+          if(tooltip)tooltip.style.display='none';
+        }
+
+        function radioGlobeClick(event){
+          const canvas=document.getElementById('radio-globe-canvas');
+          if(!canvas)return;
+          const hit=_globeHitTest(canvas,event.offsetX,event.offsetY);
+          if(!hit)return;
+          const s=hit.station;
+          const url=s.url_resolved||s.streamUrl||s.StreamUrl||'';
+          const name=s.name||s.Name||'';
+          if(!url)return;
+          const country=s.country||s.Country||'';
+          const tag=(s.tags||s.Tags||'').split(',').filter(Boolean)[0]||'';
+          radioPlayStation(
+            encodeURIComponent(url),
+            encodeURIComponent(name),
+            encodeURIComponent(country),
+            encodeURIComponent(tag),
+            encodeURIComponent(JSON.stringify(s))
+          );
+          radioGlobeMouseLeave();
+        }
+
+        function renderRadioGlobe(station){
+          const geoWrap=document.getElementById('radio-bar-geo');
+          const canvas=document.getElementById('radio-globe-canvas');
+          const label=document.getElementById('radio-geo-label');
+          if(!geoWrap||!canvas||!label)return;
+
+          let lat=station&&(station.geo_lat??station.GeoLat??null);
+          let lon=station&&(station.geo_long??station.GeoLong??null);
+          let hasCoords=typeof lat==='number'&&typeof lon==='number'&&!(lat===0&&lon===0);
+          const countryName=station&&(station.country||station.Country||'');
+          const stateName=station&&(station.state||station.State||'');
+          const countryCode=station&&(station.countrycode||station.CountryCode||'');
+
+          if(!hasCoords&&countryCode){
+            const c=_countryCentroids[countryCode.toUpperCase()];
+            if(c){lat=c[0];lon=c[1];hasCoords=true;}
+          }
+
+          if(!station||(!hasCoords&&!countryName)){
+            geoWrap.style.display='none';
+            stopGlobeAnim();
+            return;
+          }
+          geoWrap.style.display='flex';
+
+          const labelParts=[];
+          if(countryName)labelParts.push('\uD83C\uDF10 '+countryName);
+          if(stateName)labelParts.push('\uD83D\uDCCD '+stateName);
+          const rawLat=station&&(station.geo_lat??station.GeoLat??null);
+          const rawLon=station&&(station.geo_long??station.GeoLong??null);
+          const hasRawCoords=typeof rawLat==='number'&&typeof rawLon==='number'&&!(rawLat===0&&rawLon===0);
+          if(hasRawCoords)labelParts.push(rawLat.toFixed(2)+'\u00b0, '+rawLon.toFixed(2)+'\u00b0');
+          label.textContent=labelParts.join('\n');
+
+          if(!hasCoords){
+            canvas.style.display='none';
+            stopGlobeAnim();
+            return;
+          }
+          canvas.style.display='block';
+
+          // Detect new station BEFORE updating targets
+          const newLatRad = lat * Math.PI / 180;
+          const newLonRad = lon * Math.PI / 180;
+          const isNewStation = !_globeHasStation
+            || _globeTargetLat !== newLatRad
+            || _globeTargetLon !== newLonRad;
+
+          // Europe: lat 35..72°N, lon -25..45°E
+          const isEurope = (lat >= 35 && lat <= 72 && lon >= -25 && lon <= 45);
+          // Contiguous USA + Alaska: lat 18..72, lon -170..-65
+          const isUSA    = (lat >= 18 && lat <= 72 && lon >= -170 && lon <= -65);
+          const region   = isEurope ? 'europe' : isUSA ? 'usa' : '';
+
+          const wasFirstStation = !_globeHasStation;
+
+          if (isNewStation) {
+            _globeHasStation = true;
+            const sameRegion = region && region === _globeCurrentRegion;
+            if (_globeZoom > 1.3 && !sameRegion) {
+              // Currently zoomed into a different region — zoom out first
+              _globePendingLat    = newLatRad;
+              _globePendingLon    = newLonRad;
+              _globePendingRegion = region;
+              _globeZoomTarget    = 1.0;
+              _globeTransitState  = 'zoomout';
+            } else if (_globeZoom > 1.3 && sameRegion) {
+              // Same region, just rotate — keep zoom
+              _globeTargetLat    = newLatRad;
+              _globeTargetLon    = newLonRad;
+              _globeZoomTarget   = GLOBE_ZOOM_TARGET;
+              _globePingPhase    = 0;
+              _globeTransitState = 'steady';
+            } else {
+              // Not zoomed: animate rotation then zoom
+              _globeTargetLat  = newLatRad;
+              _globeTargetLon  = newLonRad;
+              if (wasFirstStation) {
+                _globeCurrentLat = newLatRad;
+                _globeCurrentLon = newLonRad;
+              }
+              _globeZoom          = 1.0;
+              _globeZoomTarget    = region ? GLOBE_ZOOM_TARGET : 1.0;
+              _globeCurrentRegion = region;
+              _globePingPhase     = 0;
+              _globeTransitState  = 'steady';
+            }
+          } else if (!_globeAnimId) {
+            // Re-entering same station (e.g. panel reopened) — just resume
+            _globeTargetLat  = newLatRad;
+            _globeTargetLon  = newLonRad;
+            _globeHasStation = true;
+          }
+          startGlobeAnim(canvas);
+        }
+
+
         let _radioStatusPollId=null;
+        let _radioElapsedBase=0; // server-reported elapsed at last poll
+        let _radioElapsedPollTime=0; // performance.now() when that poll landed
+        let _radioElapsedTick=null;
+        let _radioRetryCount=0;
+        let _radioWaveformId=null;
+        let _radioWaveformPhase=0;
+
         function startRadioStatusPoll(){
           stopRadioStatusPoll();
           _radioStatusPollId=setInterval(radioStatusTick,2500);
         }
         function stopRadioStatusPoll(){
           if(_radioStatusPollId){clearInterval(_radioStatusPollId);_radioStatusPollId=null;}
+          stopElapsedTick();
+          stopWaveform();
         }
+
+        // ── Elapsed clock ────────────────────────────────────────────────────
+        function startElapsedTick(){
+          stopElapsedTick();
+          _radioElapsedTick=setInterval(()=>{
+            if(!_radioIsPlaying)return;
+            const secNow=_radioElapsedBase+Math.round((performance.now()-_radioElapsedPollTime)/1000);
+            const el=document.getElementById('radio-bar-elapsed');
+            if(el){el.textContent=fmtSec(secNow);el.style.display='';}
+          },1000);
+        }
+        function stopElapsedTick(){
+          if(_radioElapsedTick){clearInterval(_radioElapsedTick);_radioElapsedTick=null;}
+        }
+        function fmtSec(s){
+          const h=Math.floor(s/3600);
+          const m=Math.floor((s%3600)/60);
+          const sec=s%60;
+          if(h>0)return `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+          return `${m}:${String(sec).padStart(2,'0')}`;
+        }
+
+        // ── Waveform animator ────────────────────────────────────────────────
+        function startWaveform(){
+          const cv=document.getElementById('radio-waveform');
+          if(!cv)return;
+          cv.classList.add('active');
+          stopWaveform();
+          function draw(){
+            _radioWaveformPhase+=0.07;
+            const ctx=cv.getContext('2d');
+            const W=cv.width,H=cv.height;
+            ctx.clearRect(0,0,W,H);
+            const bars=10;
+            const bw=4,gap=2;
+            const totalW=bars*(bw+gap)-gap;
+            const x0=Math.round((W-totalW)/2);
+            const accent=getComputedStyle(document.body).getPropertyValue('--player-accent').trim()||'#e94560';
+            ctx.fillStyle=accent;
+            for(let i=0;i<bars;i++){
+              const t=_radioWaveformPhase+i*0.6;
+              const h=Math.round(4+Math.abs(Math.sin(t))*(H-8));
+              const y=Math.round((H-h)/2);
+              ctx.fillRect(x0+i*(bw+gap),y,bw,h);
+            }
+            _radioWaveformId=requestAnimationFrame(draw);
+          }
+          draw();
+        }
+        function stopWaveform(){
+          if(_radioWaveformId){cancelAnimationFrame(_radioWaveformId);_radioWaveformId=null;}
+          const cv=document.getElementById('radio-waveform');
+          if(cv){cv.classList.remove('active');const ctx=cv.getContext('2d');ctx.clearRect(0,0,cv.width,cv.height);}
+        }
+
+        // ── Health dot ───────────────────────────────────────────────────────
+        function setRadioHealthDot(state){ // 'ok'|'warn'|'error'|'off'
+          const dot=document.getElementById('radio-health-dot');
+          if(!dot)return;
+          dot.className='radio-health-dot';
+          if(state==='ok')dot.classList.add('ok');
+          else if(state==='error')dot.classList.add('error');
+          // 'warn' = default amber; 'off' = hidden via amber (same visual as warn)
+        }
+
         async function radioStatusTick(){
           try{
             const r=await fetch('/api/radio/playback-status');
-            if(!r.ok)return;
+            if(!r.ok){setRadioHealthDot('error');return;}
             const s=await r.json();
             const playing=s.isPlaying||s.IsPlaying||false;
+            const stalled=s.isStalled||s.IsStalled||false;
             const name=s.stationName||s.StationName||_radioCurrentName||'';
             const url=s.stationUrl||s.StationUrl||'';
+            const songTitle=s.streamTitle||s.StreamTitle||'';
+            const elapsed=s.elapsedSeconds||s.ElapsedSeconds||0;
+            const err=s.error||s.Error||'';
             if(url)_radioCurrentUrl=url;
+
+            // Update elapsed clock base
+            if(playing&&elapsed>0){
+              _radioElapsedBase=elapsed;
+              _radioElapsedPollTime=performance.now();
+              if(!_radioElapsedTick)startElapsedTick();
+            }
+
+            // Health dot
+            if(!playing&&err){setRadioHealthDot('error');}
+            else if(stalled){setRadioHealthDot('warn');}
+            else if(playing){setRadioHealthDot('ok');}
+            else{setRadioHealthDot('warn');}
+
+            // Song title marquee
+            const songEl=document.getElementById('radio-bar-song');
+            const songTextEl=document.getElementById('radio-bar-song-text');
+            if(songEl&&songTextEl){
+              if(songTitle&&playing){
+                songTextEl.textContent=songTitle;
+                songEl.style.display='';
+              }else{
+                songEl.style.display='none';
+              }
+            }
+
+            // Waveform
+            if(playing&&!stalled){startWaveform();}
+            else{stopWaveform();}
+
+            // Auto-retry on stall (feature 13)
+            if(stalled&&_radioCurrentUrl&&_radioIsPlaying){
+              _radioRetryCount++;
+              const delay=Math.min(3000*_radioRetryCount,15000);
+              setTimeout(async()=>{
+                if(_radioIsPlaying&&_radioCurrentUrl){
+                  await fetch('/api/radio/play?'+new URLSearchParams({url:_radioCurrentUrl,name:_radioCurrentName}));
+                  _radioRetryCount=0;
+                }
+              },delay);
+            }else if(!stalled){
+              _radioRetryCount=0;
+            }
+
+            // Notify server audio is alive (so stall detection keeps ticking)
+            if(playing)fetch('/api/radio/notify-alive').catch(()=>{});
+
             updateRadioBar(name,_radioCurrentCountry,_radioCurrentTag,playing,_radioCurrentStation);
             // Sync volume slider
             const vol=s.volume??s.Volume??0.8;

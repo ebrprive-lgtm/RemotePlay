@@ -18,7 +18,7 @@ internal sealed partial class WebServer
             try
             {
                 var ctx = await _listener.GetContextAsync().ConfigureAwait(false);
-                _ = Task.Run(() => HandleRequestSafe(ctx));
+                _ = Task.Run(() => HandleRequestSafeAsync(ctx));
             }
             catch (HttpListenerException)
             {
@@ -31,9 +31,9 @@ internal sealed partial class WebServer
         }
     }
 
-    private void HandleRequestSafe(HttpListenerContext ctx)
+    private async Task HandleRequestSafeAsync(HttpListenerContext ctx)
     {
-        try { HandleRequest(ctx); }
+        try { await HandleRequestAsync(ctx).ConfigureAwait(false); }
         catch (Exception ex)
         {
             Logger.Error("Error handling request", ex);
@@ -41,7 +41,7 @@ internal sealed partial class WebServer
         }
     }
 
-    private void HandleRequest(HttpListenerContext ctx)
+    private async Task HandleRequestAsync(HttpListenerContext ctx)
     {
         var req = ctx.Request;
         var urlPath = req.Url?.AbsolutePath ?? "/";
@@ -77,6 +77,16 @@ internal sealed partial class WebServer
             case "/service-worker.js":
                 ctx.Response.AddHeader("Cache-Control", "no-cache");
                 TrySendResponse(ctx, 200, "application/javascript; charset=utf-8", GetServiceWorkerJs());
+                break;
+
+            case "/world-110m.json":
+                ctx.Response.AddHeader("Cache-Control", "public, max-age=86400");
+                TrySendResponse(ctx, 200, "application/json; charset=utf-8", GetWorld110m());
+                break;
+
+            case "/us-states.json":
+                ctx.Response.AddHeader("Cache-Control", "public, max-age=86400");
+                TrySendResponse(ctx, 200, "application/json; charset=utf-8", GetUsStates());
                 break;
 
             case "/icons/icon-192.png":
@@ -326,19 +336,19 @@ internal sealed partial class WebServer
 
             // ── Radio ─────────────────────────────────────────────────────
             case "/api/radio/search":
-                HandleRadioSearch(ctx);
+                await HandleRadioSearchAsync(ctx).ConfigureAwait(false);
                 break;
 
             case "/api/radio/top":
-                HandleRadioTop(ctx);
+                await HandleRadioTopAsync(ctx).ConfigureAwait(false);
                 break;
 
             case "/api/radio/tags":
-                HandleRadioTags(ctx);
+                await HandleRadioTagsAsync(ctx).ConfigureAwait(false);
                 break;
 
             case "/api/radio/countries":
-                HandleRadioCountries(ctx);
+                await HandleRadioCountriesAsync(ctx).ConfigureAwait(false);
                 break;
 
             case "/api/radio/play":
@@ -365,6 +375,15 @@ internal sealed partial class WebServer
 
             case "/api/radio/favorite":
                 HandleRadioFavoriteToggle(ctx);
+                break;
+
+            case "/api/radio/notify-alive":
+                _callbacks.RadioNotifyAlive();
+                TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+                break;
+
+            case "/api/radio/resolve":
+                await HandleRadioResolveAsync(ctx).ConfigureAwait(false);
                 break;
 
             default:
@@ -1034,6 +1053,17 @@ internal sealed partial class WebServer
             StartMusicIndexRefresh();
 
         var folderParam = (ctx.Request.QueryString["folder"] ?? string.Empty).Trim();
+
+        // If the user navigates to a specific folder while a scan is running,
+        // promote that folder to the front of the scan queue so its tracks
+        // are indexed immediately.
+        if (!string.IsNullOrEmpty(folderParam) && _isMusicIndexing)
+        {
+            MusicScanJob? activeJob;
+            lock (_musicIndexGate)
+                activeJob = _activeMusicScanJob;
+            activeJob?.Prioritize(folderParam);
+        }
         var offset = ReadNonNegativeInt(ctx.Request.QueryString["offset"]);
         var limit = ReadPositiveInt(ctx.Request.QueryString["limit"], _config.EffectiveLibraryPageSize, 1000);
 
@@ -1164,6 +1194,8 @@ internal sealed partial class WebServer
             sessionId     = _serverSessionId,
             isScanning    = _isMusicIndexing,
             indexedFiles  = _isMusicIndexing ? _musicScanProgress : _musicIndex.Length,
+            currentScanFolder = _musicScanFolder,
+            musicRoot     = _config.ResolvedMusicPath,
             lastRefreshUtc = _lastMusicIndexRefreshUtc,
             lastError     = _lastMusicScanError,
             // playback fields
@@ -1701,17 +1733,18 @@ internal sealed partial class WebServer
     private void StartMusicIndexRefresh()
     {
         CancellationTokenSource cts;
+        MusicScanJob job;
         lock (_musicIndexGate)
         {
             if (_isMusicIndexing)
-            {
-                // Cancel the existing scan and start a fresh one
                 _musicScanCts?.Cancel();
-            }
+
             _musicScanCts?.Dispose();
             cts = _musicScanCts = new CancellationTokenSource(TimeSpan.FromMinutes(30));
+            job = _activeMusicScanJob = new MusicScanJob(_config.ResolvedMusicPath);
             _isMusicIndexing = true;
             _musicScanProgress = 0;
+            _musicScanFolder = string.Empty;
             _lastMusicScanError = string.Empty;
         }
 
@@ -1720,29 +1753,58 @@ internal sealed partial class WebServer
             try
             {
                 var root = _config.ResolvedMusicPath;
+
+                // Accumulate all files; merge each folder's batch into the live index as it arrives
+                var allFiles = new List<MusicFile>();
+
                 var progress = new Progress<int>(count =>
                 {
                     lock (_musicIndexGate)
                         _musicScanProgress = count;
                 });
-                var files = MusicScanner.Scan(root, _musicExtensions, progress, cts.Token);
+
+                void onFolder(string folder)
+                {
+                    lock (_musicIndexGate)
+                        _musicScanFolder = folder;
+                }
+
+                void onFolderComplete(IReadOnlyList<MusicFile> batch)
+                {
+                    allFiles.AddRange(batch);
+                    // Update the live index after every folder so browse requests
+                    // immediately see the newly indexed tracks.
+                    var snapshot = allFiles.ToArray();
+                    Array.Sort(snapshot, (a, b) =>
+                        string.Compare(a.FullPath, b.FullPath, StringComparison.OrdinalIgnoreCase));
+                    lock (_musicIndexGate)
+                        _musicIndex = snapshot;
+                }
+
+                MusicScanner.Scan(job, _musicExtensions, onFolderComplete, onFolder, progress, cts.Token);
+
                 lock (_musicIndexGate)
                 {
-                    _musicIndex = [.. files];
                     _musicScanProgress = _musicIndex.Length;
                     _lastMusicIndexRefreshUtc = DateTimeOffset.UtcNow;
+                    _activeMusicScanJob = null;
                 }
-                Logger.Info($"Music index refreshed: {files.Count} tracks");
+                Logger.Info($"Music index refreshed: {_musicIndex.Length} tracks");
                 SaveMusicIndexCache();
             }
             catch (OperationCanceledException)
             {
                 Logger.Info("Music scan was cancelled");
+                lock (_musicIndexGate)
+                    _activeMusicScanJob = null;
             }
             catch (Exception ex)
             {
                 lock (_musicIndexGate)
+                {
                     _lastMusicScanError = ex.Message;
+                    _activeMusicScanJob = null;
+                }
                 Logger.Error("Music index refresh failed", ex);
             }
             finally
@@ -1874,7 +1936,7 @@ internal sealed partial class WebServer
 
     // ── Radio handlers ───────────────────────────────────────────────────────
 
-    private void HandleRadioSearch(HttpListenerContext ctx)
+    private async Task HandleRadioSearchAsync(HttpListenerContext ctx)
     {
         var q       = ctx.Request.QueryString["q"]       ?? string.Empty;
         var country = ctx.Request.QueryString["country"] ?? string.Empty;
@@ -1884,30 +1946,30 @@ internal sealed partial class WebServer
         limit = Math.Clamp(limit, 1, 100);
         offset = Math.Max(offset, 0);
 
-        var stations = _callbacks.RadioSearch(q, country, tag, limit, offset).GetAwaiter().GetResult();
+        var stations = await _callbacks.RadioSearch(q, country, tag, limit, offset).ConfigureAwait(false);
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(stations));
     }
 
-    private void HandleRadioTop(HttpListenerContext ctx)
+    private async Task HandleRadioTopAsync(HttpListenerContext ctx)
     {
         _ = int.TryParse(ctx.Request.QueryString["limit"]  ?? "40", out var limit);
         _ = int.TryParse(ctx.Request.QueryString["offset"] ?? "0",  out var offset);
         limit = Math.Clamp(limit, 1, 100);
         offset = Math.Max(offset, 0);
-        var stations = _callbacks.RadioTopStations(limit, offset).GetAwaiter().GetResult();
+        var stations = await _callbacks.RadioTopStations(limit, offset).ConfigureAwait(false);
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(stations));
     }
 
-    private void HandleRadioTags(HttpListenerContext ctx)
+    private async Task HandleRadioTagsAsync(HttpListenerContext ctx)
     {
         var countryCode = (ctx.Request.QueryString["country"] ?? string.Empty).Trim();
-        var tags = _callbacks.RadioGetTags(countryCode).GetAwaiter().GetResult();
+        var tags = await _callbacks.RadioGetTags(countryCode).ConfigureAwait(false);
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(tags));
     }
 
-    private void HandleRadioCountries(HttpListenerContext ctx)
+    private async Task HandleRadioCountriesAsync(HttpListenerContext ctx)
     {
-        var countries = _callbacks.RadioGetCountries().GetAwaiter().GetResult()
+        var countries = (await _callbacks.RadioGetCountries().ConfigureAwait(false))
             .Select(c => new { code = c.Code, name = c.Name });
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(countries));
     }
@@ -1965,6 +2027,26 @@ internal sealed partial class WebServer
             TrySendResponse(ctx, 500, "application/json",
                 JsonSerializer.Serialize(new { error = ex.Message }));
         }
+    }
+
+    /// <summary>
+    /// Resolves a Radio Browser station UUID to its stream URL via the click endpoint,
+    /// which also registers a listen-count with Radio Browser.
+    /// Returns { resolvedUrl } or falls back to the original url if resolution fails.
+    /// </summary>
+    private async Task HandleRadioResolveAsync(HttpListenerContext ctx)
+    {
+        var uuid = ctx.Request.QueryString["uuid"] ?? string.Empty;
+        var fallbackUrl = ctx.Request.QueryString["url"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(uuid))
+        {
+            TrySendResponse(ctx, 200, "application/json",
+                JsonSerializer.Serialize(new { resolvedUrl = fallbackUrl }));
+            return;
+        }
+        var resolvedUrl = await _callbacks.RadioResolveUrl(uuid, fallbackUrl).ConfigureAwait(false);
+        TrySendResponse(ctx, 200, "application/json",
+            JsonSerializer.Serialize(new { resolvedUrl }));
     }
 
 }

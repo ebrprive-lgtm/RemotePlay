@@ -53,4 +53,6 @@ internal sealed class WebServerCallbacks
     public required Func<List<RadioStation>>                                    RadioGetFavorites  { get; init; }
     public required Action<RadioStation>                                        RadioToggleFavorite{ get; init; }
     public required Func<string, bool>                                          RadioIsFavorite    { get; init; }
+    public required Action                                                      RadioNotifyAlive   { get; init; }
+    public required Func<string, string, Task<string>>                          RadioResolveUrl    { get; init; }
 }

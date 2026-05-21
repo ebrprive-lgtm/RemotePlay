@@ -141,6 +141,10 @@ internal sealed partial class WebServer
         new(() => LoadWebAsset("app.js"));
     private static readonly Lazy<string> _cachedServiceWorkerJsRaw =
         new(() => LoadWebAsset("service-worker.js"));
+    private static readonly Lazy<string> _cachedWorld110m =
+        new(() => LoadWebAsset("world-110m.json"));
+    private static readonly Lazy<string> _cachedUsStates =
+        new(() => LoadWebAsset("us-states.json"));
     private static readonly string _appVersion = ReadAppVersion();
 
     private readonly AppConfig _config;
@@ -179,6 +183,8 @@ internal sealed partial class WebServer
     private bool _isMusicIndexing;
     private string _lastMusicScanError = string.Empty;
     private int _musicScanProgress;
+    private string _musicScanFolder = string.Empty;
+    private MusicScanJob? _activeMusicScanJob;
     private CancellationTokenSource? _musicScanCts;
     private int _staleLinkCount;
     private readonly Timer _staleLinkTimer;
@@ -1070,6 +1076,8 @@ internal sealed partial class WebServer
     private static string GetStylesCss() => _cachedStylesCss.Value;
 
     private static string GetAppJs() => _cachedAppJs.Value;
+    private static string GetWorld110m() => _cachedWorld110m.Value;
+    private static string GetUsStates() => _cachedUsStates.Value;
 
     private static string GetServiceWorkerJs() =>
         _cachedServiceWorkerJsRaw.Value.Replace("__CACHE_VERSION__", _appVersion, StringComparison.Ordinal);

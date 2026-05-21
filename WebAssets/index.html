@@ -116,18 +116,27 @@
               <div id="radio-player-summary">
               <div id="radio-bar-favicon-wrap" style="flex-shrink:0;display:none"><img id="radio-bar-favicon" src="" alt="" style="width:36px;height:36px;border-radius:5px;object-fit:contain" /></div>
               <div id="radio-bar-info">
-                <div id="radio-bar-title">—</div>
+                <div id="radio-bar-title-row" style="display:flex;align-items:center;gap:.4rem;min-width:0">
+                  <div id="radio-health-dot" class="radio-health-dot" title="Stream health"></div>
+                  <div id="radio-bar-title">—</div>
+                </div>
+                <div id="radio-bar-song" class="radio-bar-song-marquee" style="display:none"><span id="radio-bar-song-text"></span></div>
                 <div id="radio-bar-meta" style="font-size:.75rem;color:var(--muted,#9aa8c2)"></div>
-                <div id="radio-bar-tech" style="font-size:.72rem;color:var(--muted,#9aa8c2);margin-top:.1rem"></div>
+                <div id="radio-bar-tech" style="font-size:.72rem;color:var(--muted,#9aa8c2);margin-top:.1rem;display:flex;align-items:center;gap:.4rem">
+                  <span id="radio-bar-quality-badge" class="radio-quality-badge" style="display:none"></span>
+                  <span id="radio-bar-tech-text"></span>
+                  <span id="radio-bar-elapsed" class="radio-elapsed" style="display:none"></span>
+                </div>
                 <div id="radio-bar-tags" style="font-size:.72rem;color:var(--muted,#9aa8c2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
                 <div id="radio-bar-pop" style="font-size:.72rem;color:var(--muted,#9aa8c2)"></div>
                 <div id="radio-bar-homepage" style="font-size:.72rem;margin-top:.15rem"></div>
               </div>
             </div>
             <div class="transport-controls">
+              <canvas id="radio-waveform" class="radio-waveform" width="60" height="32" aria-hidden="true"></canvas>
               <div class="button-group transport-main-group">
                 <button id="radio-btn-play" class="btn btn-red" onclick="radioToggle()">&#9654; Play</button>
-                <button id="radio-btn-stop" class="btn btn-stop" onclick="radioStop()">&#9632; STOP</button>
+                <button id="radio-btn-stop" class="btn btn-stop" onclick="radioDismiss()" title="Stop and close player">&#9632; Stop</button>
               </div>
             </div>
           </div>
@@ -141,6 +150,16 @@
                 <span id="radio-volume-label">80%</span>
               </span>
             </div>
+          </div>
+          <div id="radio-bar-geo" style="display:none;flex-direction:column;align-items:center;gap:.4rem;padding-top:.6rem;border-top:1px solid var(--player-card-border,#292941)">
+            <div style="position:relative;display:inline-block">
+              <canvas id="radio-globe-canvas" width="180" height="180" aria-hidden="true" style="display:block;border-radius:50%;cursor:crosshair" onclick="radioGlobeClick(event)" onmousemove="radioGlobeMouseMove(event)" onmouseleave="radioGlobeMouseLeave()"></canvas>
+              <div id="radio-globe-tooltip"></div>
+            </div>
+            <div style="display:flex;gap:.35rem;align-items:center;flex-wrap:wrap;justify-content:center">
+              <button id="radio-globe-dots-btn" class="radio-globe-toggle-btn" onclick="radioToggleGlobeDots()" title="Show all visible stations as dots on globe">&#9679; Stations</button>
+            </div>
+            <div id="radio-geo-label" style="font-size:.72rem;color:var(--muted,#9aa8c2);text-align:center;line-height:1.5"></div>
           </div>
         </div>
         <div id="music-player-bar" style="display:none" aria-label="Music player">

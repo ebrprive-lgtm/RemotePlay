@@ -193,6 +193,7 @@ public partial class MainWindow : Window
 
             Loaded += OnLoaded;
             Closing += OnClosing;
+            Activated += OnWindowActivated;
 
             Logger.Info("MainWindow constructor completed");
         }
@@ -393,6 +394,15 @@ public partial class MainWindow : Window
     private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e) => SaveWindowLayout();
 
     private void OnWindowStateChanged(object? sender, EventArgs e) => SaveWindowLayout();
+
+    // When re-activating the window (e.g. alt-tab back from another app) while in
+    // fullscreen, the LibVLC child HWND may have absorbed Win32 keyboard focus.
+    // Explicitly re-focus the WPF window so PreviewKeyDown (ESC) keeps working.
+    private void OnWindowActivated(object? sender, EventArgs e)
+    {
+        if (_isVideoMode)
+            Focus();
+    }
 
     private async Task StartServerPipelineAsync(AppConfig config, bool isRestart)
     {
@@ -951,6 +961,11 @@ public partial class MainWindow : Window
             HideIdleOverlay();
         else
             VideoPanel.Visibility = Visibility.Hidden;
+
+        // Ensure WPF keyboard focus stays on this window, not on the LibVLC child HWND.
+        // Without this, PreviewKeyDown (ESC) and overlay click events stop firing after
+        // switching away from the window and back into fullscreen.
+        Focus();
 
         FadeOutFlashCover();
     }

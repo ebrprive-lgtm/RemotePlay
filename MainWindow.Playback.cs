@@ -233,7 +233,7 @@ public partial class MainWindow
 
     private void StopMovie()
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.InvokeAsync(() =>
         {
             try
             {
@@ -488,10 +488,14 @@ public partial class MainWindow
             catch (Exception ex) { Logger.Error("Failed to refresh idle overlay QR", ex); }
         }
 
-        // IdleOverlay is now in the root Grid (outside VideoPanel) so showing it
-        // never requires the LibVLC HWND to be visible.
-        IdleOverlay.Visibility = Visibility.Visible;
-        IdleOverlay.IsHitTestVisible = true;
+        // IdleOverlay is the fullscreen idle/QR screen — only relevant in video mode.
+        // In windowed mode the regular UI is visible, so the overlay must stay hidden
+        // to avoid covering and blocking the window.
+        if (_isVideoMode)
+        {
+            IdleOverlay.Visibility = Visibility.Visible;
+            IdleOverlay.IsHitTestVisible = true;
+        }
 
         // Collapse VideoPanel only when not in video mode. When in video mode keep
         // it Hidden so the HWND stays at the correct size and SW_SHOW later won't
@@ -889,7 +893,9 @@ public partial class MainWindow
             RadioGetStatus      = _radioPlayer.GetStatus,
             RadioGetFavorites   = _radioBrowser.GetFavorites,
             RadioToggleFavorite = _radioBrowser.ToggleFavorite,
-            RadioIsFavorite     = _radioBrowser.IsFavorite
+            RadioIsFavorite     = _radioBrowser.IsFavorite,
+            RadioNotifyAlive    = _radioPlayer.NotifyAudioAlive,
+            RadioResolveUrl     = (uuid, fallback) => _radioBrowser.ResolveStationUrlAsync(uuid, fallback)
         }, _broadcaster, _playbackHistory, _appUpdater);
     }
 
