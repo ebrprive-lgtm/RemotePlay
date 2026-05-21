@@ -37,10 +37,11 @@
               <div id="search-spinner" aria-label="Searching" title="Searching..."></div>
             </div>
             <div id="breadcrumb"></div>
-            <div id="count-line"></div>
+            <div id="count-line" style="display:flex;align-items:center;gap:.5rem"><span id="count-text"></span><button id="view-toggle-video" class="radio-reset-btn view-toggle-btn" onclick="_setViewMode('video',_viewMode.video==='grid'?'list':'grid')" style="display:none" title="Toggle view"></button><button id="view-toggle-music" class="radio-reset-btn view-toggle-btn" onclick="_setViewMode('music',_viewMode.music==='grid'?'list':'grid')" style="display:none" title="Toggle view"></button></div>
             <div id="scan-status"></div>
           </div>
-          <div id="now-playing-bar" ontouchstart="onPlayerGestureStart(event)" ontouchend="onPlayerGestureEnd(event)">
+          <div id="radio-filter-sticky" style="display:none;grid-column:1/-1;border-top:1px solid var(--pill-border,rgba(255,255,255,.08));padding:.3rem .75rem .3rem .75rem"></div>
+          <div id="now-playing-bar">
             <div class="player-top">
               <div id="player-summary"><div id="player-poster"></div><div><div id="player-title">Nothing playing</div><div id="player-meta"></div><div id="connection-status">Connecting...</div><button class="diag-button" onclick="openDiagnostics()">Diagnostics</button></div></div>
               <div class="transport-controls">
@@ -137,18 +138,41 @@
               <div class="button-group transport-main-group">
                 <button id="radio-btn-play" class="btn btn-red" onclick="radioToggle()">&#9654; Play</button>
                 <button id="radio-btn-stop" class="btn btn-stop" onclick="radioDismiss()" title="Stop and close player">&#9632; Stop</button>
+                <button id="radio-btn-here" class="btn btn-here" onclick="radioPlayHere()" title="Play on this device (browser audio)" style="display:none">&#128266; Here</button>
               </div>
             </div>
           </div>
-          <div id="radio-media-controls" style="display:grid;grid-template-columns:minmax(150px,1fr);gap:.55rem;margin-top:.1rem;padding-top:.55rem;border-top:1px solid var(--player-card-border,#292941)">
+          <div id="radio-media-controls" style="display:grid;grid-template-columns:repeat(2,minmax(150px,1fr));gap:.55rem;margin-top:.1rem;padding-top:.55rem;border-top:1px solid var(--player-card-border,#292941)">
             <div class="control-card">
-              <div class="control-title">Volume</div>
+              <div class="control-title">Volume &amp; Boost</div>
               <span class="slider-wrap">
                 <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3c0-1.8-1-3.3-2.5-4.1v8.2c1.5-.8 2.5-2.3 2.5-4.1zm-2.5-8.7v2.1c2.9 1 5 3.6 5 6.6s-2.1 5.6-5 6.6v2.1c4-1.1 7-4.7 7-8.7s-3-7.6-7-8.7z"/></svg>
                 <input id="radio-bar-volume" type="range" min="0" max="1" step="0.02" value="0.8"
                        oninput="radioVolume(this.value)" aria-label="Radio volume"/>
-                <span id="radio-volume-label">80%</span>
+                <button class="radio-slider-reset-btn" id="radio-volume-label" onclick="radioVolumeReset()" title="Click to reset volume to 100%">80%</button>
               </span>
+              <span class="slider-wrap" style="margin-top:.28rem">
+                <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" title="Audio boost"><path d="M13 2L5 14h5l-1 8 8-12h-5l1-8z"/></svg>
+                <input id="radio-bar-boost" type="range" min="1" max="3" step="0.05" value="1"
+                       oninput="radioBoost(this.value)" aria-label="Radio audio boost"/>
+                <button class="radio-slider-reset-btn" id="radio-boost-label" onclick="radioBoostReset()" title="Click to reset boost to 0 dB">+0 dB</button>
+              </span>
+            </div>
+            <div class="control-card">
+              <div class="control-title">Sleep Timer</div>
+              <div id="radio-sleep-btns" class="radio-sleep-grid">
+                <button class="btn radio-sleep-preset" onclick="radioSleepSet(15)">15 m</button>
+                <button class="btn radio-sleep-preset" onclick="radioSleepSet(30)">30 m</button>
+                <button class="btn radio-sleep-preset" onclick="radioSleepSet(60)">1 h</button>
+                <button class="btn radio-sleep-preset" onclick="radioSleepSet(90)">90 m</button>
+              </div>
+              <div id="radio-sleep-countdown" style="display:none">
+                <div class="radio-sleep-active-row">
+                  <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" style="flex-shrink:0;width:14px;height:14px;opacity:.7"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zm.01 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
+                  <span id="radio-sleep-remain" class="radio-sleep-remain-text"></span>
+                  <button class="radio-sleep-cancel-btn" onclick="radioSleepCancel()" title="Cancel sleep timer" aria-label="Cancel sleep timer">&#10005;</button>
+                </div>
+              </div>
             </div>
           </div>
           <div id="radio-bar-geo" style="display:none;flex-direction:column;align-items:center;gap:.4rem;padding-top:.6rem;border-top:1px solid var(--player-card-border,#292941)">
@@ -178,6 +202,7 @@
               <div class="button-group transport-main-group">
                 <button id="music-btn-play" class="btn btn-red" onclick="musicToggle()">&#9654; Play</button>
                 <button id="music-btn-stop" class="btn btn-stop" onclick="musicStop()">&#9632; STOP</button>
+                <button id="music-btn-here" class="btn btn-here" onclick="musicPlayHere()" title="Play on this device (browser audio)">&#128266; Here</button>
               </div>
             </div>
           </div>
@@ -229,6 +254,39 @@
                 <button class="btn btn-dim" id="btn-diag-refresh">Refresh</button>
                 <button class="btn btn-red" id="btn-diag-close">Close</button>
               </div>
+            </div>
+          </div>
+        </div>
+        <div id="local-player-bar" style="display:none" aria-label="Local playback">
+          <audio id="local-audio" preload="none"></audio>
+          <div class="player-top">
+            <div id="local-player-summary">
+              <div id="local-bar-info">
+                <div id="local-player-name">—</div>
+                <div id="local-player-state" class="local-player-state">Playing locally</div>
+              </div>
+            </div>
+            <div class="transport-controls">
+              <div class="button-group transport-main-group">
+                <button id="local-play-toggle" class="btn btn-red" onclick="localToggle()" title="Play / Pause">&#9654; Play</button>
+                <button class="btn btn-stop" onclick="localStop()" title="Stop local playback">&#9632; Stop</button>
+              </div>
+            </div>
+          </div>
+          <div id="local-progress-row" style="display:grid">
+            <input id="local-seek" type="range" min="0" max="0" value="0" step="0.1"
+                   oninput="localSeekDrag()" onchange="localSeekCommit()" aria-label="Local playback position"/>
+            <span id="local-time-label">0:00 / 0:00</span>
+          </div>
+          <div id="local-media-controls" style="display:grid;grid-template-columns:minmax(150px,1fr);gap:.55rem;margin-top:.1rem;padding-top:.55rem;border-top:1px solid var(--player-card-border,#292941)">
+            <div class="control-card">
+              <div class="control-title">Volume</div>
+              <span class="slider-wrap">
+                <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3c0-1.8-1-3.3-2.5-4.1v8.2c1.5-.8 2.5-2.3 2.5-4.1zm-2.5-8.7v2.1c2.9 1 5 3.6 5 6.6s-2.1 5.6-5 6.6v2.1c4-1.1 7-4.7 7-8.7s-3-7.6-7-8.7z"/></svg>
+                <input id="local-bar-volume" type="range" min="0" max="1" step="0.02" value="1"
+                       oninput="localVolume(this.value)" aria-label="Local volume"/>
+                <span id="local-volume-label">100%</span>
+              </span>
             </div>
           </div>
         </div>

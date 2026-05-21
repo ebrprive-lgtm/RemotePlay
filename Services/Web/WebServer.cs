@@ -143,6 +143,8 @@ internal sealed partial class WebServer
         new(() => LoadWebAsset("service-worker.js"));
     private static readonly Lazy<string> _cachedWorld110m =
         new(() => LoadWebAsset("world-110m.json"));
+    private static readonly Lazy<string> _cachedWorld50m =
+        new(() => LoadWebAsset("world-50m.json"));
     private static readonly Lazy<string> _cachedUsStates =
         new(() => LoadWebAsset("us-states.json"));
     private static readonly string _appVersion = ReadAppVersion();
@@ -1077,7 +1079,8 @@ internal sealed partial class WebServer
 
     private static string GetAppJs() => _cachedAppJs.Value;
     private static string GetWorld110m() => _cachedWorld110m.Value;
-    private static string GetUsStates() => _cachedUsStates.Value;
+    private static string GetWorld50m()  => _cachedWorld50m.Value;
+    private static string GetUsStates()  => _cachedUsStates.Value;
 
     private static string GetServiceWorkerJs() =>
         _cachedServiceWorkerJsRaw.Value.Replace("__CACHE_VERSION__", _appVersion, StringComparison.Ordinal);

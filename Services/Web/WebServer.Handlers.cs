@@ -84,6 +84,11 @@ internal sealed partial class WebServer
                 TrySendResponse(ctx, 200, "application/json; charset=utf-8", GetWorld110m());
                 break;
 
+            case "/world-50m.json":
+                ctx.Response.AddHeader("Cache-Control", "public, max-age=86400");
+                TrySendResponse(ctx, 200, "application/json; charset=utf-8", GetWorld50m());
+                break;
+
             case "/us-states.json":
                 ctx.Response.AddHeader("Cache-Control", "public, max-age=86400");
                 TrySendResponse(ctx, 200, "application/json; charset=utf-8", GetUsStates());
@@ -185,7 +190,9 @@ internal sealed partial class WebServer
                 HandlePlay(ctx);
                 break;
 
-            case "/api/fix-audio":
+            case "/api/log":
+                HandleClientLog(ctx);
+                break;
                 _callbacks.FixAudio();
                 TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
                 break;
@@ -209,6 +216,7 @@ internal sealed partial class WebServer
 
             case "/api/stop":
                 _callbacks.Stop();
+                Logger.Info("Playback", "Stopping Video on Server");
                 TrySendResponse(ctx, 200, "text/plain", "OK");
                 break;
 
@@ -299,6 +307,10 @@ internal sealed partial class WebServer
                 HandleMusicBrowse(ctx);
                 break;
 
+            case "/api/music/stream":
+                HandleMusicStream(ctx);
+                break;
+
             case "/api/music/search":
                 HandleMusicSearch(ctx);
                 break;
@@ -323,6 +335,7 @@ internal sealed partial class WebServer
 
             case "/api/music/stop":
                 _callbacks.StopMusic();
+                Logger.Info("Playback", "Stopping Music on Server");
                 TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
                 break;
 
@@ -357,11 +370,16 @@ internal sealed partial class WebServer
 
             case "/api/radio/stop":
                 _callbacks.RadioStop();
+                Logger.Info("Playback", "Stopping Radio on Server");
                 TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
                 break;
 
             case "/api/radio/volume":
                 HandleRadioVolume(ctx);
+                break;
+
+            case "/api/radio/boost":
+                HandleRadioBoost(ctx);
                 break;
 
             case "/api/radio/playback-status":
@@ -1226,7 +1244,87 @@ internal sealed partial class WebServer
         _callbacks.Stop();
         _callbacks.RadioStop();
         _callbacks.PlayMusic(filePath);
+        Logger.Info("Playback", $"Playing Music: '{Path.GetFileName(filePath)}' on Server");
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+    }
+
+    private static readonly Dictionary<string, string> _audioMimeTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [".mp3"]  = "audio/mpeg",
+        [".flac"] = "audio/flac",
+        [".ogg"]  = "audio/ogg",
+        [".opus"] = "audio/ogg; codecs=opus",
+        [".m4a"]  = "audio/mp4",
+        [".aac"]  = "audio/aac",
+        [".wav"]  = "audio/wav",
+        [".wma"]  = "audio/x-ms-wma",
+    };
+
+    private void HandleMusicStream(HttpListenerContext ctx)
+    {
+        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(encodedPath))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing path");
+            return;
+        }
+        var filePath = WebPathHelpers.DecodePath(encodedPath);
+        if (!File.Exists(filePath))
+        {
+            TrySendResponse(ctx, 404, "text/plain", "File not found");
+            return;
+        }
+        var ext = Path.GetExtension(filePath);
+        var mime = _audioMimeTypes.TryGetValue(ext, out var m) ? m : "application/octet-stream";
+        var fileInfo = new FileInfo(filePath);
+        long fileLength = fileInfo.Length;
+
+        // Parse Range header for seek support
+        long rangeStart = 0;
+        long rangeEnd = fileLength - 1;
+        bool isRange = false;
+        var rangeHeader = ctx.Request.Headers["Range"];
+        if (!string.IsNullOrEmpty(rangeHeader) && rangeHeader.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = rangeHeader[6..].Split('-');
+            if (parts.Length == 2)
+            {
+                if (long.TryParse(parts[0], out var rs)) rangeStart = rs;
+                if (long.TryParse(parts[1], out var re)) rangeEnd = re;
+                isRange = true;
+            }
+        }
+        rangeStart = Math.Max(0, Math.Min(rangeStart, fileLength - 1));
+        rangeEnd   = Math.Max(rangeStart, Math.Min(rangeEnd, fileLength - 1));
+        long contentLength = rangeEnd - rangeStart + 1;
+
+        try
+        {
+            ctx.Response.StatusCode = isRange ? 206 : 200;
+            ctx.Response.ContentType = mime;
+            ctx.Response.ContentLength64 = contentLength;
+            ctx.Response.Headers["Accept-Ranges"] = "bytes";
+            ctx.Response.Headers["Content-Range"] = $"bytes {rangeStart}-{rangeEnd}/{fileLength}";
+            ctx.Response.Headers["Cache-Control"] = "no-store";
+
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            fs.Seek(rangeStart, SeekOrigin.Begin);
+            var buf = new byte[81920];
+            long remaining = contentLength;
+            while (remaining > 0)
+            {
+                int read = fs.Read(buf, 0, (int)Math.Min(buf.Length, remaining));
+                if (read == 0) break;
+                ctx.Response.OutputStream.Write(buf, 0, read);
+                remaining -= read;
+            }
+            ctx.Response.OutputStream.Close();
+        }
+        catch (HttpListenerException) { /* client disconnected */ }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"[MusicStream] {ex.Message}");
+        }
     }
 
     private void HandleMusicSeek(HttpListenerContext ctx)
@@ -1577,6 +1675,17 @@ internal sealed partial class WebServer
         _callbacks.StopMusic();
         _callbacks.RadioStop();
         _callbacks.Play(filePath);
+        Logger.Info("Playback", $"Playing Video: '{Path.GetFileName(filePath)}' on Server");
+        TrySendResponse(ctx, 200, "text/plain", "OK");
+    }
+
+    // Accepts a log message posted from the browser-side JavaScript (e.g. local playback events).
+    private void HandleClientLog(HttpListenerContext ctx)
+    {
+        using var reader = new System.IO.StreamReader(ctx.Request.InputStream, System.Text.Encoding.UTF8);
+        var body = reader.ReadToEnd();
+        if (!string.IsNullOrWhiteSpace(body))
+            Logger.Info("Playback", body.Trim());
         TrySendResponse(ctx, 200, "text/plain", "OK");
     }
 
@@ -1986,6 +2095,7 @@ internal sealed partial class WebServer
         _callbacks.Stop();
         _callbacks.StopMusic();
         _callbacks.RadioPlay(url, name);
+        Logger.Info("Playback", $"Playing Radio: '{name}' on Server");
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
     }
 
@@ -1996,6 +2106,16 @@ internal sealed partial class WebServer
                 System.Globalization.CultureInfo.InvariantCulture, out var vol))
             vol = 0.8;
         _callbacks.RadioSetVolume(Math.Clamp(vol, 0.0, 1.0));
+        TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+    }
+
+    private void HandleRadioBoost(HttpListenerContext ctx)
+    {
+        var raw = ctx.Request.QueryString["v"] ?? "1";
+        if (!double.TryParse(raw, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var boost))
+            boost = 1.0;
+        _callbacks.RadioSetBoost(Math.Clamp(boost, 1.0, 3.0));
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
     }
 

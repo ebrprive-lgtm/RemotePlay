@@ -890,6 +890,7 @@ public partial class MainWindow
             RadioPlay           = _radioPlayer.Play,
             RadioStop           = _radioPlayer.Stop,
             RadioSetVolume      = _radioPlayer.SetVolume,
+            RadioSetBoost       = _radioPlayer.SetBoost,
             RadioGetStatus      = _radioPlayer.GetStatus,
             RadioGetFavorites   = _radioBrowser.GetFavorites,
             RadioToggleFavorite = _radioBrowser.ToggleFavorite,

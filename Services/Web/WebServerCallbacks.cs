@@ -49,6 +49,7 @@ internal sealed class WebServerCallbacks
     public required Action<string, string>                                      RadioPlay          { get; init; }
     public required Action                                                      RadioStop          { get; init; }
     public required Action<double>                                              RadioSetVolume     { get; init; }
+    public required Action<double>                                              RadioSetBoost      { get; init; }
     public required Func<RadioStatus>                                           RadioGetStatus     { get; init; }
     public required Func<List<RadioStation>>                                    RadioGetFavorites  { get; init; }
     public required Action<RadioStation>                                        RadioToggleFavorite{ get; init; }

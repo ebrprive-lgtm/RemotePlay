@@ -1,4 +1,5 @@
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
 
 namespace RemotePlay.Services;
 
@@ -14,7 +15,9 @@ internal sealed class RadioPlayer : IDisposable
     private string _lastError    = string.Empty;
     private int    _deviceNumber = -1;
     private double _volume       = 0.8;
-    private DateTime _playStartUtc = DateTime.MinValue; // when current stream started
+    private double _boost        = 1.0;
+    private VolumeSampleProvider? _boostProvider;
+    private DateTime _playStartUtc = DateTime.MinValue;
     private DateTime _lastSampleUtc = DateTime.MinValue; // updated when audio data flows
 
     // Reuse the same device enumeration helpers as MusicPlayer.
@@ -63,7 +66,10 @@ internal sealed class RadioPlayer : IDisposable
                 var reader = new MediaFoundationReader(streamUrl);
                 var output = new WaveOutEvent { DeviceNumber = _deviceNumber, Volume = (float)_volume };
                 output.PlaybackStopped += OnPlaybackStopped;
-                output.Init(reader);
+                // Wrap through a VolumeSampleProvider so boost > 1.0 is possible.
+                var sampleSrc = reader.ToSampleProvider();
+                var boostProv = new VolumeSampleProvider(sampleSrc) { Volume = (float)_boost };
+                output.Init(boostProv);
 
                 lock (_lock)
                 {
@@ -75,9 +81,10 @@ internal sealed class RadioPlayer : IDisposable
                         reader.Dispose();
                         return;
                     }
-                    _reader    = reader;
-                    _output    = output;
-                    _isPlaying = true;
+                    _reader         = reader;
+                    _output         = output;
+                    _boostProvider  = boostProv;
+                    _isPlaying      = true;
                 }
                 output.Play();
             }
@@ -127,6 +134,15 @@ internal sealed class RadioPlayer : IDisposable
         }
     }
 
+    public void SetBoost(double boost)
+    {
+        lock (_lock)
+        {
+            _boost = Math.Clamp(boost, 1.0, 3.0);
+            if (_boostProvider != null) _boostProvider.Volume = (float)_boost;
+        }
+    }
+
     /// <summary>
     /// Update the stream title shown on the now-playing bar (called externally if ICY metadata is parsed).
     /// </summary>
@@ -158,6 +174,7 @@ internal sealed class RadioPlayer : IDisposable
                 StationName: _currentName,
                 StreamTitle: _streamTitle,
                 Volume:      _volume,
+                Boost:       _boost,
                 ElapsedSeconds: elapsed,
                 IsStalled:   stalled,
                 Error:       _lastError);
@@ -184,6 +201,7 @@ internal sealed class RadioPlayer : IDisposable
         _reader?.Dispose();
         _output = null;
         _reader = null;
+        _boostProvider = null;
     }
 
     public void Dispose()
@@ -204,6 +222,7 @@ internal sealed record RadioStatus(
     string StationName,
     string StreamTitle,
     double Volume,
+    double Boost,
     int    ElapsedSeconds,
     bool   IsStalled,
     string Error);

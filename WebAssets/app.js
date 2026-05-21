@@ -9,6 +9,28 @@
         let zoomDragging=false;
         let pendingSearchAbort=null;
         let thumbnailObserver=null;
+
+        // View mode: 'grid' or 'list' per section, persisted in localStorage
+        const _viewMode={
+          video: localStorage.getItem('remotePlayViewVideo')||'grid',
+          music: localStorage.getItem('remotePlayViewMusic')||'grid',
+          radio: localStorage.getItem('remotePlayViewRadio')||'grid'
+        };
+        function _setViewMode(section,mode){
+          _viewMode[section]=mode;
+          localStorage.setItem('remotePlayView'+section.charAt(0).toUpperCase()+section.slice(1),mode);
+          _applyViewToggleBtn(section);
+          if(section==='video'&&currentData)render(currentData,Boolean(currentData.query));
+          else if(section==='music'&&currentMusicData)renderMusicCards(currentMusicData,Boolean(currentMusicData.query));
+          else if(section==='radio')renderRadioCards(_radioStations,_radioStations.length===_radioPageSize*(_radioPage+1));
+        }
+        function _applyViewToggleBtn(section){
+          const btn=document.getElementById('view-toggle-'+section);
+          if(!btn)return;
+          const isGrid=_viewMode[section]==='grid';
+          btn.title=isGrid?'Switch to list view':'Switch to grid view';
+          btn.innerHTML=isGrid?'&#9776;':'&#9632;&#9632;';
+        }
         const queuedVideos=new Set();
         const playedVideos=new Set(loadPlayedVideos());
         const favoriteVideos=new Set();
@@ -993,6 +1015,7 @@
                   if(bar)bar.style.display='none';
                   document.body.classList.remove('music-player-docked');
                   stopMusicPlaybackPoll();
+                  localStop(); // also silence local browser audio
                 }
 
                 async function musicPrev(){
@@ -1062,6 +1085,24 @@
                   if(btn)btn.innerHTML=s.isPaused?'&#9654; Play':'&#9646;&#9646; Pause';
 
                   if(s.lastError&&!active)bar.style.display='none';
+
+                  // Here button: only visible when a path is known
+                  const hereBtn=document.getElementById('music-btn-here');
+                  if(hereBtn)hereBtn.style.display=(active&&musicCurrentPath)?'':'none';
+                }
+
+                async function musicPlayHere(){
+                  if(!musicCurrentPath)return;
+                  const path=musicCurrentPath;
+                  const title=document.getElementById('music-bar-title')?.textContent||'Track';
+                  // Stop server playback so we don't hear two versions
+                  await fetch('/api/music/stop');
+                  musicIsPlaying=false;
+                  stopMusicPlaybackPoll();
+                  const bar=document.getElementById('music-player-bar');
+                  if(bar)bar.style.display='none';
+                  document.body.classList.remove('music-player-docked');
+                  localPlay('/api/music/stream?path='+encodeURIComponent(path),title,'Music');
                 }
 
                 let _musicSeekDragging=false;
@@ -1244,6 +1285,8 @@
                   const radioCountHdr=document.getElementById('radio-station-count');
                   if(radioTabHdr)radioTabHdr.style.display=(mode==='radio'?'flex':'none');
                   if(radioCountHdr)radioCountHdr.style.display=(mode==='radio'?'':'none');
+                  const radioFilterSticky=document.getElementById('radio-filter-sticky');
+                  if(radioFilterSticky)radioFilterSticky.style.display=(mode==='radio'?'flex':'none');
                   const searchEl=document.getElementById('search');
                   const searchRow=document.getElementById('search-row');
                   if(mode==='video'){
@@ -1348,19 +1391,19 @@
 
                   // Count line
                   if(countLine){
+                    document.getElementById('view-toggle-video')&&(document.getElementById('view-toggle-video').style.display='none');
+                    document.getElementById('view-toggle-music')&&(document.getElementById('view-toggle-music').style.display='');
+                    _applyViewToggleBtn('music');
+                    const txt=document.getElementById('count-text');
                     if(searching){
                       const fc=data.folders?.length||0;
                       const tc=data.files?.length||0;
-                      countLine.textContent=fc+' folder(s) and '+tc+' result(s)';
+                      if(txt)txt.textContent=fc+' folder(s) and '+tc+' result(s)';
                     }else{
                       const fc=data.folders?.length||0;
                       const loaded=data.files?.length||0;
                       const total=data.totalInFolder||loaded;
-                      if(total>loaded){
-                        countLine.textContent=fc+' folder(s), '+loaded+' of '+total+' track(s) loaded';
-                      }else{
-                        countLine.textContent=fc+' folder(s), '+total+' track(s)';
-                      }
+                      if(txt)txt.textContent=total>loaded?fc+' folder(s), '+loaded+' of '+total+' track(s) loaded':fc+' folder(s), '+total+' track(s)';
                     }
                   }
 
@@ -1486,12 +1529,13 @@
                     html+='</div>';
                   }
                   if(data.files&&data.files.length){
-                    html+='<div class="section-label">Tracks</div><div class="music-grid">';
+                    html+='<div class="section-label">Tracks</div><div class="music-grid'+((_viewMode.music==='list')?' list-view':'') +'">';
                     data.files.forEach(f=>{
                       const isPlaying=musicCurrentPath&&f.path===musicCurrentPath;
                       html+='<div class="music-track-card'+(isPlaying?' playing':'')+'" data-path="'+esc(f.path)+'" onclick="playMusic(\''+jsStr(f.path)+'\',\''+jsStr(f.name)+'\')">'  
-                          +'<div class="track-name">'+esc(f.name)+'</div>'
-                          +'<div class="track-folder">'+esc(f.folder)+'</div></div>';
+                                +'<div class="track-name">'+esc(f.name)+'</div>'
+                                +'<div class="track-folder">'+esc(f.folder)+'</div>'
+                                +'</div>';
                     });
                     html+='</div>';
                     if(data.hasMore){
@@ -1561,8 +1605,11 @@
               return sep+'<a'+cls+' onclick="browse(\''+c.dir+'\')">'+(isLast?label+linkBadge:label)+'</a>';
             }).join('');
           }
-          if(searching)countLine.textContent=(data.folders?.length||0)+' folder(s) and '+data.files.length+' result(s)';
-          else countLine.textContent=data.folders.length+' folder(s), '+data.files.length+' video(s)';
+          if(searching){const txt=document.getElementById('count-text');if(txt)txt.textContent=(data.folders?.length||0)+' folder(s) and '+data.files.length+' result(s)';}
+          else{const txt=document.getElementById('count-text');if(txt)txt.textContent=data.folders.length+' folder(s), '+data.files.length+' video(s)';}
+          document.getElementById('view-toggle-music')&&(document.getElementById('view-toggle-music').style.display='none');
+          document.getElementById('view-toggle-video')&&(document.getElementById('view-toggle-video').style.display='');
+          _applyViewToggleBtn('video');
           let html='';
           if(data.folders.length){
             if(searching){
@@ -1578,7 +1625,7 @@
             }
           }
           if(data.files.length){
-            html+='<div class="section-label">Videos</div><div class="movie-grid">';
+            html+='<div class="section-label">Videos</div><div class="movie-grid'+((_viewMode.video==='list')?' list-view':'')+'">';
             html+=data.files.map(f=>{
               if(f.watched&&!playedVideos.has(f.path)){playedVideos.add(f.path);savePlayedVideos();}
               const played=playedVideos.has(f.path);
@@ -2312,29 +2359,34 @@
           const htf=document.getElementById('header-tab-favorites');
           if(hts)hts.classList.toggle('active',tab==='top');
           if(htf)htf.classList.toggle('active',tab==='favorites');
-          // Filters (only for top/search)
+          // Filters (only for top/search) — rendered into sticky header row
+          const rfs=document.getElementById('radio-filter-sticky');
           if(tab!=='favorites'){
-            html+='<div class="radio-filter-row" id="radio-filters">';
-            html+='<input id="radio-search-box" type="search" placeholder="Station name\u2026" style="background:var(--input-bg);color:var(--input-text);border:1px solid var(--input-border);padding:.55rem .6rem;border-radius:4px;font-size:.9rem;min-width:143px;width:208px;min-height:2.2rem" oninput="radioOnSearchInput()" />';
-            html+=_buildFavSelect('radio-country',_radioCountries.map(c=>({value:c.code,label:c.name})),_radioFavCountries,'radioToggleCountryFav','All countries');
-            html+=_buildFavSelect('radio-tag',_radioTags.map(t=>({value:t,label:t})),_radioFavTags,'radioToggleTagFav','All genres');
-            html+=`<select id="radio-sort" class="radio-sort-select" onchange="radioOnSortChange()" title="Sort by" aria-label="Sort stations by">
+            let filterHtml='';
+            filterHtml+='<input id="radio-search-box" type="search" placeholder="Station name\u2026" style="background:var(--input-bg);color:var(--input-text);border:1px solid var(--input-border);padding:.55rem .6rem;border-radius:4px;font-size:.9rem;min-width:143px;width:208px;min-height:2.2rem" oninput="radioOnSearchInput()" />';
+            filterHtml+=_buildFavSelect('radio-country',_radioCountries.map(c=>({value:c.code,label:c.name})),_radioFavCountries,'radioToggleCountryFav','All countries');
+            filterHtml+=_buildFavSelect('radio-tag',_radioTags.map(t=>({value:t,label:t})),_radioFavTags,'radioToggleTagFav','All genres');
+            filterHtml+=`<select id="radio-sort" class="radio-sort-select" onchange="radioOnSortChange()" title="Sort by" aria-label="Sort stations by">
               <option value="votes"${_radioSortBy==='votes'?' selected':''}>↑ Votes</option>
               <option value="name"${_radioSortBy==='name'?' selected':''}>A–Z Name</option>
               <option value="bitrate"${_radioSortBy==='bitrate'?' selected':''}>↑ Bitrate</option>
             </select>`;
-            html+=`<select id="radio-minbitrate" class="radio-bitrate-select" onchange="radioOnBitrateChange()" title="Min bitrate" aria-label="Minimum bitrate">
+            filterHtml+=`<select id="radio-minbitrate" class="radio-bitrate-select" onchange="radioOnBitrateChange()" title="Min bitrate" aria-label="Minimum bitrate">
               <option value="0"${_radioMinBitrate===0?' selected':''}>Any kbps</option>
               <option value="64"${_radioMinBitrate===64?' selected':''}>64+ kbps</option>
               <option value="128"${_radioMinBitrate===128?' selected':''}>128+ kbps</option>
               <option value="192"${_radioMinBitrate===192?' selected':''}>192+ kbps</option>
               <option value="320"${_radioMinBitrate===320?' selected':''}>320+ kbps</option>
             </select>`;
-            html+='<button class="radio-reset-btn" onclick="radioResetFilters()" title="Reset all filters">&#10005; Reset</button>';
-            html+='</div>';
+            filterHtml+='<button class="radio-reset-btn" onclick="radioResetFilters()" title="Reset all filters">&#10005; Reset</button>';
+            filterHtml+='<button id="view-toggle-radio" class="radio-reset-btn view-toggle-btn" onclick="_setViewMode(\'radio\',_viewMode.radio===\'grid\'?\'list\':\'grid\')" title="Toggle view"></button>';
+            if(rfs){rfs.innerHTML=filterHtml;rfs.style.display='flex';}
+          }else{
+            if(rfs){rfs.innerHTML='';rfs.style.display='none';}
           }
           html+='<div id="radio-cards"></div>';
           rb.innerHTML=html;
+          _applyViewToggleBtn('radio');
           // Restore filter state
           if(tab!=='favorites'){
             const sb=document.getElementById('radio-search-box');
@@ -2493,22 +2545,29 @@
           const encCountry=encodeURIComponent(country);
           const encTagFirst=encodeURIComponent((s.tags||s.Tags||'').split(',').filter(Boolean)[0]||'');
           let h=`<div class="radio-station-card${isPlaying?' playing':''}" data-url="${escHtml(url)}" onclick="radioPlayStation('${encodeURIComponent(url)}','${encodeURIComponent(name)}','${encCountry}','${encTagFirst}','${stationJson}')">`;
-          // header row: favicon + name + quality badge + fav button
-          h+='<div style="display:flex;gap:.4rem;align-items:flex-start">';
-          if(s.favicon||s.Favicon)h+=`<img src="${escHtml(s.favicon||s.Favicon||'')}" alt="" style="width:24px;height:24px;border-radius:3px;object-fit:contain;flex-shrink:0;margin-top:.1rem" onerror="this.style.display='none'" />`;
-          h+=`<span class="station-name" style="flex:1">${escHtml(name)}</span>`;
-          // Quality badge (codec + bitrate)
+          // sc-icon
+          const faviconSrc=s.favicon||s.Favicon||'';
+          h+=`<span class="sc-icon">${faviconSrc?`<img src="${escHtml(faviconSrc)}" alt="" onerror="this.style.display='none'" />`:'<span></span>'}</span>`;
+          // sc-name
+          h+=`<span class="sc-name">${escHtml(name)}</span>`;
+          // sc-quality
           const badgeParts=[codec,bitrate?bitrate+'k':''].filter(Boolean);
-          if(badgeParts.length)h+=`<span class="radio-quality-badge">${escHtml(badgeParts.join(' '))}</span>`;
-          h+=`<button class="radio-fav-btn${radioIsFav(uuid)?' active':''}" onclick="event.stopPropagation();radioToggleFav(this,'${stationJson}')" title="Favorite">${favIcon}</button>`;
-          h+='</div>';
-          // location + tags
-          if(location||tags)h+=`<div class="station-meta">${escHtml([location,tags].filter(Boolean).join(' · '))}</div>`;
-          // tech + language + popularity
-          const detailParts=[tech,language?'🗣️ '+language:'',pop].filter(Boolean);
-          if(detailParts.length)h+=`<div class="station-detail">${escHtml(detailParts.join('  ·  '))}</div>`;
-          // homepage link
-          if(homepage)h+=`<div style="margin-top:.2rem"><a href="${escHtml(homepage)}" target="_blank" rel="noopener" class="station-homepage" onclick="event.stopPropagation()">${escHtml(homepage.replace(/^https?:\/\//,'').split('/')[0])}</a></div>`;
+          h+=`<span class="sc-quality">${badgeParts.length?'<span class="radio-quality-badge">'+escHtml(badgeParts.join(' '))+'</span>':''}</span>`;
+          // sc-country
+          h+=`<span class="sc-country">${escHtml(country)}</span>`;
+          // sc-genre (first 2 tags)
+          const genreList=(s.tags||s.Tags||'').split(',').map(t=>t.trim()).filter(Boolean).slice(0,2).join(', ');
+          h+=`<span class="sc-genre">${escHtml(genreList)}</span>`;
+          // sc-fav button
+          h+=`<button class="radio-fav-btn sc-fav${radioIsFav(uuid)?' active':''}" onclick="event.stopPropagation();radioToggleFav(this,'${stationJson}')" title="Favorite">${favIcon}</button>`;
+          // card-only: location + tags subline
+          if(location||tags)h+=`<div class="station-meta card-only">${escHtml([location,tags].filter(Boolean).join(' · '))}</div>`;
+          // card-only: tech + detail subline
+          const langStr=language?'Lang: '+language:'';
+          const detailParts=[tech,langStr,pop].filter(Boolean);
+          if(detailParts.length)h+=`<div class="station-detail card-only">${escHtml(detailParts.join('  ·  '))}</div>`;
+          // card-only: homepage link
+          if(homepage)h+=`<div class="card-only"><a href="${escHtml(homepage)}" target="_blank" rel="noopener" class="station-homepage" onclick="event.stopPropagation()">${escHtml(homepage.replace(/^https?:\/\//,'').split('/')[0])}</a></div>`;
           h+='</div>';
           return h;
         }
@@ -2536,16 +2595,21 @@
               countEl.title='';
             }
           }
+          const isList=_viewMode.radio==='list';
+          const listHdr=isList?'<div class="radio-list-header"><span class="sc-icon"></span><span class="sc-name">Station</span><span class="sc-quality"></span><span class="sc-country">Country</span><span class="sc-genre">Genre / Tags</span><span class="sc-fav"></span></div>':'';
           if(pinned.length&&rest.length){
             html+='<div class="radio-section-header">&#11088; Favorite countries</div>';
-            html+='<div class="music-grid">';
+            html+='<div class="radio-inner-cards'+(isList?' list-view':'')+'">';
+            html+=listHdr;
             for(const s of _sortAndFilterStations(pinned))html+=_buildStationCard(s);
             html+='</div><div class="radio-section-header">All stations</div>';
-            html+='<div class="music-grid">';
+            html+='<div class="radio-inner-cards'+(isList?' list-view':'')+'">';
+            html+=listHdr;
             for(const s of _sortAndFilterStations(rest))html+=_buildStationCard(s);
             html+='</div>';
           }else{
-            html+='<div class="music-grid">';
+            html+='<div class="radio-inner-cards'+(isList?' list-view':'')+'">';
+            html+=listHdr;
             for(const s of _sortAndFilterStations(stations))html+=_buildStationCard(s);
             html+='</div>';
           }
@@ -2611,11 +2675,13 @@
         async function radioStop(){
           await fetch('/api/radio/stop');
           _radioIsPlaying=false;
+          localStop(); // silence browser audio too if it was playing this stream
           // Keep radio-player-docked so the bar stays visible — the user can resume from here.
           updateRadioBar(_radioCurrentName,_radioCurrentCountry,_radioCurrentTag,false,_radioCurrentStation);
         }
 
         async function radioDismiss(){
+          radioSleepCancel();
           await radioStop();
           _radioCurrentUrl='';
           _radioCurrentName='';
@@ -2639,6 +2705,61 @@
           fetch('/api/radio/volume?v='+vol.toFixed(3));
           const lbl=document.getElementById('radio-volume-label');
           if(lbl)lbl.textContent=Math.round(vol*100)+'%';
+        }
+        function radioVolumeReset(){
+          const slider=document.getElementById('radio-bar-volume');
+          if(slider){slider.value=1;radioVolume(1);}
+        }
+
+        function radioBoost(v){
+          const boost=parseFloat(v);
+          if(isNaN(boost))return;
+          fetch('/api/radio/boost?v='+boost.toFixed(3));
+          const lbl=document.getElementById('radio-boost-label');
+          if(lbl){
+            const db=Math.round(20*Math.log10(boost));
+            lbl.textContent=(db>=0?'+':'')+db+' dB';
+          }
+        }
+        function radioBoostReset(){
+          const slider=document.getElementById('radio-bar-boost');
+          if(slider){slider.value=1;radioBoost(1);}
+        }
+
+        // ── Sleep timer ──────────────────────────────────────────────────────────
+        let _sleepTimerEnd=0;
+        let _sleepTimerInterval=null;
+        function radioSleepSet(minutes){
+          _sleepTimerEnd=Date.now()+minutes*60*1000;
+          clearInterval(_sleepTimerInterval);
+          _sleepTimerInterval=setInterval(_sleepTimerTick,1000);
+          _sleepTimerTick();
+          const btns=document.getElementById('radio-sleep-btns');
+          const cd=document.getElementById('radio-sleep-countdown');
+          if(btns)btns.style.display='none';
+          if(cd)cd.style.display='';
+        }
+        function radioSleepCancel(){
+          _sleepTimerEnd=0;
+          clearInterval(_sleepTimerInterval);
+          _sleepTimerInterval=null;
+          const btns=document.getElementById('radio-sleep-btns');
+          const cd=document.getElementById('radio-sleep-countdown');
+          if(btns)btns.style.display='';
+          if(cd)cd.style.display='none';
+        }
+        function _sleepTimerTick(){
+          const rem=Math.max(0,_sleepTimerEnd-Date.now());
+          const remain=document.getElementById('radio-sleep-remain');
+          if(remain){
+            const m=Math.floor(rem/60000);
+            const s=Math.floor((rem%60000)/1000);
+            remain.textContent='Stops in '+m+':'+(s<10?'0':'')+s;
+          }
+          if(rem<=0){
+            radioSleepCancel();
+            radioDismiss();
+          }
         }
 
         function updateRadioBar(title,country,tag,playing,station){
@@ -2706,6 +2827,18 @@
           }
           if(!playing){stopWaveform();stopElapsedTick();const el=document.getElementById('radio-bar-elapsed');if(el)el.style.display='none';}
           if(btn)btn.innerHTML=playing?'\u23F8 Pause':'\u25B6 Play';
+          // Show/hide Here button based on whether a stream URL is known
+          const hereBtn=document.getElementById('radio-btn-here');
+          if(hereBtn)hereBtn.style.display=_radioCurrentUrl?'':'none';
+        }
+
+        async function radioPlayHere(){
+          if(!_radioCurrentUrl)return;
+          const url=_radioCurrentUrl;
+          const name=_radioCurrentName||'Radio';
+          // Stop server radio so we don't hear two streams
+          await radioStop();
+          localPlay(url,name,'Radio');
         }
 
         // Country centroid lookup [lat, lon] keyed by ISO 3166-1 alpha-2 code.
@@ -2755,7 +2888,7 @@
 
         // ---------------------------------------------------------------------------
         // ─── Radio Globe — ray-cast 3D sphere renderer ────────────────────────────
-        // Land polygons + country border arcs decoded once from /world-110m.json.
+        // Land polygons + country border arcs decoded once from /world-50m.json.
         // Two equirectangular textures are baked (land fill, border lines) using the
         // browser's own Canvas 2D engine for correct winding/concavity handling.
         // Each frame ray-casts with a zoom factor that animates from 1→4 so the
@@ -2774,7 +2907,7 @@
           _topoFetching=true;
           try{
             const [topoData]=await Promise.all([
-              fetch('/world-110m.json').then(r=>{ if(!r.ok)throw new Error('fetch failed'); return r.json(); }),
+              fetch('/world-50m.json').then(r=>{ if(!r.ok)throw new Error('fetch failed'); return r.json(); }),
               ensureUsStates()
             ]);
             const topo=topoData;
@@ -2860,7 +2993,7 @@
         }
 
         // ── Equirectangular textures ──────────────────────────────────────────────
-        const TEX_W=1024, TEX_H=512;
+        const TEX_W=2048, TEX_H=1024;
         let _globeTex      = null;   // Uint8Array: 1=land
         let _globeBorderTex= null;   // Uint8Array: 1=country border pixel
         let _globeStateTex = null;   // Uint8Array: 1=US state border pixel
@@ -2973,40 +3106,39 @@
           return tex;
         }
 
-        function globeTexLookup(latRad,lonRad){
-          if(!_globeTex)return 0;
+        /**
+         * Bilinear sample a 1-channel Uint8Array texture.
+         * Returns a float in [0,1] — fractional coverage suitable for smooth blending.
+         */
+        function bilinearLookup(tex,latRad,lonRad){
+          if(!tex)return 0;
           let lo=lonRad*180/Math.PI;
           lo=((lo+180)%360+360)%360-180;
           const u=(lo+180)/360*(TEX_W-1);
           const la=latRad*180/Math.PI;
           const v=(90-la)/180*(TEX_H-1);
-          const px=Math.min(TEX_W-1,Math.max(0,Math.round(u)));
-          const py=Math.min(TEX_H-1,Math.max(0,Math.round(v)));
-          return _globeTex[py*TEX_W+px];
+          const x0=Math.max(0,Math.floor(u));
+          const y0=Math.max(0,Math.floor(v));
+          const x1=Math.min(TEX_W-1,x0+1);
+          const y1=Math.min(TEX_H-1,y0+1);
+          const fx=u-x0, fy=v-y0;
+          const s00=tex[y0*TEX_W+x0];
+          const s10=tex[y0*TEX_W+x1];
+          const s01=tex[y1*TEX_W+x0];
+          const s11=tex[y1*TEX_W+x1];
+          return (s00*(1-fx)*(1-fy)+s10*fx*(1-fy)+s01*(1-fx)*fy+s11*fx*fy);
+        }
+
+        function globeTexLookup(latRad,lonRad){
+          return bilinearLookup(_globeTex,latRad,lonRad);
         }
 
         function borderTexLookup(latRad,lonRad){
-          if(!_globeBorderTex)return 0;
-          let lo=lonRad*180/Math.PI;
-          lo=((lo+180)%360+360)%360-180;
-          const u=(lo+180)/360*(TEX_W-1);
-          const la=latRad*180/Math.PI;
-          const v=(90-la)/180*(TEX_H-1);
-          const px=Math.min(TEX_W-1,Math.max(0,Math.round(u)));
-          const py=Math.min(TEX_H-1,Math.max(0,Math.round(v)));
-          return _globeBorderTex[py*TEX_W+px];
+          return bilinearLookup(_globeBorderTex,latRad,lonRad);
         }
 
         function stateTexLookup(latRad,lonRad){
-          if(!_globeStateTex)return 0;
-          let lo=lonRad*180/Math.PI;
-          lo=((lo+180)%360+360)%360-180;
-          const u=(lo+180)/360*(TEX_W-1);
-          const la=latRad*180/Math.PI;
-          const v=(90-la)/180*(TEX_H-1);
-          const px=Math.min(TEX_W-1,Math.max(0,Math.round(u)));
-          const py=Math.min(TEX_H-1,Math.max(0,Math.round(v)));
-          return _globeStateTex[py*TEX_W+px];
+          return bilinearLookup(_globeStateTex,latRad,lonRad);
         }
 
         // ── Globe animation state ─────────────────────────────────────────────────
@@ -3157,12 +3289,14 @@
               const geoLat=Math.asin(Math.max(-1,Math.min(1, hnz*sinLat + hny*cosLat)));
               const geoLon=viewLon + Math.atan2(hnx, cosLat*hnz - sinLat*hny);
 
-              const isLand  =globeTexLookup(geoLat,geoLon);
-              const isBorder=borderAlpha>0 && borderTexLookup(geoLat,geoLon);
-              const isState =borderAlpha>0 && _globeCurrentRegion==='usa' && stateTexLookup(geoLat,geoLon);
+              // Bilinear land coverage in [0,1]; threshold at 0.5 for hard land/ocean boundary
+              const landF =globeTexLookup(geoLat,geoLon);
+              const isLand=landF>0.5;
+              const borderF=borderAlpha>0 ? borderTexLookup(geoLat,geoLon) : 0;
+              const stateF =borderAlpha>0 && _globeCurrentRegion==='usa' ? stateTexLookup(geoLat,geoLon) : 0;
 
-              // Base colours
-              let br=isLand?40:7, bg=isLand?88:25, bb=isLand?38:14;
+              // Base colours — dark navy ocean, muted green land
+              let br=isLand?42:8, bg=isLand?90:22, bb=isLand?40:38;
 
               // Grid lines
               const gLat=geoLat*180/Math.PI, gLon=geoLon*180/Math.PI;
@@ -3170,46 +3304,48 @@
               const modLon=((gLon%gridDeg)+gridDeg)%gridDeg;
               const gridThr=Math.max(0.5, 0.8/zoom);
               const onGrid=(modLat<gridThr||modLat>gridDeg-gridThr)||(modLon<gridThr||modLon>gridDeg-gridThr);
-              if(onGrid){br+=8;bg+=11;bb+=8;}
+              if(onGrid){br+=6;bg+=8;bb+=6;}
 
-              // Country borders (faded in as zoom increases)
-              if(isBorder){
-                const bStr=borderAlpha*0.85;
-                br=Math.round(br*(1-bStr)+(isLand?90:40)*bStr);
-                bg=Math.round(bg*(1-bStr)+(isLand?160:80)*bStr);
-                bb=Math.round(bb*(1-bStr)+(isLand?75:50)*bStr);
+              // Country borders — blend by fractional coverage for antialiased look
+              if(borderF>0.05){
+                const bStr=borderAlpha*borderF*0.9;
+                br=Math.round(br*(1-bStr)+(isLand?95:45)*bStr);
+                bg=Math.round(bg*(1-bStr)+(isLand?165:80)*bStr);
+                bb=Math.round(bb*(1-bStr)+(isLand?78:55)*bStr);
               }
 
-              // US state borders — slightly subtler than country borders
-              if(isState){
-                const sStr=borderAlpha*0.65;
-                br=Math.round(br*(1-sStr)+(isLand?75:35)*sStr);
-                bg=Math.round(bg*(1-sStr)+(isLand?135:65)*sStr);
-                bb=Math.round(bb*(1-sStr)+(isLand?60:40)*sStr);
+              // US state borders — slightly subtler
+              if(stateF>0.05){
+                const sStr=borderAlpha*stateF*0.7;
+                br=Math.round(br*(1-sStr)+(isLand?78:38)*sStr);
+                bg=Math.round(bg*(1-sStr)+(isLand?138:65)*sStr);
+                bb=Math.round(bb*(1-sStr)+(isLand?62:45)*sStr);
               }
 
-              // Phong lighting
+              // Phong lighting — ocean specular with neutral white highlight
               const diff =Math.max(0, nx*Lx+ny*Ly+nz*Lz);
               const nDotH=Math.max(0, nx*Hx+ny*Hy+nz*Hz);
-              const spec =Math.pow(nDotH,80)*(isLand?0.04:0.18);
-              const light=0.20+0.75*diff;
+              const specP=isLand?60:120;
+              const specS=isLand?0.05:0.45;
+              const spec =Math.pow(nDotH,specP)*specS;
+              const light=0.18+0.80*diff;
 
-              d[off+0]=Math.min(255, br*light+spec*230);
-              d[off+1]=Math.min(255, bg*light+spec*255);
-              d[off+2]=Math.min(255, bb*light+spec*200);
+              d[off+0]=Math.min(255, br*light+spec*240);
+              d[off+1]=Math.min(255, bg*light+spec*240);
+              d[off+2]=Math.min(255, bb*light+spec*240);
               d[off+3]=255;
             }
           }
 
           ctx.putImageData(img,0,0);
 
-          // Atmosphere rim — only visible when near globe view (fades out with zoom)
+          // Atmosphere rim — subtle dark vignette only, no blue tint
           const rimOpacity = Math.max(0, 1 - (_globeZoom - 1) / 0.8);
           if (rimOpacity > 0.01) {
-            const rim=ctx.createRadialGradient(cx,cy,R*0.82,cx,cy,R);
-            rim.addColorStop(0,'rgba(0,0,0,0)');
-            rim.addColorStop(1,`rgba(0,30,10,${(0.55*rimOpacity).toFixed(3)})`);
-            ctx.fillStyle=rim;
+            const inner=ctx.createRadialGradient(cx,cy,R*0.75,cx,cy,R);
+            inner.addColorStop(0,'rgba(0,0,0,0)');
+            inner.addColorStop(1,`rgba(0,0,0,${(0.40*rimOpacity).toFixed(3)})`);
+            ctx.fillStyle=inner;
             ctx.beginPath();ctx.arc(cx,cy,R,0,2*Math.PI);ctx.fill();
           }
 
@@ -3653,12 +3789,17 @@
             if(playing)fetch('/api/radio/notify-alive').catch(()=>{});
 
             updateRadioBar(name,_radioCurrentCountry,_radioCurrentTag,playing,_radioCurrentStation);
-            // Sync volume slider
+            // Sync volume + boost sliders from server state
             const vol=s.volume??s.Volume??0.8;
             const vSlider=document.getElementById('radio-bar-volume');
             const vLabel=document.getElementById('radio-volume-label');
             if(vSlider&&Math.abs(parseFloat(vSlider.value)-vol)>0.02)vSlider.value=vol;
             if(vLabel)vLabel.textContent=Math.round(vol*100)+'%';
+            const boost=s.boost??s.Boost??1.0;
+            const bSlider=document.getElementById('radio-bar-boost');
+            const bLabel=document.getElementById('radio-boost-label');
+            if(bSlider&&Math.abs(parseFloat(bSlider.value)-boost)>0.02)bSlider.value=boost;
+            if(bLabel){const db=Math.round(20*Math.log10(boost));bLabel.textContent=(db>=0?'+':'')+db+' dB';}
           }catch{}
         }
 
@@ -3677,4 +3818,99 @@
               renderRadioCards(_radioStations,_radioStations.length===_radioPageSize*(_radioPage+1));
             }
           }catch{}
+        }
+
+        // ── Local (tablet-side) playback ─────────────────────────────────────
+        let _localAudio=null;
+        let _localSeekDragging=false;
+        function _fmtTime(s){
+          if(!isFinite(s)||s<0)return'0:00';
+          const m=Math.floor(s/60),sec=Math.floor(s%60);
+          return m+':'+(sec<10?'0':'')+sec;
+        }
+        function _getLocalAudio(){
+          if(!_localAudio){
+            _localAudio=document.getElementById('local-audio');
+            if(_localAudio){
+              _localAudio.addEventListener('play',_localAudioUpdate);
+              _localAudio.addEventListener('pause',_localAudioUpdate);
+              _localAudio.addEventListener('ended',localStop);
+              _localAudio.addEventListener('timeupdate',_localTimeUpdate);
+              _localAudio.addEventListener('loadedmetadata',_localTimeUpdate);
+              _localAudio.addEventListener('error',()=>{
+                const s=document.getElementById('local-player-state');
+                if(s)s.textContent='Stream error';
+              });
+            }
+          }
+          return _localAudio;
+        }
+        function _localAudioUpdate(){
+          const a=_getLocalAudio();
+          if(!a)return;
+          const btn=document.getElementById('local-play-toggle');
+          const s=document.getElementById('local-player-state');
+          if(btn)btn.innerHTML=a.paused?'&#9654; Play':'&#9646;&#9646; Pause';
+          if(s)s.textContent=a.paused?'Paused':'Playing locally';
+        }
+        function _localTimeUpdate(){
+          const a=_getLocalAudio();
+          if(!a)return;
+          const seek=document.getElementById('local-seek');
+          const lbl=document.getElementById('local-time-label');
+          const dur=isFinite(a.duration)?a.duration:0;
+          if(seek&&!_localSeekDragging){
+            seek.max=dur||0;
+            seek.value=a.currentTime||0;
+          }
+          if(lbl)lbl.textContent=_fmtTime(a.currentTime)+' / '+_fmtTime(dur);
+        }
+        function localSeekDrag(){
+          _localSeekDragging=true;
+          const a=_getLocalAudio(),seek=document.getElementById('local-seek');
+          const lbl=document.getElementById('local-time-label');
+          if(a&&seek&&lbl){
+            const dur=isFinite(a.duration)?a.duration:0;
+            lbl.textContent=_fmtTime(parseFloat(seek.value))+' / '+_fmtTime(dur);
+          }
+        }
+        function localSeekCommit(){
+          _localSeekDragging=false;
+          const a=_getLocalAudio(),seek=document.getElementById('local-seek');
+          if(a&&seek)a.currentTime=parseFloat(seek.value)||0;
+        }
+        function localVolume(v){
+          const a=_getLocalAudio();
+          if(a)a.volume=Math.min(1,Math.max(0,parseFloat(v)||0));
+          const lbl=document.getElementById('local-volume-label');
+          if(lbl)lbl.textContent=Math.round((parseFloat(v)||0)*100)+'%';
+        }
+        let _localMediaType='Local';
+        function _postLog(msg){fetch('/api/log',{method:'POST',body:msg}).catch(()=>{});}
+        function localPlay(url,name,type){
+          _localMediaType=type||'Local';
+          const a=_getLocalAudio();
+          if(!a)return;
+          a.src=url;
+          a.load();
+          a.play().catch(()=>{});
+          const nm=document.getElementById('local-player-name');
+          if(nm)nm.textContent=name;
+          document.body.classList.add('local-player-docked');
+          _localAudioUpdate();
+          _postLog(`Playing ${_localMediaType}: '${name}' on Local`);
+        }
+        function localToggle(){
+          const a=_getLocalAudio();
+          if(!a)return;
+          if(a.paused)a.play().catch(()=>{});
+          else a.pause();
+        }
+        function localStop(){
+          const a=_getLocalAudio();
+          if(a){a.pause();a.src='';}
+          document.body.classList.remove('local-player-docked');
+          _localSeekDragging=false;
+          _postLog(`Stopping ${_localMediaType} on Local`);
+          _localMediaType='Local';
         }
