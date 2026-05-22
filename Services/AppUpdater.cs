@@ -85,7 +85,7 @@ internal sealed class AppUpdater
 
             if (string.Equals(sourceVersion, _currentVersion, StringComparison.OrdinalIgnoreCase))
             {
-                Logger.Info($"AppUpdater: Current version {_currentVersion} is up to date.");
+                Logger.Detail($"AppUpdater: Current version {_currentVersion} is up to date.");
                 _hasChecked = true;
                 return;
             }

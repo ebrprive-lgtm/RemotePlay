@@ -237,11 +237,20 @@ public partial class MainWindow
         {
             try
             {
+                var isActive = _mediaPlayer.Media is not null
+                    && _mediaPlayer.State is not LibVLCSharp.Shared.VLCState.Stopped
+                                         and not LibVLCSharp.Shared.VLCState.NothingSpecial
+                                         and not LibVLCSharp.Shared.VLCState.Ended;
+
                 SaveCurrentPlaybackPosition();
                 _mediaPlayer.Stop();
                 ResetPlaybackState();
-                AppendLog("Playback stopped");
-                Logger.Info("Playback stopped");
+
+                if (isActive)
+                {
+                    AppendLog("Playback stopped");
+                    Logger.Info("Playback stopped");
+                }
             }
             catch (Exception ex)
             {
@@ -479,8 +488,21 @@ public partial class MainWindow
     {
         CancelVideoTransition();
 
+        // In audio-only mode (radio or music playing server-side, OR browser local playback active)
+        // the fullscreen overlay is a plain black screen — no QR, no text, nothing distracting.
+        // For radio we also treat "connecting" (URL set but stream not yet open) as active
+        // because the background connection task is async and IsPlaying flips true only after
+        // the MediaFoundationReader opens — typically 5-30 s after Play() is called.
+        var radioStatus = _radioPlayer.GetStatus();
+        var audioOnly = (radioStatus.IsPlaying || !string.IsNullOrEmpty(radioStatus.StationUrl))
+                     || _musicPlayer.GetStatus().IsPlaying
+                     || (_webServer?.BrowserLocalPlaying ?? false);
+        if (FindName("IdleOverlayContent") is UIElement content)
+            content.Visibility = audioOnly ? Visibility.Collapsed : Visibility.Visible;
+
         // Refresh the QR image in case it wasn't loaded yet when UpdateServerUrlDisplay ran.
-        if (_serverUrl is not null
+        if (!audioOnly
+            && _serverUrl is not null
             && FindName("FullscreenQrImage") is System.Windows.Controls.Image qrImage
             && qrImage.Source is null)
         {
@@ -876,12 +898,13 @@ public partial class MainWindow
             GetDisplayDiagnostics = GetDisplayDiagnostics,
             FixAudio = FixAudio,
             // Music — backed by WPF MediaPlayer, not VLC
-            PlayMusic      = _musicPlayer.Play,
+            PlayMusic      = (path, pos) => _musicPlayer.Play(path, pos),
             PauseMusic     = _musicPlayer.Pause,
             StopMusic      = _musicPlayer.Stop,
             GetMusicStatus = _musicPlayer.GetStatus,
             SeekMusic      = _musicPlayer.Seek,
             SetMusicVolume = _musicPlayer.SetVolume,
+            SetMusicBoost  = _musicPlayer.SetBoost,
             // Radio — backed by RadioPlayer + RadioBrowserClient
             RadioSearch         = (q, c, t, l, o) => _radioBrowser.SearchAsync(q, c, t, l, o),
             RadioTopStations    = (l, o) => _radioBrowser.TopStationsAsync(l, o),

@@ -18,7 +18,7 @@
         <header>
           <div id="brand">
             <h1>&#127916; RemotePlay <span id="version-chip" class="version-chip"></span></h1>
-            <div id="brand-actions"><div id="brand-row"><a id="health-link" href="/health" target="_blank" rel="noopener"><span id="diag-dot"></span>Health</a><a id="setup-link" href="/setup" target="_blank" rel="noopener">Setup</a><div id="peers-wrap"><button id="peers-btn" onclick="togglePeers()" aria-expanded="false" aria-haspopup="true"><span id="peers-dot"></span>Instances</button><div id="peers-dropdown" role="menu"></div></div></div><select id="theme-select" onchange="setTheme(this.value)" aria-label="Theme"><option value="default">Dark</option><option value="amoled">AMOLED</option><option value="blue">Blue</option><option value="sunset">Sunset Pop</option><option value="neon">Neon Arcade</option><option value="forest">Forest</option><option value="lavender">Pastel Lavender</option><option value="peach">Pastel Peach</option><option value="mint">Pastel Mint</option><option value="high-contrast">High contrast</option></select></div>
+            <div id="brand-actions"><div id="brand-row"><a id="health-link" href="/health" target="_blank" rel="noopener"><span id="diag-dot"></span>Health</a><a id="setup-link" href="/setup" target="_blank" rel="noopener">Setup</a><div id="peers-wrap"><button id="peers-btn" onclick="togglePeers()" aria-expanded="false" aria-haspopup="true"><span id="peers-dot"></span>Instances</button><div id="peers-dropdown" role="menu"></div></div></div><div id="brand-controls-row"><select id="theme-select" onchange="setTheme(this.value)" aria-label="Theme"><option value="default">Dark</option><option value="amoled">AMOLED</option><option value="blue">Blue</option><option value="sunset">Sunset Pop</option><option value="neon">Neon Arcade</option><option value="forest">Forest</option><option value="lavender">Pastel Lavender</option><option value="peach">Pastel Peach</option><option value="mint">Pastel Mint</option><option value="high-contrast">High contrast</option></select><button id="play-local-toggle" onclick="togglePlayLocal()" title="Playing on server — click to play on this device" aria-pressed="false">&#128266; Local</button></div></div>
             <button id="back-button" class="crumb-back" onclick="goBack()" style="display:none">&#8592; Back</button>
           </div>
           <div id="search-wrap">
@@ -111,6 +111,15 @@
         <div id="status" style="display:none">Loading...</div>
         <div id="browser"></div>
         <div id="music-browser" style="display:none"></div>
+        <div id="music-queue-pending-bar" style="display:none"></div>
+        <div id="music-selection-bar" style="display:none">
+          <span id="music-selection-label"></span>
+          <div class="music-selection-actions">
+            <button onclick="_musicSelectionAddToQueue()">&#43; Add to Queue</button>
+            <button onclick="_musicSelectionPlay()">&#9654; Play</button>
+            <button class="music-selection-clear-btn" onclick="_musicSelectionClear()">&#10005; Clear</button>
+          </div>
+        </div>
         <div id="radio-browser" style="display:none"></div>
         <div id="radio-player-bar" style="display:none" aria-label="Radio player">
           <div class="player-top">
@@ -121,7 +130,17 @@
                   <div id="radio-health-dot" class="radio-health-dot" title="Stream health"></div>
                   <div id="radio-bar-title">—</div>
                 </div>
-                <div id="radio-bar-song" class="radio-bar-song-marquee" style="display:none"><span id="radio-bar-song-text"></span></div>
+                <div id="radio-bar-song" class="radio-bar-song-marquee" style="display:none">
+                  <span id="radio-bar-song-text"></span>
+                  <button id="radio-title-history-btn" class="radio-title-history-btn" onclick="radioShowTitleHistory()" title="Title history" aria-label="Show stream title history">&#128203;</button>
+                </div>
+                <div id="radio-title-history-panel" class="radio-title-history-panel" style="display:none">
+                  <div class="radio-title-history-header">
+                    <span>&#127925; Stream title history</span>
+                    <button class="radio-title-history-close" onclick="radioShowTitleHistory()" aria-label="Close history">&#10005;</button>
+                  </div>
+                  <ul id="radio-title-history-list" class="radio-title-history-list"></ul>
+                </div>
                 <div id="radio-bar-meta" style="font-size:.75rem;color:var(--muted,#9aa8c2)"></div>
                 <div id="radio-bar-tech" style="font-size:.72rem;color:var(--muted,#9aa8c2);margin-top:.1rem;display:flex;align-items:center;gap:.4rem">
                   <span id="radio-bar-quality-badge" class="radio-quality-badge" style="display:none"></span>
@@ -138,27 +157,27 @@
               <div class="button-group transport-main-group">
                 <button id="radio-btn-play" class="btn btn-red" onclick="radioToggle()">&#9654; Play</button>
                 <button id="radio-btn-stop" class="btn btn-stop" onclick="radioDismiss()" title="Stop and close player">&#9632; Stop</button>
-                <button id="radio-btn-here" class="btn btn-here" onclick="radioPlayHere()" title="Play on this device (browser audio)" style="display:none">&#128266; Here</button>
               </div>
             </div>
           </div>
-          <div id="radio-media-controls" style="display:grid;grid-template-columns:repeat(2,minmax(150px,1fr));gap:.55rem;margin-top:.1rem;padding-top:.55rem;border-top:1px solid var(--player-card-border,#292941)">
-            <div class="control-card">
-              <div class="control-title">Volume &amp; Boost</div>
-              <span class="slider-wrap">
-                <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3c0-1.8-1-3.3-2.5-4.1v8.2c1.5-.8 2.5-2.3 2.5-4.1zm-2.5-8.7v2.1c2.9 1 5 3.6 5 6.6s-2.1 5.6-5 6.6v2.1c4-1.1 7-4.7 7-8.7s-3-7.6-7-8.7z"/></svg>
-                <input id="radio-bar-volume" type="range" min="0" max="1" step="0.02" value="0.8"
-                       oninput="radioVolume(this.value)" aria-label="Radio volume"/>
-                <button class="radio-slider-reset-btn" id="radio-volume-label" onclick="radioVolumeReset()" title="Click to reset volume to 100%">80%</button>
-              </span>
-              <span class="slider-wrap" style="margin-top:.28rem">
-                <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" title="Audio boost"><path d="M13 2L5 14h5l-1 8 8-12h-5l1-8z"/></svg>
-                <input id="radio-bar-boost" type="range" min="1" max="3" step="0.05" value="1"
-                       oninput="radioBoost(this.value)" aria-label="Radio audio boost"/>
-                <button class="radio-slider-reset-btn" id="radio-boost-label" onclick="radioBoostReset()" title="Click to reset boost to 0 dB">+0 dB</button>
-              </span>
+          <div id="radio-media-controls" style="display:flex;flex-direction:column;gap:.55rem;margin-top:.1rem;padding-top:.55rem;border-top:1px solid var(--player-card-border,#292941)">
+            <div class="control-card" style="width:100%;box-sizing:border-box">
+              <div class="radio-sliders-wrap">
+                <span class="slider-wrap">
+                  <button class="radio-slider-label-btn" onclick="radioVolumeReset()" title="Click to reset volume to 100%">Volume</button>
+                  <input id="radio-bar-volume" type="range" min="0" max="1" step="0.02" value="0.8"
+                         oninput="radioVolume(this.value)" aria-label="Radio volume"/>
+                  <button class="radio-slider-reset-btn" id="radio-volume-label" onclick="radioVolumeReset()" title="Click to reset volume to 100%">80%</button>
+                </span>
+                <span class="slider-wrap">
+                  <button class="radio-slider-label-btn" onclick="radioBoostReset()" title="Click to reset boost to 0 dB">Boost</button>
+                  <input id="radio-bar-boost" type="range" min="1" max="3" step="0.05" value="1"
+                         oninput="radioBoost(this.value)" aria-label="Radio audio boost"/>
+                  <button class="radio-slider-reset-btn" id="radio-boost-label" onclick="radioBoostReset()" title="Click to reset boost to 0 dB">+0 dB</button>
+                </span>
+              </div>
             </div>
-            <div class="control-card">
+            <div class="control-card" style="width:100%;box-sizing:border-box">
               <div class="control-title">Sleep Timer</div>
               <div id="radio-sleep-btns" class="radio-sleep-grid">
                 <button class="btn radio-sleep-preset" onclick="radioSleepSet(15)">15 m</button>
@@ -189,9 +208,16 @@
         <div id="music-player-bar" style="display:none" aria-label="Music player">
           <div class="player-top">
             <div id="music-player-summary">
+              <div id="music-bar-art" class="music-bar-art-empty" aria-hidden="true">
+                <div id="music-bar-art-bars" class="music-bar-art-bars" aria-hidden="true" style="display:none"><span></span><span></span><span></span></div>
+              </div>
               <div id="music-bar-info">
+                <div id="music-bar-trackpos" class="music-bar-trackpos" style="display:none"></div>
                 <div id="music-bar-title">—</div>
-                <div id="music-bar-meta"></div>
+                <div id="music-bar-artist"></div>
+                <div id="music-bar-album"></div>
+                <div id="music-bar-badge"></div>
+                <div id="music-bar-genreyear" style="display:none"></div>
               </div>
             </div>
             <div class="transport-controls">
@@ -202,7 +228,6 @@
               <div class="button-group transport-main-group">
                 <button id="music-btn-play" class="btn btn-red" onclick="musicToggle()">&#9654; Play</button>
                 <button id="music-btn-stop" class="btn btn-stop" onclick="musicStop()">&#9632; STOP</button>
-                <button id="music-btn-here" class="btn btn-here" onclick="musicPlayHere()" title="Play on this device (browser audio)">&#128266; Here</button>
               </div>
             </div>
           </div>
@@ -217,16 +242,28 @@
               <div id="music-option-btns" style="display:flex;gap:.45rem;flex-wrap:wrap;margin-bottom:.45rem">
                 <button id="music-btn-autoplay" class="btn music-opt-btn active" onclick="toggleMusicAutoPlay()" title="Auto Play Next track when current ends">&#9193; Auto Play Next</button>
                 <button id="music-btn-shuffle"  class="btn music-opt-btn"        onclick="toggleMusicShuffle()"  title="Shuffle songs in current folder">&#128256; Shuffle</button>
+                <button id="music-btn-repeat"   class="btn music-opt-btn"        onclick="toggleMusicRepeat()"   title="Repeat: Off / Repeat All / Repeat One">&#128257; Repeat</button>
               </div>
             </div>
             <div class="control-card">
-              <div class="control-title">Volume</div>
-              <span class="slider-wrap">
-                <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3c0-1.8-1-3.3-2.5-4.1v8.2c1.5-.8 2.5-2.3 2.5-4.1zm-2.5-8.7v2.1c2.9 1 5 3.6 5 6.6s-2.1 5.6-5 6.6v2.1c4-1.1 7-4.7 7-8.7s-3-7.6-7-8.7z"/></svg>
-                <input id="music-bar-volume" type="range" min="0" max="1" step="0.02" value="0.8"
-                       oninput="musicVolume(this.value)" aria-label="Volume"/>
-                <span id="music-volume-label">80%</span>
-              </span>
+              <div class="radio-sliders-wrap">
+                <span class="slider-wrap">
+                  <button class="radio-slider-label-btn" onclick="musicVolumeReset()" title="Click to reset volume to 100%">Volume</button>
+                  <input id="music-bar-volume" type="range" min="0" max="1" step="0.02" value="0.8"
+                         oninput="musicVolume(this.value)" aria-label="Volume"/>
+                  <button class="radio-slider-reset-btn" id="music-volume-label" onclick="musicVolumeReset()" title="Click to reset volume to 100%">80%</button>
+                </span>
+                <span class="slider-wrap">
+                  <button class="radio-slider-label-btn" onclick="musicBoostReset()" title="Click to reset boost to 0 dB">Boost</button>
+                  <input id="music-bar-boost" type="range" min="1" max="3" step="0.05" value="1"
+                         oninput="musicBoost(this.value)" aria-label="Audio boost"/>
+                  <button class="radio-slider-reset-btn" id="music-boost-label" onclick="musicBoostReset()" title="Click to reset boost to 0 dB">+0 dB</button>
+                </span>
+              </div>
+            </div>
+            <div class="control-card" id="music-queue-peek-card" style="display:none">
+              <div class="control-title">Up Next</div>
+              <div id="music-queue-peek-list"></div>
             </div>
           </div>
         </div>
@@ -257,8 +294,9 @@
             </div>
           </div>
         </div>
+        <!-- local-audio lives outside the player bar so display:none never silences it -->
+        <audio id="local-audio" preload="none"></audio>
         <div id="local-player-bar" style="display:none" aria-label="Local playback">
-          <audio id="local-audio" preload="none"></audio>
           <div class="player-top">
             <div id="local-player-summary">
               <div id="local-bar-info">
@@ -270,6 +308,7 @@
               <div class="button-group transport-main-group">
                 <button id="local-play-toggle" class="btn btn-red" onclick="localToggle()" title="Play / Pause">&#9654; Play</button>
                 <button class="btn btn-stop" onclick="localStop()" title="Stop local playback">&#9632; Stop</button>
+                <button class="btn btn-dim" onclick="localAudioBeepTest()" title="Play a short beep via Web Audio API to verify the browser can output sound">&#128276; Test</button>
               </div>
             </div>
           </div>

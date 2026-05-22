@@ -6,6 +6,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Diagnostics.CodeAnalysis;
 using RemotePlay.Services;
+using File = System.IO.File;
 
 namespace RemotePlay;
 
@@ -193,6 +194,12 @@ internal sealed partial class WebServer
             case "/api/log":
                 HandleClientLog(ctx);
                 break;
+
+            case "/api/local-playing":
+                HandleLocalPlayingAsync(ctx);
+                break;
+
+            case "/api/fix-audio":
                 _callbacks.FixAudio();
                 TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
                 break;
@@ -328,6 +335,10 @@ internal sealed partial class WebServer
                 HandleMusicPlay(ctx);
                 break;
 
+            case "/api/music/cover":
+                HandleMusicCover(ctx);
+                break;
+
             case "/api/music/pause":
                 _callbacks.PauseMusic();
                 TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
@@ -345,6 +356,9 @@ internal sealed partial class WebServer
 
             case "/api/music/volume":
                 HandleMusicVolume(ctx);
+                break;
+            case "/api/music/boost":
+                HandleMusicBoost(ctx);
                 break;
 
             // ── Radio ─────────────────────────────────────────────────────
@@ -402,6 +416,10 @@ internal sealed partial class WebServer
 
             case "/api/radio/resolve":
                 await HandleRadioResolveAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/radio/stream-proxy":
+                await HandleRadioStreamProxyAsync(ctx).ConfigureAwait(false);
                 break;
 
             default:
@@ -1136,13 +1154,8 @@ internal sealed partial class WebServer
         }
 
         var files = page
-            .Select(f => new
-            {
-                name = f.Name,
-                path = WebPathHelpers.EncodePath(f.FullPath),
-                folder = Path.GetFileName(Path.GetDirectoryName(f.FullPath)) ?? string.Empty
-            })
-            .ToArray<object>();
+            .Select(f => (object)BuildMusicFileObj(f))
+            .ToArray();
 
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new
         {
@@ -1184,13 +1197,8 @@ internal sealed partial class WebServer
         var files = matching
             .Skip(offset)
             .Take(limit)
-            .Select(f => new
-            {
-                name = f.Name,
-                path = WebPathHelpers.EncodePath(f.FullPath),
-                folder = Path.GetFileName(Path.GetDirectoryName(f.FullPath)) ?? string.Empty
-            })
-            .ToArray<object>();
+            .Select(f => (object)BuildMusicFileObj(f))
+            .ToArray();
 
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new
         {
@@ -1202,6 +1210,129 @@ internal sealed partial class WebServer
             indexedFiles = _musicIndex.Length,
             indexing = _isMusicIndexing
         }));
+    }
+
+    private static object BuildMusicFileObj(MusicFile f)
+    {
+        var dir    = Path.GetDirectoryName(f.FullPath) ?? string.Empty;
+        var ext    = Path.GetExtension(f.FullPath).TrimStart('.').ToLowerInvariant();
+
+        // Fallback values from path structure
+        string album    = Path.GetFileName(dir);
+        string artist   = Path.GetFileName(Path.GetDirectoryName(dir)) ?? string.Empty;
+        string tagTitle = string.Empty;
+        int?   trackNum = null;
+        int?   durationSec = null;
+        string genre = string.Empty;
+        int?   year  = null;
+        bool   hasCover = false;
+
+        // Try to read embedded ID3/Vorbis/etc. tags
+        try
+        {
+            using var tfile = TagLib.File.Create(f.FullPath);
+            var tag = tfile.Tag;
+
+            if (!string.IsNullOrWhiteSpace(tag.Title))   tagTitle = tag.Title;
+            if (!string.IsNullOrWhiteSpace(tag.Album))   album  = tag.Album;
+            var performers = tag.AlbumArtists.Length > 0 ? tag.AlbumArtists : tag.Performers;
+            if (performers.Length > 0 && !string.IsNullOrWhiteSpace(performers[0]))
+                artist = performers[0];
+            if (tag.Track > 0)  trackNum = (int)tag.Track;
+            if (tag.Year > 0)   year     = (int)tag.Year;
+            if (tag.Genres.Length > 0 && !string.IsNullOrWhiteSpace(tag.Genres[0]))
+                genre = tag.Genres[0];
+            hasCover = tfile.Tag.Pictures.Length > 0
+                    || FolderHasCoverImage(dir);
+            durationSec = (int)Math.Round(tfile.Properties.Duration.TotalSeconds);
+        }
+        catch
+        {
+            // TagLib can't read this file — fall back to path-based values
+            var tnMatch = System.Text.RegularExpressions.Regex.Match(f.Name, @"^(\d{1,3})[.\s\-]");
+            if (tnMatch.Success && int.TryParse(tnMatch.Groups[1].Value, out var tn))
+                trackNum = tn;
+            hasCover = FolderHasCoverImage(dir);
+        }
+
+        return new
+        {
+            name        = f.Name,
+            tagTitle,
+            path        = WebPathHelpers.EncodePath(f.FullPath),
+            folder      = Path.GetFileName(dir),
+            ext,
+            album,
+            artist,
+            trackNum,
+            durationSec,
+            genre,
+            year,
+            hasCover
+        };
+    }
+
+    private static readonly string[] _coverNames =
+        ["cover.jpg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png", "album.jpg", "album.png"];
+
+    private static bool FolderHasCoverImage(string dir)
+    {
+        if (!Directory.Exists(dir)) return false;
+        foreach (var name in _coverNames)
+            if (System.IO.File.Exists(Path.Combine(dir, name))) return true;
+        return false;
+    }
+
+    private void HandleMusicCover(HttpListenerContext ctx)
+    {
+        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(encodedPath))
+        { TrySendResponse(ctx, 400, "text/plain", "missing path"); return; }
+
+        string fullPath;
+        try   { fullPath = WebPathHelpers.DecodePath(encodedPath); }
+        catch { TrySendResponse(ctx, 400, "text/plain", "bad path"); return; }
+
+        var musicRoot = _config.ResolvedMusicPath;
+        if (!WebPathHelpers.IsUnderRoot(fullPath, musicRoot))
+        { TrySendResponse(ctx, 403, "text/plain", "forbidden"); return; }
+
+        // 1. Try embedded picture
+        try
+        {
+            using var tfile = TagLib.File.Create(fullPath);
+            var pic = tfile.Tag.Pictures.FirstOrDefault();
+            if (pic is not null)
+            {
+                ctx.Response.ContentType = string.IsNullOrEmpty(pic.MimeType) ? "image/jpeg" : pic.MimeType;
+                ctx.Response.ContentLength64 = pic.Data.Data.Length;
+                ctx.Response.OutputStream.Write(pic.Data.Data, 0, pic.Data.Data.Length);
+                ctx.Response.OutputStream.Close();
+                return;
+            }
+        }
+        catch { /* fall through to folder art */ }
+
+        // 2. Try folder cover image
+        var dir = Path.GetDirectoryName(fullPath) ?? string.Empty;
+        foreach (var name in _coverNames)
+        {
+            var candidate = Path.Combine(dir, name);
+            if (!System.IO.File.Exists(candidate)) continue;
+            var mime = name.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ? "image/png" : "image/jpeg";
+            try
+            {
+                var bytes = System.IO.File.ReadAllBytes(candidate);
+                ctx.Response.ContentType = mime;
+                ctx.Response.ContentLength64 = bytes.Length;
+                ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
+                ctx.Response.OutputStream.Close();
+                return;
+            }
+            catch { }
+        }
+
+        TrySendResponse(ctx, 404, "text/plain", "no cover");
     }
 
     private object GetMusicScanStatus()
@@ -1241,10 +1372,14 @@ internal sealed partial class WebServer
             TrySendResponse(ctx, 404, "text/plain", "File not found");
             return;
         }
+        double startPos = 0;
+        var posParam = ctx.Request.QueryString["pos"];
+        if (!string.IsNullOrEmpty(posParam))
+            MediaControlValueParser.TryParseDouble(posParam, out startPos);
         _callbacks.Stop();
         _callbacks.RadioStop();
-        _callbacks.PlayMusic(filePath);
-        Logger.Info("Playback", $"Playing Music: '{Path.GetFileName(filePath)}' on Server");
+        _callbacks.PlayMusic(filePath, startPos);
+        Logger.Info("Playback", $"Playing Music: '{Path.GetFileName(filePath)}' on Server" + (startPos > 0 ? $" at {startPos:F1}s" : ""));
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
     }
 
@@ -1352,6 +1487,20 @@ internal sealed partial class WebServer
             return;
         }
         _callbacks.SetMusicVolume(Math.Clamp(vol, 0, 1));
+        TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+    }
+
+    private void HandleMusicBoost(HttpListenerContext ctx)
+    {
+        if (!double.TryParse(ctx.Request.QueryString["v"],
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var boost))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing v");
+            return;
+        }
+        _callbacks.SetMusicBoost(Math.Clamp(boost, 0, 4));
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
     }
 
@@ -1679,13 +1828,31 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 200, "text/plain", "OK");
     }
 
+    // Sets the browser-local-playing flag so the WPF window can update its idle overlay.
+    private void HandleLocalPlayingAsync(HttpListenerContext ctx)
+    {
+        using var reader = new System.IO.StreamReader(ctx.Request.InputStream, System.Text.Encoding.UTF8);
+        var body = reader.ReadToEnd().Trim();
+        _browserLocalPlaying = body.Equals("true", StringComparison.OrdinalIgnoreCase);
+        TrySendResponse(ctx, 200, "text/plain", "ok");
+    }
+
     // Accepts a log message posted from the browser-side JavaScript (e.g. local playback events).
     private void HandleClientLog(HttpListenerContext ctx)
     {
         using var reader = new System.IO.StreamReader(ctx.Request.InputStream, System.Text.Encoding.UTF8);
-        var body = reader.ReadToEnd();
+        var body = reader.ReadToEnd().Trim();
         if (!string.IsNullOrWhiteSpace(body))
-            Logger.Info("Playback", body.Trim());
+        {
+            // Diagnostic trace prefixes are Detail-level; everything else is Info
+            if (body.StartsWith("[LOCAL-", StringComparison.Ordinal) ||
+                body.StartsWith("[RADIO-LOCAL]", StringComparison.Ordinal) ||
+                body.StartsWith("[RADIO-SERVER]", StringComparison.Ordinal) ||
+                body.StartsWith("[PROXY]", StringComparison.Ordinal))
+                Logger.Detail("Playback", body);
+            else
+                Logger.Info("Playback", body);
+        }
         TrySendResponse(ctx, 200, "text/plain", "OK");
     }
 
@@ -1824,7 +1991,7 @@ internal sealed partial class WebServer
                 _libraryIndex = files;
                 _lastIndexRefreshUtc = DateTimeOffset.UtcNow;
                 SaveLibraryIndexCache();
-                Logger.Info($"Library index refreshed: {files.Length} videos");
+                Logger.Detail($"Library index refreshed: {files.Length} videos");
             }
             catch (Exception ex)
             {
@@ -1837,6 +2004,40 @@ internal sealed partial class WebServer
                     _isIndexing = false;
             }
         });
+    }
+
+    // How long a persisted music index is considered fresh before a background re-scan is run.
+    private static readonly TimeSpan MusicIndexMaxAge = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// Called on startup. If a recent cache was loaded, defers the full re-scan by a short
+    /// warm-up period so the app is immediately usable; the background scan still runs to pick
+    /// up any files added since the cache was written. If no cache (or it is stale), scans now.
+    /// </summary>
+    private void StartMusicIndexRefreshIfNeeded()
+    {
+        DateTimeOffset? lastRefresh;
+        int cachedCount;
+        lock (_musicIndexGate)
+        {
+            lastRefresh = _lastMusicIndexRefreshUtc;
+            cachedCount = _musicIndex.Length;
+        }
+
+        if (lastRefresh.HasValue && cachedCount > 0 && DateTimeOffset.UtcNow - lastRefresh.Value < MusicIndexMaxAge)
+        {
+            Logger.Info($"Music index cache is fresh ({cachedCount} tracks, age {(DateTimeOffset.UtcNow - lastRefresh.Value).TotalMinutes:F0} min). " +
+                        "Background re-scan deferred by 60 s.");
+            // Give the app 60 seconds to fully start before doing the verify scan in the background.
+            Task.Delay(TimeSpan.FromSeconds(60)).ContinueWith(_ => StartMusicIndexRefresh());
+        }
+        else
+        {
+            Logger.Info(cachedCount == 0
+                ? "No music index cache found — starting full scan."
+                : $"Music index cache is stale ({cachedCount} tracks) — starting full scan.");
+            StartMusicIndexRefresh();
+        }
     }
 
     private void StartMusicIndexRefresh()
@@ -2167,6 +2368,71 @@ internal sealed partial class WebServer
         var resolvedUrl = await _callbacks.RadioResolveUrl(uuid, fallbackUrl).ConfigureAwait(false);
         TrySendResponse(ctx, 200, "application/json",
             JsonSerializer.Serialize(new { resolvedUrl }));
+    }
+
+    /// <summary>
+    /// Proxies a radio stream to the browser so the same-origin &lt;audio&gt; element
+    /// can play it without CORS restrictions. Query param: <c>url</c> (encoded stream URL).
+    /// Streams bytes indefinitely; the browser disconnects when it stops listening.
+    /// </summary>
+    private static async Task HandleRadioStreamProxyAsync(HttpListenerContext ctx)
+    {
+        var streamUrl = ctx.Request.QueryString["url"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(streamUrl))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "missing url");
+            return;
+        }
+
+        Logger.Detail("Playback", $"[PROXY] Request received for: {streamUrl}");
+
+        using var http = new System.Net.Http.HttpClient();
+        http.Timeout = System.Threading.Timeout.InfiniteTimeSpan;
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 RemotePlay/1.0");
+
+        System.Net.Http.HttpResponseMessage? upstream = null;
+        try
+        {
+            upstream = await http.GetAsync(streamUrl,
+                System.Net.Http.HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            Logger.Detail("Playback", $"[PROXY] Upstream responded {(int)upstream.StatusCode}, content-type={upstream.Content.Headers.ContentType}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Detail("Playback", $"[PROXY] Failed to connect to upstream: {ex.Message}");
+            TrySendResponse(ctx, 502, "text/plain", "upstream error");
+            return;
+        }
+
+        var contentType = upstream.Content.Headers.ContentType?.ToString() ?? "audio/mpeg";
+        ctx.Response.StatusCode = 200;
+        ctx.Response.ContentType = contentType;
+        ctx.Response.Headers["Access-Control-Allow-Origin"] = "*";
+        ctx.Response.Headers["Cache-Control"] = "no-cache";
+        ctx.Response.SendChunked = true;
+
+        long bytesSent = 0;
+        try
+        {
+            await using var upstreamStream = await upstream.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            var buf = new byte[16 * 1024];
+            int read;
+            while ((read = await upstreamStream.ReadAsync(buf).ConfigureAwait(false)) > 0)
+            {
+                await ctx.Response.OutputStream.WriteAsync(buf.AsMemory(0, read)).ConfigureAwait(false);
+                bytesSent += read;
+            }
+            Logger.Detail("Playback", $"[PROXY] Stream ended normally after {bytesSent} bytes");
+        }
+        catch (Exception ex)
+        {
+            Logger.Detail("Playback", $"[PROXY] Pipe closed after {bytesSent} bytes — {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            upstream.Dispose();
+            try { ctx.Response.OutputStream.Close(); } catch { /* ignored */ }
+        }
     }
 
 }

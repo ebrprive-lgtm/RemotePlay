@@ -7,6 +7,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Animation;
@@ -16,6 +17,7 @@ using LibVLCSharp.Shared.Structures;
 using RemotePlay.Helpers;
 using RemotePlay.Models;
 using RemotePlay.Services.Discovery;
+using RemotePlay.UI;
 using System.Diagnostics.CodeAnalysis;
 
 namespace RemotePlay;
@@ -260,7 +262,7 @@ public partial class MainWindow : Window
             : "RemotePlay";
 
         Logger.Clear();
-        LogBox.Clear();
+        // LogBox replaced by LogRichBox — cleared on demand via OnClearLog
         InitializeTrayIcon();
         ApplyWindowsAutostart(_config.StartWithWindows);
 
@@ -306,6 +308,10 @@ public partial class MainWindow : Window
 
         AppendLog($"RemotePlay started");
         AppendLog($"Movies: {_config.ResolvedMoviesPath}");
+        UpdateFilterButtonStyles();
+
+        // Route all Logger writes to the live log viewer
+        Logger.LineWritten += OnLoggerLineWritten;
         UpdateServerReadiness(isReady: false, "Server: starting\u2026");
         UpdateLibraryReadiness("Library: waiting for server\u2026", isReady: false, isBusy: true);
         ServerStatusText.Text = $"Server starting on {_config.Scheme}://*:{_config.Port}\u2026";
@@ -1253,25 +1259,104 @@ public partial class MainWindow : Window
 
     // -- Log / diagnostics
 
+    private LogViewerHelper.LogLevel _logFilter = LogViewerHelper.LogLevel.Info;
+
+    /// <summary>Stores all log entries so we can re-render when the filter changes.</summary>
+    private readonly List<(LogViewerHelper.LogLevel level, string rawLine)> _logEntries = [];
+
+    private void OnLogFilterClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button btn) return;
+
+        _logFilter = btn.Tag switch
+        {
+            "Error"  => LogViewerHelper.LogLevel.Error,
+            "Warn"   => LogViewerHelper.LogLevel.Warn,
+            "Info"   => LogViewerHelper.LogLevel.Info,
+            "Detail" => LogViewerHelper.LogLevel.Detail,
+            _        => LogViewerHelper.LogLevel.All,
+        };
+
+        UpdateFilterButtonStyles();
+        RebuildLog();
+    }
+
+    private void OnClearLog(object sender, RoutedEventArgs e)
+    {
+        _logEntries.Clear();
+        Logger.Clear();
+        LogRichBox.Document.Blocks.Clear();
+    }
+
+    private void UpdateFilterButtonStyles()
+    {
+        var activeTag = _logFilter switch
+        {
+            LogViewerHelper.LogLevel.Error  => "Error",
+            LogViewerHelper.LogLevel.Warn   => "Warn",
+            LogViewerHelper.LogLevel.Info   => "Info",
+            LogViewerHelper.LogLevel.Detail => "Detail",
+            _                               => "All",
+        };
+
+        foreach (var btn in new System.Windows.Controls.Button[] { LogFilterError, LogFilterWarn, LogFilterInfo, LogFilterDetail, LogFilterAll })
+        {
+            bool active = btn.Tag as string == activeTag;
+            var hex = LevelAccentHex(btn.Tag as string ?? "");
+            var wColor = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex);
+            btn.Foreground = active
+                ? new System.Windows.Media.SolidColorBrush(wColor)
+                : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x77, 0x88, 0x99));
+            btn.FontWeight = active ? FontWeights.Bold : FontWeights.Normal;
+        }
+    }
+
+    private static string LevelAccentHex(string tag) => tag switch
+    {
+        "Error"  => "#FF6B6B",
+        "Warn"   => "#FFAA55",
+        "Info"   => "#63CFFF",
+        "Detail" => "#AAAACC",
+        _        => "#CCCCEE",
+    };
+
+    private void RebuildLog()
+    {
+        LogRichBox.Document.Blocks.Clear();
+        foreach (var (level, rawLine) in _logEntries)
+        {
+            if (level <= _logFilter)
+                LogRichBox.Document.Blocks.Add(LogViewerHelper.BuildParagraph(rawLine));
+        }
+        LogScroller.ScrollToBottom();
+    }
+
+    // Kept for compatibility: loads the log file on initial tab open
     private void OnRefreshLog(object sender, RoutedEventArgs e)
     {
         try
         {
             var logFile = AppPaths.LogFile;
-            if (File.Exists(logFile))
+            if (!File.Exists(logFile)) return;
+
+            var lines = File.ReadAllLines(logFile);
+            _logEntries.Clear();
+            LogRichBox.Document.Blocks.Clear();
+
+            foreach (var line in lines)
             {
-                var lines = File.ReadAllLines(logFile);
-                LogBox.Text = string.Join(Environment.NewLine, lines);
-                LogScroller.ScrollToBottom();
+                var level = LogViewerHelper.GetLineLevel(line);
+                _logEntries.Add((level, line));
+                if (level <= _logFilter)
+                    LogRichBox.Document.Blocks.Add(LogViewerHelper.BuildParagraph(line));
             }
-            else
-            {
-                AppendLog("(log file not found yet)");
-            }
+
+            UpdateFilterButtonStyles();
+            LogScroller.ScrollToBottom();
         }
         catch (Exception ex)
         {
-            AppendLog($"Could not read log: {ex.Message}");
+            AppendLog(LogViewerHelper.LogLevel.Error, "General", $"Could not read log: {ex.Message}");
         }
     }
 
@@ -1644,10 +1729,51 @@ public partial class MainWindow : Window
 
     private void AppendLog(string message)
     {
+        var level = LogViewerHelper.InferLevel(message);
+        var cat   = "General";
+        var line  = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{LevelTag(level)}] [{cat}] {message}";
+        AppendLogLine(level, line);
+    }
+
+    private void AppendLog(LogViewerHelper.LogLevel level, string category, string message)
+    {
+        var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [{LevelTag(level)}] [{category}] {message}";
+        AppendLogLine(level, line);
+    }
+
+    private static string LevelTag(LogViewerHelper.LogLevel level) => level switch
+    {
+        LogViewerHelper.LogLevel.Error  => "ERROR",
+        LogViewerHelper.LogLevel.Warn   => "WARN",
+        LogViewerHelper.LogLevel.Info   => "INFO",
+        LogViewerHelper.LogLevel.Detail => "DETAIL",
+        _                               => "DEBUG",
+    };
+
+    private void OnLoggerLineWritten(string levelTag, string category, string line)
+    {
+        var level = levelTag switch
+        {
+            "ERROR"  => LogViewerHelper.LogLevel.Error,
+            "WARN"   => LogViewerHelper.LogLevel.Warn,
+            "INFO"   => LogViewerHelper.LogLevel.Info,
+            "DETAIL" => LogViewerHelper.LogLevel.Detail,
+            _        => LogViewerHelper.LogLevel.All,
+        };
+        AppendLogLine(level, line);
+    }
+
+    private void AppendLogLine(LogViewerHelper.LogLevel level, string rawLine)
+    {
         Dispatcher.InvokeAsync(() =>
         {
-            LogBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
-            LogScroller.ScrollToBottom();
+            _logEntries.Add((level, rawLine));
+
+            if (level <= _logFilter)
+            {
+                LogRichBox.Document.Blocks.Add(LogViewerHelper.BuildParagraph(rawLine));
+                LogScroller.ScrollToBottom();
+            }
         });
     }
 

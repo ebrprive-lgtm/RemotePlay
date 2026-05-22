@@ -9,10 +9,15 @@ internal static class Logger
     private static readonly object _lock = new();
     private static readonly string LogFile = AppPaths.LogFile;
 
+    /// <summary>Raised on every log write. Arguments: level tag (INFO/DETAIL/WARN/ERROR), category, formatted line.</summary>
+    public static event Action<string, string, string>? LineWritten;
+
     public static string FilePath => LogFile;
 
     public static void Info(string message) => Write("INFO", "General", message, null);
     public static void Info(string category, string message) => Write("INFO", category, message, null);
+    public static void Detail(string message) => Write("DETAIL", "General", message, null);
+    public static void Detail(string category, string message) => Write("DETAIL", category, message, null);
     public static void Warning(string category, string message) => Write("WARN", category, message, null);
     public static void Error(string message, Exception? ex = null) => Write("ERROR", "General", message, ex);
     public static void Error(string category, string message, Exception? ex = null) => Write("ERROR", category, message, ex);
@@ -54,6 +59,8 @@ internal static class Logger
 
                 File.AppendAllText(LogFile, line + Environment.NewLine);
             }
+
+            LineWritten?.Invoke(level, safeCategory, line);
         }
         catch
         {

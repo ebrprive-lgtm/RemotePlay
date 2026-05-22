@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -137,8 +138,19 @@ internal sealed partial class WebServer
         new(() => LoadWebAsset("index.html"));
     private static readonly Lazy<string> _cachedStylesCss =
         new(() => LoadWebAsset("styles.css"));
+    private static readonly string[] _appJsModules =
+    [
+        "app-core.js",
+        "app-diagnostics.js",
+        "app-playback.js",
+        "app-library.js",
+        "app-radio.js",
+        "app-globe.js",
+        "app-radio-status.js",
+        "app-local.js",
+    ];
     private static readonly Lazy<string> _cachedAppJs =
-        new(() => LoadWebAsset("app.js"));
+        new(() => string.Join("\n", _appJsModules.Select(f => LoadWebAsset(f))));
     private static readonly Lazy<string> _cachedServiceWorkerJsRaw =
         new(() => LoadWebAsset("service-worker.js"));
     private static readonly Lazy<string> _cachedWorld110m =
@@ -165,6 +177,9 @@ internal sealed partial class WebServer
     private HashSet<string> _favorites = new(StringComparer.OrdinalIgnoreCase);
     private readonly Timer _libraryIndexTimer;
     private readonly Timer _libraryWatcherDebounceTimer;
+    // True while the browser-side local player is active (set via /api/local-playing)
+    public bool BrowserLocalPlaying => _browserLocalPlaying;
+
     private readonly object _libraryIndexGate = new();
     private readonly object _musicIndexGate = new();
     private FileSystemWatcher? _libraryWatcher;
@@ -183,6 +198,7 @@ internal sealed partial class WebServer
     private static readonly string _serverSessionId = Guid.NewGuid().ToString("N");
     private bool _isIndexing;
     private bool _isMusicIndexing;
+    private bool _browserLocalPlaying;   // true while browser is playing audio locally
     private string _lastMusicScanError = string.Empty;
     private int _musicScanProgress;
     private string _musicScanFolder = string.Empty;
@@ -789,7 +805,7 @@ internal sealed partial class WebServer
             LoadLibraryIndexCache();
             StartLibraryIndexRefresh(force: true);
             LoadMusicIndexCache();
-            StartMusicIndexRefresh();
+            StartMusicIndexRefreshIfNeeded();
         });
 
         if (_config.UseHttps)
@@ -1128,6 +1144,10 @@ internal sealed partial class WebServer
             ctx.Response.ContentLength64 = bytes.Length;
             ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
         }
+        catch (HttpListenerException)
+        {
+            // Client disconnected before the response was fully sent — not an error.
+        }
         catch (Exception ex)
         {
             Logger.Error("Failed to send HTTP response", ex);
@@ -1147,6 +1167,10 @@ internal sealed partial class WebServer
             ctx.Response.ContentType = contentType;
             ctx.Response.ContentLength64 = body.Length;
             ctx.Response.OutputStream.Write(body, 0, body.Length);
+        }
+        catch (HttpListenerException)
+        {
+            // Client disconnected before the response was fully sent — not an error.
         }
         catch (Exception ex)
         {

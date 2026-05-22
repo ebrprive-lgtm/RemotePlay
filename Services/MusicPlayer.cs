@@ -14,6 +14,7 @@ internal sealed class MusicPlayer : IDisposable
     private string _lastError = string.Empty;
     private int _deviceNumber = -1;
     private double _volume = 0.8;
+    private double _boost  = 1.0;
 
     public static IReadOnlyList<(int DeviceNumber, string Name)> EnumerateDevices()
     {
@@ -33,7 +34,7 @@ internal sealed class MusicPlayer : IDisposable
 
     public void SetDevice(string deviceId) { lock (_lock) _deviceNumber = ResolveDeviceNumber(deviceId); }
 
-    public void Play(string filePath)
+    public void Play(string filePath, double startPositionSeconds = 0)
     {
         lock (_lock)
         {
@@ -41,7 +42,12 @@ internal sealed class MusicPlayer : IDisposable
             _lastError = string.Empty; _isPaused = false; _isPlaying = false; _currentPath = filePath;
             try
             {
-                _reader = new AudioFileReader(filePath) { Volume = (float)_volume };
+                _reader = new AudioFileReader(filePath) { Volume = (float)(_volume * _boost) };
+                if (startPositionSeconds > 0)
+                {
+                    var target = TimeSpan.FromSeconds(startPositionSeconds);
+                    if (target < _reader.TotalTime) _reader.CurrentTime = target;
+                }
                 _output = new WaveOutEvent { DeviceNumber = _deviceNumber };
                 _output.Init(_reader);
                 _output.PlaybackStopped += OnPlaybackStopped;
@@ -77,7 +83,12 @@ internal sealed class MusicPlayer : IDisposable
 
     public void SetVolume(double volume)
     {
-        lock (_lock) { _volume = Math.Clamp(volume, 0, 1); if (_reader is not null) _reader.Volume = (float)_volume; }
+        lock (_lock) { _volume = Math.Clamp(volume, 0, 1); if (_reader is not null) _reader.Volume = (float)(_volume * _boost); }
+    }
+
+    public void SetBoost(double boost)
+    {
+        lock (_lock) { _boost = Math.Clamp(boost, 0, 4); if (_reader is not null) _reader.Volume = (float)(_volume * _boost); }
     }
 
     public void Seek(double seconds)

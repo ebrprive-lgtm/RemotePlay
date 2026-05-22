@@ -289,6 +289,56 @@
             <DoubleAnimation Storyboard.TargetProperty="Opacity"
                              From="1" To="0.3" Duration="0:0:0.8"/>
         </Storyboard>
+
+        <!-- Log level filter button style -->
+        <Style x:Key="LogFilterBtn" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#778899"/>
+            <Setter Property="BorderBrush" Value="#2a2a4a"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,2"/>
+            <Setter Property="Margin" Value="2,0"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontFamily" Value="Consolas"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#1a1a38"/>
+                                <Setter Property="Foreground" Value="#CCCCEE"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="Tag" Value="Error">
+                    <Setter Property="BorderBrush" Value="#552233"/>
+                </Trigger>
+                <Trigger Property="Tag" Value="Warn">
+                    <Setter Property="BorderBrush" Value="#554422"/>
+                </Trigger>
+                <Trigger Property="Tag" Value="Info">
+                    <Setter Property="BorderBrush" Value="#224455"/>
+                </Trigger>
+                <Trigger Property="Tag" Value="Detail">
+                    <Setter Property="BorderBrush" Value="#333355"/>
+                </Trigger>
+                <Trigger Property="Tag" Value="All">
+                    <Setter Property="BorderBrush" Value="#2a2a4a"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
     </Window.Resources>
 
     <Grid Background="#111111">
@@ -309,10 +359,7 @@
                             Click="OnToggleView"
                             Background="#E94560" Foreground="White" BorderThickness="0"
                             Padding="10,4" Margin="4,0" Cursor="Hand"/>
-                    <Button x:Name="ShowExtendedLogBtn" Content="📋  Show extended log" Click="OnRefreshLog"
-                            Background="#333" Foreground="White" BorderThickness="0"
-                            Padding="10,4" Margin="4,0" Cursor="Hand"
-                            Visibility="Collapsed"/>
+
                     <Button Content="⏹  Stop &amp; Exit" Click="OnStopAndExit"
                             Background="#7a1a1a" Foreground="White" BorderThickness="0"
                             Padding="10,4" Margin="4,0" Cursor="Hand"/>
@@ -479,18 +526,64 @@
                                 </Grid>
                             </Border>
 
-                    <!-- Log output -->
-                    <Border Grid.Row="1" Background="#0a0a0a" Margin="8" CornerRadius="4"
-                            BorderBrush="#333" BorderThickness="1">
-                        <ScrollViewer x:Name="LogScroller" VerticalScrollBarVisibility="Auto">
-                            <TextBox x:Name="LogBox"
-                                     Background="Transparent" Foreground="#CCCCCC"
-                                     FontFamily="Consolas" FontSize="12"
-                                     IsReadOnly="True" TextWrapping="Wrap"
-                                     BorderThickness="0" Padding="8"
-                                     VerticalAlignment="Top"/>
-                        </ScrollViewer>
-                    </Border>
+                    <!-- Log filter bar + rich log output -->
+                    <Grid Grid.Row="1" Margin="8">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- Filter button bar -->
+                        <Border Grid.Row="0" Background="#0d0d1a"
+                                BorderBrush="#2a2a4a" BorderThickness="1,1,1,0"
+                                CornerRadius="4,4,0,0" Padding="6,4">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="Level:" Foreground="#666688" FontSize="11"
+                                           VerticalAlignment="Center" Margin="2,0,8,0"/>
+                                <Button x:Name="LogFilterError"  Content="Error"  Tag="Error"
+                                        Click="OnLogFilterClick"
+                                        Style="{StaticResource LogFilterBtn}"/>
+                                <Button x:Name="LogFilterWarn"   Content="Warn"   Tag="Warn"
+                                        Click="OnLogFilterClick"
+                                        Style="{StaticResource LogFilterBtn}"/>
+                                <Button x:Name="LogFilterDetail" Content="Detail" Tag="Detail"
+                                        Click="OnLogFilterClick"
+                                        Style="{StaticResource LogFilterBtn}"/>
+                                <Button x:Name="LogFilterInfo"   Content="Info"   Tag="Info"
+                                        Click="OnLogFilterClick"
+                                        Style="{StaticResource LogFilterBtn}"/>
+                                <Button x:Name="LogFilterAll"    Content="All"    Tag="All"
+                                        Click="OnLogFilterClick"
+                                        Style="{StaticResource LogFilterBtn}"/>
+                                <TextBlock Text="|" Foreground="#333355" Margin="6,0" VerticalAlignment="Center"/>
+                                <Button Content="Clear" Click="OnClearLog"
+                                        Background="Transparent" Foreground="#664455"
+                                        BorderThickness="0" Padding="6,2" Cursor="Hand"
+                                        FontSize="11"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Rich log output -->
+                        <Border Grid.Row="1" Background="#0a0a0a"
+                                BorderBrush="#333" BorderThickness="1"
+                                CornerRadius="0,0,4,4">
+                            <ScrollViewer x:Name="LogScroller" VerticalScrollBarVisibility="Auto">
+                                <RichTextBox x:Name="LogRichBox"
+                                             Background="Transparent"
+                                             FontFamily="Consolas" FontSize="12"
+                                             IsReadOnly="True"
+                                             BorderThickness="0" Padding="8,6"
+                                             IsDocumentEnabled="True"
+                                             VerticalAlignment="Top">
+                                    <FlowDocument
+                                                  PageWidth="4000"
+                                                  FontFamily="Consolas"
+                                                  FontSize="12"
+                                                  LineHeight="17"/>
+                                </RichTextBox>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
                 </Grid>
             </TabItem>
 
@@ -1335,7 +1428,9 @@
               Visibility="Collapsed"
               Panel.ZIndex="50"
               MouseLeftButtonDown="OnIdleOverlayClick">
-            <StackPanel HorizontalAlignment="Center"
+            <!-- IdleOverlayContent is hidden when audio-only is playing (pure black screen) -->
+            <StackPanel x:Name="IdleOverlayContent"
+                        HorizontalAlignment="Center"
                         VerticalAlignment="Center">
                 <TextBlock Text="🎬" FontSize="72" HorizontalAlignment="Center"/>
                 <TextBlock Text="RemotePlay" FontSize="32" Foreground="#E94560"

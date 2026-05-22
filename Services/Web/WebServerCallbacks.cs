@@ -34,12 +34,13 @@ internal sealed class WebServerCallbacks
     public required Action FixAudio { get; init; }
 
     // ── Music (WPF MediaPlayer, not VLC) ─────────────────────────────────────
-    public required Action<string>        PlayMusic      { get; init; }
+    public required Action<string, double> PlayMusic      { get; init; }
     public required Action                PauseMusic     { get; init; }
     public required Action                StopMusic      { get; init; }
     public required Func<MusicStatus>     GetMusicStatus { get; init; }
     public required Action<double>        SeekMusic      { get; init; }
     public required Action<double>        SetMusicVolume { get; init; }
+    public required Action<double>        SetMusicBoost  { get; init; }
 
     // ── Radio ─────────────────────────────────────────────────────────────────
     public required Func<string, string, string, int, int, Task<List<RadioStation>>> RadioSearch        { get; init; }
