@@ -1,5 +1,4 @@
 using System.IO;
-using System.Text.Json;
 using RemotePlay;
 using Xunit;
 
@@ -183,80 +182,4 @@ public sealed class AppConfigTests : IDisposable
 
     // ── Save / Load round-trip ───────────────────────────────────────────────
 
-    [Fact]
-    public void SaveAndLoad_RoundTrip_PreservesConfigValues()
-    {
-        var config = new AppConfig
-        {
-            Port = 8877,
-            UseHttps = true,
-            MoviesPath = @"C:\TestMovies",
-            InstanceName = "Test Instance",
-            Volume = 0.75,
-            AudioBoost = 1.3,
-            PlaybackSpeed = 1.5,
-            SubtitlesEnabled = false,
-            PlaybackHistoryLimit = 12
-        };
-
-        try
-        {
-            AppConfig.Save(config);
-        }
-        catch (IOException)
-        {
-            return; // Config file locked by running app — skip.
-        }
-
-        var loaded = AppConfig.Load();
-
-        Assert.Equal(config.Port, loaded.Port);
-        Assert.Equal(config.UseHttps, loaded.UseHttps);
-        Assert.Equal(config.MoviesPath, loaded.MoviesPath);
-        Assert.Equal(config.InstanceName, loaded.InstanceName);
-        Assert.Equal(config.Volume, loaded.Volume);
-        Assert.Equal(config.AudioBoost, loaded.AudioBoost);
-        Assert.Equal(config.PlaybackSpeed, loaded.PlaybackSpeed);
-        Assert.Equal(config.SubtitlesEnabled, loaded.SubtitlesEnabled);
-        Assert.Equal(config.PlaybackHistoryLimit, loaded.PlaybackHistoryLimit);
     }
-
-    [Fact]
-    public void Load_ReturnsDefaultConfig_WhenFileContainsInvalidJson()
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(_configFile)!);
-        try
-        {
-            File.WriteAllText(_configFile, "{ this is not valid json }}}");
-        }
-        catch (IOException)
-        {
-            return; // Config file locked by running app — skip.
-        }
-
-        var result = AppConfig.Load();
-
-        Assert.NotNull(result);
-        Assert.Equal(new AppConfig().Port, result.Port);
-        Assert.Equal(new AppConfig().Volume, result.Volume);
-    }
-
-    [Fact]
-    public void Load_ReturnsDefaultConfig_WhenFileDoesNotExist()
-    {
-        try
-        {
-            if (File.Exists(_configFile))
-                File.Delete(_configFile);
-        }
-        catch (IOException)
-        {
-            return; // Config file locked by running app — skip.
-        }
-
-        var result = AppConfig.Load();
-
-        Assert.NotNull(result);
-        Assert.Equal(new AppConfig().Port, result.Port);
-    }
-}

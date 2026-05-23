@@ -15,6 +15,10 @@ internal sealed class MusicPlayer : IDisposable
     private int _deviceNumber = -1;
     private double _volume = 0.8;
     private double _boost  = 1.0;
+    private string? _nextTrackPath;
+
+    /// <summary>Fired (outside the lock) when the player auto-advances to the next track.</summary>
+    public event Action<string>? TrackAdvanced;
 
     public static IReadOnlyList<(int DeviceNumber, string Name)> EnumerateDevices()
     {
@@ -91,6 +95,11 @@ internal sealed class MusicPlayer : IDisposable
         lock (_lock) { _boost = Math.Clamp(boost, 0, 4); if (_reader is not null) _reader.Volume = (float)(_volume * _boost); }
     }
 
+    public void SetNextTrack(string? path)
+    {
+        lock (_lock) _nextTrackPath = string.IsNullOrWhiteSpace(path) ? null : path;
+    }
+
     public void Seek(double seconds)
     {
         lock (_lock)
@@ -111,10 +120,24 @@ internal sealed class MusicPlayer : IDisposable
 
     private void OnPlaybackStopped(object? sender, StoppedEventArgs e)
     {
+        string? nextPath = null;
         lock (_lock)
         {
             if (e.Exception is not null) _lastError = e.Exception.Message;
-            if (_isPlaying && !_isPaused) { _isPlaying = false; _currentPath = string.Empty; }
+            if (_isPlaying && !_isPaused)
+            {
+                // Natural end-of-track: pick up queued next track if any
+                nextPath = _nextTrackPath;
+                _nextTrackPath = null;
+                _isPlaying = false;
+                _currentPath = string.Empty;
+            }
+        }
+
+        if (nextPath is not null)
+        {
+            Play(nextPath, 0);
+            TrackAdvanced?.Invoke(nextPath);
         }
     }
 

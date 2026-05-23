@@ -31,7 +31,7 @@
         #theme-select{background:var(--pill-bg);border:1px solid var(--pill-border);color:var(--pill-text);border-radius:999px;padding:.28rem .45rem;font-size:.72rem;font-weight:700;cursor:pointer;outline:2px solid transparent;outline-offset:2px}
                 #theme-select:focus,#theme-select:focus-visible{outline-color:var(--select-ring)}
         #play-local-toggle{background:var(--pill-bg);border:1px solid var(--pill-border);color:var(--pill-text);border-radius:999px;padding:.28rem .7rem;font-size:.72rem;font-weight:700;cursor:pointer;outline:2px solid transparent;outline-offset:2px;transition:background .15s,color .15s,border-color .15s}
-        #play-local-toggle:hover{background:rgba(0,180,130,.18);border-color:rgba(0,180,130,.5);color:#00c896}
+        @media(hover:hover){#play-local-toggle:hover{background:rgba(0,180,130,.18);border-color:rgba(0,180,130,.5);color:#00c896}}
         #play-local-toggle.active{background:rgba(0,180,130,.28);border-color:#00c896;color:#00c896}
         #search-wrap{display:flex;flex-direction:column;gap:.1rem;min-width:0;width:100%;padding-left:5px;border-left:1px solid var(--pill-border,rgba(255,255,255,.08))}
         #mode-tabs{display:flex;gap:.4rem;margin-bottom:.2rem;flex-wrap:wrap}
@@ -283,14 +283,83 @@
         /* Hide card-only rows in list mode */
         .radio-inner-cards.list-view .card-only{display:none!important}
         /* Music list-view rules are defined above with the .music-grid block */
-        /* Video */
-        .movie-grid.list-view{display:flex;flex-direction:column;gap:.3rem;padding:.4rem .75rem}
-        .movie-grid.list-view .movie-card{min-height:unset;height:3rem;border-radius:6px;flex-direction:row;align-items:center;background-position:left center;background-size:auto 100%}
-        .movie-grid.list-view .movie-card::before{background:linear-gradient(to right,rgba(0,0,0,.7) 0%,rgba(0,0,0,.55) 100%)}
-        .movie-grid.list-view .movie-card-inner{flex-direction:row;align-items:center;padding:.4rem .7rem;gap:.5rem}
-        .movie-grid.list-view .movie-title{font-size:.85rem;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .movie-grid.list-view .progress-overlay{width:3px;height:100%;top:0;bottom:0;right:0;left:auto;border-radius:0 6px 6px 0}
-        .movie-grid.list-view .progress-fill{height:100%}
+        /* ── Video command bar ─────────────────────────────────────────────── */
+        #count-line.vcb-active{display:block!important;padding:.18rem .55rem .12rem;font-size:.72rem;color:var(--muted,#9aa8c2)}
+        #video-command-bar{display:none;align-items:center;gap:.5rem;flex-wrap:wrap;padding:.3rem .1rem .1rem;border-top:1px solid rgba(255,255,255,.07);grid-column:1/-1;z-index:9}
+        #vcb-left{flex-shrink:0}
+        .vcb-view-btn{background:var(--btn-dim,rgba(255,255,255,.07));color:var(--text,#e0e6f0);border:1px solid rgba(255,255,255,.13);border-radius:6px;padding:.25rem .65rem;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap;transition:background .15s}
+        .vcb-view-btn:hover{background:var(--btn-dim-hover,rgba(255,255,255,.13))}
+        #vcb-filters{display:flex;gap:.3rem;flex-wrap:wrap;flex:1;align-items:center}
+        .vcb-pill{background:transparent;color:var(--muted,#9aa8c2);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:.2rem .6rem;font-size:.74rem;font-weight:600;cursor:pointer;transition:background .13s,color .13s,border-color .13s;white-space:nowrap}
+        .vcb-pill:hover{background:rgba(255,255,255,.07);color:var(--text,#e0e6f0)}
+        .vcb-pill.active{background:var(--accent,#3b82f6);color:#fff;border-color:var(--accent,#3b82f6)}
+        #vcb-right{display:flex;align-items:center;gap:.45rem;flex-shrink:0}
+        #vcb-sort,#vcb-sort-hdr{background:var(--input-bg,#1e1e2e);color:var(--input-text,#e0e6f0);border:1px solid var(--input-border,#444);border-radius:6px;padding:.22rem .55rem;font-size:.76rem;cursor:pointer}
+        .vcb-count{font-size:.72rem;color:var(--muted,#9aa8c2);white-space:nowrap}
+        /* ── Video list-view (column layout) ───────────────────────────────── */
+        /* Column template: watched-pip | title | duration | size | progress | actions */
+        :root{--vlc-cols: 18px 1fr 8ch 7ch 9ch 104px;--vlc-gap:.4rem}
+        .movie-grid.list-view{display:flex;flex-direction:column;gap:0;padding:0 .75rem .5rem;max-width:1200px}
+        /* header row */
+        .vlc-header-row{display:grid;grid-template-columns:var(--vlc-cols);align-items:center;column-gap:var(--vlc-gap);padding:.25rem .3rem;border-bottom:2px solid rgba(255,255,255,.1);font-size:.68rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted,#9aa8c2);position:sticky;top:0;background:var(--bg,#0f0f1a);z-index:2}
+        .vlc-h{padding:0 .2rem;white-space:nowrap;overflow:visible}
+        .vlc-h-title{padding-left:.1rem}
+        /* cards as CSS grid rows */
+        .movie-grid.list-view .movie-card{display:grid;grid-template-columns:var(--vlc-cols);align-items:center;column-gap:var(--vlc-gap);min-height:unset;height:2.4rem;border-radius:0;border:none;border-left:3px solid transparent;border-bottom:1px solid rgba(255,255,255,.04);background:#0000;background-image:none!important;transform:none!important;box-shadow:none!important;cursor:pointer;transition:background .1s;position:relative}
+        .movie-grid.list-view .movie-card::before,.movie-grid.list-view .movie-card::after{display:none}
+        .movie-grid.list-view .movie-card:hover{background:var(--folder-hover,#1d1d32)!important;transform:none!important}
+        .movie-grid.list-view .movie-card.alt-row{background:rgba(255,255,255,.02)!important}
+        .movie-grid.list-view .movie-card.alt-row:hover{background:var(--folder-hover,#1d1d32)!important}
+        .movie-grid.list-view .movie-card.playing{background:rgba(0,212,106,.06)!important;border-left-color:#00d46a}
+        .movie-grid.list-view .movie-card.queued{border-left-color:#ffaa00}
+        .movie-grid.list-view .movie-card.played{border-left-color:#2d8cff}
+        .movie-grid.list-view .movie-card.favorite{border-left-color:#ffcc40;box-shadow:none!important}
+        /* watched pip column */
+        .vlc-watched-pip{width:8px;height:8px;border-radius:50%;border:1.5px solid rgba(255,255,255,.22);margin:0 auto;flex-shrink:0;transition:background .15s}
+        .vlc-watched-pip.is-watched{background:#2d8cff;border-color:#2d8cff}
+        /* text columns */
+        .vlc-title,.vlc-folder,.vlc-ext,.vlc-duration,.vlc-size{font-size:.82rem;padding:0 .3rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .vlc-title{font-weight:500}
+        .vlc-folder,.vlc-ext{display:none!important}
+        .vlc-ext,.vlc-duration,.vlc-size{color:var(--muted,#9aa8c2);font-size:.75rem}
+        /* progress column */
+        .vlc-progress{display:flex;align-items:center;gap:.3rem;padding:0 .3rem;font-size:.7rem;color:var(--muted,#9aa8c2)}
+        .vlc-prog-bar{flex:1;height:4px;background:rgba(255,255,255,.1);border-radius:2px;min-width:20px;max-width:48px}
+        .vlc-prog-fill{height:100%;background:var(--accent,#3b82f6);border-radius:2px}
+        .vlc-prog-label{font-size:.68rem;white-space:nowrap}
+        /* actions column */
+        .vlc-actions{display:flex;align-items:center;gap:.2rem;padding:0 .2rem;justify-content:flex-end}
+        .vlc-actions button{background:rgba(20,20,34,.9);color:#fff;border:1px solid rgba(255,255,255,.18);padding:.18rem .38rem;border-radius:5px;cursor:pointer;font-size:.72rem;font-weight:700;white-space:nowrap;line-height:1.1;transition:background .12s;flex-shrink:0}
+        .vlc-actions button:hover{background:rgba(45,140,255,.85)}
+        .vlc-actions .primary-action{background:rgba(233,69,96,.9);border-color:rgba(233,69,96,.95)}
+        .vlc-actions .favorite-action{background:rgba(255,170,0,.92);border-color:rgba(255,170,0,.95);color:#1b1300}
+        /* hide action buttons by default; reveal on hover (desktop) or long-press (touch) */
+        .movie-grid.list-view .movie-card:not(.playing) .vlc-actions.card-list-actions{visibility:hidden;pointer-events:none}
+        @media (hover:hover) and (pointer:fine){.movie-grid.list-view .movie-card:not(.playing):hover .vlc-actions.card-list-actions{visibility:visible;pointer-events:auto}}
+        @media (pointer:coarse){.movie-grid.list-view .movie-card:not(.playing).actions-open .vlc-actions.card-list-actions{visibility:visible;pointer-events:auto}}
+        /* hide grid-mode inner card in list mode, show grid-mode overlay in grid mode */
+        .movie-grid.list-view .movie-card-inner{display:none!important}
+        .movie-grid:not(.list-view) .vlc-watched-pip,.movie-grid:not(.list-view) .vlc-title,.movie-grid:not(.list-view) .vlc-duration,.movie-grid:not(.list-view) .vlc-size,.movie-grid:not(.list-view) .vlc-progress,.movie-grid:not(.list-view) .vlc-actions{display:none!important}
+        /* keep movie-card-inner visible in grid mode */
+        .movie-grid:not(.list-view) .movie-card-inner{display:flex!important}
+        /* suppress all badge/overlay clutter in list rows */
+        .movie-grid.list-view .queue-badge,.movie-grid.list-view .favorite-badge,.movie-grid.list-view .link-badge,.movie-grid.list-view .progress-label{display:none!important}
+        /* thin left-edge progress indicator in list mode */
+        .movie-grid.list-view .progress-overlay{position:absolute;left:0;top:0;bottom:0;width:2px;height:100%;border-radius:0;background:rgba(45,140,255,.18)}
+        .movie-grid.list-view .progress-fill{height:100%;width:100%}
+        /* stop-button in list mode */
+        .movie-grid.list-view .stop-btn{font-size:.68rem;padding:.18rem .35rem;border-radius:4px;white-space:nowrap;flex-shrink:0}
+        /* ── keep old card-list-actions for any legacy references ──────────── */
+        .card-list-actions{flex-direction:row;gap:.22rem;align-items:center;flex-shrink:0}
+        /* state dots: no longer used in new layout; kept for card-mode progress cards */
+        .list-state-dots{display:flex;gap:.28rem;align-items:center;flex-shrink:0}
+        .list-state-dot{width:7px;height:7px;border-radius:50%;display:none}
+        .movie-card.queued .list-state-dot.dot-queued,.movie-card.played .list-state-dot.dot-played,.movie-card.favorite .list-state-dot.dot-fav{display:block}
+        .list-state-dot.dot-queued{background:#ffaa00}
+        .list-state-dot.dot-played{background:#2d8cff}
+        .list-state-dot.dot-fav{background:#ffcc40}
+        /* narrow screens: collapse some columns */
+        @media (max-width:640px){:root{--vlc-cols: 14px 1fr 0 6ch 76px;--vlc-gap:.2rem}.vlc-duration,.vlc-size{display:none!important}}
         .radio-country-fav-btn:hover{background:var(--btn-dim-hover,#555)}
         .radio-country-fav-btn.active{background:#f6c90e22;border-color:#f6c90e;color:#f6c90e}
         .radio-fav-select-wrap{position:relative;display:inline-flex;align-items:stretch;gap:2px}
@@ -422,6 +491,7 @@
           body.desktop-player-docked header{grid-template-columns:auto minmax(280px,1fr)}
           body.desktop-player-docked #now-playing-bar{position:fixed;top:8px;right:12px;width:clamp(320px,34vw,460px);max-height:calc(100vh - 20px);overflow-y:auto;overflow-x:hidden;z-index:26;padding:1rem 1rem .95rem;border-radius:14px;gap:.75rem;scrollbar-width:thin;scrollbar-color:#333355 transparent}
           body.desktop-player-docked #browser{padding-right:calc(clamp(320px,34vw,460px) + 18px)}
+          body.desktop-player-docked #video-command-bar{padding-right:calc(clamp(320px,34vw,460px) + 24px)}
           body.desktop-player-docked .player-top{grid-template-columns:1fr}
           body.desktop-player-docked #player-title{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.25;max-height:none}
           body.desktop-player-docked .transport-controls{display:flex;gap:.5rem;justify-content:stretch}
@@ -586,12 +656,10 @@
         #breadcrumb{font-size:.92rem;color:var(--path-text,#888);display:flex;align-items:center;gap:.3rem;flex-wrap:wrap;min-height:1.25rem;line-height:1.25rem}
         #breadcrumb a{color:var(--path-link,#00d4aa);cursor:pointer;text-decoration:none}
         #count-line{font-size:.78rem;color:var(--path-text,#777);line-height:1rem;min-height:1rem}
-        #scan-status{font-size:.72rem;color:var(--path-text,#9ea2b8);line-height:1rem;min-height:1rem}
-        #scan-status.global-scan-status{display:block;padding:.42rem .75rem;background:#10251f;border-bottom:1px solid rgba(0,212,170,.28);color:#ddfff7}
-        #scan-status.scanning{color:#00d4aa}
-        #scan-status.error{color:#ff7777}
-        .crumb-back{display:block;width:100%;color:var(--path-link,#00d4aa);background:var(--pill-bg,#161624);border:1px solid var(--pill-border,#2a2a3e);border-radius:8px;padding:.75rem .95rem;cursor:pointer;text-decoration:none;font-size:1.05rem;font-weight:700;text-align:center;box-sizing:border-box}
-        .crumb-back:hover{background:var(--pill-hover,#1e1e30)}
+        #scan-status{display:none!important}
+        #scan-status.error{display:block!important;padding:.3rem .75rem;background:#2a0f0f;border-bottom:1px solid rgba(255,100,100,.3);color:#ff9999;font-size:.72rem}
+        .crumb-back{display:inline-flex;align-items:center;gap:.35rem;width:fit-content;color:var(--path-link,#00d4aa);background:var(--pill-bg,#161624);border:1px solid var(--pill-border,#2a2a3e);border-radius:8px;padding:.59rem 1.17rem;cursor:pointer;text-decoration:none;font-size:1.1rem;font-weight:700;box-sizing:border-box;margin:.4rem .75rem .2rem}
+        @media(hover:hover){.crumb-back:hover{background:var(--pill-hover,#1e1e30)}}
         .crumb-current{color:#ddd;font-weight:600}
         #status{padding:.35rem .75rem;background:#0a0a0a;font-size:.74rem;color:#777;border-bottom:1px solid #1a1a1a}
         #browser{padding:.7rem .75rem;flex:1}
@@ -646,7 +714,8 @@
         .movie-card.playing{border-color:#00d46a}
         .movie-card.queued{border-color:#ffaa00}
         .movie-card.queued::before{background:linear-gradient(to bottom,rgba(255,170,0,.18) 0%,rgba(0,0,0,.78) 100%)}
-        .movie-card.played{border-color:#2d8cff}
+        .movie-card.played{border-color:#2d8cff;border-width:3px}
+        .movie-card.played::before{background:linear-gradient(to bottom,rgba(45,140,255,.18) 0%,rgba(0,0,0,.72) 100%)}
         .movie-card.favorite{box-shadow:0 0 0 2px rgba(255,204,64,.22),0 5px 18px rgba(255,204,64,.16)}
         .movie-card.playing.played{border-color:#00d46a}
         .movie-card.playing.queued{border-color:#00d46a}

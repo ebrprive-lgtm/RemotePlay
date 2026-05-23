@@ -25,30 +25,22 @@ let _libStatusWasScanning = false;
 
 function updateLibraryStatus(scan) {
   if (currentMode !== 'video') return;
-  const el = document.getElementById('scan-status');
-  if (!el || !scan) return;
+  const badge = document.getElementById('indexing-badge');
+  const el = document.getElementById('scan-status'); // kept for error fallback
+  if (!scan) return;
   const indexed = Number(scan.indexedFiles ?? scan.IndexedFiles) || 0;
   const movies = Number(scan.indexedMovies ?? scan.IndexedMovies ?? indexed) || 0;
   const links = Number(scan.indexedLinks ?? scan.IndexedLinks) || 0;
-  const scanned = Number(scan.scannedFiles ?? scan.ScannedFiles) || 0;
-  const folders = Number(scan.scannedFolders ?? scan.ScannedFolders) || 0;
   const isScanning = Boolean(scan.isScanning ?? scan.IsScanning);
   const error = (scan.lastError ?? scan.LastError ?? '').trim();
-  el.classList.toggle('scanning', isScanning);
-  el.classList.toggle('error', Boolean(error));
-  el.classList.toggle('global-scan-status', isScanning);
+  if (badge) badge.style.display = isScanning ? '' : 'none';
   if (error) {
-    el.textContent = 'Library scan failed: ' + error;
+    if (el) { el.style.display = ''; el.textContent = 'Library scan failed: ' + error; }
     _stopLibStatusPoll();
     return;
   }
+  if (el) el.style.display = 'none';
   if (isScanning) {
-    el.textContent =
-      'Indexing library... ' +
-      scanned +
-      ' movie(s), ' +
-      folders +
-      ' folder(s) indexed so far. Normal playback is not interrupted.';
     _libStatusWasScanning = true;
     _startLibStatusPoll();
     return;
@@ -60,11 +52,11 @@ function updateLibraryStatus(scan) {
       browse(currentDir, 0, false, false);
   }
   _stopLibStatusPoll();
-  if (indexed > 0) {
-    const linkPart = links > 0 ? ' — ' + links + ' link(s)' : '';
-    el.textContent = 'Library ready: ' + movies + ' movie(s)' + linkPart;
-  } else {
-    el.textContent = 'Library index not built yet';
+  // Update count-text with library ready info
+  const countText = document.getElementById('count-text');
+  if (countText && !countText.textContent) {
+    const linkPart = links > 0 ? ' \u2014 ' + links + ' link(s)' : '';
+    countText.textContent = 'Library ready: ' + movies + ' movie(s)' + linkPart;
   }
 }
 

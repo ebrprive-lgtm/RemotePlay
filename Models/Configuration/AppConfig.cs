@@ -1,5 +1,4 @@
 using System.IO;
-using System.Text.Json;
 
 namespace RemotePlay;
 
@@ -73,8 +72,6 @@ internal sealed record AppConfig
     public double BrowserColTypeWidth   { get; init; } = 60;
     public double BrowserColTargetWidth { get; init; } = 260;
 
-    private static readonly string ConfigFile = AppPaths.ConfigFile;
-
     /// <summary>Returns the fully-resolved movies path (relative paths are resolved against the exe directory).</summary>
     public string ResolvedMoviesPath =>
         Path.IsPathRooted(MoviesPath)
@@ -96,56 +93,6 @@ internal sealed record AppConfig
     public string[] EffectiveMusicFileExtensions => NormalizeExtensions(MusicFileExtensions, () => new AppConfig().MusicFileExtensions).ToArray();
 
     public string[] EffectiveIgnoredLibraryFolders => NormalizeNames(IgnoredLibraryFolders).ToArray();
-
-    public static void Save(AppConfig config)
-    {
-        ArgumentNullException.ThrowIfNull(config);
-
-        var json = JsonSerializer.Serialize(config,
-            new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
-            });
-
-        // Write to a temp file first, then atomically replace the real config file.
-        // This prevents a crash mid-write from corrupting the config and silently resetting all settings.
-        var tmp = ConfigFile + ".tmp";
-        File.WriteAllText(tmp, json);
-
-        if (File.Exists(ConfigFile))
-            File.Replace(tmp, ConfigFile, destinationBackupFileName: null);
-        else
-            File.Move(tmp, ConfigFile);
-    }
-
-    public static AppConfig Load()
-    {
-        try
-        {
-            if (File.Exists(ConfigFile))
-            {
-                var json = File.ReadAllText(ConfigFile);
-                var config = JsonSerializer.Deserialize<AppConfig>(json,
-                    new JsonSerializerOptions
-                    {
-                        PropertyNameCaseInsensitive = true,
-                        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
-                    });
-                if (config is not null)
-                {
-                    Logger.Info($"Config loaded — Scheme: {config.Scheme}, Port: {config.Port}, MoviesPath: {config.ResolvedMoviesPath}, MusicPath: {config.ResolvedMusicPath}");
-                    return config;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Failed to load config, using defaults", ex);
-        }
-
-        return new AppConfig();
-    }
 
     /// <summary>Returns a new <see cref="AppConfig"/> identical to <paramref name="source"/> except with updated browser directory paths.</summary>
     public static AppConfig WithBrowserDirs(AppConfig source, string leftDir, string rightDir)
@@ -195,11 +142,4 @@ internal sealed record AppConfig
 
         return names.Length > 0 ? names : new AppConfig().IgnoredLibraryFolders;
     }
-}
-
-internal enum PlaybackEndMode
-{
-    Stop,
-    PlayNext,
-    ReturnToLibrary
 }

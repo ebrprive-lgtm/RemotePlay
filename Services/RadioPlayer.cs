@@ -64,11 +64,12 @@ internal sealed class RadioPlayer : IDisposable
             try
             {
                 var reader = new MediaFoundationReader(streamUrl);
-                var output = new WaveOutEvent { DeviceNumber = _deviceNumber, Volume = (float)_volume };
+                var output = new WaveOutEvent { DeviceNumber = _deviceNumber };
                 output.PlaybackStopped += OnPlaybackStopped;
-                // Wrap through a VolumeSampleProvider so boost > 1.0 is possible.
+                // Wrap through a VolumeSampleProvider for combined volume+boost gain,
+                // matching the gain model used by MusicPlayer (sample-level, same curve).
                 var sampleSrc = reader.ToSampleProvider();
-                var boostProv = new VolumeSampleProvider(sampleSrc) { Volume = (float)_boost };
+                var boostProv = new VolumeSampleProvider(sampleSrc) { Volume = (float)(_volume * _boost) };
                 output.Init(boostProv);
 
                 lock (_lock)
@@ -130,7 +131,7 @@ internal sealed class RadioPlayer : IDisposable
         lock (_lock)
         {
             _volume = Math.Clamp(volume, 0.0, 1.0);
-            if (_output != null) _output.Volume = (float)_volume;
+            if (_boostProvider != null) _boostProvider.Volume = (float)(_volume * _boost);
         }
     }
 
@@ -139,7 +140,7 @@ internal sealed class RadioPlayer : IDisposable
         lock (_lock)
         {
             _boost = Math.Clamp(boost, 1.0, 3.0);
-            if (_boostProvider != null) _boostProvider.Volume = (float)_boost;
+            if (_boostProvider != null) _boostProvider.Volume = (float)(_volume * _boost);
         }
     }
 

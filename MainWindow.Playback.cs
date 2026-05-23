@@ -905,6 +905,7 @@ public partial class MainWindow
             SeekMusic      = _musicPlayer.Seek,
             SetMusicVolume = _musicPlayer.SetVolume,
             SetMusicBoost  = _musicPlayer.SetBoost,
+            SetMusicNextTrack = _musicPlayer.SetNextTrack,
             // Radio — backed by RadioPlayer + RadioBrowserClient
             RadioSearch         = (q, c, t, l, o) => _radioBrowser.SearchAsync(q, c, t, l, o),
             RadioTopStations    = (l, o) => _radioBrowser.TopStationsAsync(l, o),

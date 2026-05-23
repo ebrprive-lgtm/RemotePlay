@@ -18,8 +18,8 @@
         <header>
           <div id="brand">
             <h1>&#127916; RemotePlay <span id="version-chip" class="version-chip"></span></h1>
+            <span id="indexing-badge" style="display:none">Indexing</span>
             <div id="brand-actions"><div id="brand-row"><a id="health-link" href="/health" target="_blank" rel="noopener"><span id="diag-dot"></span>Health</a><a id="setup-link" href="/setup" target="_blank" rel="noopener">Setup</a><div id="peers-wrap"><button id="peers-btn" onclick="togglePeers()" aria-expanded="false" aria-haspopup="true"><span id="peers-dot"></span>Instances</button><div id="peers-dropdown" role="menu"></div></div></div><div id="brand-controls-row"><select id="theme-select" onchange="setTheme(this.value)" aria-label="Theme"><option value="default">Dark</option><option value="amoled">AMOLED</option><option value="blue">Blue</option><option value="sunset">Sunset Pop</option><option value="neon">Neon Arcade</option><option value="forest">Forest</option><option value="lavender">Pastel Lavender</option><option value="peach">Pastel Peach</option><option value="mint">Pastel Mint</option><option value="high-contrast">High contrast</option></select><button id="play-local-toggle" onclick="togglePlayLocal()" title="Playing on server — click to play on this device" aria-pressed="false">&#128266; Local</button></div></div>
-            <button id="back-button" class="crumb-back" onclick="goBack()" style="display:none">&#8592; Back</button>
           </div>
           <div id="search-wrap">
             <div id="mode-tabs">
@@ -38,9 +38,31 @@
             </div>
             <div id="breadcrumb"></div>
             <div id="count-line" style="display:flex;align-items:center;gap:.5rem"><span id="count-text"></span><button id="view-toggle-video" class="radio-reset-btn view-toggle-btn" onclick="_setViewMode('video',_viewMode.video==='grid'?'list':'grid')" style="display:none" title="Toggle view"></button><button id="view-toggle-music" class="radio-reset-btn view-toggle-btn" onclick="_setViewMode('music',_viewMode.music==='grid'?'list':'grid')" style="display:none" title="Toggle view"></button></div>
-            <div id="scan-status"></div>
+            <div id="scan-status" style="display:none"></div>
           </div>
           <div id="radio-filter-sticky" style="display:none;grid-column:1/-1;border-top:1px solid var(--pill-border,rgba(255,255,255,.08));padding:.3rem .75rem .3rem .75rem"></div>
+          <div id="video-command-bar" style="display:none">
+            <div id="vcb-left">
+              <button id="vcb-view-btn" class="vcb-view-btn" onclick="_setViewMode('video',_viewMode.video==='grid'?'list':'grid')" title="Toggle list / grid view"></button>
+            </div>
+            <div id="vcb-filters">
+              <button class="vcb-pill active" data-vf="all"    onclick="setVideoFilter('all')">All</button>
+              <button class="vcb-pill"        data-vf="unwatched" onclick="setVideoFilter('unwatched')">Unwatched</button>
+              <button class="vcb-pill"        data-vf="watched"   onclick="setVideoFilter('watched')">Watched</button>
+              <button class="vcb-pill"        data-vf="fav"       onclick="setVideoFilter('fav')">&#10084; Fav</button>
+              <button class="vcb-pill"        data-vf="progress"  onclick="setVideoFilter('progress')">&#9654; In Progress</button>
+            </div>
+            <div id="vcb-right">
+              <select id="vcb-sort" onchange="setVideoSort(this.value)" aria-label="Sort videos">
+                <option value="name">Name</option>
+                <option value="folder">Folder</option>
+                <option value="duration">Duration</option>
+                <option value="size">Size</option>
+                <option value="progress">Progress</option>
+              </select>
+              <span id="vcb-count" class="vcb-count"></span>
+            </div>
+          </div>
           <div id="now-playing-bar">
             <div class="player-top">
               <div id="player-summary"><div id="player-poster"></div><div><div id="player-title">Nothing playing</div><div id="player-meta"></div><div id="connection-status">Connecting...</div><button class="diag-button" onclick="openDiagnostics()">Diagnostics</button></div></div>
@@ -109,6 +131,7 @@
           </div>
         </header>
         <div id="status" style="display:none">Loading...</div>
+        <button id="back-button" class="crumb-back" onclick="goBack()" style="display:none">&#8592; Back</button>
         <div id="browser"></div>
         <div id="music-browser" style="display:none"></div>
         <div id="music-queue-pending-bar" style="display:none"></div>

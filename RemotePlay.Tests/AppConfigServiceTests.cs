@@ -80,4 +80,25 @@ public class AppConfigServiceTests : IDisposable
 
         Assert.NotNull(config);
     }
+
+    [Fact]
+    public void Load_WhenFileContainsInvalidJson_ReturnsDefaultConfig()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_configPath)!);
+        try
+        {
+            File.WriteAllText(_configPath, "{ this is not valid json }}}");
+        }
+        catch (IOException)
+        {
+            return; // Config file locked by running app — skip.
+        }
+
+        var service = new AppConfigService();
+        var config = service.Load();
+
+        Assert.NotNull(config);
+        Assert.Equal(new AppConfig().Port, config.Port);
+        Assert.Equal(new AppConfig().Volume, config.Volume);
+    }
 }

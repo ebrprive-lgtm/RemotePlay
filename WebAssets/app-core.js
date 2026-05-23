@@ -30,8 +30,10 @@ function _setViewMode(section, mode) {
   _viewMode[section] = mode;
   localStorage.setItem('remotePlayView' + section.charAt(0).toUpperCase() + section.slice(1), mode);
   _applyViewToggleBtn(section);
-  if (section === 'video' && currentData) render(currentData, Boolean(currentData.query));
-  else if (section === 'music' && currentMusicData)
+  if (section === 'video' && currentData) {
+    if (typeof _applyVcbViewBtn === 'function') _applyVcbViewBtn();
+    render(currentData, Boolean(currentData.query));
+  } else if (section === 'music' && currentMusicData)
     renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
   else if (section === 'radio')
     renderRadioCards(_radioStations, _radioStations.length === _radioPageSize * (_radioPage + 1));
@@ -186,6 +188,16 @@ document.addEventListener('DOMContentLoaded', () => {
   // Always start in server mode — local is a session gesture, not a persisted preference.
   localStorage.setItem('remotePlayLocal', 'false');
   setPlayLocal(false);
+
+  // Keep --header-h in sync so sticky elements below the header don't overlap it.
+  const hdr = document.querySelector('header');
+  if (hdr && typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(entries => {
+      const h = entries[0].borderBoxSize?.[0]?.blockSize ?? entries[0].contentRect.height;
+      document.documentElement.style.setProperty('--header-h', h + 'px');
+    });
+    ro.observe(hdr);
+  }
 });
 function setTheme(theme, save = true) {
   document.body.classList.remove(

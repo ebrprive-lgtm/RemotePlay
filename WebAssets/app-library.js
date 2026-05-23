@@ -86,6 +86,9 @@ async function playMusic(path, name) {
 
   await fetch('/api/music/play?path=' + encodeURIComponent(path));
   musicIsPlaying = true;
+  // Immediately tell the server which track comes next so playback continues
+  // even when this browser tab is closed before the current song ends.
+  _queueNextTrackOnServer();
   const trackMetaSrv = musicTrackList.find(t => t.path === path) || {};
   updateMusicBar({
     isPlaying: true,
@@ -590,6 +593,17 @@ function toggleMusicRepeat() {
   _refreshMusicNavLabels();
 }
 
+// Tell the server which track to auto-advance to when the current one ends.
+// Called every time a track starts playing so the server always has the right
+// lookahead even if the browser is closed before the song finishes.
+function _queueNextTrackOnServer() {
+  const nextT = _musicPeekNext();
+  const url = nextT
+    ? '/api/music/queue-next?path=' + encodeURIComponent(nextT.path)
+    : '/api/music/queue-next'; // empty path clears the queued track
+  fetch(url).catch(() => {});
+}
+
 let _musicKnownSessionId = null; // last server session ID seen; null = unknown
 
 function startMusicPlaybackPoll() {
@@ -618,6 +632,24 @@ function startMusicPlaybackPoll() {
 
     const wasPlaying = musicIsPlaying;
     musicIsPlaying = s.isPlaying || s.isPaused;
+
+    // Detect a server-initiated track advance (the server auto-played the next
+    // track while the browser was open). Sync browser state and re-register the
+    // new lookahead so the chain keeps going.
+    if (s.currentPath && s.currentPath !== musicCurrentPath && s.isPlaying) {
+      musicCurrentPath = s.currentPath;
+      const advancedIdx = musicTrackList.findIndex(t => t.path === s.currentPath);
+      if (advancedIdx >= 0) {
+        musicTrackIndex = advancedIdx;
+        if (_musicShuffle && _musicShuffleOrder.length) {
+          const pos = _musicShuffleOrder.indexOf(advancedIdx);
+          if (pos >= 0) _musicShufflePos = pos;
+        }
+      }
+      _refreshMusicNavLabels();
+      _queueNextTrackOnServer();
+    }
+
     // Enrich server status with track-list metadata for the player bar
     const trackMeta = musicCurrentPath ? musicTrackList.find(t => t.path === musicCurrentPath) : null;
     if (trackMeta) {
@@ -632,7 +664,9 @@ function startMusicPlaybackPoll() {
     }
     updateMusicBar(s);
 
-    // auto-advance when track ends naturally
+    // auto-advance when track ends naturally and the server didn't already handle it
+    // (server handles it when _nextTrackPath was set; this covers the case where
+    //  the browser is still open but autoplay wasn't yet registered)
     if (!s.isPlaying && !s.isPaused && wasPlaying && musicCurrentPath && !s.currentPath) {
       musicCurrentPath = null;
       if (_musicAutoPlay || _musicShuffle || _musicRepeat !== 'none') {
@@ -692,10 +726,12 @@ function switchMode(mode) {
     stopRadioStatusPoll();
     const back = document.getElementById('back-button');
     if (back) back.onclick = goBack;
+    _applyVideoCommandBar(true); // always show bar when entering video mode
     refreshLibraryStatus();
     if (currentData) render(currentData);
     else browse(null);
   } else if (mode === 'music') {
+    if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
     if (searchRow) searchRow.style.display = '';
     searchEl.placeholder = 'Search music library...';
     stopRadioStatusPoll();
@@ -712,6 +748,7 @@ function switchMode(mode) {
     if (!currentMusicData) browseMusic(null);
     else renderMusicHeader(currentMusicData, false);
   } else if (mode === 'radio') {
+    if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
     if (searchRow) searchRow.style.display = 'none';
     stopMusicStatusPoll();
     setMusicHeaderForMode('radio');
@@ -1458,6 +1495,89 @@ async function searchLibrary(q, offset = 0, append = false) {
     pendingSearchAbort = null;
   }
 }
+// ── Video command-bar filter / sort state ────────────────────────────
+let _videoFilter = 'all'; // 'all' | 'unwatched' | 'watched' | 'fav' | 'progress'
+let _videoSort   = 'name'; // 'name' | 'folder' | 'duration' | 'size' | 'progress'
+let _currentRawFiles = []; // last unfiltered file list from server
+
+function setVideoFilter(f) {
+  _videoFilter = f;
+  document.querySelectorAll('#vcb-filters .vcb-pill').forEach(b => b.classList.toggle('active', b.dataset.vf === f));
+  _rerenderVideoFiles();
+}
+function setVideoSort(s) {
+  _videoSort = s;
+  const sel = document.getElementById('vcb-sort');
+  if (sel && sel.value !== s) sel.value = s;
+  _rerenderVideoFiles();
+}
+function _applyVideoCommandBar(show) {
+  const bar = document.getElementById('video-command-bar');
+  const cl  = document.getElementById('count-line');
+  const vtv = document.getElementById('view-toggle-video');
+  // Bar lives inside the header now; show whenever we are in video mode
+  if (bar) bar.style.display = show ? 'flex' : 'none';
+  if (cl)  { cl.style.display = show ? '' : ''; cl.classList.toggle('vcb-active', show); }
+  if (vtv) vtv.style.display = 'none';
+  if (show) {
+    const sel = document.getElementById('vcb-sort');
+    if (sel) sel.value = _videoSort;
+    document.querySelectorAll('#vcb-filters .vcb-pill').forEach(b => b.classList.toggle('active', b.dataset.vf === _videoFilter));
+    _applyVcbViewBtn();
+  }
+}
+function _applyVcbViewBtn() {
+  const btn = document.getElementById('vcb-view-btn');
+  if (!btn) return;
+  const isList = _viewMode.video === 'list';
+  btn.textContent = isList ? '⊞ Grid' : '☰ List';
+  btn.title = isList ? 'Switch to grid view' : 'Switch to list view';
+}
+function _sortedFiles(files) {
+  const arr = files.slice();
+  switch (_videoSort) {
+    case 'folder':   arr.sort((a,b) => (a.folder||'').localeCompare(b.folder||'') || (a.displayName||a.name||'').localeCompare(b.displayName||b.name||'')); break;
+    case 'duration': arr.sort((a,b) => (Number(b.duration)||0) - (Number(a.duration)||0)); break;
+    case 'size':     arr.sort((a,b) => (Number(b.sizeBytes)||0) - (Number(a.sizeBytes)||0)); break;
+    case 'progress': arr.sort((a,b) => (Number(b.progress)||0) - (Number(a.progress)||0)); break;
+    default:         arr.sort((a,b) => (a.displayName||a.name||'').localeCompare(b.displayName||b.name||'')); break;
+  }
+  return arr;
+}
+function _filteredFiles(files) {
+  switch (_videoFilter) {
+    case 'unwatched': return files.filter(f => !playedVideos.has(f.path) && (Number(f.progress)||0) < 0.95);
+    case 'watched':   return files.filter(f => playedVideos.has(f.path) || (Number(f.progress)||0) >= 0.95);
+    case 'fav':       return files.filter(f => favoriteVideos.has(f.path) || Boolean(f.favorite));
+    case 'progress':  return files.filter(f => { const p = Number(f.progress)||0; return p > 0.02 && p < 0.95; });
+    default:          return files;
+  }
+}
+function _rerenderVideoFiles() {
+  if (!_currentRawFiles.length) return;
+  const filtered = _filteredFiles(_currentRawFiles);
+  const sorted   = _sortedFiles(filtered);
+  const cnt = document.getElementById('vcb-count');
+  if (cnt) cnt.textContent = sorted.length + ' / ' + _currentRawFiles.length + ' video(s)';
+  _renderVideoFileRows(sorted);
+}
+function _formatDuration(secs) {
+  if (!secs) return '';
+  const s = Math.round(secs);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h > 0
+    ? h + ':' + String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0')
+    : m + ':' + String(sec).padStart(2,'0');
+}
+function _formatSize(bytes) {
+  if (!bytes) return '';
+  if (bytes >= 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+  if (bytes >= 1048576)    return (bytes / 1048576).toFixed(0) + ' MB';
+  return (bytes / 1024).toFixed(0) + ' KB';
+}
+
 function render(data, searching) {
   const bc = document.getElementById('breadcrumb');
   const countLine = document.getElementById('count-line');
@@ -1506,8 +1626,8 @@ function render(data, searching) {
   }
   document.getElementById('view-toggle-music') &&
     (document.getElementById('view-toggle-music').style.display = 'none');
-  document.getElementById('view-toggle-video') &&
-    (document.getElementById('view-toggle-video').style.display = '');
+  // Show video command bar (hides the old count-line toggle)
+  _applyVideoCommandBar(true);
   _applyViewToggleBtn('video');
   let html = '';
   if (data.folders.length) {
@@ -1551,107 +1671,23 @@ function render(data, searching) {
     }
   }
   if (data.files.length) {
-    html +=
-      '<div class="section-label">Videos</div><div class="movie-grid' +
-      (_viewMode.video === 'list' ? ' list-view' : '') +
-      '">';
-    html += data.files
-      .map((f) => {
-        if (f.watched && !playedVideos.has(f.path)) {
-          playedVideos.add(f.path);
-          savePlayedVideos();
-        }
-        const played = playedVideos.has(f.path);
-        const thumbUrl = '/api/thumb?path=' + encodeURIComponent(f.path);
-        const bg = 'data-thumb="' + esc(thumbUrl) + '"';
-        const queued = queuedVideos.has(f.path);
-        if (f.favorite) favoriteVideos.add(f.path);
-        const favorite = favoriteVideos.has(f.path) || Boolean(f.favorite);
-        const cardClass =
-          'movie-card ' +
-          (f.path === playingPath ? 'playing ' : '') +
-          (queued ? 'queued ' : '') +
-          (played ? 'played ' : '') +
-          (favorite ? 'favorite' : '');
-        const isPlaying = f.path === playingPath;
-        const action = isPlaying ? '' : ' onclick="onCardClick(event,\'' + f.path + '\')"';
-        const stopButton = isPlaying
-          ? '<button class="stop-btn" onclick="stopPlayingCard(event,\'' +
-            f.path +
-            '\')">&#9632; STOP</button>'
-          : '';
-        const cardActions = isPlaying
-          ? ''
-          : '<div class="card-actions"><button class="primary-action" onclick="playCardAction(event,\'' +
-            f.path +
-            "','" +
-            esc(f.name) +
-            '\')">Play</button><button class="muted-action" onclick="queueCardAction(event,\'' +
-            f.path +
-            '\')">' +
-            (queued ? 'Unqueue' : 'Queue') +
-            '</button><button class="favorite-action" onclick="toggleFavoriteCard(event,\'' +
-            f.path +
-            '\')">' +
-            (favorite ? 'Unfavorite' : 'Favorite') +
-            '</button><button class="muted-action" onclick="toggleWatchedCard(event,\'' +
-            f.path +
-            '\')">' +
-            (played ? 'Unwatch' : 'Watched') +
-            '</button></div>';
-        const displayName = f.displayName || f.name;
-        const progress = Number(f.progress) || 0;
-        const progressPct = Math.max(0, Math.min(99, Math.round(progress * 100)));
-        const progressOverlay =
-          progressPct > 0
-            ? '<div class="progress-label">' +
-              progressPct +
-              '%</div><div class="progress-overlay"><div class="progress-fill" style="width:' +
-              progressPct +
-              '%"></div></div>'
-            : '';
-        const queuedBadge = queued ? '<div class="queue-badge queued-badge">Queued</div>' : '';
-        const favoriteBadge = favorite
-          ? '<div class="favorite-badge queued-badge">Favorite</div>'
-          : '';
-        const linkBadge = f.isLink
-          ? '<div class="queue-badge link-badge" title="Library link">🔗</div>'
-          : '';
-        return (
-          '<div class="' +
-          cardClass +
-          '" id="' +
-          cardIdFor(f.path) +
-          '" data-path="' +
-          esc(f.path) +
-          '" role="button" tabindex="0" aria-label="Play ' +
-          esc(displayName) +
-          '" ' +
-          bg +
-          action +
-          ' onkeydown="activateKeyboardClick(event,this)" onpointerdown="beginCardHold(event,\'' +
-          f.path +
-          '\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">' +
-          '<div class="movie-card-inner">' +
-          '<div class="movie-title">' +
-          esc(displayName) +
-          '</div>' +
-          queuedBadge +
-          favoriteBadge +
-          linkBadge +
-          stopButton +
-          cardActions +
-          '</div>' +
-          progressOverlay +
-          '</div>'
-        );
-      })
-      .join('');
-    html += '</div>';
+    // Store raw files for filter/sort; render via helper
+    _currentRawFiles = data.files;
+    const filtered = _filteredFiles(data.files);
+    const sorted   = _sortedFiles(filtered);
+    const cnt = document.getElementById('vcb-count');
+    if (cnt) cnt.textContent = sorted.length + ' / ' + data.files.length + ' video(s)';
+    html += '<div class="section-label" style="display:none">Videos</div>';
+    html += '<div id="video-list-grid" class="movie-grid' + (_viewMode.video === 'list' ? ' list-view' : '') + '"></div>';
+    // We'll populate the grid after inserting the HTML skeleton
   }
   if (!data.folders.length && !data.files.length)
     html = '<div id="empty">No subfolders or video files here.</div>';
   document.getElementById('browser').innerHTML = html;
+  if (data.files.length) {
+    const sorted2 = _sortedFiles(_filteredFiles(data.files));
+    _renderVideoFileRows(sorted2);
+  }
   if (data.hasMoreFiles) {
     const shown = (data.files || []).length;
     document
@@ -1665,6 +1701,113 @@ function render(data, searching) {
           ')</button>'
       );
   }
+  observeMovieCards();
+  return; // early return — rest of old render body is replaced
+}
+
+function _renderVideoFileRows(files) {
+  const grid = document.getElementById('video-list-grid');
+  if (!grid) return;
+  const isList = _viewMode.video === 'list';
+  grid.className = 'movie-grid' + (isList ? ' list-view' : '');
+
+  const HEADER = isList
+    ? '<div class="vlc-header-row">' +
+        '<div class="vlc-h vlc-h-watched"></div>' +
+        '<div class="vlc-h vlc-h-title">Title</div>' +
+        '<div class="vlc-h vlc-h-duration">Duration</div>' +
+        '<div class="vlc-h vlc-h-size">Size</div>' +
+        '<div class="vlc-h vlc-h-progress">Progress</div>' +
+        '<div class="vlc-h vlc-h-actions"></div>' +
+      '</div>'
+    : '';
+
+  let html = HEADER;
+  html += files
+    .map((f, rowIndex) => {
+      if (f.watched && !playedVideos.has(f.path)) {
+        playedVideos.add(f.path);
+        savePlayedVideos();
+      }
+      const played    = playedVideos.has(f.path);
+      const queued    = queuedVideos.has(f.path);
+      if (f.favorite) favoriteVideos.add(f.path);
+      const favorite  = favoriteVideos.has(f.path) || Boolean(f.favorite);
+      const thumbUrl  = '/api/thumb?path=' + encodeURIComponent(f.path);
+      const altRow    = rowIndex % 2 === 1 ? ' alt-row' : '';
+      const isPlaying = f.path === playingPath;
+      const displayName = f.displayName || f.name;
+      const progress  = Number(f.progress) || 0;
+      const progressPct = Math.max(0, Math.min(99, Math.round(progress * 100)));
+      const cardClass = 'movie-card ' +
+        (isPlaying ? 'playing ' : '') +
+        (queued    ? 'queued '  : '') +
+        (played    ? 'played '  : '') +
+        (favorite  ? 'favorite ': '') +
+        altRow;
+      const action = isPlaying ? '' : ' onclick="onCardClick(event,\'' + f.path + '\')"';
+      // ── column: watched pip ────────────────────────────────────────────────
+      const watchedPip = '<div class="vlc-watched-pip' + (played ? ' is-watched' : '') + '" title="' + (played ? 'Watched' : 'Not watched') + '"></div>';
+      // ── column: title ─────────────────────────────────────────────────────
+      const linkBadgeInline = f.isLink ? ' <span class="folder-link-badge" title="Library link">🔗</span>' : '';
+      const titleCol = '<div class="vlc-title">' + esc(displayName) + linkBadgeInline + '</div>';
+      // ── column: folder ───────────────────────────────────────────────────
+      const folderCol = '<div class="vlc-folder">' + esc(f.folder || '') + '</div>';
+      // ── column: format ───────────────────────────────────────────────────
+      const extCol = '<div class="vlc-ext">' + esc(f.ext || '') + '</div>';
+      // ── column: duration ─────────────────────────────────────────────────
+      const durCol = '<div class="vlc-duration">' + _formatDuration(Number(f.duration) || 0) + '</div>';
+      // ── column: size ─────────────────────────────────────────────────────
+      const sizeCol = '<div class="vlc-size">' + _formatSize(Number(f.sizeBytes) || 0) + '</div>';
+      // ── column: progress bar ─────────────────────────────────────────────
+      const progCol = progressPct > 0
+        ? '<div class="vlc-progress"><div class="vlc-prog-bar"><div class="vlc-prog-fill" style="width:' + progressPct + '%"></div></div><span class="vlc-prog-label">' + progressPct + '%</span></div>'
+        : '<div class="vlc-progress"></div>';
+      // ── column: action buttons ───────────────────────────────────────────
+      const actionsCol = isPlaying
+        ? '<div class="vlc-actions"><button class="stop-btn" onclick="stopPlayingCard(event,\'' + f.path + '\')">&#9632;</button></div>'
+        : '<div class="vlc-actions card-list-actions">' +
+            '<button class="primary-action" onclick="playCardAction(event,\'' + f.path + "','" + esc(f.name) + '\')">&#9654;</button>' +
+            '<button class="muted-action"   onclick="queueCardAction(event,\'' + f.path + '\')">' + (queued ? '&#8722;Q' : '+Q') + '</button>' +
+            '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + f.path + '\')">' + (favorite ? '&#9733;' : '&#9734;') + '</button>' +
+            '<button class="muted-action"   onclick="toggleWatchedCard(event,\'' + f.path + '\')">' + (played ? '&#128064;' : '&#10003;') + '</button>' +
+          '</div>';
+      // ── grid-mode card overlay actions (hidden in list mode) ─────────────
+      const cardActionsGrid = isPlaying ? '' :
+        '<div class="card-actions">' +
+          '<button class="primary-action" onclick="playCardAction(event,\'' + f.path + "','" + esc(f.name) + '\')">Play</button>' +
+          '<button class="muted-action"   onclick="queueCardAction(event,\'' + f.path + '\')">' + (queued ? 'Unqueue' : 'Queue') + '</button>' +
+          '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + f.path + '\')">' + (favorite ? 'Unfavorite' : 'Favorite') + '</button>' +
+          '<button class="muted-action"   onclick="toggleWatchedCard(event,\'' + f.path + '\')">' + (played ? 'Unwatch' : 'Watched') + '</button>' +
+        '</div>';
+      const progressOverlay = progressPct > 0
+        ? '<div class="progress-overlay"><div class="progress-fill" style="width:' + progressPct + '%"></div></div>'
+        : '';
+      const gridBadges = (queued  ? '<div class="queue-badge queued-badge">Queued</div>'   : '') +
+                         (favorite ? '<div class="favorite-badge queued-badge">Favorite</div>' : '');
+
+      return '<div class="' + cardClass +
+        '" id="' + cardIdFor(f.path) +
+        '" data-path="' + esc(f.path) +
+        '" role="button" tabindex="0" aria-label="Play ' + esc(displayName) +
+        '" data-thumb="' + esc(thumbUrl) + '"' +
+        action +
+        ' onkeydown="activateKeyboardClick(event,this)"' +
+        ' onpointerdown="beginCardHold(event,\'' + f.path + '\')"' +
+        ' onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">' +
+        // List-mode columns (CSS grid)
+        watchedPip + titleCol + durCol + sizeCol + progCol + actionsCol +
+        // Grid-mode inner card (hidden in list mode)
+        '<div class="movie-card-inner">' +
+          '<div class="movie-title">' + esc(displayName) + '</div>' +
+          gridBadges +
+          cardActionsGrid +
+        '</div>' +
+        progressOverlay +
+        '</div>';
+    })
+    .join('');
+  grid.innerHTML = html;
   observeMovieCards();
 }
 function loadMoreFiles() {
@@ -2088,17 +2231,39 @@ function updatePlayingCard(newPath, oldPath) {
       card.classList.remove('actions-open');
       card.classList.toggle('played', !isActive && playedVideos.has(p));
       card.onclick = isActive ? null : (event) => onCardClick(event, p);
+      // Grid-mode overlay actions
       const actions = card.querySelector('.card-actions');
       if (actions) actions.style.display = isActive ? 'none' : '';
-      const existing = card.querySelector('.stop-btn');
-      if (isActive && !existing) {
+      // Grid-mode stop button (inside .movie-card-inner)
+      const existingStopInner = card.querySelector('.movie-card-inner .stop-btn');
+      if (isActive && !existingStopInner) {
         const btn = document.createElement('button');
         btn.className = 'stop-btn';
         btn.innerHTML = '&#9632; STOP';
         btn.onclick = (e) => stopPlayingCard(e, p);
         card.querySelector('.movie-card-inner')?.appendChild(btn);
-      } else if (!isActive && existing) {
-        existing.remove();
+      } else if (!isActive && existingStopInner) {
+        existingStopInner.remove();
+      }
+      // List-mode actions column: rebuild when stopping so the four buttons reappear
+      const vlcActions = card.querySelector('.vlc-actions');
+      if (vlcActions) {
+        if (isActive) {
+          vlcActions.innerHTML = '<button class="stop-btn" onclick="stopPlayingCard(event,\'' + p + '\')">&#9632;</button>';
+          vlcActions.classList.remove('card-list-actions');
+        } else {
+          const isQueued   = card.classList.contains('queued');
+          const isFav      = card.classList.contains('favorite');
+          const isWatched  = card.classList.contains('played');
+          const ep = p.replace(/'/g, "\\'");
+          const fname = esc(card.getAttribute('aria-label') || '').replace(/^Play /, '');
+          vlcActions.classList.add('card-list-actions');
+          vlcActions.innerHTML =
+            '<button class="primary-action"  onclick="playCardAction(event,\'' + ep + "','" + fname + '\')">&#9654;</button>' +
+            '<button class="muted-action"    onclick="queueCardAction(event,\'' + ep + '\')">' + (isQueued ? '&#8722;Q' : '+Q') + '</button>' +
+            '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + ep + '\')">' + (isFav ? '&#9733;' : '&#9734;') + '</button>' +
+            '<button class="muted-action"    onclick="toggleWatchedCard(event,\'' + ep + '\')">' + (isWatched ? '&#128064;' : '&#10003;') + '</button>';
+        }
       }
     }
   }

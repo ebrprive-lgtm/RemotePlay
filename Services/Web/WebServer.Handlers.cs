@@ -335,6 +335,10 @@ internal sealed partial class WebServer
                 HandleMusicPlay(ctx);
                 break;
 
+            case "/api/music/queue-next":
+                HandleMusicQueueNext(ctx);
+                break;
+
             case "/api/music/cover":
                 HandleMusicCover(ctx);
                 break;
@@ -1383,6 +1387,26 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
     }
 
+    private void HandleMusicQueueNext(HttpListenerContext ctx)
+    {
+        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(encodedPath))
+        {
+            // Empty path clears the queued next track
+            _callbacks.SetMusicNextTrack(null);
+            TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+            return;
+        }
+        var filePath = WebPathHelpers.DecodePath(encodedPath);
+        if (!File.Exists(filePath))
+        {
+            TrySendResponse(ctx, 404, "text/plain", "File not found");
+            return;
+        }
+        _callbacks.SetMusicNextTrack(filePath);
+        TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+    }
+
     private static readonly Dictionary<string, string> _audioMimeTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         [".mp3"]  = "audio/mpeg",
@@ -2190,6 +2214,13 @@ internal sealed partial class WebServer
         resumeMap.TryGetValue(filePath, out var resume);
         var progress = resume is null || resume.DurationSeconds <= 0 ? 0 : Math.Round(resume.PositionSeconds / resume.DurationSeconds, 3);
         var watched = (watchedSet?.Contains(filePath) ?? false) || progress >= 0.95;
+        long sizeBytes = 0;
+        try { sizeBytes = new FileInfo(filePath).Length; } catch { }
+        // Use resume duration when available; do NOT probe unplayed files with TagLib
+        // (per-file tag reads on a large folder cause very noticeable load delays).
+        double durationSec = resume is not null && resume.DurationSeconds > 0
+            ? Math.Round(resume.DurationSeconds, 1)
+            : 0;
         return new
         {
             name,
@@ -2198,13 +2229,26 @@ internal sealed partial class WebServer
             folder,
             favorite = isFavorite,
             position = resume is null ? 0 : Math.Round(resume.PositionSeconds, 1),
-            duration = resume is null ? 0 : Math.Round(resume.DurationSeconds, 1),
+            duration = durationSec,
             progress,
             resume = resume is null ? string.Empty : FormatTime(resume.PositionSeconds),
             watched,
             isLink,
-            linkPath = isLink && linkSourcePath is not null ? WebPathHelpers.EncodePath(linkSourcePath) : null
+            linkPath = isLink && linkSourcePath is not null ? WebPathHelpers.EncodePath(linkSourcePath) : null,
+            ext = Path.GetExtension(filePath).TrimStart('.').ToUpperInvariant(),
+            sizeBytes
         };
+    }
+
+    private static double ReadFileDurationSeconds(string filePath)
+    {
+        try
+        {
+            using var tfile = TagLib.File.Create(filePath);
+            var secs = tfile.Properties.Duration.TotalSeconds;
+            return secs > 0 ? Math.Round(secs, 1) : 0;
+        }
+        catch { return 0; }
     }
 
     private static string CleanDisplayTitle(string name) => DisplayFormatHelpers.CleanDisplayTitle(name);
