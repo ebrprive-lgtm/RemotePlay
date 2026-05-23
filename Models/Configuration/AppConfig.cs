@@ -28,7 +28,7 @@ internal sealed record AppConfig
     public int PreferredDisplayIndex { get; init; } = -1; // -1 = primary screen
     public bool StartWithWindows { get; init; }
     public bool UseTrayIcon { get; init; } = true;
-    public int LibraryRescanDelayMinutes { get; init; } = 10;
+    public int LibraryRescanDelayMinutes { get; init; } = 60;
     public bool EnableThumbnailGeneration { get; init; } = true;
     public string[] IgnoredLibraryFolders { get; init; } = ["Subs", "Alt"];
     public string[] VideoFileExtensions { get; init; } = [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv"];

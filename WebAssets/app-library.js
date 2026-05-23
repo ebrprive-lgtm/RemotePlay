@@ -165,6 +165,33 @@ function musicVolumeReset() {
   if (slider) { slider.value = 1; musicVolume(1); }
 }
 
+// Combined volume/boost slider (0–1.0 = volume, 1.0–1.3 = boost zone)
+function musicCombinedSlider(v) {
+  const val = parseFloat(v);
+  if (isNaN(val)) return;
+  const slider = document.getElementById('music-bar-combined');
+  const lbl    = document.getElementById('music-combined-label');
+  if (val <= 1.0) {
+    // Volume zone
+    if (slider) slider.classList.remove('slider-boosting');
+    if (lbl) lbl.textContent = Math.round(val * 100) + '%';
+    musicVolume(val);
+    musicBoost(1.0);
+  } else {
+    // Boost zone: map 1.0–1.3 → gain 1–3
+    const gain = 1 + (val - 1) * (2 / 0.3);
+    if (slider) slider.classList.add('slider-boosting');
+    const db = Math.round(20 * Math.log10(gain));
+    if (lbl) lbl.textContent = '100% +' + db + 'dB';
+    musicVolume(1.0);
+    musicBoost(gain);
+  }
+}
+function musicCombinedReset() {
+  const slider = document.getElementById('music-bar-combined');
+  if (slider) { slider.value = 0.8; musicCombinedSlider(0.8); }
+}
+
 function musicBoost(v) {
   const boost = parseFloat(v);
   if (isNaN(boost)) return;
@@ -664,10 +691,19 @@ function startMusicPlaybackPoll() {
     }
     updateMusicBar(s);
 
+    // Surface server-side music playback errors (skip in local mode — local errors are handled by app-local.js)
+    const musicErr = (s.lastError || s.LastError || '').trim();
+    if (musicErr && !isPlayLocal() && typeof showPlaybackErrorPopup === 'function') {
+      const trackName = s.title || s.Title || (musicCurrentPath ? musicCurrentPath.replace(/.*[/\\]/, '') : '');
+      const label = trackName ? `"${trackName}"` : 'Track';
+      showPlaybackErrorPopup('Music', `${label} could not play.\n\n${musicErr}`);
+    }
+
     // auto-advance when track ends naturally and the server didn't already handle it
     // (server handles it when _nextTrackPath was set; this covers the case where
     //  the browser is still open but autoplay wasn't yet registered)
-    if (!s.isPlaying && !s.isPaused && wasPlaying && musicCurrentPath && !s.currentPath) {
+    // Skip in local mode — the ended event on the <audio> element drives advancement there.
+    if (!isPlayLocal() && !s.isPlaying && !s.isPaused && wasPlaying && musicCurrentPath && !s.currentPath) {
       musicCurrentPath = null;
       if (_musicAutoPlay || _musicShuffle || _musicRepeat !== 'none') {
         const nextT = _musicNextTrack();
@@ -693,8 +729,10 @@ function stopMusicPlaybackPoll() {
 
 function switchMode(mode) {
   // Stop whichever player is active before switching away from it.
+  const leavingVideo = currentMode === 'video' && mode !== 'video';
   const leavingMusic = currentMode === 'music' && mode !== 'music';
   const leavingRadio = currentMode === 'radio' && mode !== 'radio';
+  if (leavingVideo && playingPath && typeof stop !== 'undefined') stop();
   if (leavingMusic && musicIsPlaying && typeof musicStop !== 'undefined') musicStop();
   if (leavingRadio && typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying && typeof radioStop !== 'undefined') radioStop();
 
@@ -715,10 +753,17 @@ function switchMode(mode) {
   const radioCountHdr = document.getElementById('radio-station-count');
   if (radioTabHdr) radioTabHdr.style.display = mode === 'radio' ? 'flex' : 'none';
   if (radioCountHdr) radioCountHdr.style.display = mode === 'radio' ? '' : 'none';
-  const radioFilterSticky = document.getElementById('radio-filter-sticky');
-  if (radioFilterSticky) radioFilterSticky.style.display = mode === 'radio' ? 'flex' : 'none';
   const searchEl = document.getElementById('search');
   const searchRow = document.getElementById('search-row');
+  // Always show the nav row; just switch which recent strip is active
+  const navRow = document.getElementById('browse-nav-row');
+  const vStrip = document.getElementById('video-recent-strip');
+  const mStrip = document.getElementById('music-recent-strip');
+  const rStrip = document.getElementById('radio-recent-strip');
+  if (navRow) navRow.style.display = '';
+  if (vStrip) vStrip.style.display = mode === 'video' ? '' : 'none';
+  if (mStrip) mStrip.style.display = mode === 'music' ? '' : 'none';
+  if (rStrip) rStrip.style.display = mode === 'radio' ? '' : 'none';
   if (mode === 'video') {
     if (searchRow) searchRow.style.display = '';
     searchEl.placeholder = 'Search entire library...';
@@ -727,11 +772,19 @@ function switchMode(mode) {
     const back = document.getElementById('back-button');
     if (back) back.onclick = goBack;
     _applyVideoCommandBar(true); // always show bar when entering video mode
+    const mcb = document.getElementById('music-command-bar');
+    if (mcb) mcb.style.display = 'none';
+    const rcb = document.getElementById('radio-command-bar');
+    if (rcb) rcb.style.display = 'none';
     refreshLibraryStatus();
     if (currentData) render(currentData);
     else browse(null);
   } else if (mode === 'music') {
     if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
+    const rcb = document.getElementById('radio-command-bar');
+    if (rcb) rcb.style.display = 'none';
+    const mcb = document.getElementById('music-command-bar');
+    if (mcb) { mcb.style.display = 'flex'; _syncMusicCommandBar(); }
     if (searchRow) searchRow.style.display = '';
     searchEl.placeholder = 'Search music library...';
     stopRadioStatusPoll();
@@ -749,6 +802,10 @@ function switchMode(mode) {
     else renderMusicHeader(currentMusicData, false);
   } else if (mode === 'radio') {
     if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
+    const mcb = document.getElementById('music-command-bar');
+    if (mcb) mcb.style.display = 'none';
+    const rcb = document.getElementById('radio-command-bar');
+    if (rcb) rcb.style.display = 'flex';
     if (searchRow) searchRow.style.display = 'none';
     stopMusicStatusPoll();
     setMusicHeaderForMode('radio');
@@ -852,23 +909,26 @@ function renderMusicHeader(data, searching) {
     document.getElementById('view-toggle-video') &&
       (document.getElementById('view-toggle-video').style.display = 'none');
     document.getElementById('view-toggle-music') &&
-      (document.getElementById('view-toggle-music').style.display = '');
+      (document.getElementById('view-toggle-music').style.display = 'none');
     _applyViewToggleBtn('music');
     const txt = document.getElementById('count-text');
+    let countText = '';
     if (searching) {
       const fc = data.folders?.length || 0;
       const tc = data.files?.length || 0;
-      if (txt) txt.textContent = fc + ' folder(s) and ' + tc + ' result(s)';
+      countText = fc + ' folder(s) and ' + tc + ' result(s)';
     } else {
       const fc = data.folders?.length || 0;
       const loaded = data.files?.length || 0;
       const total = data.totalInFolder || loaded;
-      if (txt)
-        txt.textContent =
-          total > loaded
-            ? fc + ' folder(s), ' + loaded + ' of ' + total + ' track(s) loaded'
-            : fc + ' folder(s), ' + total + ' track(s)';
+      countText = total > loaded
+        ? fc + ' folder(s), ' + loaded + ' of ' + total + ' track(s) loaded'
+        : fc + ' folder(s), ' + total + ' track(s)';
     }
+    if (txt) txt.textContent = countText;
+    const mcbCount = document.getElementById('mcb-count');
+    if (mcbCount) mcbCount.textContent = countText;
+    _setCbRightVisible('mcb-right', (data.files?.length || 0) > 0 && _viewMode.music !== 'list');
   }
 
   // Scan status line
@@ -892,6 +952,33 @@ function renderMusicHeader(data, searching) {
     } else {
       scanStatus.textContent =
         'Music library empty or path not configured' + (root ? ' \u2014 path: ' + root : '');
+    }
+  }
+}
+
+function _syncMusicCommandBar(playAllVisible) {
+  const mcb = document.getElementById('music-command-bar');
+  if (!mcb) return;
+  // Sync view button label
+  const viewBtn = document.getElementById('mcb-view-btn');
+  const isList = _viewMode.music === 'list';
+  if (viewBtn) {
+    viewBtn.textContent = isList ? '\u2261 List' : '\u25a6 Grid';
+    viewBtn.title = isList ? 'Switch to grid view' : 'Switch to list view';
+  }
+  // Sync sort select
+  const sortSel = document.getElementById('mcb-sort');
+  if (sortSel) sortSel.value = _musicSort.col;
+  // Re-sync sort-block visibility based on view mode
+  if (currentMusicData) _setCbRightVisible('mcb-right', (currentMusicData.files?.length || 0) > 0 && !isList);
+  // Show/hide Play All
+  const playAllBtn = document.getElementById('mcb-play-all');
+  if (playAllBtn && playAllVisible != null) {
+    playAllBtn.style.display = playAllVisible ? '' : 'none';
+    if (playAllVisible) {
+      const queueCount = window._musicQueue ? window._musicQueue.length : 0;
+      const badge = queueCount > 0 ? ` <span class="music-queue-badge">${queueCount} queued</span>` : '';
+      playAllBtn.innerHTML = '\u25b6 Play All' + badge;
     }
   }
 }
@@ -1153,6 +1240,14 @@ async function browseMusic(folder, offset = 0, append = false) {
     }
     if (currentMode === 'music') renderMusicHeader(currentMusicData, false);
     renderMusicCards(currentMusicData);
+    // Show recently played strip on the music root, hide in subfolders
+    const mStrip = document.getElementById('music-recent-strip');
+    if (!folder && !append) {
+      if (mStrip) mStrip.style.display = '';
+      loadMusicRecent().then((files) => { if (files.length) renderMusicRecent(files); });
+    } else if (!append && mStrip) {
+      mStrip.style.display = 'none';
+    }
   } catch (e) {
     mb.innerHTML = '<div style="padding:.75rem">Error: ' + e + '</div>';
   }
@@ -1241,19 +1336,24 @@ function _musicSortFiles(files) {
       if (vb == null) return -1;
       return (va - vb) * mul;
     }
-    va = (va || '').toLowerCase();
-    vb = (vb || '').toLowerCase();
+    va = String(va ?? '').toLowerCase();
+    vb = String(vb ?? '').toLowerCase();
     return va < vb ? -mul : va > vb ? mul : 0;
   });
 }
 
 function musicSortBy(col) {
-  if (_musicSort.col === col) {
+  // When called from the <select>, toggling direction only makes sense for column-header clicks;
+  // a fresh select choice always resets to ascending.
+  const fromSelect = document.getElementById('mcb-sort') === document.activeElement;
+  if (!fromSelect && _musicSort.col === col) {
     _musicSort.dir = _musicSort.dir === 'asc' ? 'desc' : 'asc';
   } else {
     _musicSort = { col, dir: 'asc' };
   }
   try { localStorage.setItem('remotePlayMusicSort', JSON.stringify(_musicSort)); } catch (_) {}
+  const sel = document.getElementById('mcb-sort');
+  if (sel) sel.value = _musicSort.col;
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
 }
 
@@ -1278,18 +1378,9 @@ function renderMusicCards(data, searching) {
     const isList = _viewMode.music === 'list';
     const sortedFiles = _musicSortFiles(data.files);
 
-    // ── Section header with view-toggle + Play All ───────────────────────
-    const totalInFolder = data.totalInFolder || data.files.length;
+    // ── Sync command bar ──────────────────────────────────────────────────
     const playAllVisible = !!data.folder;
-    html += '<div class="music-section-header">';
-    // View-toggle button (grid ↔ list) mirrored here so it's adjacent to Play All
-    html += `<button class="music-view-toggle-inline" onclick="_setViewMode('music','${isList ? 'grid' : 'list'}')" title="${isList ? 'Switch to grid view' : 'Switch to list view'}">${isList ? '&#9632;&#9632;' : '&#9776;'}</button>`;
-    if (playAllVisible) {
-      const queueCount = window._musicQueue ? window._musicQueue.length : 0;
-      const queueBadge = queueCount > 0 ? ` <span class="music-queue-badge">${queueCount} queued</span>` : '';
-      html += `<button class="music-play-all-btn" onclick="playMusicAll()" title="Play all tracks in this folder">&#9654; Play All${queueBadge}</button>`;
-    }
-    html += '</div>';
+    _syncMusicCommandBar(playAllVisible);
 
     if (isList) {
       const _si = (col) => _musicSort.col === col ? (_musicSort.dir === 'asc' ? ' ▲' : ' ▼') : '';
@@ -1526,19 +1617,26 @@ function _applyVideoCommandBar(show) {
     _applyVcbViewBtn();
   }
 }
+/** Show or hide a command-bar right section (sort + count) based on whether files are present. */
+function _setCbRightVisible(id, visible) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = visible ? '' : 'none';
+}
 function _applyVcbViewBtn() {
   const btn = document.getElementById('vcb-view-btn');
   if (!btn) return;
   const isList = _viewMode.video === 'list';
   btn.textContent = isList ? '⊞ Grid' : '☰ List';
   btn.title = isList ? 'Switch to grid view' : 'Switch to list view';
+  // Re-sync sort-block visibility based on new view mode
+  if (currentData) _setCbRightVisible('vcb-right', (currentData.files?.length || 0) > 0 && !isList);
 }
 function _sortedFiles(files) {
   const arr = files.slice();
   switch (_videoSort) {
     case 'folder':   arr.sort((a,b) => (a.folder||'').localeCompare(b.folder||'') || (a.displayName||a.name||'').localeCompare(b.displayName||b.name||'')); break;
     case 'duration': arr.sort((a,b) => (Number(b.duration)||0) - (Number(a.duration)||0)); break;
-    case 'size':     arr.sort((a,b) => (Number(b.sizeBytes)||0) - (Number(a.sizeBytes)||0)); break;
+    case 'year':     arr.sort((a,b) => { const ya = _parseYear(a.name||''), yb = _parseYear(b.name||''); return (yb||'0').localeCompare(ya||'0') || (a.displayName||a.name||'').localeCompare(b.displayName||b.name||''); }); break;
     case 'progress': arr.sort((a,b) => (Number(b.progress)||0) - (Number(a.progress)||0)); break;
     default:         arr.sort((a,b) => (a.displayName||a.name||'').localeCompare(b.displayName||b.name||'')); break;
   }
@@ -1578,10 +1676,20 @@ function _formatSize(bytes) {
   return (bytes / 1024).toFixed(0) + ' KB';
 }
 
+/** Extract a 4-digit year (1900-2099) from a filename, checking the most common
+ *  tagging conventions: (YYYY), [YYYY], .YYYY., or a bare 4-digit token. */
+function _parseYear(name) {
+  const m = name.match(/[(\[]((?:19|20)\d{2})[)\]]/) ||
+            name.match(/\.((19|20)\d{2})\./) ||
+            name.match(/\b((?:19|20)\d{2})\b/);
+  return m ? m[1] : '';
+}
+
 function render(data, searching) {
   const bc = document.getElementById('breadcrumb');
   const countLine = document.getElementById('count-line');
   const back = document.getElementById('back-button');
+  // Recent strip stays populated at all times — do not clear on navigation
   const canGoBack =
     !searching && (browseHistory.length > 0 || (data.parent != null && !data.isRoot));
   back.style.display = canGoBack ? 'block' : 'none';
@@ -1670,6 +1778,7 @@ function render(data, searching) {
       html += '</div>';
     }
   }
+  _setCbRightVisible('vcb-right', data.files.length > 0 && _viewMode.video !== 'list');
   if (data.files.length) {
     // Store raw files for filter/sort; render via helper
     _currentRawFiles = data.files;
@@ -1713,12 +1822,12 @@ function _renderVideoFileRows(files) {
 
   const HEADER = isList
     ? '<div class="vlc-header-row">' +
-        '<div class="vlc-h vlc-h-watched"></div>' +
-        '<div class="vlc-h vlc-h-title">Title</div>' +
-        '<div class="vlc-h vlc-h-duration">Duration</div>' +
-        '<div class="vlc-h vlc-h-size">Size</div>' +
-        '<div class="vlc-h vlc-h-progress">Progress</div>' +
-        '<div class="vlc-h vlc-h-actions"></div>' +
+        '<div class="vlc-h vlc-h-title sortable" onclick="setVideoSort(\'name\')" title="Sort by title">Title</div>' +
+        '<div class="vlc-h vlc-h-progress sortable" onclick="setVideoSort(\'progress\')" title="Sort by progress">Progress</div>' +
+        '<div class="vlc-h vlc-h-year sortable" onclick="setVideoSort(\'year\')" title="Sort by year">Year</div>' +
+        '<div class="vlc-h vlc-h-cb"></div>' +
+        '<div class="vlc-h vlc-h-ext">Format</div>' +
+        '<div class="vlc-h vlc-h-duration sortable" onclick="setVideoSort(\'duration\')" title="Sort by duration">Duration</div>' +
       '</div>'
     : '';
 
@@ -1747,37 +1856,43 @@ function _renderVideoFileRows(files) {
         altRow;
       const action = isPlaying ? '' : ' onclick="onCardClick(event,\'' + f.path + '\')"';
       // ── column: watched pip ────────────────────────────────────────────────
-      const watchedPip = '<div class="vlc-watched-pip' + (played ? ' is-watched' : '') + '" title="' + (played ? 'Watched' : 'Not watched') + '"></div>';
-      // ── column: title ─────────────────────────────────────────────────────
+      // watched state is indicated by the left border colour on the row (class 'played')
+      // ── column: title (with inline actions on right) ──────────────────────
       const linkBadgeInline = f.isLink ? ' <span class="folder-link-badge" title="Library link">🔗</span>' : '';
-      const titleCol = '<div class="vlc-title">' + esc(displayName) + linkBadgeInline + '</div>';
+      const inlineActions = isPlaying
+        ? '<div class="vlc-inline-actions"><button class="stop-btn" onclick="stopPlayingCard(event,\'' + f.path + '\')">&#9632; Stop</button></div>'
+        : '<div class="vlc-inline-actions">' +
+            '<button class="primary-action" onclick="playCardAction(event,\'' + f.path + "','" + esc(f.name) + '\')">&#9654; Play</button>' +
+            '<button class="muted-action"   onclick="queueCardAction(event,\'' + f.path + '\')">' + (queued ? '&#8722; Unqueue' : '+ Queue') + '</button>' +
+            '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + f.path + '\')">' + (favorite ? '&#9733; Unfav' : '&#9734; Fav') + '</button>' +
+            '<button class="muted-action"   onclick="toggleWatchedCard(event,\'' + f.path + '\')">' + (played ? '&#128064; Unwatch' : '&#10003; Watched') + '</button>' +
+          '</div>';
+      const titleCol = '<div class="vlc-title"><span class="vlc-title-text">' + esc(displayName) + linkBadgeInline + '</span>' + inlineActions + '</div>';
       // ── column: folder ───────────────────────────────────────────────────
       const folderCol = '<div class="vlc-folder">' + esc(f.folder || '') + '</div>';
-      // ── column: format ───────────────────────────────────────────────────
-      const extCol = '<div class="vlc-ext">' + esc(f.ext || '') + '</div>';
+      // ── column: year (parsed from filename) ──────────────────────────────
+      const year = _parseYear(f.name || '');
+      const yearCol = '<div class="vlc-year">' + (year || '') + '</div>';
+      // ── column: multi-select checkbox (list mode only) ──────────────────
+      const cbCol = '<div class="vlc-cb"><input type="checkbox" class="vlc-select-cb" data-path="' + esc(f.path) + '" onclick="event.stopPropagation()" title="Select" aria-label="Select ' + esc(displayName) + '"/></div>';
+      // ── column: format (file extension badge) ────────────────────────────
+      const extText = f.ext || '';
+      const extCol = '<div class="vlc-ext">' + (extText ? '<span class="vlc-ext-badge">' + esc(extText) + '</span>' : '') + '</div>';
       // ── column: duration ─────────────────────────────────────────────────
       const durCol = '<div class="vlc-duration">' + _formatDuration(Number(f.duration) || 0) + '</div>';
       // ── column: size ─────────────────────────────────────────────────────
       const sizeCol = '<div class="vlc-size">' + _formatSize(Number(f.sizeBytes) || 0) + '</div>';
-      // ── column: progress bar ─────────────────────────────────────────────
-      const progCol = progressPct > 0
-        ? '<div class="vlc-progress"><div class="vlc-prog-bar"><div class="vlc-prog-fill" style="width:' + progressPct + '%"></div></div><span class="vlc-prog-label">' + progressPct + '%</span></div>'
-        : '<div class="vlc-progress"></div>';
-      // ── column: action buttons ───────────────────────────────────────────
-      const actionsCol = isPlaying
-        ? '<div class="vlc-actions"><button class="stop-btn" onclick="stopPlayingCard(event,\'' + f.path + '\')">&#9632;</button></div>'
-        : '<div class="vlc-actions card-list-actions">' +
-            '<button class="primary-action" onclick="playCardAction(event,\'' + f.path + "','" + esc(f.name) + '\')">&#9654;</button>' +
-            '<button class="muted-action"   onclick="queueCardAction(event,\'' + f.path + '\')">' + (queued ? '&#8722;Q' : '+Q') + '</button>' +
-            '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + f.path + '\')">' + (favorite ? '&#9733;' : '&#9734;') + '</button>' +
-            '<button class="muted-action"   onclick="toggleWatchedCard(event,\'' + f.path + '\')">' + (played ? '&#128064;' : '&#10003;') + '</button>' +
-          '</div>';
+      // ── column: progress (percentage text only) ───────────────────────────
+      const progCol = '<div class="vlc-progress">' + (progressPct > 0 ? progressPct + '%' : '') + '</div>';
+      // ── (actions now inline in titleCol — no separate actionsCol) ─────────
+      const actionsCol = '';
       // ── grid-mode card overlay actions (hidden in list mode) ─────────────
       const cardActionsGrid = isPlaying ? '' :
         '<div class="card-actions">' +
           '<button class="primary-action" onclick="playCardAction(event,\'' + f.path + "','" + esc(f.name) + '\')">Play</button>' +
           '<button class="muted-action"   onclick="queueCardAction(event,\'' + f.path + '\')">' + (queued ? 'Unqueue' : 'Queue') + '</button>' +
-          '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + f.path + '\')">' + (favorite ? 'Unfavorite' : 'Favorite') + '</button>' +
+          '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + f.path + '\')">'
+            + (favorite ? '&#10084;&#xFE0E; Unfavorite' : '&#9825; Favorite') + '</button>' +
           '<button class="muted-action"   onclick="toggleWatchedCard(event,\'' + f.path + '\')">' + (played ? 'Unwatch' : 'Watched') + '</button>' +
         '</div>';
       const progressOverlay = progressPct > 0
@@ -1796,7 +1911,7 @@ function _renderVideoFileRows(files) {
         ' onpointerdown="beginCardHold(event,\'' + f.path + '\')"' +
         ' onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">' +
         // List-mode columns (CSS grid)
-        watchedPip + titleCol + durCol + sizeCol + progCol + actionsCol +
+        titleCol + progCol + yearCol + cbCol + extCol + durCol + actionsCol +
         // Grid-mode inner card (hidden in list mode)
         '<div class="movie-card-inner">' +
           '<div class="movie-title">' + esc(displayName) + '</div>' +
@@ -1809,6 +1924,39 @@ function _renderVideoFileRows(files) {
     .join('');
   grid.innerHTML = html;
   observeMovieCards();
+  _scheduleDurationPatch(files);
+}
+// Waits a short moment for the server's background probes to complete, then
+// fetches any durations that were missing on initial render and patches them in.
+let _durationPatchTimer = null;
+function _scheduleDurationPatch(files) {
+  if (_durationPatchTimer) clearTimeout(_durationPatchTimer);
+  const missing = files.filter(f => !(Number(f.duration) > 0)).map(f => f.path);
+  if (!missing.length) return;
+  _durationPatchTimer = setTimeout(async () => {
+    _durationPatchTimer = null;
+    try {
+      const res = await fetch('/api/durations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(missing)
+      });
+      if (!res.ok) return;
+      const map = await res.json(); // { encodedPath: durationSeconds, ... }
+      for (const [encodedPath, dur] of Object.entries(map)) {
+        if (!(dur > 0)) continue;
+        // Update the raw data so re-renders have the value
+        const raw = _currentRawFiles.find(f => f.path === encodedPath);
+        if (raw) raw.duration = dur;
+        // Patch the live DOM cell
+        const card = document.getElementById(cardIdFor(encodedPath));
+        if (card) {
+          const cell = card.querySelector('.vlc-duration');
+          if (cell) cell.textContent = _formatDuration(dur);
+        }
+      }
+    } catch (_) { /* ignore */ }
+  }, 2500);
 }
 function loadMoreFiles() {
   if (!currentData) return;
@@ -1816,20 +1964,62 @@ function loadMoreFiles() {
   if (currentData.query) searchLibrary(currentData.query, nextOffset, true);
   else browse(currentDir, nextOffset, true);
 }
-function renderRecent(files) {
+async function loadMusicRecent() {
+  try {
+    const res = await fetch('/api/music/recent');
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.files) ? data.files : [];
+  } catch (e) {
+    return [];
+  }
+}
+function renderMusicRecent(files) {
+  const strip = document.getElementById('music-recent-strip');
+  if (!strip) return;
+  strip.innerHTML = '';
   if (!files.length) return;
-  const browser = document.getElementById('browser');
-  const continueFiles = files
-    .filter((f) => Number(f.progress) > 0 && Number(f.progress) < 0.95)
-    .slice(0, 6);
-  if (!continueFiles.length) return;
-  const html =
-    '<div class="section-label recent-toggle" onclick="toggleRecentSection(this)" style="cursor:pointer;user-select:none;">' +
-    'Continue watching <span class="recent-chevron" style="font-size:0.75em;margin-left:6px;">▶</span></div>' +
-    '<div class="continue-grid recent-grid" style="display:none;">' +
-    continueFiles.map((f) => renderProgressCard(f, true)).join('') +
-    '</div>';
-  browser.innerHTML = html + browser.innerHTML;
+  strip.innerHTML = files.slice(0, 5).map((f) => {
+    const title   = f.tagTitle ? f.tagTitle : _titleFromName(f.name);
+    const pct     = Math.max(0, Math.min(99, Math.round((Number(f.progress) || 0) * 100)));
+    const isCont  = pct > 0 && pct < 95;
+    const hasCover = !!f.hasCover;
+    const thumb   = hasCover ? '/api/music/cover?path=' + encodeURIComponent(f.path) : '';
+    return (
+      '<div class="vr-card" role="button" tabindex="0"' +
+      ' title="' + esc(title) + '"' +
+      ' onclick="playMusic(' + jsStr(f.path) + ',' + jsStr(title) + ')"' +
+      ' onkeydown="activateKeyboardClick(event,this)">' +
+      (hasCover
+        ? '<div class="vr-thumb" style="background-image:url(\'' + thumb + '\')"></div>'
+        : '<div class="vr-thumb vr-thumb-placeholder">&#9835;</div>') +
+      '<div class="vr-label">' + esc(title) + '</div>' +
+      (isCont ? '<div class="vr-progress"><div class="vr-progress-fill" style="width:' + pct + '%"></div></div>' : '') +
+      '</div>'
+    );
+  }).join('');
+}
+function renderRecent(files) {
+  const strip = document.getElementById('video-recent-strip');
+  if (!strip) return;
+  strip.innerHTML = '';
+  if (!files.length) return;
+  strip.innerHTML = files.slice(0, 5).map((f) => {
+    const isCont  = Number(f.progress) > 0 && Number(f.progress) < 0.95;
+    const pct     = Math.max(0, Math.min(99, Math.round((Number(f.progress) || 0) * 100)));
+    const title   = f.displayName || f.name;
+    const thumb   = '/api/thumb?path=' + encodeURIComponent(f.path);
+    return (
+      '<div class="vr-card" role="button" tabindex="0"' +
+      ' title="' + esc(title) + '"' +
+      ' onclick="onCardClick(event,\'' + f.path + '\')"' +
+      ' onkeydown="activateKeyboardClick(event,this)">' +
+      '<div class="vr-thumb" style="background-image:url(\'' + thumb + '\')"></div>' +
+      '<div class="vr-label">' + esc(title) + '</div>' +
+      (isCont ? '<div class="vr-progress"><div class="vr-progress-fill" style="width:' + pct + '%"></div></div>' : '') +
+      '</div>'
+    );
+  }).join('');
 }
 function renderFavorites(files) {
   if (!files.length) return;
@@ -1877,11 +2067,11 @@ function renderProgressCard(f, isContinue, isFavoriteSection = false) {
     '<div class="movie-card-inner"><div class="movie-title">' +
     esc(displayName) +
     '</div>' +
+    (isContinue ? '<div class="continue-badge queued-badge">▶ Continue</div>' : '') +
     (queued ? '<div class="queue-badge queued-badge">Queued</div>' : '') +
     (favorite ? '<div class="favorite-badge queued-badge">Favorite</div>' : '') +
     '<div class="movie-meta">' +
-    pct +
-    '% • ' +
+    (pct > 0 ? pct + '% • ' : '') +
     esc(f.folder || '') +
     '</div>' +
     '<div class="card-actions"><button class="primary-action" onclick="playCardAction(event,\'' +
@@ -1913,12 +2103,13 @@ function activateKeyboardClick(event, element) {
   event.preventDefault();
   element.click();
 }
-function toggleRecentSection(label) {
+function toggleRecentSection(label, storageKey) {
   const grid = label.nextElementSibling;
   const chevron = label.querySelector('.recent-chevron');
   const open = grid.style.display === 'none';
   grid.style.display = open ? '' : 'none';
   if (chevron) chevron.textContent = open ? '▼' : '▶';
+  if (storageKey) localStorage.setItem(storageKey, open ? '1' : '0');
 }
 function goBack() {
   currentIsLinkedDir = false;
@@ -2374,8 +2565,8 @@ refreshLibraryStatus();
 refreshThumbnailStatus();
 setInterval(refreshLibraryStatus, 2500);
 setInterval(refreshThumbnailStatus, 2500);
-updateVolumeIcon(parseFloat(document.getElementById('volume').value) || 0);
-updateAudioBoostIcon(parseFloat(document.getElementById('audio-boost').value) || 0);
+updateVolumeIcon(parseFloat(document.getElementById('video-combined-vol')?.value) || 0);
+// updateAudioBoostIcon is a no-op — boost state now reflected by combined slider colour
 syncSpeedChips(currentPlaybackSpeed);
 const nowPlayingBar = document.getElementById('now-playing-bar');
 if (nowPlayingBar) {

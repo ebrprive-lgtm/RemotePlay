@@ -18,8 +18,66 @@
         <header>
           <div id="brand">
             <h1>&#127916; RemotePlay <span id="version-chip" class="version-chip"></span></h1>
-            <span id="indexing-badge" style="display:none">Indexing</span>
-            <div id="brand-actions"><div id="brand-row"><a id="health-link" href="/health" target="_blank" rel="noopener"><span id="diag-dot"></span>Health</a><a id="setup-link" href="/setup" target="_blank" rel="noopener">Setup</a><div id="peers-wrap"><button id="peers-btn" onclick="togglePeers()" aria-expanded="false" aria-haspopup="true"><span id="peers-dot"></span>Instances</button><div id="peers-dropdown" role="menu"></div></div></div><div id="brand-controls-row"><select id="theme-select" onchange="setTheme(this.value)" aria-label="Theme"><option value="default">Dark</option><option value="amoled">AMOLED</option><option value="blue">Blue</option><option value="sunset">Sunset Pop</option><option value="neon">Neon Arcade</option><option value="forest">Forest</option><option value="lavender">Pastel Lavender</option><option value="peach">Pastel Peach</option><option value="mint">Pastel Mint</option><option value="high-contrast">High contrast</option></select><button id="play-local-toggle" onclick="togglePlayLocal()" title="Playing on server — click to play on this device" aria-pressed="false">&#128266; Local</button></div></div>
+            <div id="brand-actions">
+              <div id="brand-row">
+                <a id="health-link" href="/health" target="_blank" rel="noopener"><span id="diag-dot"></span>Health</a>
+                <a id="setup-link" href="/setup" target="_blank" rel="noopener">Setup</a>
+                <div id="peers-wrap">
+                  <button id="peers-btn" onclick="togglePeers()" aria-expanded="false" aria-haspopup="true"><span id="peers-dot"></span>Instances</button>
+                  <div id="peers-dropdown" role="menu"></div>
+                </div>
+              </div>
+              <div id="brand-controls-row">
+                <div id="theme-picker" class="theme-picker">
+                  <button id="theme-picker-btn" class="theme-picker-btn" onclick="toggleThemePicker()" aria-haspopup="true" aria-expanded="false" aria-label="Choose theme"><span class="theme-picker-btn-label">🎨 <span id="theme-picker-label">Dark</span></span><span class="theme-picker-btn-arrow">▾</span></button>
+                  <div id="theme-picker-panel" class="theme-picker-panel" role="listbox" aria-label="Theme">
+                    <div class="tp-group-label">🌸 Pastel</div>
+                    <div class="tp-grid">
+                      <button class="tp-item" data-theme="lavender"      onclick="setTheme('lavender')">💜 Lavender</button>
+                      <button class="tp-item" data-theme="lemon"         onclick="setTheme('lemon')">🍋 Lemon</button>
+                      <button class="tp-item" data-theme="mint"          onclick="setTheme('mint')">🌿 Mint</button>
+                      <button class="tp-item" data-theme="peach"         onclick="setTheme('peach')">🍑 Peach</button>
+                      <button class="tp-item" data-theme="rose"          onclick="setTheme('rose')">🌸 Rose</button>
+                      <button class="tp-item" data-theme="sky"           onclick="setTheme('sky')">🩵 Sky</button>
+                    </div>
+                    <div class="tp-group-label">🌗 Muted</div>
+                    <div class="tp-grid">
+                      <button class="tp-item" data-theme="caramel"       onclick="setTheme('caramel')">🍮 Caramel</button>
+                      <button class="tp-item" data-theme="olive"         onclick="setTheme('olive')">🌿 Olive</button>
+                      <button class="tp-item" data-theme="silver"        onclick="setTheme('silver')">🩶 Silver</button>
+                      <button class="tp-item" data-theme="steel"         onclick="setTheme('steel')">🔩 Steel</button>
+                      <button class="tp-item" data-theme="violet"        onclick="setTheme('violet')">🔮 Violet</button>
+                    </div>
+                    <div class="tp-group-label">⬛ Normal</div>
+                    <div class="tp-grid">
+                      <button class="tp-item" data-theme="default"       onclick="setTheme('default')">🌑 Dark</button>
+                      <button class="tp-item" data-theme="dracula"       onclick="setTheme('dracula')">🧛 Dracula</button>
+                      <button class="tp-item" data-theme="dusk"          onclick="setTheme('dusk')">🌆 Dusk</button>
+                      <button class="tp-item" data-theme="mocha"         onclick="setTheme('mocha')">☕ Mocha</button>
+                      <button class="tp-item" data-theme="slate"         onclick="setTheme('slate')">🪨 Slate</button>
+                      <button class="tp-item" data-theme="sunset"        onclick="setTheme('sunset')">🌅 Sunset</button>
+                    </div>
+                    <div class="tp-group-label">🌑 Deep Dark</div>
+                    <div class="tp-grid">
+                      <button class="tp-item" data-theme="amoled"        onclick="setTheme('amoled')">⚫ AMOLED</button>
+                      <button class="tp-item" data-theme="aurora"        onclick="setTheme('aurora')">🌌 Aurora</button>
+                      <button class="tp-item" data-theme="blue"          onclick="setTheme('blue')">🔷 Blue</button>
+                      <button class="tp-item" data-theme="crimson"       onclick="setTheme('crimson')">🩸 Crimson</button>
+                      <button class="tp-item" data-theme="forest"        onclick="setTheme('forest')">🌲 Forest</button>
+                      <button class="tp-item" data-theme="gold"          onclick="setTheme('gold')">✨ Gold</button>
+                      <button class="tp-item" data-theme="neon"          onclick="setTheme('neon')">⚡ Neon</button>
+                      <button class="tp-item" data-theme="ocean"         onclick="setTheme('ocean')">🌊 Ocean</button>
+                    </div>
+                    <div class="tp-group-label">♿ Accessibility</div>
+                    <div class="tp-grid">
+                      <button class="tp-item" data-theme="high-contrast" onclick="setTheme('high-contrast')">◼ High Contrast</button>
+                    </div>
+                  </div>
+                </div>
+                <button id="play-local-toggle" onclick="togglePlayLocal()" title="Playing on server — click to play on this device" aria-pressed="false">&#128266; Local</button>
+              </div>
+              <span id="indexing-badge" style="display:none">Indexing</span>
+            </div>
           </div>
           <div id="search-wrap">
             <div id="mode-tabs">
@@ -40,8 +98,50 @@
             <div id="count-line" style="display:flex;align-items:center;gap:.5rem"><span id="count-text"></span><button id="view-toggle-video" class="radio-reset-btn view-toggle-btn" onclick="_setViewMode('video',_viewMode.video==='grid'?'list':'grid')" style="display:none" title="Toggle view"></button><button id="view-toggle-music" class="radio-reset-btn view-toggle-btn" onclick="_setViewMode('music',_viewMode.music==='grid'?'list':'grid')" style="display:none" title="Toggle view"></button></div>
             <div id="scan-status" style="display:none"></div>
           </div>
-          <div id="radio-filter-sticky" style="display:none;grid-column:1/-1;border-top:1px solid var(--pill-border,rgba(255,255,255,.08));padding:.3rem .75rem .3rem .75rem"></div>
+          <div id="radio-filter-sticky" style="display:none"></div>
+          <!-- ── Music command bar ──────────────────────────────────────────── -->
+          <div id="music-command-bar" style="display:none">
+            <div class="cb-inner">
+            <div id="mcb-left">
+              <button id="mcb-view-btn" class="vcb-view-btn" onclick="_setViewMode('music',_viewMode.music==='grid'?'list':'grid')" title="Toggle list / grid view"></button>
+            </div>
+            <div id="mcb-filters">
+              <button id="mcb-play-all" class="vcb-pill mcb-play-all" onclick="playMusicAll()" style="display:none">&#9654; Play All</button>
+            </div>
+            <div id="mcb-right">
+              <select id="mcb-sort" onchange="musicSortBy(this.value)" aria-label="Sort music">
+                <option value="trackNum">Track #</option>
+                <option value="name">Name</option>
+                <option value="artist">Artist</option>
+                <option value="album">Album</option>
+                <option value="ext">Format</option>
+                <option value="durationSec">Duration</option>
+              </select>
+              <span id="mcb-count" class="vcb-count"></span>
+            </div>
+            </div>
+          </div>
+          <!-- ── Radio command bar ──────────────────────────────────────────── -->
+          <div id="radio-command-bar" style="display:none">
+            <div class="cb-inner">
+            <div id="rcb-left">
+              <button id="rcb-view-btn" class="vcb-view-btn" onclick="_setViewMode('radio',_viewMode.radio==='grid'?'list':'grid')" title="Toggle list / grid view"></button>
+            </div>
+            <div id="rcb-filters">
+              <!-- populated by app-radio.js -->
+            </div>
+            <div id="rcb-right">
+              <select id="rcb-sort" onchange="radioSetSort(this.value)" aria-label="Sort stations">
+                <option value="votes">Votes</option>
+                <option value="name">Name</option>
+                <option value="bitrate">Bitrate</option>
+              </select>
+              <span id="rcb-count" class="vcb-count"></span>
+            </div>
+            </div>
+          </div>
           <div id="video-command-bar" style="display:none">
+            <div class="cb-inner">
             <div id="vcb-left">
               <button id="vcb-view-btn" class="vcb-view-btn" onclick="_setViewMode('video',_viewMode.video==='grid'?'list':'grid')" title="Toggle list / grid view"></button>
             </div>
@@ -57,10 +157,11 @@
                 <option value="name">Name</option>
                 <option value="folder">Folder</option>
                 <option value="duration">Duration</option>
-                <option value="size">Size</option>
+                <option value="year">Year</option>
                 <option value="progress">Progress</option>
               </select>
               <span id="vcb-count" class="vcb-count"></span>
+            </div>
             </div>
           </div>
           <div id="now-playing-bar">
@@ -96,8 +197,13 @@
             <div id="media-controls">
               <div class="control-card">
                 <div class="control-title">Audio</div>
-                <span class="slider-wrap"><button id="volume-icon-btn" class="icon-btn" type="button" onclick="toggleVolumeMute()" aria-label="Toggle volume mute"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3c0-1.8-1-3.3-2.5-4.1v8.2c1.5-.8 2.5-2.3 2.5-4.1zm-2.5-8.7v2.1c2.9 1 5 3.6 5 6.6s-2.1 5.6-5 6.6v2.1c4-1.1 7-4.7 7-8.7s-3-7.6-7-8.7z"/><path class="icon-strike" d="M3 21L21 3"/></svg></button><input id="volume" type="range" min="0" max="1" value="1" step="0.05" oninput="setVolume(this.value)" onchange="setVolume(this.value)" aria-label="Volume"/><span id="volume-label">100%</span></span>
-                <span class="slider-wrap"><button id="boost-icon-btn" class="icon-btn off" type="button" onclick="toggleAudioBoostMute()" aria-label="Toggle audio boost"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L5 14h5l-1 8 8-12h-5l1-8z"/><path class="icon-strike" d="M3 21L21 3"/></svg></button><input id="audio-boost" type="range" min="0" max="1" value="0" step="0.05" oninput="setAudioBoost(this.value)" onchange="setAudioBoost(this.value)"/><span id="audio-boost-label">0%</span></span>
+                <span class="slider-wrap">
+                  <button id="volume-icon-btn" class="icon-btn" type="button" onclick="toggleVolumeMute()" aria-label="Toggle volume mute"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3zm13.5 3c0-1.8-1-3.3-2.5-4.1v8.2c1.5-.8 2.5-2.3 2.5-4.1zm-2.5-8.7v2.1c2.9 1 5 3.6 5 6.6s-2.1 5.6-5 6.6v2.1c4-1.1 7-4.7 7-8.7s-3-7.6-7-8.7z"/><path class="icon-strike" d="M3 21L21 3"/></svg></button>
+                  <input id="video-combined-vol" type="range" min="0" max="1.3" step="0.01" value="1"
+                         class="combined-vol-slider"
+                         oninput="setVideoCombinedSlider(this.value)" onchange="setVideoCombinedSlider(this.value)" aria-label="Volume / boost"/>
+                  <span id="volume-label">100%</span>
+                </span>
               </div>
               <div class="control-card">
                 <div class="control-title">Display</div>
@@ -131,7 +237,13 @@
           </div>
         </header>
         <div id="status" style="display:none">Loading...</div>
-        <button id="back-button" class="crumb-back" onclick="goBack()" style="display:none">&#8592; Back</button>
+        <div id="browse-nav-row">
+          <button id="back-button" class="crumb-back" onclick="goBack()" style="display:none">&#8592; Back</button>
+          <div class="browse-nav-spacer"></div>
+          <div id="video-recent-strip"></div>
+          <div id="music-recent-strip" style="display:none"></div>
+          <div id="radio-recent-strip" style="display:none"></div>
+        </div>
         <div id="browser"></div>
         <div id="music-browser" style="display:none"></div>
         <div id="music-queue-pending-bar" style="display:none"></div>
@@ -187,16 +299,11 @@
             <div class="control-card" style="width:100%;box-sizing:border-box">
               <div class="radio-sliders-wrap">
                 <span class="slider-wrap">
-                  <button class="radio-slider-label-btn" onclick="radioVolumeReset()" title="Click to reset volume to 100%">Volume</button>
-                  <input id="radio-bar-volume" type="range" min="0" max="1" step="0.02" value="0.8"
-                         oninput="radioVolume(this.value)" aria-label="Radio volume"/>
-                  <button class="radio-slider-reset-btn" id="radio-volume-label" onclick="radioVolumeReset()" title="Click to reset volume to 100%">80%</button>
-                </span>
-                <span class="slider-wrap">
-                  <button class="radio-slider-label-btn" onclick="radioBoostReset()" title="Click to reset boost to 0 dB">Boost</button>
-                  <input id="radio-bar-boost" type="range" min="1" max="3" step="0.05" value="1"
-                         oninput="radioBoost(this.value)" aria-label="Radio audio boost"/>
-                  <button class="radio-slider-reset-btn" id="radio-boost-label" onclick="radioBoostReset()" title="Click to reset boost to 0 dB">+0 dB</button>
+                  <button class="radio-slider-label-btn" onclick="radioCombinedReset()" title="Click to reset to 80%">Volume</button>
+                  <input id="radio-bar-combined" type="range" min="0" max="1.3" step="0.01" value="0.8"
+                         class="combined-vol-slider"
+                         oninput="radioCombinedSlider(this.value)" aria-label="Radio volume / boost"/>
+                  <button class="radio-slider-reset-btn" id="radio-combined-label" onclick="radioCombinedReset()" title="Click to reset to 80%">80%</button>
                 </span>
               </div>
             </div>
@@ -271,16 +378,11 @@
             <div class="control-card">
               <div class="radio-sliders-wrap">
                 <span class="slider-wrap">
-                  <button class="radio-slider-label-btn" onclick="musicVolumeReset()" title="Click to reset volume to 100%">Volume</button>
-                  <input id="music-bar-volume" type="range" min="0" max="1" step="0.02" value="0.8"
-                         oninput="musicVolume(this.value)" aria-label="Volume"/>
-                  <button class="radio-slider-reset-btn" id="music-volume-label" onclick="musicVolumeReset()" title="Click to reset volume to 100%">80%</button>
-                </span>
-                <span class="slider-wrap">
-                  <button class="radio-slider-label-btn" onclick="musicBoostReset()" title="Click to reset boost to 0 dB">Boost</button>
-                  <input id="music-bar-boost" type="range" min="1" max="3" step="0.05" value="1"
-                         oninput="musicBoost(this.value)" aria-label="Audio boost"/>
-                  <button class="radio-slider-reset-btn" id="music-boost-label" onclick="musicBoostReset()" title="Click to reset boost to 0 dB">+0 dB</button>
+                  <button class="radio-slider-label-btn" onclick="musicCombinedReset()" title="Click to reset to 80%">Volume</button>
+                  <input id="music-bar-combined" type="range" min="0" max="1.3" step="0.01" value="0.8"
+                         class="combined-vol-slider"
+                         oninput="musicCombinedSlider(this.value)" aria-label="Volume / boost"/>
+                  <button class="radio-slider-reset-btn" id="music-combined-label" onclick="musicCombinedReset()" title="Click to reset to 80%">80%</button>
                 </span>
               </div>
             </div>
@@ -353,5 +455,6 @@
           </div>
         </div>
         <script src="/app.js?v=__ASSET_VERSION__" defer></script>
+
         </body></html>
 

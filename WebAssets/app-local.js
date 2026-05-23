@@ -18,6 +18,10 @@ function localPlay(url, name, type) {
     fetch('/api/local-playing', { method: 'POST', body: 'false' }).catch(() => {});
     const s = document.getElementById('local-player-state');
     if (s) s.textContent = 'Play error: ' + (err && err.message ? err.message : String(err));
+    const errMsg = err && err.message ? err.message : String(err);
+    if (typeof showPlaybackErrorPopup === 'function') {
+      showPlaybackErrorPopup(type || 'Media', `"${name}" could not play.\n\n${errMsg}`);
+    }
   });
   // Notify server AFTER play() — keeps the user-gesture scope clean
   setTimeout(() => fetch('/api/local-playing', { method: 'POST', body: 'true' }).catch(() => {}), 0);

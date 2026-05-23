@@ -233,10 +233,15 @@ async function radioStatusTick() {
     const effectivePlaying = isPlayLocal() ? _radioIsPlaying : playing;
     if (!effectivePlaying && err) {
       setRadioHealthDot('error');
+      // Show themed popup with the server-reported error reason
+      const stationLabel = name ? `"${name}"` : 'Station';
+      showPlaybackErrorPopup('Radio', `${stationLabel} stopped playing.\n\n${err}`);
     } else if (stalled && !isPlayLocal()) {
       setRadioHealthDot('warn');
     } else if (effectivePlaying) {
       setRadioHealthDot('ok');
+      // Playback is healthy — allow the error popup to reappear if a new error occurs
+      if (typeof clearPlaybackErrorDedup === 'function') clearPlaybackErrorDedup('Radio');
     } else {
       setRadioHealthDot('warn');
     }
@@ -290,20 +295,24 @@ async function radioStatusTick() {
     if (!isPlayLocal()) {
       updateRadioBar(name, _radioCurrentCountry, _radioCurrentTag, playing, _radioCurrentStation);
     }
-    // Sync volume + boost sliders from server state — skip in local mode (local drives these directly)
+    // Sync combined volume/boost slider from server state
     if (!isPlayLocal()) {
-      const vol = s.volume ?? s.Volume ?? 0.8;
-      const vSlider = document.getElementById('radio-bar-volume');
-      const vLabel = document.getElementById('radio-volume-label');
-      if (vSlider && Math.abs(parseFloat(vSlider.value) - vol) > 0.02) vSlider.value = vol;
-      if (vLabel) vLabel.textContent = Math.round(vol * 100) + '%';
-      const boost = s.boost ?? s.Boost ?? 1.0;
-      const bSlider = document.getElementById('radio-bar-boost');
-      const bLabel = document.getElementById('radio-boost-label');
-      if (bSlider && Math.abs(parseFloat(bSlider.value) - boost) > 0.02) bSlider.value = boost;
-      if (bLabel) {
-        const db = Math.round(20 * Math.log10(boost));
-        bLabel.textContent = (db >= 0 ? '+' : '') + db + ' dB';
+      const vol   = s.volume ?? s.Volume ?? 0.8;
+      const boost = s.boost  ?? s.Boost  ?? 1.0;
+      // Map back to combined slider position (0–1.0 = volume, 1.0–1.3 = boost zone)
+      const combined = boost > 1.0 ? Math.min(1.3, 1.0 + (boost - 1) * (0.3 / 2)) : Math.min(1.0, vol);
+      const cSlider = document.getElementById('radio-bar-combined');
+      const cLabel  = document.getElementById('radio-combined-label');
+      if (cSlider && Math.abs(parseFloat(cSlider.value) - combined) > 0.015) {
+        cSlider.value = combined;
+        if (combined > 1.0) {
+          cSlider.classList.add('slider-boosting');
+          const db = Math.round(20 * Math.log10(boost));
+          if (cLabel) cLabel.textContent = '100% +' + db + 'dB';
+        } else {
+          cSlider.classList.remove('slider-boosting');
+          if (cLabel) cLabel.textContent = Math.round(combined * 100) + '%';
+        }
       }
     }
   } catch {}
@@ -355,7 +364,17 @@ function _getLocalAudio() {
         fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=playing vol=${vol} muted=${muted} readyState=${rs} networkState=${ns} acState=${acState} currentTime=${_localAudio.currentTime.toFixed(2)}` }).catch(()=>{});
       });
       _localAudio.addEventListener('pause',   () => { fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=pause src=${_localAudio.src}` }).catch(()=>{}); _localAudioUpdate(); });
-      _localAudio.addEventListener('ended',   () => { fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=ended` }).catch(()=>{}); localStop(); });
+      _localAudio.addEventListener('ended',   () => {
+        fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=ended` }).catch(()=>{});
+        // Auto-advance to the next music track when playing locally; otherwise just stop.
+        if (typeof _localMediaType !== 'undefined' && _localMediaType === 'Music'
+            && typeof isPlayLocal === 'function' && isPlayLocal()
+            && typeof musicNext === 'function') {
+          musicNext();
+        } else {
+          localStop();
+        }
+      });
       _localAudio.addEventListener('stalled', () => { fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=stalled` }).catch(()=>{}); });
       _localAudio.addEventListener('waiting', () => { fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=waiting` }).catch(()=>{}); });
       _localAudio.addEventListener('canplay', () => { fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=canplay` }).catch(()=>{}); });
@@ -379,6 +398,12 @@ function _getLocalAudio() {
         const detail = `Media error ${errCode}: ${errMsg}`;
         if (s) s.textContent = detail;
         fetch('/api/log', { method: 'POST', body: `Local audio error — ${_localMediaType}: ${detail} (src: ${_localAudio.src || 'none'})` }).catch(() => {});
+        const nmEl = document.getElementById('local-player-name');
+        const nm = nmEl ? nmEl.textContent : '';
+        if (typeof showPlaybackErrorPopup === 'function') {
+          const label = nm ? `"${nm}"` : 'Stream';
+          showPlaybackErrorPopup(_localMediaType || 'Media', `${label} stopped.\n\n${detail}`);
+        }
       });
     }
   }

@@ -182,6 +182,8 @@ internal sealed partial class WebServer
 
     private readonly object _libraryIndexGate = new();
     private readonly object _musicIndexGate = new();
+    // Lazily populated by background probes so the browse path stays fast.
+    private readonly ConcurrentDictionary<string, double> _videoDurationCache = new(StringComparer.OrdinalIgnoreCase);
     private FileSystemWatcher? _libraryWatcher;
     private LibraryFile[] _libraryIndex = [];
     private MusicFile[] _musicIndex = [];
@@ -234,7 +236,7 @@ internal sealed partial class WebServer
         _appUpdater = appUpdater;
         LoadFavorites();
         _libraryIndexTimer = new Timer(_ => RefreshLibraryIndexIfIdle(), null,
-            TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(30));
+            TimeSpan.FromHours(24), TimeSpan.FromHours(24));
         _libraryWatcherDebounceTimer = new Timer(_ => RunDelayedLibraryRescan(), null,
             Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         _staleLinkTimer = new Timer(_ => RunStaleLinkCheck(), null,
@@ -258,6 +260,38 @@ internal sealed partial class WebServer
 
         return _perIpHistories.GetOrAdd(clientIp,
             ip => new PlaybackHistory(AppPaths.HistoryFileForIp(ip)));
+    }
+
+    /// <summary>
+    /// Returns a progress map that merges the shared WPF history with the per-IP history.
+    /// The per-IP entry wins when both have a record for the same path.
+    /// This ensures remote browser clients see progress recorded by the local WPF player.
+    /// </summary>
+    private Dictionary<string, RecentPlaybackItem> GetMergedProgressMap(PlaybackHistory ipHistory)
+    {
+        var shared = _playbackHistory.GetProgressMap();
+        if (ReferenceEquals(ipHistory, _playbackHistory))
+            return shared;
+
+        var perIp  = ipHistory.GetProgressMap();
+        // Start from shared, then overwrite/add with per-IP entries (per-IP wins).
+        foreach (var (key, value) in perIp)
+            shared[key] = value;
+        return shared;
+    }
+
+    /// <summary>
+    /// Returns a watched set that merges the shared WPF history with the per-IP history.
+    /// </summary>
+    private HashSet<string> GetMergedWatchedSet(PlaybackHistory ipHistory)
+    {
+        var shared = _playbackHistory.GetWatchedSet();
+        if (ReferenceEquals(ipHistory, _playbackHistory))
+            return shared;
+
+        foreach (var path in ipHistory.GetWatchedSet())
+            shared.Add(path);
+        return shared;
     }
     public LibraryScanStatus LibraryStatus => GetLibraryScanStatus();
 

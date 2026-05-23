@@ -33,10 +33,13 @@ function _setViewMode(section, mode) {
   if (section === 'video' && currentData) {
     if (typeof _applyVcbViewBtn === 'function') _applyVcbViewBtn();
     render(currentData, Boolean(currentData.query));
-  } else if (section === 'music' && currentMusicData)
+  } else if (section === 'music' && currentMusicData) {
+    if (typeof _syncMusicCommandBar === 'function') _syncMusicCommandBar();
     renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
-  else if (section === 'radio')
+  } else if (section === 'radio') {
+    if (typeof _syncRadioCommandBar === 'function') _syncRadioCommandBar();
     renderRadioCards(_radioStations, _radioStations.length === _radioPageSize * (_radioPage + 1));
+  }
 }
 function _applyViewToggleBtn(section) {
   const btn = document.getElementById('view-toggle-' + section);
@@ -118,34 +121,39 @@ function togglePlayLocal() {
       // Capture current playback position from the seek bar (populated by last poll)
       const seekEl = document.getElementById('music-seek');
       const resumePos = seekEl ? parseFloat(seekEl.value) || 0 : 0;
-      fetch('/api/music/stop').then(() => {
-        if (typeof musicIsPlaying !== 'undefined') musicIsPlaying = false;
-        if (typeof stopMusicPlaybackPoll !== 'undefined') stopMusicPlaybackPoll();
-        // Keep the music bar visible — localPlay manages its own player bar
-        localPlay('/api/music/stream?path=' + encodeURIComponent(musicCurrentPath), title, 'Music');
-        // Seek the local audio element to the saved position BEFORE it becomes audible.
-        // Mute briefly, then seek on canplay and unmute so there's no flash of pos-0 audio.
-        if (resumePos > 0.5) {
-          const a = typeof _getLocalAudio !== 'undefined' ? _getLocalAudio() : null;
-          if (a) {
-            a.muted = true;
-            const seekWhenReady = () => {
-              a.currentTime = resumePos;
-              a.removeEventListener('canplay', seekWhenReady);
-              // Unmute after the seek is committed — use seeked event for accuracy
-              const onSeeked = () => { a.muted = false; a.removeEventListener('seeked', onSeeked); };
-              a.addEventListener('seeked', onSeeked);
-              // Fallback: unmute after 400 ms in case seeked never fires
-              setTimeout(() => { a.muted = false; a.removeEventListener('seeked', onSeeked); }, 400);
-            };
-            if (a.readyState >= 2) {
-              seekWhenReady();
-            } else {
-              a.addEventListener('canplay', seekWhenReady);
-            }
+      // Stop the poll synchronously so no in-flight tick races with the handoff.
+      if (typeof stopMusicPlaybackPoll !== 'undefined') stopMusicPlaybackPoll();
+      musicIsPlaying = false;
+
+      // CRITICAL: call localPlay() NOW — still inside the user-gesture activation window.
+      // If we wait for the fetch().then() the browser's autoplay policy will have expired
+      // and play() will be rejected with MEDIA_ERR_SRC_NOT_SUPPORTED.
+      // Start muted so server audio and local audio don't overlap while the stop propagates.
+      const aHandoff = typeof _getLocalAudio !== 'undefined' ? _getLocalAudio() : null;
+      if (aHandoff) aHandoff.muted = true;
+      localPlay('/api/music/stream?path=' + encodeURIComponent(musicCurrentPath), title, 'Music');
+
+      // Seek to saved position once the stream is ready, then unmute.
+      const doSeekAndUnmute = () => {
+        const a = typeof _getLocalAudio !== 'undefined' ? _getLocalAudio() : null;
+        if (!a) return;
+        const applySeek = () => {
+          if (resumePos > 0.5) {
+            a.currentTime = resumePos;
+            const onSeeked = () => { a.muted = false; a.removeEventListener('seeked', onSeeked); };
+            a.addEventListener('seeked', onSeeked);
+            // Fallback: unmute after 400 ms in case seeked never fires
+            setTimeout(() => { a.muted = false; a.removeEventListener('seeked', onSeeked); }, 400);
+          } else {
+            a.muted = false;
           }
-        }
-      }).catch(() => {});
+        };
+        if (a.readyState >= 2) applySeek();
+        else { a.addEventListener('canplay', function h() { a.removeEventListener('canplay', h); applySeek(); }); }
+      };
+
+      // Tell the server to stop AFTER play() is already running; unmute once confirmed.
+      fetch('/api/music/stop').then(doSeekAndUnmute).catch(doSeekAndUnmute);
     }
   } else {
     fetch('/api/log', { method: 'POST', body: 'Switched playback mode to Server' }).catch(() => {});
@@ -157,12 +165,10 @@ function togglePlayLocal() {
     const localResumePos = (a && localType === 'Music') ? (a.currentTime || 0) : 0;
     // Use localStop() so the "Stopping X on Local" log line is emitted correctly
     if (typeof localStop !== 'undefined') localStop();
-    // Tear down the Web Audio boost graph so the <audio> element is released for normal use
-    if (typeof _localBoostCtx !== 'undefined' && _localBoostCtx) {
-      try { _localBoostCtx.close(); } catch {}
-      _localBoostCtx = null;
-      _localBoostGain = null;
-    }
+    // Leave the Web Audio boost graph running — localStop() already cleared a.src so the
+    // MediaElementSource produces silence. Suspending risks a resume-race where the context
+    // is still in the suspended→running transition when the next localPlay() calls a.play(),
+    // which Chrome rejects with MEDIA_ERR_SRC_NOT_SUPPORTED.
     if (wasPlaying) {
       if (localType === 'Radio' && typeof _radioCurrentUrl !== 'undefined' && _radioCurrentUrl) {
         // Resume radio on server
@@ -209,12 +215,59 @@ function setTheme(theme, save = true) {
     'theme-lavender',
     'theme-peach',
     'theme-mint',
-    'theme-high-contrast'
+    'theme-crimson',
+    'theme-ocean',
+    'theme-gold',
+    'theme-slate',
+    'theme-rose',
+    'theme-dracula',
+    'theme-aurora',
+    'theme-dusk',
+    'theme-mocha',
+    'theme-sky',
+    'theme-lemon',
+    'theme-high-contrast',
+    'theme-steel',
+    'theme-olive',
+    'theme-violet',
+    'theme-silver',
+    'theme-caramel'
   );
   if (theme && theme !== 'default') document.body.classList.add('theme-' + theme);
-  const selector = document.getElementById('theme-select');
-  if (selector) selector.value = theme || 'default';
-  if (save) localStorage.setItem('remotePlayTheme', theme || 'default');
+  // sync custom picker button label + active item
+  const activeKey = theme || 'default';
+  const panel = document.getElementById('theme-picker-panel');
+  const btnLabel = document.getElementById('theme-picker-label');
+  if (panel) {
+    panel.querySelectorAll('.tp-item').forEach(el => {
+      const isActive = el.dataset.theme === activeKey;
+      el.classList.toggle('active', isActive);
+      if (isActive && btnLabel) btnLabel.textContent = el.textContent.trim();
+    });
+    panel.classList.remove('open');
+    const btn = document.getElementById('theme-picker-btn');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+  if (save) localStorage.setItem('remotePlayTheme', activeKey);
+}
+
+function toggleThemePicker() {
+  const panel = document.getElementById('theme-picker-panel');
+  const btn   = document.getElementById('theme-picker-btn');
+  if (!panel) return;
+  const open = panel.classList.toggle('open');
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+  if (open) {
+    // close when clicking outside
+    const close = e => {
+      if (!document.getElementById('theme-picker').contains(e.target)) {
+        panel.classList.remove('open');
+        btn && btn.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('pointerdown', close, true);
+      }
+    };
+    document.addEventListener('pointerdown', close, true);
+  }
 }
 
 function applyPhonePlaybackState(isPlaying) {
@@ -286,12 +339,12 @@ function onPlayerGestureEnd(event) {
   adjustVolumeBy(dy < 0 ? 0.05 : -0.05);
 }
 function adjustVolumeBy(delta) {
-  const slider = document.getElementById('volume');
+  const slider = document.getElementById('video-combined-vol');
   if (!slider) return;
-  const current = Math.max(0, Math.min(1, Number(slider.value) || 0));
-  const next = Math.max(0, Math.min(1, current + delta));
+  const current = Math.max(0, Math.min(1.3, Number(slider.value) || 0));
+  const next = Math.max(0, Math.min(1.3, current + delta));
   slider.value = next.toFixed(2);
-  setVolume(slider.value);
+  setVideoCombinedSlider(slider.value);
   haptic(8);
 }
 function startPolling() {
@@ -339,16 +392,27 @@ async function pollStatus() {
       );
       const optionsCard = document.getElementById('options-card');
       const volume = Math.max(0, Math.min(1, Number(s.volume) || 0));
-      document.getElementById('volume').value = volume;
-      document.getElementById('volume-label').textContent = Math.round(volume * 100) + '%';
       if (volume > 0.001) lastVolumeBeforeMute = volume;
       updateVolumeIcon(volume);
-      const boostAmount = Math.max(0, Math.min(1, (Number(s.audioBoost) || 1) - 1));
-      document.getElementById('audio-boost').value = boostAmount;
-      document.getElementById('audio-boost-label').textContent =
-        Math.round(boostAmount * 100) + '%';
-      if (boostAmount > 0.001) lastBoostBeforeMute = boostAmount;
-      updateAudioBoostIcon(boostAmount);
+      const boostGain = Math.max(1, Number(s.audioBoost) || 1);
+      const boostAmount = boostGain - 1; // keep for buildPlayerMeta compatibility
+      // Map vol + boostGain back to combined slider
+      const combined = boostGain > 1.0
+        ? Math.min(1.3, 1.0 + (boostGain - 1) * 0.3)
+        : Math.min(1.0, volume);
+      const cs = document.getElementById('video-combined-vol');
+      const volLbl = document.getElementById('volume-label');
+      if (cs) {
+        cs.value = combined.toFixed(2);
+        if (combined > 1.0) {
+          cs.classList.add('slider-boosting');
+          const db = Math.round(20 * Math.log10(boostGain));
+          if (volLbl) volLbl.textContent = '100% +' + db + 'dB';
+        } else {
+          cs.classList.remove('slider-boosting');
+          if (volLbl) volLbl.textContent = Math.round(volume * 100) + '%';
+        }
+      }
       const brightness = Math.max(0.3, Math.min(0.7, Number(s.brightness) || 0.5));
       document.getElementById('brightness').value = brightness;
       document.getElementById('brightness-label').textContent = Math.round(brightness * 100) + '%';
@@ -367,11 +431,13 @@ async function pollStatus() {
       }
       const err = document.getElementById('error');
       if (s.lastError) {
-        err.style.display = 'block';
-        err.textContent = 'Playback error: ' + s.lastError;
+        err.style.display = 'none';
+        showPlaybackErrorPopup('Video', s.lastError);
       } else {
         err.style.display = 'none';
         err.textContent = '';
+        // Video is playing without error — allow the popup to reappear if a new error occurs
+        clearPlaybackErrorDedup('Video');
       }
       updateResumePrompt(s);
       const progress = document.getElementById('progress');
@@ -430,4 +496,197 @@ async function pollStatus() {
     );
     updateDiagnosticsIndicator('error');
   }
+}
+
+// ── Playback error popup ─────────────────────────────────────────────────────
+// Tracks the last error shown per domain to avoid repeat popups.
+const _pbeLastError = { video: '', music: '', radio: '' };
+let _pbeOverlayEl = null;
+
+// Translate common Windows HRESULT / media error codes to plain English.
+// Returns { friendly: string, translated: boolean }
+function _friendlyMediaError(msg) {
+  if (!msg) return { friendly: msg, translated: false };
+  const codes = {
+    '0xC00D2EFE': 'The stream ended unexpectedly or the station stopped broadcasting.',
+    '0xC00D0035': 'The stream source could not be found. The URL may be invalid or the station is offline.',
+    '0xC00D36FA': 'Playback was stopped by the application.',
+    '0xC00D36B4': 'The media format is not supported.',
+    '0xC00D36C4': 'The byte stream type is unsupported. The station format may not be compatible.',
+    '0xC00D4A44': 'The stream could not be opened. The station may be offline or require authentication.',
+    '0x80004005': 'An unspecified error occurred while accessing the stream.',
+    '0x80070005': 'Access was denied to the media source.',
+    '0x800700AA': 'The resource is currently in use by another process.',
+    '0xC00D07D2': 'The codec required for this stream is not available.',
+    '0xC00D3E8C': 'The network timed out while buffering the stream.',
+    '0xC00D4268': 'Could not connect to the server. The station may be offline.',
+  };
+  const textCodes = {
+    'WaveHeaderUnprepared': 'The audio output device encountered an internal buffer error. The audio driver may have reset — try restarting playback.',
+    'waveOutWrite':         'The audio output device encountered an internal buffer error. The audio driver may have reset — try restarting playback.',
+    'MMSYSERR_INVALHANDLE': 'The audio output device handle became invalid. The audio driver may have reset — try restarting playback.',
+    'MMSYSERR_NODRIVER':    'No audio output driver is available. Check that an audio device is connected and enabled.',
+    'WAVERR_STILLPLAYING':  'The audio device is still busy with a previous buffer. Try stopping and restarting playback.',
+  };
+
+  let out = msg;
+  let translated = false;
+
+  // Replace known hex codes and clean up surrounding debris
+  for (const [code, human] of Object.entries(codes)) {
+    if (out.toUpperCase().includes(code.toUpperCase())) {
+      // Remove the code itself, then remove any wrapping parens/brackets that held only the code
+      out = out.replace(new RegExp(`\\s*[\\(\\[]?\\s*${code}\\s*[\\)\\]]?\\s*`, 'gi'), ' ');
+      // Clean up trailing punctuation and whitespace
+      out = out.replace(/[.\s]+$/, '').replace(/^[.\s]+/, '').trim();
+      out = (out ? out + '\n\n' : '') + human;
+      translated = true;
+    }
+  }
+
+  // Replace known text error tokens (take priority — replace entire message)
+  for (const [token, human] of Object.entries(textCodes)) {
+    if (out.includes(token)) {
+      out = human;
+      translated = true;
+      break;
+    }
+  }
+
+  return { friendly: out, translated };
+}
+
+function _buildPbeOverlay() {
+  if (_pbeOverlayEl) return _pbeOverlayEl;
+
+  const overlay = document.createElement('div');
+  // All critical styles are inline so no CSS class can interfere
+  Object.assign(overlay.style, {
+    position: 'fixed',
+    top: '0',
+    left: '0',
+    width: '100%',
+    height: '100%',
+    zIndex: '99999',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(0,0,0,0.65)',
+  });
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+
+  const card = document.createElement('div');
+  card.id = 'playback-error-overlay';
+  // Use player-card-bg-solid first (opaque), fall back to a hardcoded opaque dark colour.
+  // Do NOT use --card-bg which can be semi-transparent in light/silver themes.
+  Object.assign(card.style, {
+    background: 'var(--player-card-bg-solid, var(--folder-bg, #1a1e2e))',
+    color: 'var(--folder-text, #eef)',
+    border: '2px solid var(--accent, #e94560)',
+    borderRadius: '18px',
+    padding: '1.6rem 2rem 1.4rem',
+    maxWidth: 'min(520px, 92vw)',
+    width: '100%',
+    boxShadow: '0 24px 64px rgba(0,0,0,0.75)',
+    fontFamily: "'Segoe UI', sans-serif",
+  });
+
+  const header = document.createElement('div');
+  Object.assign(header.style, { display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '.6rem' });
+
+  const icon = document.createElement('span');
+  icon.textContent = '⚠';
+  Object.assign(icon.style, { fontSize: '1.3rem', color: 'var(--accent, #e94560)', flexShrink: '0' });
+
+  const domainEl = document.createElement('span');
+  domainEl.id = 'pbe-domain';
+  Object.assign(domainEl.style, { fontSize: '.78rem', fontWeight: '700', opacity: '.7', letterSpacing: '.05em', textTransform: 'uppercase' });
+
+  const title = document.createElement('h2');
+  title.textContent = 'Playback stopped';
+  Object.assign(title.style, { fontSize: '1.25rem', fontWeight: '800', margin: '0', color: 'var(--title-color, var(--accent, #e94560))' });
+
+  header.appendChild(icon);
+  header.appendChild(domainEl);
+
+  const msgEl = document.createElement('p');
+  msgEl.id = 'pbe-message';
+  Object.assign(msgEl.style, { margin: '.4rem 0 .6rem', fontSize: '.9rem', lineHeight: '1.5', whiteSpace: 'pre-wrap', opacity: '.9' });
+
+  const techEl = document.createElement('p');
+  techEl.id = 'pbe-tech';
+  Object.assign(techEl.style, { margin: '0 0 1rem', fontSize: '.72rem', lineHeight: '1.4', whiteSpace: 'pre-wrap', opacity: '.5', fontFamily: 'monospace' });
+
+  const actions = document.createElement('div');
+  Object.assign(actions.style, { display: 'flex', justifyContent: 'flex-end' });
+
+  const dismissBtn = document.createElement('button');
+  dismissBtn.textContent = 'Dismiss';
+  Object.assign(dismissBtn.style, {
+    background: 'var(--accent, #e94560)',
+    color: '#fff',
+    border: 'none',
+    borderRadius: '8px',
+    padding: '.5rem 1.4rem',
+    fontWeight: '700',
+    fontSize: '.88rem',
+    cursor: 'pointer',
+  });
+  dismissBtn.onclick = closePlaybackErrorPopup;
+  actions.appendChild(dismissBtn);
+
+  card.appendChild(header);
+  card.appendChild(title);
+  card.appendChild(msgEl);
+  card.appendChild(techEl);
+  card.appendChild(actions);
+  overlay.appendChild(card);
+
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closePlaybackErrorPopup(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePlaybackErrorPopup(); });
+
+  // Store direct references so showPlaybackErrorPopup never needs getElementById
+  overlay._domainEl = domainEl;
+  overlay._msgEl = msgEl;
+  overlay._techEl = techEl;
+
+  _pbeOverlayEl = overlay;
+  return overlay;
+}
+
+function showPlaybackErrorPopup(domain, message) {
+  if (!message) return;
+  const key = (domain || 'video').toLowerCase();
+  // Deduplicate: don't re-show the same error for the same domain until dismissed
+  if (_pbeLastError[key] === message) return;
+  _pbeLastError[key] = message;
+
+  const overlay = _buildPbeOverlay();
+  if (overlay._domainEl) overlay._domainEl.textContent = domain || '';
+  const { friendly, translated } = _friendlyMediaError(message);
+  if (overlay._msgEl) overlay._msgEl.textContent = friendly;
+  // Show raw technical detail only when we actually translated the message
+  if (overlay._techEl) {
+    overlay._techEl.textContent = translated ? message.trim() : '';
+    overlay._techEl.style.display = translated ? '' : 'none';
+  }
+
+  // Always attach as last child of body so nothing can trap it
+  document.body.appendChild(overlay);
+}
+
+// Called by domain status pollers when playback resumes successfully,
+// so the same error can show again if it recurs after recovery.
+function clearPlaybackErrorDedup(domain) {
+  const key = (domain || 'video').toLowerCase();
+  _pbeLastError[key] = '';
+}
+
+function closePlaybackErrorPopup() {
+  if (_pbeOverlayEl && _pbeOverlayEl.parentNode) {
+    _pbeOverlayEl.parentNode.removeChild(_pbeOverlayEl);
+  }
+  // Do NOT clear _pbeLastError here — keeps the dismissed error suppressed
+  // until the domain actually recovers (clearPlaybackErrorDedup is called).
 }

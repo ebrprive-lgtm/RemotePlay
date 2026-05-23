@@ -56,10 +56,42 @@ async function onSeekCommit() {
 }
 
 function updateVolumeIcon(value) {
-  document.getElementById('volume-icon-btn').classList.toggle('off', (Number(value) || 0) <= 0.001);
+  const btn = document.getElementById('volume-icon-btn');
+  if (btn) btn.classList.toggle('off', (Number(value) || 0) <= 0.001);
 }
 function updateAudioBoostIcon(value) {
-  document.getElementById('boost-icon-btn').classList.toggle('off', (Number(value) || 0) <= 0.001);
+  // legacy no-op — boost state is now reflected by slider colour
+}
+
+// Combined volume/boost slider (0–1.0 = volume, 1.0–1.3 = boost zone)
+// Boost mapping: slider 1.0 → gain 1.0, slider 1.3 → gain 2.0 (linear)
+async function setVideoCombinedSlider(v) {
+  const val = parseFloat(v);
+  if (isNaN(val)) return;
+  const slider = document.getElementById('video-combined-vol');
+  const lbl    = document.getElementById('volume-label');
+  if (val <= 1.0) {
+    if (slider) slider.classList.remove('slider-boosting');
+    const volume = Math.max(0, val);
+    if (volume > 0.001) lastVolumeBeforeMute = volume;
+    if (lbl) lbl.textContent = Math.round(volume * 100) + '%';
+    updateVolumeIcon(volume);
+    await api('/api/volume?value=' + volume.toFixed(2));
+    await api('/api/audio-boost?value=1.00');
+  } else {
+    if (slider) slider.classList.add('slider-boosting');
+    // vol = 1.0, boost gain maps 1.0–1.3 → 1.0–2.0
+    const gain = 1 + (val - 1) * (1 / 0.3);
+    const db = Math.round(20 * Math.log10(gain));
+    if (lbl) lbl.textContent = '100% +' + db + 'dB';
+    updateVolumeIcon(1);
+    await api('/api/volume?value=1.00');
+    await api('/api/audio-boost?value=' + gain.toFixed(2));
+  }
+}
+async function setVideoCombinedReset() {
+  const slider = document.getElementById('video-combined-vol');
+  if (slider) { slider.value = 1; await setVideoCombinedSlider(1); }
 }
 async function togglePause() {
   haptic(12);
@@ -100,30 +132,31 @@ async function setVolume(value) {
   if (volume > 0.001) lastVolumeBeforeMute = volume;
   document.getElementById('volume-label').textContent = Math.round(volume * 100) + '%';
   updateVolumeIcon(volume);
+  // sync combined slider (only if we are in volume zone)
+  const cs = document.getElementById('video-combined-vol');
+  if (cs && parseFloat(cs.value) <= 1.0) { cs.value = volume.toFixed(2); cs.classList.remove('slider-boosting'); }
   await api('/api/volume?value=' + encodeURIComponent(volume.toFixed(2)));
 }
 async function toggleVolumeMute() {
   haptic(10);
-  const slider = document.getElementById('volume');
+  const slider = document.getElementById('video-combined-vol');
+  if (!slider) return;
   const current = Math.max(0, Math.min(1, parseFloat(slider.value) || 0));
+  // Only mute/unmute when in volume zone
+  const combined = parseFloat(slider.value);
+  if (combined > 1.0) return; // don't mute in boost zone
   const next = current > 0.001 ? 0 : Math.max(0.05, lastVolumeBeforeMute || 0.7);
   slider.value = next.toFixed(2);
-  await setVolume(slider.value);
+  await setVideoCombinedSlider(slider.value);
 }
 async function setAudioBoost(value) {
   const boostAmount = Math.max(0, Math.min(1, parseFloat(value) || 0));
   if (boostAmount > 0.001) lastBoostBeforeMute = boostAmount;
-  document.getElementById('audio-boost-label').textContent = Math.round(boostAmount * 100) + '%';
   updateAudioBoostIcon(boostAmount);
   await api('/api/audio-boost?value=' + encodeURIComponent((1 + boostAmount).toFixed(2)));
 }
 async function toggleAudioBoostMute() {
-  haptic(10);
-  const slider = document.getElementById('audio-boost');
-  const current = Math.max(0, Math.min(1, parseFloat(slider.value) || 0));
-  const next = current > 0.001 ? 0 : Math.max(0.05, lastBoostBeforeMute || 0.3);
-  slider.value = next.toFixed(2);
-  await setAudioBoost(slider.value);
+  // Legacy — no longer exposed in UI; no-op
 }
 async function setBrightness(value) {
   const brightness = Math.max(0.3, Math.min(0.7, parseFloat(value) || 0.5));
@@ -191,9 +224,13 @@ function _getProfile(n) {
   return Object.assign({}, DEFAULT_PROFILE, p[n] || {});
 }
 function _currentSettings() {
+  const cs = document.getElementById('video-combined-vol');
+  const combined = cs ? parseFloat(cs.value) : 1;
+  const volume = Math.min(1, combined);
+  const boost  = combined > 1.0 ? (combined - 1) * (1 / 0.3) : 0;
   return {
-    volume: parseFloat(document.getElementById('volume').value) || 1,
-    boost: parseFloat(document.getElementById('audio-boost').value) || 0,
+    volume,
+    boost,
     brightness: parseFloat(document.getElementById('brightness').value) || 0.5,
     saturation: parseFloat(document.getElementById('saturation').value) || 1,
     zoom: parseFloat(document.getElementById('zoom').value) || 1,
@@ -251,9 +288,13 @@ async function applyProfile(n) {
     setTimeout(() => btn.classList.remove('applying'), 500);
   }
   await setVolume(profile.volume);
-  document.getElementById('volume').value = profile.volume.toFixed(2);
-  await setAudioBoost(profile.boost);
-  document.getElementById('audio-boost').value = profile.boost.toFixed(2);
+  // Set the combined slider: if boost > 0, map to boost zone; otherwise use volume
+  const combined = profile.boost > 0
+    ? Math.min(1.3, 1.0 + profile.boost * 0.3)
+    : Math.min(1.0, profile.volume);
+  const cs = document.getElementById('video-combined-vol');
+  if (cs) { cs.value = combined.toFixed(2); await setVideoCombinedSlider(combined); }
+  else { await setAudioBoost(profile.boost); }
   await setBrightness(profile.brightness);
   await setSaturation(profile.saturation);
   await commitZoom(profile.zoom);
@@ -624,6 +665,7 @@ function clearPendingThumbnails() {
   }
   document.querySelectorAll('.movie-card').forEach((card) => {
     card.style.backgroundImage = 'none';
+    card.classList.remove('has-poster');
   });
 }
 
@@ -637,6 +679,7 @@ function observeMovieCards() {
   if (!('IntersectionObserver' in window)) {
     cards.forEach((card) => {
       card.style.backgroundImage = 'url(' + card.dataset.thumb + ')';
+      card.classList.add('has-poster');
       card.removeAttribute('data-thumb');
     });
     return;
@@ -648,7 +691,7 @@ function observeMovieCards() {
         if (!entry.isIntersecting) continue;
         const card = entry.target;
         const thumb = card.dataset.thumb;
-        if (thumb) card.style.backgroundImage = 'url(' + thumb + ')';
+        if (thumb) { card.style.backgroundImage = 'url(' + thumb + ')'; card.classList.add('has-poster'); }
         card.removeAttribute('data-thumb');
         thumbnailObserver.unobserve(card);
       }

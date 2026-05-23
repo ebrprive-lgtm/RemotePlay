@@ -163,6 +163,10 @@ internal sealed partial class WebServer
                 TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(GetThumbnailQueueStatus()));
                 break;
 
+            case "/api/durations":
+                HandleDurations(ctx);
+                break;
+
             case "/api/recent":
                 HandleRecent(ctx);
                 break;
@@ -312,6 +316,10 @@ internal sealed partial class WebServer
 
             case "/api/music/browse":
                 HandleMusicBrowse(ctx);
+                break;
+
+            case "/api/music/recent":
+                HandleMusicRecent(ctx);
                 break;
 
             case "/api/music/stream":
@@ -816,6 +824,8 @@ internal sealed partial class WebServer
         var scanStatus = GetLibraryScanStatus();
         var certificate = TryGetHttpsCertificate();
         var runtime = BuildRuntimeHealthJson();
+        var musicStatus = _callbacks.GetMusicStatus();
+        var radioStatus = _callbacks.RadioGetStatus();
         var startupWarning = string.IsNullOrWhiteSpace(_startupWarning) ? "None" : _startupWarning;
         var playbackError = string.IsNullOrWhiteSpace(status.LastError) ? "None" : status.LastError;
         var scanError = string.IsNullOrWhiteSpace(scanStatus.LastError) ? "None" : scanStatus.LastError;
@@ -828,6 +838,34 @@ internal sealed partial class WebServer
         var libraryLabel = _isIndexing ? "Indexing" : "Ready";
         var displayLabel = displayDiagnostics.NeedsFullscreenRepair ? "Repair needed" : "Fullscreen OK";
         var certificateLabel = certificate is not null ? "Available" : "Missing";
+
+        // Music codec card — only rendered when music is actively playing
+        var musicCodecCard = (musicStatus.IsPlaying || musicStatus.IsPaused) ? $"""
+              <section class="card"><h2>&#127925; Music playing <span class="pill ok">ACTIVE</span></h2><dl class="grid">
+                <div class="metric wide"><dt>Track</dt><dd>{HtmlEncode(string.IsNullOrWhiteSpace(musicStatus.Title) ? Path.GetFileName(musicStatus.CurrentPath) : musicStatus.Title)}</dd></div>
+                <div class="metric wide"><dt>Path</dt><dd class="mono">{HtmlEncode(musicStatus.CurrentPath)}</dd></div>
+                <div class="metric"><dt>Format</dt><dd>{HtmlEncode(Path.GetExtension(musicStatus.CurrentPath).TrimStart('.').ToUpperInvariant())}</dd></div>
+                <div class="metric"><dt>State</dt><dd>{(musicStatus.IsPaused ? "Paused" : "Playing")}</dd></div>
+                <div class="metric"><dt>Position</dt><dd>{TimeSpan.FromSeconds(musicStatus.Position):hh\\:mm\\:ss}</dd></div>
+                <div class="metric"><dt>Duration</dt><dd>{(musicStatus.Duration > 0 ? TimeSpan.FromSeconds(musicStatus.Duration).ToString(@"hh\:mm\:ss") : "N/A")}</dd></div>
+                {(string.IsNullOrWhiteSpace(musicStatus.LastError) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(musicStatus.LastError)}</dd></div>")}
+              </dl></section>
+            """ : string.Empty;
+
+        // Radio codec card — only rendered when radio is actively playing or was last active
+        var radioCodecCard = radioStatus.IsPlaying ? $"""
+              <section class="card"><h2>&#128251; Radio playing <span class="pill ok">ACTIVE</span></h2><dl class="grid">
+                <div class="metric wide"><dt>Station</dt><dd>{HtmlEncode(radioStatus.StationName)}</dd></div>
+                <div class="metric wide"><dt>Stream URL</dt><dd class="mono">{HtmlEncode(radioStatus.StationUrl)}</dd></div>
+                {(string.IsNullOrWhiteSpace(radioStatus.StreamTitle) ? "" : $"<div class=\"metric wide\"><dt>Now playing</dt><dd>{HtmlEncode(radioStatus.StreamTitle)}</dd></div>")}
+                <div class="metric"><dt>Elapsed</dt><dd>{TimeSpan.FromSeconds(radioStatus.ElapsedSeconds):hh\\:mm\\:ss}</dd></div>
+                <div class="metric"><dt>Stalled</dt><dd class="{(radioStatus.IsStalled ? "warn-text" : "ok-text")}">{radioStatus.IsStalled}</dd></div>
+                <div class="metric"><dt>Volume</dt><dd>{Math.Round(radioStatus.Volume * 100)}%</dd></div>
+                <div class="metric"><dt>Boost</dt><dd>{radioStatus.Boost:F1}×</dd></div>
+                {(string.IsNullOrWhiteSpace(radioStatus.Error) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(radioStatus.Error)}</dd></div>")}
+              </dl></section>
+            """ : string.Empty;
+
         var html = $$$$"""
             <!DOCTYPE html>
             <html lang="en">
@@ -938,6 +976,8 @@ internal sealed partial class WebServer
                       """)))}
                       """
                   )}}}}</section>
+                {{{{musicCodecCard}}}}
+                {{{{radioCodecCard}}}}
                 <section class="card"><h2>Library index <span class="pill {{{{libraryState}}}}">{{{{HtmlEncode(libraryLabel)}}}}</span></h2><dl class="grid">
                   <div class="metric"><dt>Indexed videos</dt><dd>{{{{_libraryIndex.Length}}}}</dd></div>
                   <div class="metric"><dt>Indexing now</dt><dd>{{{{_isIndexing}}}}</dd></div>
@@ -1354,7 +1394,7 @@ internal sealed partial class WebServer
             // playback fields
             isPlaying     = pb.IsPlaying,
             isPaused      = pb.IsPaused,
-            currentPath   = pb.CurrentPath,
+            currentPath   = pb.CurrentPath is not null ? WebPathHelpers.EncodePath(pb.CurrentPath) : null,
             title         = pb.Title,
             position      = pb.Position,
             duration      = pb.Duration,
@@ -1536,8 +1576,8 @@ internal sealed partial class WebServer
 
         var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         var history = GetHistoryForIp(GetClientIp(ctx));
-        var resumeMap = history.GetProgressMap();
-        var watchedSet = history.GetWatchedSet();
+        var resumeMap = GetMergedProgressMap(history);
+        var watchedSet = GetMergedWatchedSet(history);
         var naturalComparer = _naturalComparer;
 
         var offset = ReadNonNegativeInt(ctx.Request.QueryString["offset"]);
@@ -1607,12 +1647,89 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { files }));
     }
 
+    private void HandleMusicRecent(HttpListenerContext ctx)
+    {
+        var root = _config.ResolvedMusicPath;
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            TrySendResponse(ctx, 200, "application/json", "{\"files\":[]}");
+            return;
+        }
+
+        var musicExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { ".mp3", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".wav", ".opus", ".ape", ".alac" };
+
+        var indexLookup = _musicIndex.ToDictionary(f => f.FullPath, StringComparer.OrdinalIgnoreCase);
+
+        var files = GetHistoryForIp(GetClientIp(ctx)).GetRecent(_config.PlaybackHistoryLimit)
+            .Where(item => WebPathHelpers.IsUnderRoot(item.FilePath, root)
+                        && musicExts.Contains(Path.GetExtension(item.FilePath)))
+            .Take(10)
+            .Select(item =>
+            {
+                if (!indexLookup.TryGetValue(item.FilePath, out var musicFile))
+                    musicFile = new MusicFile(Path.GetFileName(item.FilePath), item.FilePath);
+                return BuildMusicRecentObj(musicFile, item.PositionSeconds, item.DurationSeconds);
+            })
+            .ToArray();
+
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { files }));
+    }
+
+    private static object BuildMusicRecentObj(MusicFile f, double positionSeconds, double durationSeconds)
+    {
+        var dir     = Path.GetDirectoryName(f.FullPath) ?? string.Empty;
+        var ext     = Path.GetExtension(f.FullPath).TrimStart('.').ToLowerInvariant();
+        string album    = Path.GetFileName(dir);
+        string artist   = Path.GetFileName(Path.GetDirectoryName(dir)) ?? string.Empty;
+        string tagTitle = string.Empty;
+        int?   durationSec = durationSeconds > 0 ? (int)Math.Round(durationSeconds) : null;
+        string genre    = string.Empty;
+        int?   year     = null;
+        bool   hasCover = false;
+
+        try
+        {
+            using var tfile = TagLib.File.Create(f.FullPath);
+            var tag = tfile.Tag;
+            if (!string.IsNullOrWhiteSpace(tag.Title))  tagTitle = tag.Title;
+            if (!string.IsNullOrWhiteSpace(tag.Album))  album    = tag.Album;
+            var performers = tag.AlbumArtists.Length > 0 ? tag.AlbumArtists : tag.Performers;
+            if (performers.Length > 0 && !string.IsNullOrWhiteSpace(performers[0]))
+                artist = performers[0];
+            if (tag.Year > 0)   year = (int)tag.Year;
+            if (tag.Genres.Length > 0 && !string.IsNullOrWhiteSpace(tag.Genres[0]))
+                genre = tag.Genres[0];
+            hasCover = tfile.Tag.Pictures.Length > 0 || FolderHasCoverImage(dir);
+            durationSec = (int)Math.Round(tfile.Properties.Duration.TotalSeconds);
+        }
+        catch { /* fall back to path-based values */ }
+
+        return new
+        {
+            name        = f.Name,
+            tagTitle,
+            path        = WebPathHelpers.EncodePath(f.FullPath),
+            folder      = Path.GetFileName(dir),
+            ext,
+            album,
+            artist,
+            genre,
+            year,
+            durationSec,
+            hasCover,
+            position    = Math.Round(positionSeconds, 1),
+            duration    = Math.Round(durationSeconds, 1),
+            progress    = durationSeconds > 0 ? Math.Round(positionSeconds / durationSeconds, 3) : 0
+        };
+    }
+
     private void HandleFavorites(HttpListenerContext ctx)
     {
         var root = _config.ResolvedMoviesPath;
         var history = GetHistoryForIp(GetClientIp(ctx));
-        var resumeMap = history.GetProgressMap();
-        var watchedSet = history.GetWatchedSet();
+        var resumeMap = GetMergedProgressMap(history);
+        var watchedSet = GetMergedWatchedSet(history);
         var files = GetFavoritePaths()
             .Where(path => WebPathHelpers.IsUnderRoot(path, root) && File.Exists(path))
             .OrderBy(path => Path.GetFileNameWithoutExtension(path), _naturalComparer)
@@ -1773,8 +1890,8 @@ internal sealed partial class WebServer
             .ToArray();
 
         var history = GetHistoryForIp(GetClientIp(ctx));
-        var resumeMap = history.GetProgressMap();
-        var watchedSet = history.GetWatchedSet();
+        var resumeMap = GetMergedProgressMap(history);
+        var watchedSet = GetMergedWatchedSet(history);
         var offset = ReadNonNegativeInt(ctx.Request.QueryString["offset"]);
         var limit = ReadPositiveInt(ctx.Request.QueryString["limit"], _config.EffectiveLibraryPageSize, 1000);
 
@@ -1930,9 +2047,6 @@ internal sealed partial class WebServer
 
     private void RefreshLibraryIndexIfIdle()
     {
-        if (DateTimeOffset.UtcNow - _lastRequestUtc < TimeSpan.FromHours(1))
-            return;
-
         if (_lastIndexRefreshUtc is not null && DateTimeOffset.UtcNow - _lastIndexRefreshUtc.Value < TimeSpan.FromDays(1))
             return;
 
@@ -2209,18 +2323,70 @@ internal sealed partial class WebServer
     private static object[] BuildBreadcrumbs(string root, string targetDir) =>
         LibraryIndexHelpers.BuildBreadcrumbs(root, targetDir);
 
-    private static object BuildCardFile(string name, string filePath, IReadOnlyDictionary<string, RecentPlaybackItem> resumeMap, string folder = "", bool isFavorite = false, bool isLink = false, string? linkSourcePath = null, IReadOnlySet<string>? watchedSet = null)
+    /// <summary>
+    /// POST /api/durations — accepts a JSON array of Base64-encoded file paths,
+    /// returns a JSON object mapping each encoded path to its cached duration in seconds.
+    /// Only paths already present in the in-memory cache are returned (never probes disk).
+    /// </summary>
+    private void HandleDurations(HttpListenerContext ctx)
+    {
+        using var reader = new System.IO.StreamReader(ctx.Request.InputStream, System.Text.Encoding.UTF8);
+        var body = reader.ReadToEnd();
+        string[] encodedPaths;
+        try
+        {
+            encodedPaths = JsonSerializer.Deserialize<string[]>(body) ?? [];
+        }
+        catch
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Expected JSON array of encoded paths");
+            return;
+        }
+
+        var result = new Dictionary<string, double>();
+        foreach (var encoded in encodedPaths)
+        {
+            if (string.IsNullOrWhiteSpace(encoded)) continue;
+            var filePath = WebPathHelpers.DecodePath(encoded);
+            if (_videoDurationCache.TryGetValue(filePath, out var d) && d > 0)
+                result[encoded] = d;
+        }
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(result));
+    }
+
+    private object BuildCardFile(string name, string filePath, IReadOnlyDictionary<string, RecentPlaybackItem> resumeMap, string folder = "", bool isFavorite = false, bool isLink = false, string? linkSourcePath = null, IReadOnlySet<string>? watchedSet = null)
     {
         resumeMap.TryGetValue(filePath, out var resume);
         var progress = resume is null || resume.DurationSeconds <= 0 ? 0 : Math.Round(resume.PositionSeconds / resume.DurationSeconds, 3);
         var watched = (watchedSet?.Contains(filePath) ?? false) || progress >= 0.95;
         long sizeBytes = 0;
         try { sizeBytes = new FileInfo(filePath).Length; } catch { }
-        // Use resume duration when available; do NOT probe unplayed files with TagLib
-        // (per-file tag reads on a large folder cause very noticeable load delays).
-        double durationSec = resume is not null && resume.DurationSeconds > 0
-            ? Math.Round(resume.DurationSeconds, 1)
-            : 0;
+
+        // Prefer duration from resume map (already known from playback).
+        // Fall back to the background-populated cache.
+        // If neither has a value yet, queue a background probe so future requests will have it.
+        double durationSec = 0;
+        if (resume is not null && resume.DurationSeconds > 0)
+        {
+            durationSec = Math.Round(resume.DurationSeconds, 1);
+            _videoDurationCache[filePath] = durationSec; // keep cache warm
+        }
+        else if (_videoDurationCache.TryGetValue(filePath, out var cached) && cached > 0)
+        {
+            durationSec = cached;
+        }
+        else
+        {
+            // Schedule a one-shot background probe; result lands in cache for next request.
+            var pathCapture = filePath;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                var d = ReadFileDurationSeconds(pathCapture);
+                if (d > 0)
+                    _videoDurationCache[pathCapture] = d;
+            });
+        }
+
         return new
         {
             name,
