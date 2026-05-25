@@ -101,7 +101,7 @@
           <div id="radio-filter-sticky" style="display:none"></div>
           <!-- ── Music command bar ──────────────────────────────────────────── -->
           <div id="music-command-bar" style="display:none">
-            <div class="cb-inner">
+            <div class="cb-inner" id="mcb-normal">
             <div id="mcb-left">
               <button id="mcb-view-btn" class="vcb-view-btn" onclick="_setViewMode('music',_viewMode.music==='grid'?'list':'grid')" title="Toggle list / grid view"></button>
             </div>
@@ -119,6 +119,13 @@
               </select>
               <span id="mcb-count" class="vcb-count"></span>
             </div>
+            </div>
+            <div class="cb-inner" id="mcb-selection" style="display:none">
+              <span id="music-selection-label" style="font-weight:600;font-size:.85rem"></span>
+              <div class="music-selection-actions">
+                <button onclick="_musicSelectionPlay()">&#9654; Play selected tracks</button>
+              </div>
+              <button class="music-selection-clear-btn" onclick="_musicSelectionClear()">&#10005; Clear</button>
             </div>
           </div>
           <!-- ── Radio command bar ──────────────────────────────────────────── -->
@@ -141,7 +148,7 @@
             </div>
           </div>
           <div id="video-command-bar" style="display:none">
-            <div class="cb-inner">
+            <div class="cb-inner" id="vcb-normal">
             <div id="vcb-left">
               <button id="vcb-view-btn" class="vcb-view-btn" onclick="_setViewMode('video',_viewMode.video==='grid'?'list':'grid')" title="Toggle list / grid view"></button>
             </div>
@@ -162,6 +169,13 @@
               </select>
               <span id="vcb-count" class="vcb-count"></span>
             </div>
+            </div>
+            <div class="cb-inner" id="vcb-selection" style="display:none">
+              <span id="video-selection-label" style="font-weight:600;font-size:.85rem"></span>
+              <div class="music-selection-actions">
+                <button onclick="_videoSelectionQueue()">&#9654; Play selected</button>
+              </div>
+              <button class="music-selection-clear-btn" onclick="_videoSelectionClear()">&#10005; Clear</button>
             </div>
           </div>
           <div id="now-playing-bar">
@@ -239,22 +253,15 @@
         <div id="status" style="display:none">Loading...</div>
         <div id="browse-nav-row">
           <button id="back-button" class="crumb-back" onclick="goBack()" style="display:none">&#8592; Back</button>
-          <div class="browse-nav-spacer"></div>
           <div id="video-recent-strip"></div>
+          <button id="video-recent-clear" class="vr-clear-btn" style="display:none" title="Clear recently played" onclick="clearRecentVideos()">&#x2715;</button>
+          <div class="browse-nav-spacer"></div>
           <div id="music-recent-strip" style="display:none"></div>
           <div id="radio-recent-strip" style="display:none"></div>
         </div>
         <div id="browser"></div>
         <div id="music-browser" style="display:none"></div>
         <div id="music-queue-pending-bar" style="display:none"></div>
-        <div id="music-selection-bar" style="display:none">
-          <span id="music-selection-label"></span>
-          <div class="music-selection-actions">
-            <button onclick="_musicSelectionAddToQueue()">&#43; Add to Queue</button>
-            <button onclick="_musicSelectionPlay()">&#9654; Play</button>
-            <button class="music-selection-clear-btn" onclick="_musicSelectionClear()">&#10005; Clear</button>
-          </div>
-        </div>
         <div id="radio-browser" style="display:none"></div>
         <div id="radio-player-bar" style="display:none" aria-label="Radio player">
           <div class="player-top">
@@ -351,10 +358,11 @@
               </div>
             </div>
             <div class="transport-controls">
-              <div class="button-group transport-nav-group">
+              <div class="button-group transport-nav-group" id="music-nav-normal">
                 <button id="music-btn-prev" class="btn btn-nav" onclick="musicPrev()" title="Previous"><span class="nav-main">&#9664;&#9664; Prev</span><span class="nav-title" id="music-prev-title"></span></button>
                 <button id="music-btn-next" class="btn btn-nav" onclick="musicNext()" title="Next"><span class="nav-main">Next &#9654;&#9654;</span><span class="nav-title" id="music-next-title"></span></button>
               </div>
+              <button id="music-btn-queue-next" class="btn btn-nav queue-mode" style="display:none" onclick="musicNext()" title="Play next queued track"><span class="nav-main">&#9654; Next Queued</span><span class="nav-title" id="music-queue-next-title"></span></button>
               <div class="button-group transport-main-group">
                 <button id="music-btn-play" class="btn btn-red" onclick="musicToggle()">&#9654; Play</button>
                 <button id="music-btn-stop" class="btn btn-stop" onclick="musicStop()">&#9632; STOP</button>

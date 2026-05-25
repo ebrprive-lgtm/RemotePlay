@@ -121,6 +121,8 @@
         /* ── Music grid (card mode) ────────────────────────────────────────── */
         /* 6 cols: #(32px) | title(flex) | badge+dur(auto) | artist(24%) | album(26%) | time(52px) */
         :root{--mtc-cols:32px minmax(0,1fr) 52px minmax(0,.8fr) minmax(0,1fr) 52px}
+        /* 7 cols list-view: # | title | fmt | artist | album | time | cb */
+        :root{--mtc-list-cols:32px minmax(0,1fr) 52px minmax(0,.8fr) minmax(0,1fr) 52px 44px}
         .music-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.5rem;padding:.5rem .75rem}
         /* Card: tighter padding, left accent bar on playing */
         .music-track-card{background:var(--card-bg,#1a1f3a);border:1px solid var(--card-border,rgba(148,163,184,.15));border-left:3px solid transparent;border-radius:8px;padding:.45rem .6rem .45rem .5rem;cursor:pointer;transition:background .15s,border-color .15s;display:grid;grid-template-columns:32px 1fr auto;grid-template-rows:auto auto auto auto;column-gap:.4rem;row-gap:.1rem;align-items:center;overflow:hidden;position:relative}
@@ -175,39 +177,66 @@
         /* ── Multi-select ────────────────────────────────────────────────── */
         .mtc-checkbox{position:absolute;top:.35rem;left:.35rem;width:1.1rem;height:1.1rem;opacity:0;cursor:pointer;z-index:3;accent-color:var(--player-accent,#e94560);transition:opacity .12s}
         .music-track-card:hover .mtc-checkbox,.music-track-card.selected .mtc-checkbox{opacity:1}
+        /* Card mode selected: outline ring */
         .music-track-card.selected{outline:2px solid var(--player-accent,#e94560);background:rgba(233,69,96,.08)}
-        /* Selection action bar */
-        #music-selection-bar{display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:.55rem 1rem;background:var(--player-accent,#e94560);color:#fff;font-size:.85rem;font-weight:600;border-radius:8px;margin:.4rem .75rem;position:sticky;top:0;z-index:30;box-shadow:0 4px 18px rgba(0,0,0,.45)}
-        #music-selection-label{white-space:nowrap}
-        .music-selection-actions{display:flex;gap:.5rem;flex-wrap:wrap}
-        .music-selection-actions button{background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);color:#fff;border-radius:6px;padding:.3rem .75rem;font-size:.8rem;font-weight:600;cursor:pointer;transition:background .12s}
-        .music-selection-actions button:hover{background:rgba(255,255,255,.32)}
-        .music-selection-clear-btn{background:rgba(0,0,0,.2) !important}
+        /* List mode selected: themed border around the full row */
+        .music-grid.list-view .music-track-card.selected{outline:1px solid color-mix(in srgb,var(--player-accent,#e94560) 70%,transparent);outline-offset:-1px;border-left-color:var(--player-accent,#e94560);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--player-accent,#e94560) 28%,transparent);background:rgba(233,69,96,.10)!important}
+        /* Selection action bar — lives inside the command bar, replaces normal controls */
+        #mcb-selection{display:flex;align-items:center;gap:.75rem;width:100%}
+        #mcb-selection #music-selection-label{color:var(--player-text,#e2e8f0);white-space:nowrap;flex:1}
+        #mcb-selection .music-selection-actions{display:flex;gap:.5rem;flex-wrap:wrap;flex-shrink:0}
+        #mcb-selection .music-selection-actions button{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28);color:#fff;border-radius:6px;padding:.28rem .75rem;font-size:.8rem;font-weight:600;cursor:pointer;transition:background .12s}
+        #mcb-selection .music-selection-actions button:hover{background:rgba(255,255,255,.28)}
+        #mcb-selection>.music-selection-clear-btn{flex-shrink:0;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.28);color:#fff;border-radius:6px;padding:.28rem .75rem;font-size:.8rem;font-weight:600;cursor:pointer;transition:background .12s}
+        #mcb-selection>.music-selection-clear-btn:hover{background:rgba(255,255,255,.12)}
+        /* Video selection bar — mirrors music selection bar */
+        #vcb-selection{display:flex;align-items:center;gap:.75rem;width:100%}
+        #vcb-selection #video-selection-label{color:var(--player-text,#e2e8f0);white-space:nowrap;flex:1}
+        #vcb-selection .music-selection-actions{display:flex;gap:.5rem;flex-wrap:wrap;flex-shrink:0}
+        #vcb-selection .music-selection-actions button{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28);color:#fff;border-radius:6px;padding:.28rem .75rem;font-size:.8rem;font-weight:600;cursor:pointer;transition:background .12s}
+        #vcb-selection .music-selection-actions button:hover{background:rgba(255,255,255,.28)}
+        #vcb-selection>.music-selection-clear-btn{flex-shrink:0;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.28);color:#fff;border-radius:6px;padding:.28rem .75rem;font-size:.8rem;font-weight:600;cursor:pointer;transition:background .12s}
+        #vcb-selection>.music-selection-clear-btn:hover{background:rgba(255,255,255,.12)}
+        /* keep old bar styles for any legacy references but hide the element itself */
+        #music-selection-bar{display:none!important}
         /* Pre-playback pending queue notice */
         #music-queue-pending-bar{padding:.5rem 1rem;background:rgba(233,69,96,.12);border:1px solid rgba(233,69,96,.3);border-radius:7px;margin:.3rem .75rem;font-size:.8rem;color:var(--player-text,#ddd);font-style:italic}
         /* ── Music list mode ────────────────────────────────────────────────── */
         .music-grid.list-view{display:flex;flex-direction:column;gap:0;padding:.15rem .75rem;max-width:1100px}
-        .music-list-header{display:grid;grid-template-columns:var(--mtc-cols);column-gap:.55rem;align-items:center;padding:.22rem 0;font-size:.66rem;font-weight:700;color:var(--muted,#9aa8c2);letter-spacing:.07em;text-transform:uppercase;border-bottom:2px solid rgba(255,255,255,.12);position:sticky;top:0;background:var(--folder-bg,#1a1a2e);z-index:2;max-width:1100px}
+        .music-list-header{display:grid;grid-template-columns:var(--mtc-list-cols);column-gap:.55rem;align-items:center;padding:.22rem 0;font-size:.66rem;font-weight:700;color:var(--muted,#9aa8c2);letter-spacing:.07em;text-transform:uppercase;border-bottom:2px solid rgba(255,255,255,.12);position:sticky;top:0;background:var(--folder-bg,#1a1a2e);z-index:2;max-width:1100px}
         .music-list-header .sortable{cursor:pointer;user-select:none}
         .music-list-header .sortable:hover{color:#fff}
         .mtc-dur-hdr{text-align:right}
         /* List card: single dense row */
-        .music-grid.list-view .music-track-card{border-radius:0;border:none;border-left:3px solid transparent;border-bottom:1px solid rgba(255,255,255,.04);display:grid;grid-template-columns:var(--mtc-cols);grid-template-rows:auto;column-gap:.55rem;row-gap:0;align-items:center;padding:.28rem 0;background:transparent;min-height:0}
+        .music-grid.list-view .music-track-card{border-radius:0;border:none;border-left:3px solid transparent;border-bottom:1px solid rgba(255,255,255,.04);display:grid;grid-template-columns:var(--mtc-list-cols);grid-template-rows:30px;column-gap:.55rem;row-gap:0;align-items:center;padding:0;background:transparent;height:31px;line-height:1.1;overflow:hidden}
+        /* In list-view the checkbox becomes an in-flow grid cell, not absolute */
+        .music-grid.list-view .mtc-checkbox{position:static;opacity:0;width:1rem;height:1rem;grid-column:7;grid-row:1;align-self:center;justify-self:center;display:block;margin:0;padding:0;transition:opacity .12s}
+        .music-grid.list-view .music-track-card:hover .mtc-checkbox,
+        .music-grid.list-view .music-track-card.selected .mtc-checkbox{opacity:1}
         .music-grid.list-view .music-track-card:hover{background:var(--folder-hover,#1d1d32)}
         .music-grid.list-view .music-track-card.alt-row{background:rgba(255,255,255,.02)}
         .music-grid.list-view .music-track-card.alt-row:hover{background:var(--folder-hover,#1d1d32)}
         .music-grid.list-view .music-track-card.playing{background:rgba(59,130,246,.08)!important;border-left-color:var(--accent,#3b82f6);border-bottom-color:rgba(59,130,246,.2);animation:mtc-playing-pulse 2.8s ease-in-out infinite}
         /* Reset card placements for list auto-flow */
-        .music-grid.list-view .mtc-play-indicator{grid-column:unset;grid-row:unset;justify-content:center;width:28px;height:28px}
-        .music-grid.list-view .mtc-title{grid-column:unset;grid-row:unset;font-size:.83rem;font-weight:500}
-        .music-grid.list-view .mtc-badge-group{grid-column:unset;grid-row:unset;flex-direction:row;align-items:center;gap:.3rem;align-self:center;margin-top:0}
+        .music-grid.list-view .mtc-play-indicator{grid-column:1;grid-row:1;justify-content:center;width:30px;height:30px;align-self:center}
+        .music-grid.list-view .mtc-thumb{width:30px;height:30px}
+        .music-grid.list-view .mtc-title{grid-column:2;grid-row:1;font-size:.83rem;font-weight:500;align-self:center}
+        /* cols shifted: fmt=3, artist=4, album=5, time=6, cb=7 */
+        .music-grid.list-view .mtc-badge-group{grid-column:3;grid-row:1;flex-direction:row;align-items:center;gap:.3rem;align-self:center;margin-top:0}
         .music-grid.list-view .mtc-badge-dur{display:none}
-        .music-grid.list-view .mtc-artist{grid-column:unset;grid-row:unset;font-size:.75rem;opacity:.85}
-        .music-grid.list-view .mtc-album{grid-column:unset;grid-row:unset;font-size:.75rem;font-style:italic;opacity:.65}
-        .music-grid.list-view .mtc-duration{grid-column:unset;grid-row:unset;text-align:right;font-size:.72rem}
+        .music-grid.list-view .mtc-artist{grid-column:4;grid-row:1;font-size:.75rem;opacity:.85;align-self:center}
+        .music-grid.list-view .mtc-album{grid-column:5;grid-row:1;font-size:.75rem;font-style:italic;opacity:.65;align-self:center}
+        .music-grid.list-view .mtc-duration{grid-column:6;grid-row:1;text-align:right;font-size:.72rem;align-self:center}
         /* Hide card-only in list mode */
         .music-grid.list-view .card-only{display:none!important}
-        /* ── Music context menu ─────────────────────────────────────────────── */
+        /* ── Queued-state indicator in list views ───────────────────────── */
+        /* Music list: amber left border + subtle queue badge */
+        .music-grid.list-view .music-track-card.queued{border-left-color:#ffaa00}
+        .mtc-queued-badge{display:none;font-size:.6rem;font-weight:700;color:#ffaa00;border:1px solid rgba(255,170,0,.4);border-radius:3px;padding:.02rem .28rem;letter-spacing:.03em;white-space:nowrap;line-height:1.4;flex-shrink:0}
+        .music-grid.list-view .music-track-card.queued .mtc-queued-badge{display:inline-block}
+        /* Video list: amber left border already set (.movie-card.queued); add badge */
+        .vlc-queued-badge{display:none;font-size:.6rem;font-weight:700;color:#ffaa00;border:1px solid rgba(255,170,0,.4);border-radius:3px;padding:.02rem .28rem;letter-spacing:.03em;white-space:nowrap;line-height:1.4;flex-shrink:0;margin-left:.2rem}
+        .movie-grid.list-view .movie-card.queued .vlc-queued-badge{display:inline-block}
         .music-ctx-menu{position:fixed;z-index:9999;background:var(--card-bg,#1a1f3a);border:1px solid var(--card-border,rgba(148,163,184,.2));border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.5);padding:.3rem 0;min-width:160px;animation:ctxFadeIn .1s ease}
         @keyframes ctxFadeIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
         .music-ctx-menu button{display:block;width:100%;background:none;border:none;color:var(--player-text,#e2e8f0);text-align:left;padding:.5rem 1rem;font-size:.84rem;cursor:pointer;transition:background .12s}
@@ -371,6 +400,8 @@
         #count-line.vcb-active{display:block!important;padding:.18rem .55rem .12rem;font-size:.72rem;color:var(--muted,#9aa8c2)}
         #video-command-bar,#music-command-bar,#radio-command-bar{display:none;align-items:center;gap:.5rem;flex-wrap:wrap;padding:.3rem 0 .25rem;background:var(--player-card-bg,#13132a);grid-column:1/-1;z-index:9;margin-left:-.75rem;margin-right:-.75rem;margin-bottom:-.45rem}
         .cb-inner{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;width:100%;max-width:1200px;margin:0;padding:0 .75rem;box-sizing:border-box}
+        #music-command-bar .cb-inner{max-width:calc(1100px + 1.5rem)}
+        #video-command-bar .cb-inner{max-width:calc(1200px + 1.5rem)}
         #vcb-left,#mcb-left,#rcb-left{flex-shrink:0}
         .vcb-view-btn{background:transparent;color:var(--player-accent,#e94560);border:1px solid var(--player-accent,#e94560);border-radius:6px;height:1.75rem;padding:0 .75rem;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s,border-color .15s,opacity .15s;box-sizing:border-box;opacity:.75;outline:none}
         .vcb-view-btn:focus-visible{outline:none}
@@ -402,8 +433,8 @@
         #rcb-filters .rcb-heart.active{color:#e94560}
         #rcb-filters .rcb-heart:hover{color:#f6c90e}
         /* ── Video list-view (column layout) ───────────────────────────────── */
-        /* Column template: title | progress | year | cb | format | duration */
-        :root{--vlc-cols: 1fr 4.5rem 3.5rem 1.4rem 3.2rem 5.5rem;--vlc-gap:.75rem}
+        /* Column template: title | progress | year | format | duration | cb */
+        :root{--vlc-cols: 1fr 4.5rem 3.5rem 3.2rem 5.5rem 38px;--vlc-gap:.75rem}
         .movie-grid.list-view{display:flex;flex-direction:column;gap:0;padding:0 0 .5rem;max-width:1200px}
         /* header row */
         .vlc-header-row{display:grid;grid-template-columns:var(--vlc-cols);align-items:center;column-gap:var(--vlc-gap);padding:.26rem 0;border-bottom:2px solid rgba(255,255,255,.12);font-size:.66rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted,#9aa8c2);position:sticky;top:0;background:var(--folder-bg,#1a1a2e);z-index:2}
@@ -414,7 +445,7 @@
         /* cards as CSS grid rows */
         .movie-grid.list-view .movie-card{display:grid;grid-template-columns:var(--vlc-cols);align-items:center;column-gap:var(--vlc-gap);min-height:unset;height:2.4rem;border-radius:0;border:none;border-left:5px solid transparent;border-bottom:1px solid rgba(255,255,255,.04);background:#0000;background-image:none!important;transform:none!important;box-shadow:none!important;cursor:pointer;transition:background .1s;position:relative;padding:0}
         .movie-grid.list-view .movie-card::before,.movie-grid.list-view .movie-card::after{display:none}
-        .vlc-cb{display:flex;align-items:center;justify-content:center}
+        .vlc-cb{display:flex;align-items:center;justify-content:center;justify-self:stretch;align-self:stretch}
         .vlc-cb input[type=checkbox]{width:1rem;height:1rem;accent-color:var(--accent,#e94560);cursor:pointer;margin:0}
         .movie-grid:not(.list-view) .vlc-cb{display:none}
         .movie-grid.list-view .movie-card:hover{background:var(--folder-hover,#1d1d32)!important;transform:none!important}
@@ -424,6 +455,7 @@
         .movie-grid.list-view .movie-card.queued{border-left-color:#ffaa00}
         .movie-grid.list-view .movie-card.played{border-left-color:#2d8cff}
         .movie-grid.list-view .movie-card.favorite{border-left-color:var(--fav-color,#ffcc40);box-shadow:none!important}
+        .movie-grid.list-view .movie-card.selected{background:rgba(233,69,96,.08)!important;outline:2px solid var(--accent,#e94560);outline-offset:-2px}
         /* watched pip column — hidden; watched state shown by left border only */
         .vlc-watched-pip{display:none!important}
         /* text columns */
@@ -433,8 +465,8 @@
         .vlc-fav-heart{font-size:.8rem;color:#e05;line-height:1;flex-shrink:0;vertical-align:middle}
         .vlc-folder{display:none!important}
         .vlc-year,.vlc-ext,.vlc-duration,.vlc-size{color:var(--muted,#9aa8c2);font-size:.75rem;padding:0 .3rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .vlc-cb{display:flex;align-items:center;justify-content:center;padding:0}
-        .vlc-cb input[type=checkbox]{width:14px;height:14px;cursor:pointer;accent-color:var(--accent,#e94560);flex-shrink:0}
+        .vlc-cb{display:flex;align-items:center;justify-content:center;justify-self:stretch;align-self:stretch;padding:0}
+        .vlc-cb input[type=checkbox]{width:1rem;height:1rem;cursor:pointer;accent-color:var(--accent,#e94560);flex-shrink:0;margin:0}
         .vlc-ext-badge{display:inline-block;background:color-mix(in srgb,var(--accent,#e94560) 18%,transparent);border:1px solid color-mix(in srgb,var(--accent,#e94560) 40%,transparent);border-radius:3px;padding:.05rem .32rem;font-size:.65rem;font-weight:700;letter-spacing:.04em;color:var(--accent,#e94560);line-height:1.4}
         /* progress column */
         .vlc-progress{display:flex;align-items:center;padding:0 .3rem;font-size:.75rem;color:var(--muted,#9aa8c2);white-space:nowrap}
@@ -564,6 +596,7 @@
         .btn-dim{background:var(--btn-dim-bg,#333);color:var(--player-text,#fff)}.btn-dim:hover{background:var(--btn-dim-hover,#555)}
         .btn-nav{background:var(--btn-nav-bg,#2b3f6b);color:var(--player-text,#fff)}.btn-nav:hover{background:var(--btn-nav-hover,#36528a)}
         .btn-nav.queue-mode{background:#ffaa00;color:#1b1300}.btn-nav.queue-mode:hover{background:#ffc247}
+        #music-btn-queue-next{min-width:180px;width:100%}
         .btn-nav{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.28rem;line-height:1.05;min-height:46px;width:100%}
         .transport-nav-group.queue-mode{display:grid;grid-template-columns:1fr}
         .transport-nav-group.queue-mode #previous-btn{display:none}
@@ -582,8 +615,7 @@
 .version-chip{font-size:.7rem;font-weight:600;color:var(--path-text,#6a7a9a);white-space:nowrap;letter-spacing:.03em;cursor:default;vertical-align:middle}
         #now-playing-bar{display:none;min-width:0;width:100%;flex-direction:column;gap:.6rem;background:linear-gradient(135deg,#0d0d1a,#151526);padding:.7rem;border:1px solid #30304a;border-radius:12px;box-shadow:0 6px 18px rgba(0,0,0,.38);-webkit-user-select:none;user-select:none;color:var(--player-text,#fff)}
         #now-playing-bar *{-webkit-user-select:none;user-select:none}
-        #player-summary{display:grid;grid-template-columns:72px minmax(0,1fr);gap:.7rem;align-items:center;min-width:0}
-        #player-poster{width:72px;height:96px;border-radius:10px;background:#202038 center/cover no-repeat;border:1px solid #333858;box-shadow:0 5px 15px rgba(0,0,0,.35)}
+        #player-poster
         #player-title{font-size:.9rem;color:var(--player-text,#fff);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
         .player-top{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.7rem}
         .transport-controls{display:flex;gap:.45rem;align-items:stretch;justify-content:flex-end;flex-wrap:wrap}
@@ -798,6 +830,8 @@
         .vr-thumb{width:74px;height:46px;background:var(--header-bg,#161822) center/cover no-repeat;flex-shrink:0}
         .vr-thumb-placeholder{display:flex;align-items:center;justify-content:center;font-size:1.4rem;color:var(--muted,#9aa8c2);background:var(--header-bg,#161822)}
         .vr-label{width:100%;padding:.15rem .25rem .18rem;font-size:.6rem;font-weight:600;color:var(--player-text,#e0e4f5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;line-height:1.2;background:var(--card-bg,#1e1e2e)}
+        .vr-clear-btn{align-self:flex-start;margin-top:2px;margin-left:2px;flex-shrink:0;width:18px;height:18px;padding:0;border:1px solid var(--pill-border,rgba(255,255,255,.18));border-radius:4px;background:rgba(0,0,0,.35);color:var(--muted,#9aa8c2);font-size:.62rem;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
+        .vr-clear-btn:hover{background:rgba(220,60,60,.6);color:#fff;border-color:rgba(220,60,60,.8)}
         .vr-progress{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.1)}
         .vr-progress-fill{height:100%;background:linear-gradient(90deg,var(--player-accent,#2d8cff),color-mix(in srgb,var(--player-accent,#2d8cff) 60%,#00d4aa))}
         .crumb-current{color:var(--folder-text,#ddd);font-weight:600}

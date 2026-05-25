@@ -379,7 +379,7 @@ function updateAdjacentButtons(s) {
   previous.classList.toggle('queue-mode', hasQueue);
   next.classList.toggle('queue-mode', hasQueue);
   previous.querySelector('.nav-main').textContent = 'PREV';
-  next.querySelector('.nav-main').textContent = hasQueue ? 'PLAY NEXT QUEUED' : 'NEXT';
+  next.querySelector('.nav-main').textContent = hasQueue ? 'Next Queued' : 'NEXT';
   if (hasQueue) {
     previous.querySelector('.nav-title').textContent = '';
     next.querySelector('.nav-title').textContent = shortTitle(queue[0].title || 'Queued video');

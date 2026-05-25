@@ -172,6 +172,15 @@ internal sealed class PlaybackHistory
         }
     }
 
+    public void ClearAll()
+    {
+        lock (_gate)
+        {
+            _entries.Clear();
+            SaveEntries();
+        }
+    }
+
     public void Trim(int historyLimit)
     {
         var limit = Math.Max(1, historyLimit);

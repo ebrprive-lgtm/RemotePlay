@@ -171,6 +171,10 @@ internal sealed partial class WebServer
                 HandleRecent(ctx);
                 break;
 
+            case "/api/recent/clear":
+                HandleRecentClear(ctx);
+                break;
+
             case "/api/favorites":
                 HandleFavorites(ctx);
                 break;
@@ -1781,6 +1785,12 @@ internal sealed partial class WebServer
         var watchedParam = ctx.Request.QueryString["watched"] ?? "true";
         var watched = !string.Equals(watchedParam, "false", StringComparison.OrdinalIgnoreCase);
         GetHistoryForIp(GetClientIp(ctx)).MarkWatched(filePath, watched);
+        TrySendResponse(ctx, 200, "text/plain", "OK");
+    }
+
+    private void HandleRecentClear(HttpListenerContext ctx)
+    {
+        GetHistoryForIp(GetClientIp(ctx)).ClearAll();
         TrySendResponse(ctx, 200, "text/plain", "OK");
     }
 

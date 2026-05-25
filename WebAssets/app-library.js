@@ -18,7 +18,83 @@ let _musicShuffleOrder = []; // shuffled indices into musicTrackList
 let _musicShufflePos = -1;
 // Multi-select
 let _musicSelected = new Set(); // selected track paths
-let _musicLastSelectedIdx = -1; // for shift-click range
+let _musicLastSelectedIdx = -1;
+// ── Video multi-select state ──────────────────────────────────────────────
+let _videoSelected = new Set(); // selected video paths
+
+function _videoSelectionToggle(path) {
+  if (_videoSelected.has(path)) _videoSelected.delete(path);
+  else _videoSelected.add(path);
+  // Update the card's selected class and checkbox state
+  const card = document.getElementById(cardIdFor(path));
+  if (card) {
+    card.classList.toggle('selected', _videoSelected.has(path));
+    const cb = card.querySelector('.vlc-select-cb');
+    if (cb) cb.checked = _videoSelected.has(path);
+  }
+  _renderVideoSelection();
+}
+
+function _videoSelectionClear() {
+  _videoSelected.forEach(path => {
+    const card = document.getElementById(cardIdFor(path));
+    if (card) {
+      card.classList.remove('selected');
+      const cb = card.querySelector('.vlc-select-cb');
+      if (cb) cb.checked = false;
+    }
+  });
+  _videoSelected.clear();
+  _renderVideoSelection();
+}
+
+function _renderVideoSelection() {
+  const normal = document.getElementById('vcb-normal');
+  const sel    = document.getElementById('vcb-selection');
+  const lbl    = document.getElementById('video-selection-label');
+  const count  = _videoSelected.size;
+  if (normal) normal.style.display = count > 0 ? 'none' : '';
+  if (sel)    sel.style.display    = count > 0 ? ''     : 'none';
+  if (lbl)    lbl.textContent = count > 0 ? `${count} video${count !== 1 ? 's' : ''} selected` : '';
+}
+
+async function _videoSelectionPlay() {
+  if (!_videoSelected.size) return;
+  const paths = Array.from(_videoSelected);
+  const first = paths[0];
+  const rest  = paths.slice(1);
+  // Queue the rest before playing the first
+  for (const p of rest) {
+    if (queuedVideos.has(p)) continue;
+    await api('/api/queue/add?path=' + encodeURIComponent(p));
+    queuedVideos.add(p);
+    setQueuedCard(p, true);
+  }
+  _videoSelectionClear();
+  play(first);
+}
+
+async function _videoSelectionQueue() {
+  if (!_videoSelected.size) return;
+  const paths = Array.from(_videoSelected);
+  const first = paths[0];
+  const rest  = paths.slice(1);
+  // Queue the rest, then play the first
+  for (const p of rest) {
+    if (queuedVideos.has(p)) continue;
+    await api('/api/queue/add?path=' + encodeURIComponent(p));
+    queuedVideos.add(p);
+    setQueuedCard(p, true);
+  }
+  updateQueueControls({
+    queue: Array.from(queuedVideos).map((path) => ({
+      path,
+      title: path.split(/[\\/]/).pop() || path,
+    })),
+  });
+  _videoSelectionClear();
+  play(first);
+}
 
 // ── Music playback ─────────────────────────────────────────────────────
 let _musicTrackListFolder = null; // folder the current musicTrackList was built from
@@ -1127,15 +1203,13 @@ function _musicSelectionToggle(path, idx, shiftHeld) {
   _renderMusicSelection();
 }
 function _renderMusicSelection() {
-  const bar = document.getElementById('music-selection-bar');
-  const lbl = document.getElementById('music-selection-label');
-  if (!bar) return;
-  const count = _musicSelected.size;
-  if (count === 0) { bar.style.display = 'none'; }
-  else {
-    bar.style.display = '';
-    if (lbl) lbl.textContent = `${count} track${count !== 1 ? 's' : ''} selected`;
-  }
+  const normal = document.getElementById('mcb-normal');
+  const sel    = document.getElementById('mcb-selection');
+  const lbl    = document.getElementById('music-selection-label');
+  const count  = _musicSelected.size;
+  if (normal) normal.style.display = count > 0 ? 'none' : '';
+  if (sel)    sel.style.display    = count > 0 ? ''     : 'none';
+  if (lbl)    lbl.textContent = count > 0 ? `${count} track${count !== 1 ? 's' : ''} selected` : '';
   // Sync checkboxes in the DOM
   document.querySelectorAll('.music-track-card').forEach((el) => {
     const cb = el.querySelector('.mtc-checkbox');
@@ -1391,12 +1465,14 @@ function renderMusicCards(data, searching) {
         + `<span class="sortable" onclick="musicSortBy('artist')" title="Sort by artist">Artist${_si('artist')}</span>`
         + `<span class="sortable" onclick="musicSortBy('album')" title="Sort by album">Album${_si('album')}</span>`
         + `<span class="sortable mtc-dur-hdr" onclick="musicSortBy('durationSec')" title="Sort by duration">Time${_si('durationSec')}</span>`
+        + '<span></span>'
         + '</div>';
     }
     html += '<div class="music-grid' + (isList ? ' list-view' : '') + '">';
     sortedFiles.forEach((f, idx) => {
-      const isPlaying = musicCurrentPath && f.path === musicCurrentPath;
+      const isPlaying  = musicCurrentPath && f.path === musicCurrentPath;
       const isSelected = _musicSelected.has(f.path);
+      const isQueued   = window._musicQueue && window._musicQueue.some(q => q.path === f.path);
       // Prefer embedded ID3 title; fall back to cleaned filename
       const title      = f.tagTitle ? f.tagTitle : _titleFromName(f.name);
       const badge      = _fmtBadge(f.ext);
@@ -1411,7 +1487,7 @@ function renderMusicCards(data, searching) {
       // Merged genre · year single line
       const genreYear = [genre, year].filter(Boolean).join(' · ');
 
-      let card = `<div class="music-track-card${isPlaying ? ' playing' : ''}${isSelected ? ' selected' : ''}${isList && idx % 2 === 1 ? ' alt-row' : ''}" data-path="${esc(f.path)}" data-idx="${idx}" title="${esc(title)}">`;
+      let card = `<div class="music-track-card${isPlaying ? ' playing' : ''}${isSelected ? ' selected' : ''}${isQueued ? ' queued' : ''}${isList && idx % 2 === 1 ? ' alt-row' : ''}" data-path="${esc(f.path)}" data-idx="${idx}" title="${esc(title)}">`;
 
       // ── Checkbox (for multi-select) ────────────────────────────────────
       card += `<input type="checkbox" class="mtc-checkbox" data-path="${esc(f.path)}" data-idx="${idx}"${isSelected ? ' checked' : ''} tabindex="-1" aria-label="Select ${esc(title)}" />`;
@@ -1432,7 +1508,7 @@ function renderMusicCards(data, searching) {
       }
 
       // ── Col 2: title ───────────────────────────────────────────────────
-      card += `<span class="mtc-title">${esc(title)}</span>`;
+      card += `<span class="mtc-title">${esc(title)}${isList && isQueued ? ' <span class="mtc-queued-badge">Q</span>' : ''}</span>`;
 
       // ── Col 3: format badge + duration (together in top-right) ─────────
       const durHtml = duration ? `<span class="mtc-badge-dur">${esc(duration)}</span>` : '';
@@ -1817,6 +1893,8 @@ function render(data, searching) {
 function _renderVideoFileRows(files) {
   const grid = document.getElementById('video-list-grid');
   if (!grid) return;
+  // Clear any stale selection when the file list is replaced
+  _videoSelectionClear();
   const isList = _viewMode.video === 'list';
   grid.className = 'movie-grid' + (isList ? ' list-view' : '');
 
@@ -1825,9 +1903,9 @@ function _renderVideoFileRows(files) {
         '<div class="vlc-h vlc-h-title sortable" onclick="setVideoSort(\'name\')" title="Sort by title">Title</div>' +
         '<div class="vlc-h vlc-h-progress sortable" onclick="setVideoSort(\'progress\')" title="Sort by progress">Progress</div>' +
         '<div class="vlc-h vlc-h-year sortable" onclick="setVideoSort(\'year\')" title="Sort by year">Year</div>' +
-        '<div class="vlc-h vlc-h-cb"></div>' +
         '<div class="vlc-h vlc-h-ext">Format</div>' +
         '<div class="vlc-h vlc-h-duration sortable" onclick="setVideoSort(\'duration\')" title="Sort by duration">Duration</div>' +
+        '<div class="vlc-h vlc-h-cb"></div>' +
       '</div>'
     : '';
 
@@ -1867,7 +1945,7 @@ function _renderVideoFileRows(files) {
             '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + f.path + '\')">' + (favorite ? '&#9733; Unfav' : '&#9734; Fav') + '</button>' +
             '<button class="muted-action"   onclick="toggleWatchedCard(event,\'' + f.path + '\')">' + (played ? '&#128064; Unwatch' : '&#10003; Watched') + '</button>' +
           '</div>';
-      const titleCol = '<div class="vlc-title"><span class="vlc-title-text">' + esc(displayName) + linkBadgeInline + '</span>' + inlineActions + '</div>';
+      const titleCol = '<div class="vlc-title"><span class="vlc-title-text">' + esc(displayName) + linkBadgeInline + '</span>' + (queued ? '<span class="vlc-queued-badge">Q</span>' : '') + inlineActions + '</div>';
       // ── column: folder ───────────────────────────────────────────────────
       const folderCol = '<div class="vlc-folder">' + esc(f.folder || '') + '</div>';
       // ── column: year (parsed from filename) ──────────────────────────────
@@ -1911,7 +1989,7 @@ function _renderVideoFileRows(files) {
         ' onpointerdown="beginCardHold(event,\'' + f.path + '\')"' +
         ' onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">' +
         // List-mode columns (CSS grid)
-        titleCol + progCol + yearCol + cbCol + extCol + durCol + actionsCol +
+        titleCol + progCol + yearCol + extCol + durCol + actionsCol + cbCol +
         // Grid-mode inner card (hidden in list mode)
         '<div class="movie-card-inner">' +
           '<div class="movie-title">' + esc(displayName) + '</div>' +
@@ -1923,6 +2001,16 @@ function _renderVideoFileRows(files) {
     })
     .join('');
   grid.innerHTML = html;
+  // Attach checkbox change handlers for multi-select
+  grid.querySelectorAll('.vlc-select-cb').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      e.stopPropagation();
+      const path = cb.dataset.path;
+      if (path) _videoSelectionToggle(path);
+    });
+    // Prevent the click from bubbling to the card row
+    cb.addEventListener('click', e => e.stopPropagation());
+  });
   observeMovieCards();
   _scheduleDurationPatch(files);
 }
@@ -1999,11 +2087,20 @@ function renderMusicRecent(files) {
     );
   }).join('');
 }
+async function clearRecentVideos() {
+  await fetch('/api/recent/clear', { method: 'POST' });
+  renderRecent([]);
+}
 function renderRecent(files) {
   const strip = document.getElementById('video-recent-strip');
   if (!strip) return;
+  const clearBtn = document.getElementById('video-recent-clear');
   strip.innerHTML = '';
-  if (!files.length) return;
+  if (!files.length) {
+    if (clearBtn) clearBtn.style.display = 'none';
+    return;
+  }
+  if (clearBtn) clearBtn.style.display = '';
   strip.innerHTML = files.slice(0, 5).map((f) => {
     const isCont  = Number(f.progress) > 0 && Number(f.progress) < 0.95;
     const pct     = Math.max(0, Math.min(99, Math.round((Number(f.progress) || 0) * 100)));
@@ -2126,6 +2223,11 @@ function onCardClick(event, p) {
     cardHoldOpened = false;
     event.preventDefault();
     event.stopPropagation();
+    return;
+  }
+  // If at least one video is selected, row click toggles selection instead of playing
+  if (_videoSelected.size > 0) {
+    _videoSelectionToggle(p);
     return;
   }
   play(p);
@@ -2435,6 +2537,24 @@ function updatePlayingCard(newPath, oldPath) {
         card.querySelector('.movie-card-inner')?.appendChild(btn);
       } else if (!isActive && existingStopInner) {
         existingStopInner.remove();
+      }
+      // List-mode inline actions (inside title column): swap to stop button when playing
+      const vlcInlineActions = card.querySelector('.vlc-inline-actions');
+      if (vlcInlineActions) {
+        const ep = p.replace(/'/g, "\\'");
+        if (isActive) {
+          vlcInlineActions.innerHTML = '<button class="stop-btn" onclick="stopPlayingCard(event,\'' + ep + '\')">&#9632; Stop</button>';
+        } else {
+          const isQueued  = card.classList.contains('queued');
+          const isFav     = card.classList.contains('favorite');
+          const isWatched = card.classList.contains('played');
+          const fname = esc(card.getAttribute('aria-label') || '').replace(/^Play /, '');
+          vlcInlineActions.innerHTML =
+            '<button class="primary-action"  onclick="playCardAction(event,\'' + ep + "','" + fname + '\')">&#9654; Play</button>' +
+            '<button class="muted-action"    onclick="queueCardAction(event,\'' + ep + '\')">' + (isQueued ? '&#8722; Unqueue' : '+ Queue') + '</button>' +
+            '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + ep + '\')">' + (isFav ? '&#9733; Unfav' : '&#9734; Fav') + '</button>' +
+            '<button class="muted-action"    onclick="toggleWatchedCard(event,\'' + ep + '\')">' + (isWatched ? '&#128064; Unwatch' : '&#10003; Watched') + '</button>';
+        }
       }
       // List-mode actions column: rebuild when stopping so the four buttons reappear
       const vlcActions = card.querySelector('.vlc-actions');

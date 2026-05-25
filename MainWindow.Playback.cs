@@ -344,8 +344,11 @@ public partial class MainWindow
     {
         Dispatcher.InvokeAsync(() =>
         {
-            VideoPlayer.Visibility = Visibility.Visible;
-            _ = CompleteVideoTransitionAsync();
+            if (_isVideoMode)
+            {
+                VideoPlayer.Visibility = Visibility.Visible;
+                _ = CompleteVideoTransitionAsync();
+            }
 
             if (!_isVideoMode)
                 _miniPreviewTimer.Start();

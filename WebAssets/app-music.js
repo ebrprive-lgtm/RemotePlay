@@ -380,6 +380,7 @@ function _buildShuffleOrder() {
   _musicShufflePos = 0;
 }
 function toggleMusicShuffle() {
+  if (window._musicQueue && window._musicQueue.length) return; // disabled in queue mode
   _musicShuffle = !_musicShuffle;
   const btn = document.getElementById('music-btn-shuffle');
   if (btn) btn.classList.toggle('active', _musicShuffle);
@@ -442,6 +443,35 @@ function _refreshMusicNavLabels() {
   const nextTitleEl = document.getElementById('music-next-title');
   const nextTrack = _musicPeekNext();
   if (nextTitleEl) nextTitleEl.textContent = nextTrack ? nextTrack.name : '';
+
+  // Queue mode: when explicit queue has items, replace Prev/Next with single "Play Next in Queue"
+  // and disable Shuffle / Repeat since they don't apply to an explicit queue.
+  const queueLen = window._musicQueue ? window._musicQueue.length : 0;
+  const inQueueMode = queueLen > 0;
+
+  const navNormal   = document.getElementById('music-nav-normal');
+  const queueNextBtn = document.getElementById('music-btn-queue-next');
+  const shuffleBtn  = document.getElementById('music-btn-shuffle');
+  const repeatBtn   = document.getElementById('music-btn-repeat');
+
+  if (navNormal)    navNormal.style.display   = inQueueMode ? 'none' : '';
+  if (queueNextBtn) {
+    queueNextBtn.style.display = inQueueMode ? '' : 'none';
+    // Show first item in queue as subtitle
+    const queueNextTitleEl = document.getElementById('music-queue-next-title');
+    if (queueNextTitleEl) queueNextTitleEl.textContent = queueLen > 0 ? window._musicQueue[0].name : '';
+  }
+  if (shuffleBtn) {
+    shuffleBtn.disabled = inQueueMode;
+    shuffleBtn.style.opacity = inQueueMode ? '0.35' : '';
+    shuffleBtn.title = inQueueMode ? 'Shuffle disabled while queue is active' : 'Shuffle songs in current folder';
+  }
+  if (repeatBtn) {
+    repeatBtn.disabled = inQueueMode;
+    repeatBtn.style.opacity = inQueueMode ? '0.35' : '';
+    repeatBtn.title = inQueueMode ? 'Repeat disabled while queue is active' : 'Repeat: Off / Repeat All / Repeat One';
+  }
+
   _renderMusicQueuePeek();
 }
 function _musicNextTrack() {
@@ -450,8 +480,9 @@ function _musicNextTrack() {
   // Consume from the explicit queue first
   if (window._musicQueue && window._musicQueue.length) {
     const next = window._musicQueue.shift();
-    // Refresh queue count badge
+    // Refresh queue count badge and nav labels
     if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
+    _refreshMusicNavLabels();
     return next || null;
   }
   if (_musicShuffle) {
@@ -503,11 +534,13 @@ function _updateMusicSeekFill() {
 function _musicQueueRemove(idx) {
   if (!window._musicQueue || idx < 0 || idx >= window._musicQueue.length) return;
   window._musicQueue.splice(idx, 1);
+  _refreshMusicNavLabels();
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
   _renderMusicQueuePeek();
 }
 function _musicQueueClear() {
   window._musicQueue = [];
+  _refreshMusicNavLabels();
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
   _renderMusicQueuePeek();
 }
@@ -608,6 +641,7 @@ function _renderMusicQueuePeek() {
 }
 
 function toggleMusicRepeat() {
+  if (window._musicQueue && window._musicQueue.length) return; // disabled in queue mode
   const modes = ['none', 'all', 'one'];
   _musicRepeat = modes[(modes.indexOf(_musicRepeat) + 1) % modes.length];
   const btn = document.getElementById('music-btn-repeat');
@@ -975,7 +1009,7 @@ function startMusicStatusPoll() {
       if (currentMode !== 'music') return stopMusicStatusPoll();
       if (!s.isScanning) {
         stopMusicStatusPoll();
-        browseMusic(currentMusicFolder);
+        browseMusic(currentMusicFolder, 0, false, true);
       } else {
         // Update live count directly in the scan status element
         const scanStatus = document.getElementById('scan-status');
@@ -995,7 +1029,7 @@ function startMusicStatusPoll() {
         }
         // Re-browse every ~10s during scan so tracks appear progressively
         pollCount++;
-        if (pollCount % 5 === 0) browseMusic(currentMusicFolder, 0, false);
+        if (pollCount % 5 === 0) browseMusic(currentMusicFolder, 0, false, true);
       }
     } catch (e) {}
   }, 2000);
@@ -1108,15 +1142,13 @@ function _musicSelectionToggle(path, idx, shiftHeld) {
   _renderMusicSelection();
 }
 function _renderMusicSelection() {
-  const bar = document.getElementById('music-selection-bar');
-  const lbl = document.getElementById('music-selection-label');
-  if (!bar) return;
-  const count = _musicSelected.size;
-  if (count === 0) { bar.style.display = 'none'; }
-  else {
-    bar.style.display = '';
-    if (lbl) lbl.textContent = `${count} track${count !== 1 ? 's' : ''} selected`;
-  }
+  const normal = document.getElementById('mcb-normal');
+  const sel    = document.getElementById('mcb-selection');
+  const lbl    = document.getElementById('music-selection-label');
+  const count  = _musicSelected.size;
+  if (normal) normal.style.display = count > 0 ? 'none' : '';
+  if (sel)    sel.style.display    = count > 0 ? ''     : 'none';
+  if (lbl)    lbl.textContent = count > 0 ? `${count} track${count !== 1 ? 's' : ''} selected` : '';
   // Sync checkboxes in the DOM
   document.querySelectorAll('.music-track-card').forEach((el) => {
     const cb = el.querySelector('.mtc-checkbox');
@@ -1140,9 +1172,9 @@ function _musicSelectionAddToQueue() {
   }
   _musicSelectionClear();
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
-  _renderMusicQueuePeek();
+  _refreshMusicNavLabels();
 }
-function _musicSelectionPlay() {
+function _musicSelectionPlay()
   if (!_musicSelected.size) return;
   if (currentMusicData && currentMusicData.files) {
     const sorted = _musicSortFiles(currentMusicData.files);
@@ -1152,6 +1184,7 @@ function _musicSelectionPlay() {
     const [first, ...rest] = selected;
     window._musicQueue = rest.map((f) => ({ path: f.path, name: f.name }));
     playMusic(first.path, first.name);
+    _refreshMusicNavLabels();
   }
   _musicSelectionClear();
 }
@@ -1183,20 +1216,22 @@ function _musicCardContextBind(el, path, name) {
   }, { passive: true });
 }
 
-async function browseMusic(folder, offset = 0, append = false) {
+async function browseMusic(folder, offset = 0, append = false, silentRefresh = false) {
   if (!append) {
-    _musicSelectionClear();
-    // Push current folder to history before navigating
-    if (currentMusicFolder !== folder) {
-      if (currentMusicFolder !== null) musicBrowseHistory.push(currentMusicFolder);
-      // Going to root resets history
-      if (folder === null || folder === undefined) musicBrowseHistory = [];
+    if (!silentRefresh) {
+      _musicSelectionClear();
+      // Push current folder to history before navigating
+      if (currentMusicFolder !== folder) {
+        if (currentMusicFolder !== null) musicBrowseHistory.push(currentMusicFolder);
+        // Going to root resets history
+        if (folder === null || folder === undefined) musicBrowseHistory = [];
+      }
     }
     currentMusicFolder = folder;
   }
   const mb = document.getElementById('music-browser');
   if (!mb) return;
-  if (!append)
+  if (!append && !silentRefresh)
     mb.innerHTML = '<div style="padding:.75rem;color:var(--muted,#9aa8c2)">Loading\u2026</div>';
   try {
     const url =
@@ -1368,6 +1403,7 @@ function renderMusicCards(data, searching) {
       html += '<div class="music-list-header">'
         + '<span title="Art / Track #">#</span>'
         + `<span class="sortable" onclick="musicSortBy('name')" title="Sort by title">Title${_si('name')}</span>`
+        + '<span title="Select"></span>'
         + `<span class="sortable" onclick="musicSortBy('ext')" title="Sort by format">Fmt${_si('ext')}</span>`
         + `<span class="sortable" onclick="musicSortBy('artist')" title="Sort by artist">Artist${_si('artist')}</span>`
         + `<span class="sortable" onclick="musicSortBy('album')" title="Sort by album">Album${_si('album')}</span>`
@@ -1503,6 +1539,7 @@ function playMusicAll() {
   playMusic(first.path, first.name);
   // queue remaining â€” stored for auto-advance
   window._musicQueue = sorted.slice(1);
-  // refresh to show queue count badge
+  // refresh to show queue count badge and nav labels
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
+  _refreshMusicNavLabels();
 }

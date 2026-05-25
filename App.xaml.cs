@@ -91,6 +91,10 @@ namespace RemotePlay
                 Logger.Info("Application startup begin");
                 base.OnStartup(e);
 
+                // Show splash immediately before the heavy DI/service setup.
+                var splash = new SplashWindow();
+                splash.Show();
+
                 var serviceCollection = new ServiceCollection();
                 serviceCollection.AddRemotePlayApplication();
                 var registeredServices = serviceCollection
@@ -112,6 +116,7 @@ namespace RemotePlay
 
                 MainWindow = mainWindow;
                 mainWindow.Show();
+                splash.FadeOutAndClose();
 
                 Logger.Info("Application startup complete");
             }
