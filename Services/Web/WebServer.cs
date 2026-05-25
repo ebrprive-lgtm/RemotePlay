@@ -125,7 +125,7 @@ internal sealed partial class WebServer
     private static readonly HashSet<string> VideoExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv" };
     private static readonly HashSet<string> HiddenFolderNames =
-        new(StringComparer.OrdinalIgnoreCase) { "Subs", "Alt" };
+        new(StringComparer.OrdinalIgnoreCase) { "Subs", "Alt", "#Recycle" };
     private static readonly Guid HttpsCertificateAppId = new("be2a8b40-850e-4ef1-a893-b0b13f5c7fd9");
     private const string HttpsCertificateSubject = "CN=RemotePlay Local HTTPS";
 
@@ -839,7 +839,15 @@ internal sealed partial class WebServer
             LoadLibraryIndexCache();
             StartLibraryIndexRefresh(force: true);
             LoadMusicIndexCache();
-            StartMusicIndexRefreshIfNeeded();
+            // If no cache exists yet (first run), do a full scan to populate the index.
+            // Otherwise, treat the loaded cache as authoritative until the user triggers /api/music/rescan.
+            int cached;
+            lock (_musicIndexGate) cached = _musicIndex.Length;
+            if (cached == 0)
+            {
+                Logger.Info("No music index cache found — starting initial scan.");
+                StartMusicIndexRefresh();
+            }
         });
 
         if (_config.UseHttps)

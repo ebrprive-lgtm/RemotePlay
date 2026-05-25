@@ -70,8 +70,16 @@ async function setVideoCombinedSlider(v) {
   if (isNaN(val)) return;
   const slider = document.getElementById('video-combined-vol');
   const lbl    = document.getElementById('volume-label');
+  const totalRange  = 1.3;
+  const volBoundary = (1.0 / totalRange * 100).toFixed(2) + '%';  // ~76.92%
+  const fillPct     = (val / totalRange * 100).toFixed(2) + '%';
   if (val <= 1.0) {
-    if (slider) slider.classList.remove('slider-boosting');
+    if (slider) {
+      slider.classList.remove('slider-boosting');
+      slider.style.setProperty('--cvs-vol',   fillPct);
+      slider.style.setProperty('--cvs-boost', fillPct);
+      slider.style.setProperty('--cvs-thumb', 'var(--player-accent,#e94560)');
+    }
     const volume = Math.max(0, val);
     if (volume > 0.001) lastVolumeBeforeMute = volume;
     if (lbl) lbl.textContent = Math.round(volume * 100) + '%';
@@ -79,7 +87,12 @@ async function setVideoCombinedSlider(v) {
     await api('/api/volume?value=' + volume.toFixed(2));
     await api('/api/audio-boost?value=1.00');
   } else {
-    if (slider) slider.classList.add('slider-boosting');
+    if (slider) {
+      slider.classList.add('slider-boosting');
+      slider.style.setProperty('--cvs-vol',   volBoundary);
+      slider.style.setProperty('--cvs-boost', fillPct);
+      slider.style.setProperty('--cvs-thumb', '#f97316');
+    }
     // vol = 1.0, boost gain maps 1.0–1.3 → 1.0–2.0
     const gain = 1 + (val - 1) * (1 / 0.3);
     const db = Math.round(20 * Math.log10(gain));

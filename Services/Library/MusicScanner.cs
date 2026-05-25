@@ -99,6 +99,27 @@ internal sealed class MusicScanJob
     {
         get { lock (_lock) return _queue.Count > 0; }
     }
+
+    /// <summary>
+    /// Marks <paramref name="directory"/> as already scanned so the background BFS
+    /// skips it when it naturally dequeues the path.
+    /// </summary>
+    internal void MarkScanned(string directory)
+    {
+        lock (_lock)
+        {
+            _scanned.Add(directory);
+            // Remove from the queue if it is still pending.
+            var node = _queue.First;
+            while (node is not null)
+            {
+                var next = node.Next;
+                if (string.Equals(node.Value, directory, StringComparison.OrdinalIgnoreCase))
+                    _queue.Remove(node);
+                node = next;
+            }
+        }
+    }
 }
 
 internal static class MusicScanner
@@ -121,7 +142,8 @@ internal static class MusicScanner
         Action<IReadOnlyList<MusicFile>>? onFolderComplete = null,
         Action<string>? onFolder = null,
         IProgress<int>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlySet<string>? ignoredFolderNames = null)
     {
         var extSet = new HashSet<string>(extensions, StringComparer.OrdinalIgnoreCase);
         int total = 0;
@@ -161,7 +183,10 @@ internal static class MusicScanner
             try
             {
                 foreach (var sub in Directory.EnumerateDirectories(dir, "*", SearchOption.TopDirectoryOnly))
+                {
+                    if (ignoredFolderNames?.Contains(Path.GetFileName(sub)) == true) continue;
                     job.Enqueue(sub);
+                }
             }
             catch (Exception ex)
             {

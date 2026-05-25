@@ -33,7 +33,7 @@ internal sealed record AppConfig
     public string[] IgnoredLibraryFolders { get; init; } = ["Subs", "Alt"];
     public string[] VideoFileExtensions { get; init; } = [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".m4v", ".ts", ".flv"];
     /// <summary>Audio file extensions recognised by the music library scanner.</summary>
-    public string[] MusicFileExtensions { get; init; } = [".mp3", ".flac", ".aac", ".ogg", ".wav", ".m4a", ".wma"];
+    public string[] MusicFileExtensions { get; init; } = [".mp3", ".flac", ".aac", ".ogg", ".wav", ".m4a", ".wma", ".opus"];
 
     /// <summary>
     /// Friendly name of the audio output device to use for music playback.

@@ -656,7 +656,7 @@
                                             Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
                                 </Grid>
                                 <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="Root folder scanned for music files (.mp3 .flac .aac .ogg .wav .m4a .wma). All subfolders are included."/>
+                                           Text="Root folder scanned for music files (.mp3 .flac .aac .ogg .wav .m4a .wma .opus). All subfolders are included."/>
 
                                 <TextBlock Text="Delayed auto-rescan interval" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
                                 <Grid Margin="0,0,0,20">

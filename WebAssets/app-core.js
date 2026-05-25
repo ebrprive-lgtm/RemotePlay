@@ -8,7 +8,37 @@ let pollInterval = null,
   lastQueue = [];
 let lastVolumeBeforeMute = 0.7,
   lastBoostBeforeMute = 0.3;
-let seekHoldTimer = null,
+
+// Decode a server-side Base64-encoded file path back to the raw FS path string.
+function _decodePath(encoded) {
+  try {
+    return decodeURIComponent(escape(atob(encoded)));
+  } catch {
+    return null;
+  }
+}
+
+// Return the parent directory of a decoded FS path (works for both / and \ separators).
+function _parentDir(fsPath) {
+  if (!fsPath) return null;
+  const sep = fsPath.includes('\\') ? '\\' : '/';
+  const idx = fsPath.lastIndexOf(sep);
+  return idx > 0 ? fsPath.substring(0, idx) : null;
+}
+
+// Derive the Base64-encoded parent folder of a Base64-encoded file path.
+// The browse APIs (browseMusic, browse) expect encoded paths.
+function _encodedParentDir(encodedFilePath) {
+  const fsPath = _decodePath(encodedFilePath);
+  const folder = _parentDir(fsPath);
+  if (!folder) return null;
+  try {
+    return btoa(unescape(encodeURIComponent(folder)));
+  } catch {
+    return null;
+  }
+}
+
   seekHoldInterval = null,
   seekHoldTriggered = false,
   suppressNextSeekTap = false;
@@ -194,6 +224,62 @@ document.addEventListener('DOMContentLoaded', () => {
   // Always start in server mode — local is a session gesture, not a persisted preference.
   localStorage.setItem('remotePlayLocal', 'false');
   setPlayLocal(false);
+
+  // On load, switch to whichever domain is currently playing on this server instance.
+  // This means navigating to an instance always lands on the active player, not the default tab.
+  (async () => {
+    try {
+      const [videoRes, musicRes, radioRes] = await Promise.all([
+        fetch('/api/status').then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/music/status').then(r => r.ok ? r.json() : null).catch(() => null),
+        fetch('/api/radio/playback-status').then(r => r.ok ? r.json() : null).catch(() => null),
+      ]);
+      let targetMode = null;
+      if (musicRes && (musicRes.isPlaying || musicRes.isPaused)) targetMode = 'music';
+      else if (radioRes && radioRes.isPlaying) targetMode = 'radio';
+      else if (videoRes && (videoRes.isPlaying || videoRes.isPaused)) targetMode = 'video';
+
+      if (!targetMode || targetMode === 'video') return; // video is already default; nothing to do
+
+      // Apply the correct mode + browse folder. We call this twice:
+      //  1. Immediately — for fast rendering when the video browse(null) hasn't fired yet.
+      //  2. After ~900 ms — to override the video tab/command-bar re-activation that
+      //     render() triggers when the module-level browse(null) response arrives.
+      function _applyActiveMode() {
+        // Pre-seed music folder sentinel so switchMode doesn't fire browseMusic(null) first
+        if (targetMode === 'music' && musicRes && musicRes.currentPath) {
+          const folder = _parentDir(_decodePath(musicRes.currentPath));
+          if (folder && typeof currentMusicFolder !== 'undefined') {
+            currentMusicFolder = folder;
+            if (typeof currentMusicData !== 'undefined' && !currentMusicData) currentMusicData = {};
+          }
+        }
+
+        if (typeof switchMode === 'function') switchMode(targetMode);
+
+        if (targetMode === 'music' && musicRes && (musicRes.isPlaying || musicRes.isPaused)) {
+          if (typeof musicIsPlaying !== 'undefined') musicIsPlaying = true;
+          if (typeof musicCurrentPath !== 'undefined') musicCurrentPath = musicRes.currentPath || null;
+          if (typeof updateMusicBar === 'function') updateMusicBar(musicRes);
+          if (typeof startMusicPlaybackPoll === 'function') startMusicPlaybackPoll();
+          if (musicRes.currentPath && typeof browseMusic === 'function') {
+            const folder = _parentDir(_decodePath(musicRes.currentPath));
+            if (folder) browseMusic(folder);
+          }
+        } else if (targetMode === 'radio') {
+          if (typeof startRadioStatusPoll === 'function') startRadioStatusPoll();
+        }
+      }
+
+      _applyActiveMode();
+      // Re-apply after the initial video browse response has rendered (race fix)
+      setTimeout(_applyActiveMode, 900);
+    } catch {}
+  })();
+
+  // Initialize the combined volume/boost slider gradient to its default value.
+  if (typeof musicCombinedSlider === 'function') musicCombinedSlider(0.8);
+  if (typeof setVideoCombinedSlider === 'function') setVideoCombinedSlider(1.0);
 
   // Keep --header-h in sync so sticky elements below the header don't overlap it.
   const hdr = document.querySelector('header');
@@ -396,20 +482,31 @@ async function pollStatus() {
       updateVolumeIcon(volume);
       const boostGain = Math.max(1, Number(s.audioBoost) || 1);
       const boostAmount = boostGain - 1; // keep for buildPlayerMeta compatibility
-      // Map vol + boostGain back to combined slider
+      // Map vol + boostGain back to combined slider and update its gradient
       const combined = boostGain > 1.0
         ? Math.min(1.3, 1.0 + (boostGain - 1) * 0.3)
         : Math.min(1.0, volume);
       const cs = document.getElementById('video-combined-vol');
-      const volLbl = document.getElementById('volume-label');
       if (cs) {
         cs.value = combined.toFixed(2);
+        // Update the track-fill gradient without firing API calls
+        const totalRange  = 1.3;
+        const volBoundary = (1.0 / totalRange * 100).toFixed(2) + '%';
+        const fillPct     = (combined / totalRange * 100).toFixed(2) + '%';
         if (combined > 1.0) {
           cs.classList.add('slider-boosting');
+          cs.style.setProperty('--cvs-vol',   volBoundary);
+          cs.style.setProperty('--cvs-boost', fillPct);
+          cs.style.setProperty('--cvs-thumb', '#f97316');
           const db = Math.round(20 * Math.log10(boostGain));
+          const volLbl = document.getElementById('volume-label');
           if (volLbl) volLbl.textContent = '100% +' + db + 'dB';
         } else {
           cs.classList.remove('slider-boosting');
+          cs.style.setProperty('--cvs-vol',   fillPct);
+          cs.style.setProperty('--cvs-boost', fillPct);
+          cs.style.setProperty('--cvs-thumb', 'var(--player-accent,#e94560)');
+          const volLbl = document.getElementById('volume-label');
           if (volLbl) volLbl.textContent = Math.round(volume * 100) + '%';
         }
       }

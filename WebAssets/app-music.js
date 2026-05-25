@@ -135,6 +135,7 @@ async function musicStop() {
   await fetch('/api/music/stop');
   musicIsPlaying = false;
   musicCurrentPath = null;
+  _onMusicTrackChangedLyrics(null, '', '');
   const bar = document.getElementById('music-player-bar');
   if (bar) bar.style.display = 'none';
   document.body.classList.remove('music-player-docked');
@@ -330,6 +331,12 @@ function updateMusicBar(s) {
   // Play button label
   const btn = document.getElementById('music-btn-play');
   if (btn) btn.innerHTML = s.isPaused ? '&#9654; Play' : '&#9646;&#9646; Pause';
+
+  // Lyrics — trigger fetch when the track changes
+  const lyricsPath = s.currentPath || musicCurrentPath;
+  if (lyricsPath && lyricsPath !== _musicLyricsCurrentPath) {
+    _onMusicTrackChangedLyrics(lyricsPath, s.artist || '', s.title || '');
+  }
 
   if (s.lastError && !active) bar.style.display = 'none';
 }
@@ -608,7 +615,7 @@ function _renderMusicQueuePeek() {
 
   // --- Up Next section --- only shown when autoplay is on AND no explicit queue items
   if (upNextItems.length && _musicAutoPlay && !queueItems.length) {
-    html += `<div class="music-queue-section-header"><span>Up Next</span></div>`;
+    if (queueItems.length) html += `<div class="music-queue-section-header"><span>Up Next</span></div>`;
     html += upNextItems.map(({ t, listIdx }, i) => {
       const num = listIdx >= 0 ? listIdx + 1 : '?';
       const dur = t.durationSec ? fmtSec(t.durationSec) : '';
@@ -1139,6 +1146,103 @@ function _musicCtxCopy(path) {
   try { navigator.clipboard.writeText(path); } catch (_) {}
 }
 
+// -- Lyrics -------------------------------------------------------------------
+const _musicLyricsCache = new Map(); // path -> { found, lyrics } | 'loading'
+let _musicLyricsCurrentPath = null;
+
+async function _fetchMusicLyrics(path, artist, title) {
+  if (_musicLyricsCache.has(path)) return;
+  _musicLyricsCache.set(path, 'loading');
+  // If title looks like a filename (contains path separators or no spaces),
+  // extract the base name and strip leading track numbers like "07 - " or "07."
+  let cleanTitle = title || '';
+  if (!cleanTitle || cleanTitle.includes('/') || cleanTitle.includes('\\')) {
+    cleanTitle = (path.split(/[\/\\]/).pop() || '').replace(/\.[^.]+$/, '');
+  }
+  cleanTitle = cleanTitle.replace(/^\d{1,3}[\s._-]+/, '').trim();
+  if (!cleanTitle) { _musicLyricsCache.set(path, { found: false }); if (path === _musicLyricsCurrentPath) _applyMusicLyricsState(path); return; }
+  try {
+    const params = new URLSearchParams({ title: cleanTitle });
+    if (artist) params.set('artist', artist);
+    const res  = await fetch('/api/music/lyrics?' + params.toString());
+    const data = await res.json();
+    _musicLyricsCache.set(path, data);
+  } catch (_e) {
+    _musicLyricsCache.set(path, { found: false });
+  }
+  if (path === _musicLyricsCurrentPath) _applyMusicLyricsState(path);
+}
+
+function _applyMusicLyricsState(path) {
+  const btn  = document.getElementById('music-btn-lyrics');
+  const card = document.getElementById('music-lyrics-card');
+  const body = document.getElementById('music-lyrics-body');
+  const src  = document.getElementById('music-lyrics-source');
+  if (!btn) return;
+  const entry = _musicLyricsCache.get(path);
+  if (!entry) { btn.style.display = 'none'; return; }
+  btn.style.display = '';
+  if (entry === 'loading') {
+    btn.textContent = '\u23F3 Lyrics';
+    btn.disabled = true;
+    return;
+  }
+  btn.disabled = false;
+  if (!entry.found) {
+    btn.textContent = '\u274C No lyrics';
+    btn.classList.add('lyrics-not-found');
+    if (card) card.style.display = 'none';
+    return;
+  }
+  btn.textContent = '\uD83C\uDFA4 Lyrics';
+  btn.classList.remove('lyrics-not-found');
+  if (card && card.style.display !== 'none') {
+    if (body) body.textContent = entry.lyrics || '';
+    if (src)  src.innerHTML = entry.geniusUrl
+      ? '<a class="lyrics-genius-link" href="' + entry.geniusUrl + '" target="_blank" rel="noopener">View on Genius \u2197</a>'
+      : '';
+  }
+}
+
+function toggleMusicLyricsPanel() {
+  const card = document.getElementById('music-lyrics-card');
+  const btn  = document.getElementById('music-btn-lyrics');
+  if (!card || !btn) return;
+  // Don't open panel if lyrics weren't found
+  if (btn.classList.contains('lyrics-not-found')) return;
+  const opening = card.style.display === 'none';
+  card.style.display = opening ? '' : 'none';
+  if (btn) btn.classList.toggle('active', opening);
+  if (opening && _musicLyricsCurrentPath) {
+    const entry = _musicLyricsCache.get(_musicLyricsCurrentPath);
+    const body  = document.getElementById('music-lyrics-body');
+    const src   = document.getElementById('music-lyrics-source');
+    if (entry && entry !== 'loading' && entry.found) {
+      if (body) body.textContent = entry.lyrics || '';
+      if (src)  src.innerHTML = entry.geniusUrl
+        ? '<a class="lyrics-genius-link" href="' + entry.geniusUrl + '" target="_blank" rel="noopener">View on Genius \u2197</a>'
+        : '';
+    }
+  }
+}
+
+function _onMusicTrackChangedLyrics(path, artist, title) {
+  _musicLyricsCurrentPath = path;
+  const btn  = document.getElementById('music-btn-lyrics');
+  const card = document.getElementById('music-lyrics-card');
+  if (btn)  { btn.classList.remove('active', 'lyrics-not-found'); btn.disabled = false; }
+  if (card) card.style.display = 'none';
+  if (!path) { if (btn) btn.style.display = 'none'; return; }
+  const cached = _musicLyricsCache.get(path);
+  if (cached && cached !== 'loading') {
+    _applyMusicLyricsState(path);
+  } else {
+    // Show loading state immediately so button is visible
+    if (btn) { btn.style.display = ''; btn.textContent = '\u23F3 Lyrics'; btn.disabled = true; }
+    _fetchMusicLyrics(path, artist, title);
+  }
+}
+
 // â”€â”€ Multi-select â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function _musicSelectionToggle(path, idx, shiftHeld) {
   if (shiftHeld && _musicLastSelectedIdx >= 0 && currentMusicData && currentMusicData.files) {
@@ -1188,7 +1292,7 @@ function _musicSelectionAddToQueue() {
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
   _refreshMusicNavLabels();
 }
-function _musicSelectionPlay()
+function _musicSelectionPlay() {
   if (!_musicSelected.size) return;
   if (currentMusicData && currentMusicData.files) {
     const sorted = _musicSortFiles(currentMusicData.files);

@@ -378,9 +378,10 @@
             <div class="control-card">
               <div class="control-title">Options</div>
               <div id="music-option-btns" style="display:flex;gap:.45rem;flex-wrap:wrap;margin-bottom:.45rem">
-                <button id="music-btn-autoplay" class="btn music-opt-btn active" onclick="toggleMusicAutoPlay()" title="Auto Play Next track when current ends">&#9193; Auto Play Next</button>
+                <button id="music-btn-autoplay" class="btn music-opt-btn active"    onclick="toggleMusicAutoPlay()" title="Automatically play next track">&#9193; Play Next</button>
                 <button id="music-btn-shuffle"  class="btn music-opt-btn"        onclick="toggleMusicShuffle()"  title="Shuffle songs in current folder">&#128256; Shuffle</button>
                 <button id="music-btn-repeat"   class="btn music-opt-btn"        onclick="toggleMusicRepeat()"   title="Repeat: Off / Repeat All / Repeat One">&#128257; Repeat</button>
+                <button id="music-btn-lyrics"   class="btn music-opt-btn"        onclick="toggleMusicLyricsPanel()" title="Show lyrics" style="display:none">&#127908; Lyrics</button>
               </div>
             </div>
             <div class="control-card">
@@ -401,6 +402,14 @@
           </div>
         </div>
         <div id="browse-loading" aria-hidden="true"><div class="browse-spinner"></div><span>Loading…</span></div>
+        <div id="music-lyrics-panel" aria-label="Lyrics" style="display:none">
+          <div id="music-lyrics-panel-header">
+            <span>&#127908; Lyrics</span>
+            <button class="vr-clear-btn" onclick="toggleMusicLyricsPanel()" title="Close lyrics" aria-label="Close lyrics">&#x2715;</button>
+          </div>
+          <div id="music-lyrics-body" class="music-lyrics-body"></div>
+          <div id="music-lyrics-source" class="music-lyrics-source"></div>
+        </div>
         <div id="diagnostics-overlay">
           <div id="diagnostics-panel">
             <h2>RemotePlay diagnostics</h2>

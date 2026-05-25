@@ -1,4 +1,6 @@
 using NAudio.Wave;
+using NAudio.Wave.SampleProviders;
+using RemotePlay.Services.Audio;
 using System.IO;
 
 namespace RemotePlay.Services;
@@ -7,7 +9,8 @@ internal sealed class MusicPlayer : IDisposable
 {
     private readonly object _lock = new();
     private WaveOutEvent? _output;
-    private AudioFileReader? _reader;
+    private WaveStream? _reader;           // AudioFileReader or OpusFileReader
+    private WaveChannel32? _volumeChannel; // wraps OpusFileReader for volume control
     private string _currentPath = string.Empty;
     private bool _isPaused;
     private bool _isPlaying;
@@ -16,6 +19,8 @@ internal sealed class MusicPlayer : IDisposable
     private double _volume = 0.8;
     private double _boost  = 1.0;
     private string? _nextTrackPath;
+    private string _tagArtist = string.Empty;
+    private string _tagTitle  = string.Empty;
 
     /// <summary>Fired (outside the lock) when the player auto-advances to the next track.</summary>
     public event Action<string>? TrackAdvanced;
@@ -44,16 +49,43 @@ internal sealed class MusicPlayer : IDisposable
         {
             DisposePlayback();
             _lastError = string.Empty; _isPaused = false; _isPlaying = false; _currentPath = filePath;
+            // Read ID3 tags once so polling GetStatus() is cheap
+            _tagArtist = string.Empty;
+            _tagTitle  = string.Empty;
             try
             {
-                _reader = new AudioFileReader(filePath) { Volume = (float)(_volume * _boost) };
-                if (startPositionSeconds > 0)
+                using var tf = TagLib.File.Create(filePath);
+                _tagArtist = tf.Tag.FirstPerformer ?? tf.Tag.FirstAlbumArtist ?? string.Empty;
+                _tagTitle  = tf.Tag.Title ?? string.Empty;
+            }
+            catch { /* ignore tag read failures */ }
+            try
+            {
+                var ext = Path.GetExtension(filePath);
+                IWaveProvider provider;
+                if (ext.Equals(".opus", StringComparison.OrdinalIgnoreCase))
                 {
-                    var target = TimeSpan.FromSeconds(startPositionSeconds);
-                    if (target < _reader.TotalTime) _reader.CurrentTime = target;
+                    var opusReader = new OpusFileReader(filePath);
+                    _reader = opusReader;
+                    _volumeChannel = new WaveChannel32(opusReader) { Volume = (float)(_volume * _boost) };
+                    if (startPositionSeconds > 0)
+                        _reader.Position = (long)(startPositionSeconds * _reader.WaveFormat.AverageBytesPerSecond);
+                    provider = _volumeChannel;
+                }
+                else
+                {
+                    var afr = new AudioFileReader(filePath) { Volume = (float)(_volume * _boost) };
+                    _reader = afr;
+                    _volumeChannel = null;
+                    if (startPositionSeconds > 0)
+                    {
+                        var target = TimeSpan.FromSeconds(startPositionSeconds);
+                        if (target < afr.TotalTime) afr.CurrentTime = target;
+                    }
+                    provider = afr;
                 }
                 _output = new WaveOutEvent { DeviceNumber = _deviceNumber };
-                _output.Init(_reader);
+                _output.Init(provider);
                 _output.PlaybackStopped += OnPlaybackStopped;
                 _output.Play();
                 _isPlaying = true;
@@ -77,22 +109,38 @@ internal sealed class MusicPlayer : IDisposable
     {
         lock (_lock)
         {
-            double pos = _reader?.CurrentTime.TotalSeconds ?? 0;
-            double dur = _reader?.TotalTime.TotalSeconds ?? 0;
+            double pos = 0, dur = 0;
+            if (_reader is AudioFileReader afr)
+            { pos = afr.CurrentTime.TotalSeconds; dur = afr.TotalTime.TotalSeconds; }
+            else if (_reader is not null && _reader.WaveFormat.AverageBytesPerSecond > 0)
+            { pos = (double)_reader.Position / _reader.WaveFormat.AverageBytesPerSecond;
+              dur = _reader.Length > 0 ? (double)_reader.Length / _reader.WaveFormat.AverageBytesPerSecond : 0; }
+            var displayTitle = !string.IsNullOrEmpty(_tagTitle)
+                ? _tagTitle
+                : (string.IsNullOrEmpty(_currentPath) ? string.Empty : Path.GetFileNameWithoutExtension(_currentPath));
             return new MusicStatus(_isPlaying && !_isPaused, _isPaused, _currentPath,
-                string.IsNullOrEmpty(_currentPath) ? string.Empty : Path.GetFileNameWithoutExtension(_currentPath),
-                pos, dur, _lastError);
+                displayTitle, _tagArtist, pos, dur, _lastError);
         }
     }
 
     public void SetVolume(double volume)
     {
-        lock (_lock) { _volume = Math.Clamp(volume, 0, 1); if (_reader is not null) _reader.Volume = (float)(_volume * _boost); }
+        lock (_lock)
+        {
+            _volume = Math.Clamp(volume, 0, 1);
+            if (_reader is AudioFileReader afr) afr.Volume = (float)(_volume * _boost);
+            else if (_volumeChannel is not null) _volumeChannel.Volume = (float)(_volume * _boost);
+        }
     }
 
     public void SetBoost(double boost)
     {
-        lock (_lock) { _boost = Math.Clamp(boost, 0, 4); if (_reader is not null) _reader.Volume = (float)(_volume * _boost); }
+        lock (_lock)
+        {
+            _boost = Math.Clamp(boost, 0, 4);
+            if (_reader is AudioFileReader afr) afr.Volume = (float)(_volume * _boost);
+            else if (_volumeChannel is not null) _volumeChannel.Volume = (float)(_volume * _boost);
+        }
     }
 
     public void SetNextTrack(string? path)
@@ -105,14 +153,16 @@ internal sealed class MusicPlayer : IDisposable
         lock (_lock)
         {
             if (_reader is null || _output is null) return;
-            // Reposition the reader directly – no Stop()/Play() needed.
-            // WaveOutEvent feeds audio by calling Read() on the reader; the next
-            // buffer fill will start from the new CurrentTime.
-            // Calling Stop() here would fire PlaybackStopped on the Windows callback
-            // thread (asynchronously), which we cannot reliably suppress.
-            _reader.CurrentTime = TimeSpan.FromSeconds(
-                Math.Clamp(seconds, 0, _reader.TotalTime.TotalSeconds - 0.01));
-            // If for some reason the output stalled, kick it back to playing.
+            if (_reader is AudioFileReader afr)
+            {
+                afr.CurrentTime = TimeSpan.FromSeconds(
+                    Math.Clamp(seconds, 0, afr.TotalTime.TotalSeconds - 0.01));
+            }
+            else
+            {
+                long targetByte = (long)(seconds * _reader.WaveFormat.AverageBytesPerSecond);
+                _reader.Position = Math.Clamp(targetByte, 0, Math.Max(0, _reader.Length - 1));
+            }
             if (_isPlaying && !_isPaused && _output.PlaybackState != PlaybackState.Playing)
                 _output.Play();
         }
@@ -144,11 +194,13 @@ internal sealed class MusicPlayer : IDisposable
     private void DisposePlayback()
     {
         _isPlaying = false; _isPaused = false; _currentPath = string.Empty;
+        _tagArtist = string.Empty; _tagTitle = string.Empty;
         if (_output is not null) { _output.PlaybackStopped -= OnPlaybackStopped; _output.Stop(); _output.Dispose(); _output = null; }
+        if (_volumeChannel is not null) { _volumeChannel.Dispose(); _volumeChannel = null; }
         if (_reader is not null) { _reader.Dispose(); _reader = null; }
     }
 
     public void Dispose() { lock (_lock) { DisposePlayback(); } }
 }
 
-internal sealed record MusicStatus(bool IsPlaying, bool IsPaused, string CurrentPath, string Title, double Position, double Duration, string LastError);
+internal sealed record MusicStatus(bool IsPlaying, bool IsPaused, string CurrentPath, string Title, string Artist, double Position, double Duration, string LastError);

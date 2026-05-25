@@ -43,8 +43,8 @@ internal static class WebServerConfigHelpers
             .Select(value => value.Trim())
             .ToArray() ?? [];
 
-        return names.Length > 0
-            ? new HashSet<string>(names, StringComparer.OrdinalIgnoreCase)
-            : new HashSet<string>(fallback, StringComparer.OrdinalIgnoreCase);
+        // Always include the hardcoded defaults; user-configured names are additive.
+        var combined = fallback.Concat(names);
+        return new HashSet<string>(combined, StringComparer.OrdinalIgnoreCase);
     }
 }

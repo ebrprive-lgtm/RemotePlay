@@ -355,6 +355,10 @@ internal sealed partial class WebServer
                 HandleMusicCover(ctx);
                 break;
 
+            case "/api/music/lyrics":
+                await HandleMusicLyricsAsync(ctx).ConfigureAwait(false);
+                break;
+
             case "/api/music/pause":
                 _callbacks.PauseMusic();
                 TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
@@ -1138,16 +1142,64 @@ internal sealed partial class WebServer
 
         var folderParam = (ctx.Request.QueryString["folder"] ?? string.Empty).Trim();
 
-        // If the user navigates to a specific folder while a scan is running,
-        // promote that folder to the front of the scan queue so its tracks
-        // are indexed immediately.
-        if (!string.IsNullOrEmpty(folderParam) && _isMusicIndexing)
+        // If the user navigates to a specific folder that has no entries in the index yet,
+        // scan it immediately on this thread so results are available right now — regardless
+        // of whether the background BFS is still running or has already completed.
+        if (!string.IsNullOrEmpty(folderParam) && Directory.Exists(folderParam))
         {
-            MusicScanJob? activeJob;
+            // Check whether this folder already has entries in the index.
+            bool alreadyIndexed;
             lock (_musicIndexGate)
-                activeJob = _activeMusicScanJob;
-            activeJob?.Prioritize(folderParam);
+                alreadyIndexed = _musicIndex.Any(f =>
+                    string.Equals(Path.GetDirectoryName(f.FullPath), folderParam, StringComparison.OrdinalIgnoreCase));
+
+            if (!alreadyIndexed)
+            {
+                // Quick synchronous scan of just this one directory.
+                var instant = new List<MusicFile>();
+                try
+                {
+                    foreach (var f in Directory.EnumerateFiles(folderParam, "*.*", SearchOption.TopDirectoryOnly))
+                    {
+                        if (!_musicExtensions.Contains(Path.GetExtension(f))) continue;
+                        instant.Add(new MusicFile(Name: Path.GetFileNameWithoutExtension(f), FullPath: f));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning("MusicScanner", $"Instant browse scan failed for '{folderParam}': {ex.Message}");
+                }
+
+                if (instant.Count > 0)
+                {
+                    // Merge into the live index; background scan will skip this dir via _scanned.
+                    lock (_musicIndexGate)
+                    {
+                        var merged = _musicIndex.Concat(instant).ToArray();
+                        Array.Sort(merged, (a, b) =>
+                            string.Compare(a.FullPath, b.FullPath, StringComparison.OrdinalIgnoreCase));
+                        _musicIndex = merged;
+                    }
+                    // Tell the background job not to re-scan this folder.
+                    MusicScanJob? activeJob;
+                    lock (_musicIndexGate)
+                        activeJob = _activeMusicScanJob;
+                    activeJob?.MarkScanned(folderParam);
+
+                    Logger.Detail("MusicScanner", $"Instant browse scan: {instant.Count} track(s) from '{folderParam}'");
+                }
+            }
+            else
+            {
+                // Folder is already indexed — still tell the background job to skip it
+                // and promote it so BFS moves on faster.
+                MusicScanJob? activeJob;
+                lock (_musicIndexGate)
+                    activeJob = _activeMusicScanJob;
+                activeJob?.Prioritize(folderParam);
+            }
         }
+
         var offset = ReadNonNegativeInt(ctx.Request.QueryString["offset"]);
         var limit = ReadPositiveInt(ctx.Request.QueryString["limit"], _config.EffectiveLibraryPageSize, 1000);
 
@@ -1173,6 +1225,7 @@ internal sealed partial class WebServer
             {
                 folders = Directory.Exists(musicRoot)
                     ? Directory.GetDirectories(musicRoot)
+                        .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)))
                         .OrderBy(d => d, _naturalComparer)
                         .Select(d => (object)new { name = Path.GetFileName(d), folder = d })
                         .ToArray()
@@ -1190,6 +1243,7 @@ internal sealed partial class WebServer
             {
                 folders = Directory.Exists(folderParam)
                     ? Directory.GetDirectories(folderParam)
+                        .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)))
                         .OrderBy(d => d, _naturalComparer)
                         .Select(d => (object)new { name = Path.GetFileName(d), folder = d })
                         .ToArray()
@@ -1400,6 +1454,7 @@ internal sealed partial class WebServer
             isPaused      = pb.IsPaused,
             currentPath   = pb.CurrentPath is not null ? WebPathHelpers.EncodePath(pb.CurrentPath) : null,
             title         = pb.Title,
+            artist        = pb.Artist,
             position      = pb.Position,
             duration      = pb.Duration,
             playbackError = pb.LastError
@@ -1528,6 +1583,181 @@ internal sealed partial class WebServer
         {
             System.Diagnostics.Debug.WriteLine($"[MusicStream] {ex.Message}");
         }
+    }
+
+    /// <summary>Fetches lyrics for a track from Genius by scraping the search result page.</summary>
+    private async Task HandleMusicLyricsAsync(HttpListenerContext ctx)
+    {
+        var artist = ctx.Request.QueryString["artist"] ?? string.Empty;
+        var title  = ctx.Request.QueryString["title"]  ?? string.Empty;
+        Logger.Detail("Lyrics", $"Request: artist='{artist}' title='{title}'");
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"missing title\"}");
+            return;
+        }
+
+        try
+        {
+            var (lyrics, geniusUrl) = await FetchGeniusLyricsAsync(artist, title).ConfigureAwait(false);
+            if (lyrics is null)
+            {
+                Logger.Detail("Lyrics", $"No lyrics found for '{artist} - {title}'");
+                TrySendResponse(ctx, 200, "application/json", "{\"found\":false}");
+                return;
+            }
+            Logger.Detail("Lyrics", $"Found lyrics for '{artist} - {title}' ({lyrics.Length} chars) url={geniusUrl}");
+            TrySendResponse(ctx, 200, "application/json",
+                JsonSerializer.Serialize(new { found = true, lyrics, geniusUrl }));
+        }
+        catch (Exception ex)
+        {
+            Logger.Detail("Lyrics", $"Genius fetch exception for '{artist} - {title}': {ex.Message}");
+            TrySendResponse(ctx, 200, "application/json", "{\"found\":false}");
+        }
+    }
+
+    private static async Task<(string? lyrics, string? geniusUrl)> FetchGeniusLyricsAsync(string artist, string title)
+    {
+        var query = string.IsNullOrWhiteSpace(artist) ? title : $"{artist} {title}";
+        Logger.Detail("Lyrics", $"Searching Genius API for: '{query}'");
+
+        using var http = new System.Net.Http.HttpClient();
+        http.Timeout = TimeSpan.FromSeconds(15);
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36");
+        http.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
+        http.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
+
+        // Step 1: use Genius internal JSON search API (not the SPA search page)
+        var searchUrl = "https://genius.com/api/search/song?q=" + Uri.EscapeDataString(query);
+        Logger.Detail("Lyrics", $"Search URL: {searchUrl}");
+        var searchJson = await http.GetStringAsync(searchUrl).ConfigureAwait(false);
+
+        var songUrl = ExtractFirstGeniusSongUrlFromJson(searchJson, artist, title);
+        if (songUrl is null)
+        {
+            Logger.Detail("Lyrics", $"No song URL found in Genius API response (response len={searchJson.Length})");
+            return (null, null);
+        }
+        Logger.Detail("Lyrics", $"Song URL: {songUrl}");
+
+        // Step 2: fetch the lyrics page
+        var lyricsHtml = await http.GetStringAsync(songUrl).ConfigureAwait(false);
+        Logger.Detail("Lyrics", $"Lyrics page fetched ({lyricsHtml.Length} chars), looking for containers...");
+        var containerCount = System.Text.RegularExpressions.Regex.Matches(lyricsHtml, "data-lyrics-container").Count;
+        Logger.Detail("Lyrics", $"Found {containerCount} lyrics container(s)");
+
+        var lyrics = ExtractGeniusLyricsText(lyricsHtml);
+        Logger.Detail("Lyrics", lyrics is null ? "Lyrics extraction returned null" : $"Extracted {lyrics.Length} chars of lyrics");
+        return lyrics is null ? (null, null) : (lyrics, songUrl);
+    }
+
+    private static string? ExtractFirstGeniusSongUrlFromJson(string json, string artist, string title)
+    {
+        // The Genius /api/search/song response contains hits with "url":"https://genius.com/...-lyrics"
+        // Slashes may be escaped as \/ in the JSON. We take the first hit URL ending in -lyrics.
+        const string urlKey = "\"url\":\"";
+        var pos = 0;
+        while (pos < json.Length)
+        {
+            var keyPos = json.IndexOf(urlKey, pos, StringComparison.Ordinal);
+            if (keyPos < 0) break;
+            var valStart = keyPos + urlKey.Length;
+            var valEnd   = json.IndexOf('"', valStart);
+            if (valEnd < 0) break;
+            var url = json[valStart..valEnd].Replace("\\/", "/");
+            if (url.Contains("genius.com/", StringComparison.OrdinalIgnoreCase) &&
+                url.EndsWith("-lyrics", StringComparison.OrdinalIgnoreCase))
+                return url;
+            pos = valEnd;
+        }
+        return null;
+    }
+
+    private static string? ExtractGeniusLyricsText(string html)
+    {
+        // Genius wraps lyrics in <div data-lyrics-container="true">...</div>
+        const string attr = "data-lyrics-container=\"true\"";
+        var sb = new System.Text.StringBuilder();
+        var pos = 0;
+        while (true)
+        {
+            var divStart = html.IndexOf(attr, pos, StringComparison.Ordinal);
+            if (divStart < 0) break;
+            // Walk back to the opening <
+            var tagOpen = html.LastIndexOf('<', divStart);
+            if (tagOpen < 0) break;
+            // Find the end of the opening tag >
+            var tagClose = html.IndexOf('>', tagOpen);
+            if (tagClose < 0) break;
+            var innerStart = tagClose + 1;
+            // Find matching closing </div> (account for nesting)
+            var depth = 1;
+            var cursor = innerStart;
+            while (depth > 0 && cursor < html.Length)
+            {
+                var nextOpen  = html.IndexOf("<div",  cursor, StringComparison.OrdinalIgnoreCase);
+                var nextClose = html.IndexOf("</div>", cursor, StringComparison.OrdinalIgnoreCase);
+                if (nextClose < 0) break;
+                if (nextOpen >= 0 && nextOpen < nextClose) { depth++; cursor = nextOpen + 4; }
+                else { depth--; cursor = nextClose + 6; }
+            }
+            var innerHtml = html[innerStart..(cursor - 6 < innerStart ? innerStart : cursor - 6)];
+            // Convert <br> and </div> to newlines, strip remaining tags
+            innerHtml = System.Text.RegularExpressions.Regex.Replace(innerHtml, @"<br\s*/?>", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            innerHtml = System.Text.RegularExpressions.Regex.Replace(innerHtml, @"</div>", "\n", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            innerHtml = System.Text.RegularExpressions.Regex.Replace(innerHtml, @"<[^>]+>", string.Empty);
+            innerHtml = System.Net.WebUtility.HtmlDecode(innerHtml);
+            if (sb.Length > 0) sb.AppendLine();
+            sb.Append(innerHtml.Trim());
+            pos = cursor;
+        }
+        var result = sb.ToString().Trim();
+        if (result.Length == 0) return null;
+
+        // Find the real start of the lyrics by searching for section markers in priority order:
+        // 1) [Intro]  2) [Verse 1]  3) any line ending with "Lyrics" (Genius title header)
+        var lines = result.Split('\n');
+        int startLine = 0;
+        bool found = false;
+
+        // Priority 1: [Intro]
+        for (int i = 0; i < lines.Length && !found; i++)
+        {
+            if (lines[i].TrimStart().StartsWith("[Intro]", StringComparison.OrdinalIgnoreCase))
+            { startLine = i; found = true; }
+        }
+
+        // Priority 2: [Verse 1]
+        if (!found)
+        {
+            for (int i = 0; i < lines.Length && !found; i++)
+            {
+                if (lines[i].TrimStart().StartsWith("[Verse 1]", StringComparison.OrdinalIgnoreCase))
+                { startLine = i; found = true; }
+            }
+        }
+
+        // Priority 3: any line whose trimmed content ends with "Lyrics" (Genius title header)
+        if (!found)
+        {
+            for (int i = 0; i < lines.Length && !found; i++)
+            {
+                if (lines[i].TrimEnd().EndsWith("Lyrics", StringComparison.OrdinalIgnoreCase))
+                {
+                    startLine = i + 1;
+                    // Skip blank lines immediately after the header
+                    while (startLine < lines.Length && string.IsNullOrWhiteSpace(lines[startLine]))
+                        startLine++;
+                    found = true;
+                }
+            }
+        }
+
+        result = string.Join('\n', lines.Skip(startLine)).Trim();
+        return result.Length > 0 ? result : null;
     }
 
     private void HandleMusicSeek(HttpListenerContext ctx)
@@ -2239,7 +2469,7 @@ internal sealed partial class WebServer
                         _musicIndex = snapshot;
                 }
 
-                MusicScanner.Scan(job, _musicExtensions, onFolderComplete, onFolder, progress, cts.Token);
+                MusicScanner.Scan(job, _musicExtensions, onFolderComplete, onFolder, progress, cts.Token, _hiddenFolderNames);
 
                 lock (_musicIndexGate)
                 {

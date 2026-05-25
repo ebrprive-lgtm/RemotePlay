@@ -1,4 +1,4 @@
-let currentMode = 'video';
+let currentMode = localStorage.getItem('remotePlayMode') || 'video';
 let musicBrowseHistory = [];
 let currentMusicFolder = null;
 let currentMusicData = null;
@@ -197,6 +197,7 @@ async function musicStop() {
   await fetch('/api/music/stop');
   musicIsPlaying = false;
   musicCurrentPath = null;
+  _onMusicTrackChangedLyrics(null, '', '');
   const bar = document.getElementById('music-player-bar');
   if (bar) bar.style.display = 'none';
   document.body.classList.remove('music-player-docked');
@@ -247,16 +248,28 @@ function musicCombinedSlider(v) {
   if (isNaN(val)) return;
   const slider = document.getElementById('music-bar-combined');
   const lbl    = document.getElementById('music-combined-label');
+  // Slider range is 0–1.3; convert value to a percentage of total track width
+  const totalRange = 1.3;
+  const volBoundary = (1.0 / totalRange * 100).toFixed(2) + '%';  // ~76.92%
+  const fillPct = (val / totalRange * 100).toFixed(2) + '%';
   if (val <= 1.0) {
-    // Volume zone
-    if (slider) slider.classList.remove('slider-boosting');
+    // Volume zone: accent color fills up to value; no boost segment
+    if (slider) {
+      slider.style.setProperty('--cvs-vol',   fillPct);
+      slider.style.setProperty('--cvs-boost', fillPct);
+      slider.style.setProperty('--cvs-thumb', 'var(--player-accent,#e94560)');
+    }
     if (lbl) lbl.textContent = Math.round(val * 100) + '%';
     musicVolume(val);
     musicBoost(1.0);
   } else {
-    // Boost zone: map 1.0–1.3 → gain 1–3
+    // Boost zone: accent fills to 100% boundary; orange fills from there to value
     const gain = 1 + (val - 1) * (2 / 0.3);
-    if (slider) slider.classList.add('slider-boosting');
+    if (slider) {
+      slider.style.setProperty('--cvs-vol',   volBoundary);
+      slider.style.setProperty('--cvs-boost', fillPct);
+      slider.style.setProperty('--cvs-thumb', '#f97316');
+    }
     const db = Math.round(20 * Math.log10(gain));
     if (lbl) lbl.textContent = '100% +' + db + 'dB';
     musicVolume(1.0);
@@ -393,6 +406,12 @@ function updateMusicBar(s) {
   const btn = document.getElementById('music-btn-play');
   if (btn) btn.innerHTML = s.isPaused ? '&#9654; Play' : '&#9646;&#9646; Pause';
 
+  // Lyrics — trigger fetch when the track changes
+  const lyricsPath = s.currentPath || musicCurrentPath;
+  if (lyricsPath && lyricsPath !== _musicLyricsCurrentPath) {
+    _onMusicTrackChangedLyrics(lyricsPath, s.artist || '', s.title || '');
+  }
+
   if (s.lastError && !active) bar.style.display = 'none';
 }
 
@@ -408,6 +427,172 @@ async function musicPlayHere() {
   if (bar) bar.style.display = 'none';
   document.body.classList.remove('music-player-docked');
   localPlay('/api/music/stream?path=' + encodeURIComponent(path), title, 'Music');
+}
+
+// -- Lyrics -------------------------------------------------------------------
+const _musicLyricsCache = new Map(); // path -> { found, lyrics, geniusUrl } | 'loading'
+let _musicLyricsCurrentPath = null;
+let _musicLyricsPanelOpen = false; // persists across track changes
+
+async function _fetchMusicLyrics(path, artist, title) {
+  if (_musicLyricsCache.has(path)) return;
+  _musicLyricsCache.set(path, 'loading');
+  let cleanTitle = title || '';
+  if (!cleanTitle || cleanTitle.includes('/') || cleanTitle.includes('\\')) {
+    cleanTitle = (path.split(/[\/\\]/).pop() || '').replace(/\.[^.]+$/, '');
+  }
+  cleanTitle = cleanTitle.replace(/^\d{1,3}[\s._-]+/, '').trim();
+  if (!cleanTitle) { _musicLyricsCache.set(path, { found: false }); if (path === _musicLyricsCurrentPath) _applyMusicLyricsState(path); return; }
+  try {
+    const params = new URLSearchParams({ title: cleanTitle });
+    if (artist) params.set('artist', artist);
+    const res  = await fetch('/api/music/lyrics?' + params.toString());
+    const data = await res.json();
+    _musicLyricsCache.set(path, data);
+  } catch (_e) {
+    _musicLyricsCache.set(path, { found: false });
+  }
+  if (path === _musicLyricsCurrentPath) _applyMusicLyricsState(path);
+}
+
+function _applyMusicLyricsState(path) {
+  const btn   = document.getElementById('music-btn-lyrics');
+  const panel = document.getElementById('music-lyrics-panel');
+  const body  = document.getElementById('music-lyrics-body');
+  const src   = document.getElementById('music-lyrics-source');
+  if (!btn) return;
+
+  if (!path) {
+    btn.style.display = 'none';
+    _closeLyricsPanel();
+    return;
+  }
+
+  btn.style.display = '';
+  const entry = _musicLyricsCache.get(path);
+
+  if (!entry || entry === 'loading') {
+    btn.textContent = '\u23F3 Lyrics';
+    btn.disabled = true;
+    // Panel stays open but shows loading state
+    if (_musicLyricsPanelOpen && panel) {
+      _openLyricsPanel();
+      if (body) body.textContent = 'Loading lyrics\u2026';
+      if (src)  src.innerHTML = '';
+    }
+    return;
+  }
+
+  btn.disabled = false;
+
+  if (!entry.found) {
+    btn.textContent = '\uD83C\uDFA4 No lyrics';
+    btn.classList.add('lyrics-not-found');
+    btn.classList.remove('active');
+    // No lyrics — hide panel visually but keep intent so next track with lyrics reopens it
+    _closeLyricsPanelVisual();
+    return;
+  }
+
+  btn.textContent = '\uD83C\uDFA4 Lyrics';
+  btn.classList.remove('lyrics-not-found');
+  // Restore open state
+  if (_musicLyricsPanelOpen) {
+    _openLyricsPanel();
+    if (body) body.textContent = entry.lyrics || '';
+    if (src)  src.innerHTML = entry.geniusUrl
+      ? '<a class="lyrics-genius-link" href="' + entry.geniusUrl + '" target="_blank" rel="noopener">View on Genius \u2197</a>'
+      : '';
+  }
+}
+
+function _openLyricsPanel() {
+  const panel = document.getElementById('music-lyrics-panel');
+  const btn   = document.getElementById('music-btn-lyrics');
+  if (panel) { panel.classList.add('open'); panel.style.display = 'flex'; }
+  if (btn)   btn.classList.add('active');
+  _musicLyricsPanelOpen = true;
+}
+
+function _closeLyricsPanel() {
+  const panel = document.getElementById('music-lyrics-panel');
+  const btn   = document.getElementById('music-btn-lyrics');
+  if (panel) { panel.classList.remove('open'); panel.style.display = 'none'; }
+  if (btn)   { btn.classList.remove('active'); }
+  _musicLyricsPanelOpen = false;
+}
+
+// Hides the panel visually but preserves the user's intent to keep it open.
+// Used when the current track has no lyrics — next track with lyrics will reopen automatically.
+function _closeLyricsPanelVisual() {
+  const panel = document.getElementById('music-lyrics-panel');
+  const btn   = document.getElementById('music-btn-lyrics');
+  if (panel) { panel.classList.remove('open'); panel.style.display = 'none'; }
+  if (btn)   { btn.classList.remove('active'); }
+  // _musicLyricsPanelOpen intentionally NOT reset
+}
+
+function toggleMusicLyricsPanel() {
+  if (_musicLyricsPanelOpen) {
+    _closeLyricsPanel();
+  } else {
+    _musicLyricsPanelOpen = true;
+    // Populate panel immediately if we already have data
+    if (_musicLyricsCurrentPath) {
+      const entry = _musicLyricsCache.get(_musicLyricsCurrentPath);
+      const body  = document.getElementById('music-lyrics-body');
+      const src   = document.getElementById('music-lyrics-source');
+      if (!entry || entry === 'loading') {
+        _openLyricsPanel();
+        if (body) body.textContent = 'Loading lyrics\u2026';
+        if (src)  src.innerHTML = '';
+      } else if (!entry.found) {
+        _closeLyricsPanelVisual();
+      } else {
+        _openLyricsPanel();
+        if (body) body.textContent = entry.lyrics || '';
+        if (src)  src.innerHTML = entry.geniusUrl
+          ? '<a class="lyrics-genius-link" href="' + entry.geniusUrl + '" target="_blank" rel="noopener">View on Genius \u2197</a>'
+          : '';
+      }
+    } else {
+      _openLyricsPanel();
+    }
+  }
+}
+
+function _onMusicTrackChangedLyrics(path, artist, title) {
+  _musicLyricsCurrentPath = path;
+  const btn = document.getElementById('music-btn-lyrics');
+
+  if (!path) {
+    if (btn) { btn.style.display = 'none'; btn.disabled = false; btn.classList.remove('active', 'lyrics-not-found'); }
+    _closeLyricsPanel();
+    return;
+  }
+
+  // Show button immediately; keep active state if panel was open
+  if (btn) {
+    btn.style.display = '';
+    btn.disabled = false;
+    btn.classList.remove('lyrics-not-found');
+    btn.classList.toggle('active', _musicLyricsPanelOpen);
+  }
+
+  const cached = _musicLyricsCache.get(path);
+  if (cached && cached !== 'loading') {
+    _applyMusicLyricsState(path);
+  } else {
+    if (btn) { btn.textContent = '\u23F3 Lyrics'; btn.disabled = true; }
+    if (_musicLyricsPanelOpen) {
+      const body = document.getElementById('music-lyrics-body');
+      const src  = document.getElementById('music-lyrics-source');
+      _openLyricsPanel();
+      if (body) body.textContent = 'Loading lyrics\u2026';
+      if (src)  src.innerHTML = '';
+    }
+    _fetchMusicLyrics(path, artist, title);
+  }
 }
 
 let _musicSeekDragging = false;
@@ -637,7 +822,7 @@ function _renderMusicQueuePeek() {
 
   // --- Up Next section --- only shown when autoplay is on AND no explicit queue items
   if (upNextItems.length && _musicAutoPlay && !queueItems.length) {
-    html += `<div class="music-queue-section-header"><span>Up Next</span></div>`;
+    if (queueItems.length) html += `<div class="music-queue-section-header"><span>Up Next</span></div>`;
     html += upNextItems.map(({ t, listIdx }, i) => {
       const num = listIdx >= 0 ? listIdx + 1 : '?';
       const dur = t.durationSec ? fmtSec(t.durationSec) : '';
@@ -813,6 +998,7 @@ function switchMode(mode) {
   if (leavingRadio && typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying && typeof radioStop !== 'undefined') radioStop();
 
   currentMode = mode;
+  localStorage.setItem('remotePlayMode', mode);
   // Remove music dock when leaving music mode
   if (mode !== 'music') document.body.classList.remove('music-player-docked');
   if (mode !== 'radio' && !_radioIsPlaying) document.body.classList.remove('radio-player-docked');
@@ -1070,7 +1256,11 @@ function startMusicStatusPoll() {
       if (currentMode !== 'music') return stopMusicStatusPoll();
       if (!s.isScanning) {
         stopMusicStatusPoll();
-        browseMusic(currentMusicFolder);
+        // Only re-browse on scan complete if we're at root, or the current folder
+        // has no tracks yet (avoid wiping an already-populated folder view).
+        const currentHasTracks = currentMusicData && currentMusicData.files && currentMusicData.files.length > 0;
+        if (!currentMusicFolder || !currentHasTracks) browseMusic(currentMusicFolder);
+        else renderMusicHeader(currentMusicData, false); // just refresh the header badge
       } else {
         // Update live count directly in the scan status element
         const scanStatus = document.getElementById('scan-status');
@@ -1088,9 +1278,12 @@ function startMusicStatusPoll() {
           currentMusicData.indexing = true;
           currentMusicData.indexedFiles = s.indexedFiles || 0;
         }
-        // Re-browse every ~10s during scan so tracks appear progressively
+        // Re-browse every ~10s during scan so tracks appear progressively,
+        // but only if the current folder view has no tracks yet (avoid wiping
+        // a folder that was already populated by the instant scan).
         pollCount++;
-        if (pollCount % 5 === 0) browseMusic(currentMusicFolder, 0, false);
+        const currentHasTracks = currentMusicData && currentMusicData.files && currentMusicData.files.length > 0;
+        if (pollCount % 5 === 0 && !currentHasTracks) browseMusic(currentMusicFolder, 0, false);
       }
     } catch (e) {}
   }, 2000);
@@ -1101,6 +1294,7 @@ function stopMusicStatusPoll() {
     clearInterval(musicStatusPollTimer);
     musicStatusPollTimer = null;
   }
+  _stopMusicFolderFastPoll();
 }
 
 // ── Music keyboard navigation ──────────────────────────────────────────────
@@ -1276,9 +1470,43 @@ function _musicCardContextBind(el, path, name) {
   }, { passive: true });
 }
 
+let _musicFolderFastPollTimer = null;
+
+function _startMusicFolderFastPoll(folder) {
+  _stopMusicFolderFastPoll();
+  _musicFolderFastPollTimer = setInterval(async () => {
+    if (currentMode !== 'music' || currentMusicFolder !== folder) {
+      _stopMusicFolderFastPoll();
+      return;
+    }
+    try {
+      const url = '/api/music/browse' + (folder ? '?folder=' + encodeURIComponent(folder) : '');
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const data = await res.json();
+      // Stop fast-polling once tracks are available or indexing has finished
+      if ((data.files && data.files.length > 0) || !data.indexing) {
+        _stopMusicFolderFastPoll();
+        currentMusicData = data;
+        currentMusicData.folder = folder;
+        if (currentMode === 'music') renderMusicHeader(currentMusicData, false);
+        renderMusicCards(currentMusicData);
+      }
+    } catch (e) {}
+  }, 500);
+}
+
+function _stopMusicFolderFastPoll() {
+  if (_musicFolderFastPollTimer) {
+    clearInterval(_musicFolderFastPollTimer);
+    _musicFolderFastPollTimer = null;
+  }
+}
+
 async function browseMusic(folder, offset = 0, append = false) {
   if (!append) {
     _musicSelectionClear();
+    _stopMusicFolderFastPoll();
     // Push current folder to history before navigating
     if (currentMusicFolder !== folder) {
       if (currentMusicFolder !== null) musicBrowseHistory.push(currentMusicFolder);
@@ -1314,6 +1542,13 @@ async function browseMusic(folder, offset = 0, append = false) {
     }
     if (currentMode === 'music') renderMusicHeader(currentMusicData, false);
     renderMusicCards(currentMusicData);
+    // If we just navigated into a folder and it's still indexing (no tracks yet),
+    // start a fast re-poll so results appear as soon as the priority scan finishes.
+    if (folder && !append && data.indexing && !(data.files && data.files.length > 0) && !(data.folders && data.folders.length > 0)) {
+      _startMusicFolderFastPoll(folder);
+    } else {
+      _stopMusicFolderFastPoll();
+    }
     // Show recently played strip on the music root, hide in subfolders
     const mStrip = document.getElementById('music-recent-strip');
     if (!folder && !append) {
@@ -1541,7 +1776,7 @@ function renderMusicCards(data, searching) {
         '<button class="load-more-btn" onclick="loadMoreMusic()">Load more tracks (' +
         shown + ' of ' + total + ' loaded)</button>';
     }
-  } else if (data.folder && data.indexing) {
+  } else if (data.folder && data.indexing && !(data.folders && data.folders.length > 0)) {
     html +=
       '<div style="padding:1rem;color:var(--muted,#9aa8c2)">&#128197; Still indexing \u2014 tracks will appear here when the scan reaches this folder.</div>';
   } else if (data.folder && !data.indexing) {
@@ -1810,8 +2045,9 @@ function render(data, searching) {
   }
   document.getElementById('view-toggle-music') &&
     (document.getElementById('view-toggle-music').style.display = 'none');
-  // Show video command bar (hides the old count-line toggle)
-  _applyVideoCommandBar(true);
+  // Show video command bar only when still in video mode — avoids overriding tab state
+  // when an async browse response arrives after the user has switched to music/radio.
+  if (currentMode === 'video') _applyVideoCommandBar(true);
   _applyViewToggleBtn('video');
   let html = '';
   if (data.folders.length) {

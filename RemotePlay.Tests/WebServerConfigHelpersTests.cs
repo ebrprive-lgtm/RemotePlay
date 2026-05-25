@@ -82,13 +82,15 @@ public sealed class WebServerConfigHelpersTests
     }
 
     [Fact]
-    public void BuildNameSet_ValidValues_ReturnsThoseValues()
+    public void BuildNameSet_ValidValues_ReturnsBothValuesAndFallback()
     {
         var result = WebServerConfigHelpers.BuildNameSet(["Extras", "Behind The Scenes"], DefaultNames);
 
         Assert.Contains("Extras", result, StringComparer.OrdinalIgnoreCase);
         Assert.Contains("Behind The Scenes", result, StringComparer.OrdinalIgnoreCase);
-        Assert.DoesNotContain("Subs", result, StringComparer.OrdinalIgnoreCase);
+        // Defaults are always included (additive, not replacement)
+        Assert.Contains("Subs", result, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("Alt", result, StringComparer.OrdinalIgnoreCase);
     }
 
     [Fact]
