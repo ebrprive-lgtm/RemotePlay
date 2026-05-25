@@ -24,6 +24,20 @@ let _musicLastSelectedIdx = -1; // for shift-click range
 let _musicTrackListFolder = null; // folder the current musicTrackList was built from
 async function playMusic(path, name) {
   musicCurrentPath = path;
+  // If a queue is active and this track isn't already at the front of it,
+  // inject it at the front so the queue continues from this song.
+  if (window._musicQueue && window._musicQueue.length > 0) {
+    const frontPath = window._musicQueue[0].path;
+    if (frontPath !== path) {
+      const existingIdx = window._musicQueue.findIndex((t) => t.path === path);
+      if (existingIdx > 0) window._musicQueue.splice(existingIdx, 1);
+      const trackName = name || pathToName(path);
+      window._musicQueue.unshift({ path, name: trackName });
+    }
+    // Consume the front item (this track) so the queue advances correctly on next
+    window._musicQueue.shift();
+    _refreshMusicNavLabels();
+  }
   // Update the .playing highlight immediately on click
   document.querySelectorAll('.music-track-card').forEach((card) => {
     card.classList.toggle('playing', card.dataset.path === path);
@@ -1117,7 +1131,7 @@ function _musicCtxQueue(path, name) {
   if (!window._musicQueue) window._musicQueue = [];
   window._musicQueue.push({ path, name });
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
-  _renderMusicQueuePeek();
+  _refreshMusicNavLabels();
 }
 
 function _musicCtxCopy(path) {
