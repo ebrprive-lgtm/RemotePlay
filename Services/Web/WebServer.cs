@@ -223,6 +223,18 @@ internal sealed partial class WebServer
     private string? _startupWarning;
     private readonly RemotePlay.Services.AppUpdater? _appUpdater;
 
+    // ── Rate limiting ────────────────────────────────────────────────────────
+    private sealed class RateLimitBucket
+    {
+        public int Count;
+        public long WindowStartTicks = DateTimeOffset.UtcNow.UtcTicks;
+    }
+
+    private readonly ConcurrentDictionary<string, RateLimitBucket> _rateLimitBuckets = new(StringComparer.OrdinalIgnoreCase);
+
+    // ── Graceful-shutdown token ──────────────────────────────────────────────
+    private CancellationTokenSource _listenerCts = new();
+
     public WebServer(AppConfig config, WebServerCallbacks callbacks, PresenceBroadcaster? broadcaster = null, PlaybackHistory? playbackHistory = null, RemotePlay.Services.AppUpdater? appUpdater = null)
     {
         _config = config;
@@ -829,6 +841,35 @@ internal sealed partial class WebServer
     private static HashSet<string> BuildNameSet(IEnumerable<string>? values, IEnumerable<string> fallback) =>
         WebServerConfigHelpers.BuildNameSet(values, fallback);
 
+    /// <summary>
+    /// Returns <c>true</c> when <paramref name="clientIp"/> has exceeded the configured
+    /// request quota for the current sliding window. Always returns <c>false</c> when
+    /// <see cref="AppConfig.MaxRequestsPerIpPerWindow"/> is zero (rate limiting disabled).
+    /// </summary>
+    private bool IsRateLimited(string clientIp)
+    {
+        var limit = _config.MaxRequestsPerIpPerWindow;
+        if (limit <= 0)
+            return false;
+
+        var windowTicks = TimeSpan.FromSeconds(Math.Max(1, _config.RateLimitWindowSeconds)).Ticks;
+        var bucket = _rateLimitBuckets.GetOrAdd(clientIp, _ => new RateLimitBucket());
+
+        lock (bucket)
+        {
+            var nowTicks = DateTimeOffset.UtcNow.UtcTicks;
+            if (nowTicks - bucket.WindowStartTicks >= windowTicks)
+            {
+                bucket.Count = 1;
+                bucket.WindowStartTicks = nowTicks;
+                return false;
+            }
+
+            bucket.Count++;
+            return bucket.Count > limit;
+        }
+    }
+
     public void Start()
     {
         ValidateStartupConfiguration();
@@ -870,7 +911,8 @@ internal sealed partial class WebServer
         _listener.Start();
         Logger.Info("WebServer", $"Web server listening on {_activeScheme}://*:{_config.Port}");
         StartLibraryWatcher();
-        Task.Run(ListenLoopAsync);
+        _listenerCts = new CancellationTokenSource();
+        Task.Run(() => ListenLoopAsync(_listenerCts.Token));
     }
 
     public void RequestLibraryRescan() => StartLibraryIndexRefresh(force: true);
@@ -907,6 +949,8 @@ internal sealed partial class WebServer
 
     public void Stop()
     {
+        try { _listenerCts.Cancel(); } catch { }
+        try { _listenerCts.Dispose(); } catch { }
         try { CancelThumbnailQueue(); } catch { }
         try { _thumbnailQueueCancellation?.Dispose(); } catch { }
         try { _libraryIndexTimer.Dispose(); } catch { }
@@ -981,8 +1025,10 @@ internal sealed partial class WebServer
 
         var delay = TimeSpan.FromMinutes(_config.LibraryRescanDelayMinutes);
         var dueUtc = DateTimeOffset.UtcNow.Add(delay);
+        var isNewSchedule = _pendingLibraryRescanUtc == null;
         _pendingLibraryRescanUtc = dueUtc;
-        Logger.Info($"Library change detected; delayed rescan scheduled for {dueUtc:u} ({_config.LibraryRescanDelayMinutes} minute(s))");
+        if (isNewSchedule)
+            Logger.Info($"Library change detected; rescan scheduled in {_config.LibraryRescanDelayMinutes} minute(s)");
         _libraryWatcherDebounceTimer.Change(delay, Timeout.InfiniteTimeSpan);
     }
 

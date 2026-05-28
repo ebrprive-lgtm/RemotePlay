@@ -87,13 +87,13 @@ namespace RemotePlay
 
             try
             {
+                // Show splash as early as possible — before DI setup and base startup.
+                var splash = new SplashWindow();
+                splash.Show();
+
                 Logger.Clear();
                 Logger.Info("Application startup begin");
                 base.OnStartup(e);
-
-                // Show splash immediately before the heavy DI/service setup.
-                var splash = new SplashWindow();
-                splash.Show();
 
                 var serviceCollection = new ServiceCollection();
                 serviceCollection.AddRemotePlayApplication();

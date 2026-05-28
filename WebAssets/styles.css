@@ -76,8 +76,8 @@
         body.theme-lemon header,body.theme-lemon #now-playing-bar{background:linear-gradient(135deg,#fff4b0,#fffde8)!important;border-color:#e8c800!important;color:#2e2400!important}
         body.theme-lemon .movie-card{--fav-color:#9a6000}
         body.theme-high-contrast .btn{outline:1px solid #fff}
-        body.theme-high-contrast .mode-tab{color:#fff;background:#000;border:2px solid #fff}
-        body.theme-high-contrast .mode-tab.active,body.theme-high-contrast .mode-tab:hover{background:#ff0;color:#000;border-color:#ff0}
+        body.theme-high-contrast .mode-tab{color:#fff;background:none;border:none;border-bottom:2px solid transparent}
+        body.theme-high-contrast .mode-tab.active,body.theme-high-contrast .mode-tab:hover{color:#ff0;border-bottom-color:#ff0;background:none}
         body.theme-high-contrast .vcb-pill.active{color:#000}
         body.theme-high-contrast .vcb-pill.active{color:#000}
         body.theme-high-contrast .mcb-play-all{color:#000!important}
@@ -89,7 +89,25 @@
         #title-row{display:flex;align-items:baseline;gap:.45rem}
         h1{font-size:1.05rem;color:var(--title-color,#e94560);white-space:nowrap;line-height:1;margin:0}
         #brand-actions{display:flex;flex-direction:column;align-items:stretch;gap:.3rem;min-width:0}
-        #brand-controls-row{display:flex;flex-direction:row;align-items:center;gap:.4rem;flex-wrap:nowrap}
+        /* ── Icon matrix (replaces old pill rows) ──────────────────────────── */
+        #icon-matrix{display:flex;flex-wrap:wrap;gap:.15rem;align-items:flex-start}
+        .im-btn-wrap{position:relative}
+        .im-btn{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:.18rem;min-width:44px;padding:.35rem .45rem;background:none;border:none;border-radius:8px;color:var(--muted,#9aa8c2);font-size:.6rem;font-weight:700;cursor:pointer;text-decoration:none;transition:color .13s,background .13s;white-space:nowrap;line-height:1;letter-spacing:.02em}
+        .im-btn:hover{background:rgba(255,255,255,.07);color:var(--text,#e0e6f0)}
+        .im-btn.active{color:var(--player-accent,#e94560)}
+        /* fixed-size icon box: every emoji/svg rendered inside the same 22×22 cell */
+        .im-icon{width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:1.05rem;line-height:1;position:relative;flex-shrink:0}
+        .im-label{font-size:.59rem;font-weight:600;letter-spacing:.03em}
+        /* theme picker inside icon matrix */
+        #theme-picker.im-btn-wrap .theme-picker-btn{background:none;border:none;padding:.35rem .45rem;border-radius:8px;width:auto;min-width:44px;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:.18rem;color:var(--muted,#9aa8c2);font-size:.6rem;font-weight:700;transition:color .13s,background .13s}
+        #theme-picker.im-btn-wrap .theme-picker-btn:hover{background:rgba(255,255,255,.07);color:var(--text,#e0e6f0)}
+        .theme-picker-btn-label,.theme-picker-btn-arrow{display:none}
+        /* ── Sleep timer popup ─────────────────────────────────────────────── */
+        .sleep-popup-panel{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:999;background:color-mix(in srgb,var(--folder-bg,#1a1a2e) 97%,black);border:1px solid color-mix(in srgb,var(--player-accent,#e94560) 30%,transparent);border-radius:12px;padding:.6rem .65rem .55rem;box-shadow:0 8px 32px rgba(0,0,0,.7);min-width:210px}
+        .sleep-popup-panel.open{display:block}
+        .sleep-popup-title{font-size:.72rem;font-weight:700;color:var(--player-accent,#e94560);margin-bottom:.4rem;letter-spacing:.04em}
+        .sleep-icon-badge{position:absolute;top:-5px;right:-6px;background:var(--player-accent,#e94560);color:#fff;font-size:.48rem;font-weight:700;border-radius:999px;padding:.05rem .28rem;line-height:1.4;pointer-events:none}
+        /* legacy brand-row / brand-controls-row kept for compat */
         #brand-row{display:flex;gap:.4rem;align-items:center;flex-wrap:nowrap}
         /* theme-select: replaced by custom .theme-picker below */
         /* ── Custom theme picker ─────────────────────────────────────────────── */
@@ -108,16 +126,13 @@
         .tp-item.active{background:color-mix(in srgb,var(--player-accent,#e94560) 25%,var(--pill-bg,#162033));border-color:var(--player-accent,#e94560);color:var(--player-accent,#e94560);font-weight:700}
         #theme-select:focus,#theme-select:focus-visible{outline:none}
         #theme-select option{background:var(--input-bg,#1e1e2e);color:var(--input-text,#eee);font-weight:400}
-        /* play-local-toggle: same width as peers-btn to keep the column aligned */
-        #play-local-toggle{background:var(--pill-bg);border:1px solid var(--pill-border);color:var(--pill-text);border-radius:999px;padding:.28rem .7rem;font-size:.72rem;font-weight:700;cursor:pointer;outline:2px solid transparent;outline-offset:2px;transition:background .15s,color .15s,border-color .15s;min-width:80px;text-align:center}
-        #indexing-badge{font-size:.65rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#f0a030;background:rgba(240,160,48,.15);border:1px solid rgba(240,160,48,.35);border-radius:999px;padding:.15rem .55rem;white-space:nowrap;align-self:flex-start}
-        @media(hover:hover){#play-local-toggle:hover{background:rgba(0,180,130,.18);border-color:rgba(0,180,130,.5);color:#00c896}}
-        #play-local-toggle.active{background:rgba(0,180,130,.28);border-color:#00c896;color:#00c896}
+        #play-local-toggle.active{color:#00c896}
+        #indexing-badge{font-size:.56rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#f0a030;background:rgba(240,160,48,.12);border:1px solid rgba(240,160,48,.28);border-radius:4px;padding:.1rem .35rem;white-space:nowrap;align-self:flex-start;opacity:.85}
         #search-wrap{display:flex;flex-direction:column;gap:.1rem;min-width:0;width:100%;padding-left:5px;border-left:1px solid var(--pill-border,rgba(255,255,255,.08))}
-        #mode-tabs{display:flex;gap:.4rem;margin-bottom:.2rem;flex-wrap:wrap}
-        .mode-tab{background:var(--pill-bg,rgba(255,255,255,.06));border:1px solid var(--pill-border,rgba(255,255,255,.12));color:var(--pill-text,#b0c4de);border-radius:999px;padding:.4rem 1rem;font-size:.85rem;font-weight:700;cursor:pointer;transition:background .15s,color .15s}
-        .mode-tab:hover{background:var(--pill-hover,rgba(255,255,255,.12))}
-        .mode-tab.active{background:var(--accent,#e94560);border-color:var(--accent,#e94560);color:#fff}
+        #mode-tabs{display:flex;gap:0;margin-bottom:.1rem;border-bottom:2px solid rgba(255,255,255,.07)}
+        .mode-tab{background:none;border:none;border-bottom:3px solid transparent;margin-bottom:-2px;color:var(--muted,#9aa8c2);padding:.3rem .8rem;font-size:.95rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:.35rem;transition:color .15s,border-color .15s;border-radius:0;white-space:nowrap}
+        .mode-tab:hover{color:var(--text,#e0e6f0)}
+        .mode-tab.active{color:var(--player-accent,#e94560);border-bottom-color:var(--player-accent,#e94560);font-weight:800}
         /* ── Music grid (card mode) ────────────────────────────────────────── */
         /* 6 cols: #(32px) | title(flex) | badge+dur(auto) | artist(24%) | album(26%) | time(52px) */
         :root{--mtc-cols:32px minmax(0,1fr) 52px minmax(0,.8fr) minmax(0,1fr) 52px}
@@ -324,6 +339,11 @@
         #radio-globe-tooltip{position:absolute;background:#151526;border:1px solid #3a3a57;color:#d8dbea;font-size:.72rem;padding:.28rem .55rem;border-radius:6px;pointer-events:none;white-space:nowrap;z-index:20;display:none;box-shadow:0 4px 12px rgba(0,0,0,.45)}
 
         /* ── Sleep timer preset buttons ─────────────────────────────────────── */
+        /* Radio-bar favorite heart button */
+        .radio-bar-fav-btn{background:none;border:none;cursor:pointer;font-size:1rem;color:var(--muted,#9aa8c2);padding:.1rem .25rem;border-radius:4px;line-height:1;transition:color .15s,transform .1s;flex-shrink:0;opacity:.7}
+        .radio-bar-fav-btn:hover{color:#e94560;opacity:1;transform:scale(1.2)}
+        .radio-bar-fav-btn.active{color:#e94560;opacity:1}
+        .radio-bar-fav-btn.active:hover{color:#c73352}
         .radio-sleep-preset{background:var(--player-chip-bg,var(--pill-bg,#2a2a3d));border:1.5px solid var(--player-accent,#e94560);color:var(--player-text,#9aa8c2);border-radius:999px;padding:.3rem .75rem;font-size:.75rem;cursor:pointer;min-height:1.8rem;transition:background .15s,color .15s,border-color .15s}
         button.btn.radio-sleep-preset{background:var(--pill-bg,var(--player-chip-bg,#2a2a3d))!important;border:1.5px solid var(--player-accent,#e94560)!important;color:var(--pill-text,var(--player-text,#9aa8c2))!important}
         .radio-sleep-preset:hover{background:var(--player-accent,#e94560)!important;color:#fff!important;border-color:var(--player-accent,#e94560)!important}
@@ -635,10 +655,12 @@
         .music-opt-btn{background:var(--btn-dim-bg,#333);color:var(--folder-text,#eee)!important;border:1px solid var(--player-card-border,#444);border-radius:6px;padding:.32rem .7rem;font-size:.8rem;cursor:pointer;transition:background .15s,border-color .15s,color .15s;white-space:nowrap}
         .music-opt-btn:hover{background:var(--btn-dim-hover,#555);color:var(--folder-text,#eee)!important}
         .music-opt-btn.active{background:var(--player-accent,#e94560);border-color:var(--player-accent,#e94560);color:var(--btn-accent-text,#fff)!important}
-        #health-link,#setup-link{display:inline-flex;align-items:center;gap:.3rem;background:var(--pill-bg);border:1px solid var(--pill-border);color:var(--pill-text);text-decoration:none;border-radius:999px;padding:.34rem .55rem;font-size:.75rem;font-weight:700}
-        #health-link:hover,#setup-link:hover{background:var(--pill-hover)}
-        #diag-dot{width:.65rem;height:.65rem;border-radius:999px;background:#ffaa00;box-shadow:0 0 0 3px rgba(255,170,0,.18)}
-        #diag-dot.ok{background:#00d4aa;box-shadow:0 0 0 3px rgba(0,212,170,.18)}
+        /* health / setup — inherit flat .im-btn; only override what differs */
+        #health-link,#setup-link{text-decoration:none;background:none;border:none;border-radius:8px;padding:.35rem .45rem}
+        #health-link:hover,#setup-link:hover{background:rgba(255,255,255,.07)}
+        /* diag dot: absolute badge inside the fixed .im-icon box */
+        #diag-dot{width:.55rem;height:.55rem;border-radius:999px;background:#ffaa00;box-shadow:0 0 0 2px rgba(255,170,0,.25);position:absolute;bottom:1px;right:0px}
+        #diag-dot.ok{background:#00d4aa;box-shadow:0 0 0 2px rgba(0,212,170,.25)}
         #diag-dot.error{background:#ff5959;box-shadow:0 0 0 3px rgba(255,89,89,.2)}
         #search-row{display:flex;gap:.35rem;min-width:0;align-items:center}
         #search{background:var(--input-bg);color:var(--input-text);border:1px solid var(--input-border);padding:.38rem .6rem;border-radius:4px;font-size:.86rem;flex:1;max-width:380px;min-width:100px;transition:border-color .2s,box-shadow .2s}
@@ -896,8 +918,8 @@
         .crumb-current{color:var(--folder-text,#ddd);font-weight:600}
         #status{padding:.35rem .75rem;background:#0a0a0a;font-size:.74rem;color:#777;border-bottom:1px solid #1a1a1a}
         #browser{padding:.4rem .75rem .7rem;flex:1}
-        #browse-loading{display:none;position:fixed;inset:0;z-index:50;align-items:center;justify-content:center;flex-direction:column;gap:.8rem;background:rgba(0,0,0,.45);backdrop-filter:blur(2px);color:#ccc;font-size:.9rem;pointer-events:none}
-        #browse-loading.visible{display:flex}
+        #browse-loading{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:.8rem;background:rgba(0,0,0,.45);backdrop-filter:blur(2px);color:#ccc;font-size:.9rem;pointer-events:none;opacity:0;visibility:hidden;transition:opacity .2s ease,visibility .2s ease}
+        #browse-loading.visible{opacity:1;visibility:visible}
         .browse-spinner{width:36px;height:36px;border:3px solid rgba(255,255,255,.15);border-top-color:#00d4aa;border-radius:50%;animation:rp-spin .75s linear infinite}
         #diagnostics-overlay{position:fixed;inset:0;background:rgba(0,0,0,.72);display:none;align-items:center;justify-content:center;padding:1rem;z-index:99}
         #diagnostics-overlay.open{display:flex}
@@ -981,10 +1003,13 @@
         .load-more-btn{display:block;margin:1rem auto 1.5rem;background:var(--btn-nav-bg,#2b3f6b);color:var(--player-text,#fff);border:1px solid var(--btn-nav-hover,#36528a);border-radius:999px;padding:.72rem 1rem;font-weight:800;cursor:pointer}
         .load-more-btn:hover{background:var(--btn-nav-hover,#36528a)}
         #empty{text-align:center;padding:3rem;color:#555}
-        #peers-wrap{position:relative;display:inline-block}
-        #peers-btn{display:inline-flex;align-items:center;gap:.3rem;background:var(--pill-bg);border:1px solid var(--pill-border);color:var(--pill-text);border-radius:999px;padding:.34rem .55rem;font-size:.75rem;font-weight:700;cursor:pointer;white-space:nowrap;min-width:80px;justify-content:center}
-        #peers-btn:hover{background:var(--pill-hover)}
-        #peers-dot{width:.65rem;height:.65rem;border-radius:999px;background:#ffaa00;box-shadow:0 0 0 3px rgba(255,170,0,.18);flex-shrink:0}
+        #peers-wrap{position:relative;display:inline-flex}
+        /* peers-btn — inherit flat .im-btn; only override what differs */
+        #peers-btn{background:none;border:none;border-radius:8px;padding:.35rem .45rem;min-width:unset}
+        #peers-btn:hover{background:rgba(255,255,255,.07)}
+        /* peers dot: same absolute-badge style as diag-dot */
+        #peers-dot{width:.55rem;height:.55rem;border-radius:999px;background:#ffaa00;box-shadow:0 0 0 2px rgba(255,170,0,.25);position:absolute;bottom:1px;right:0px}
+        #peers-dot.multi{background:#00d4aa;box-shadow:0 0 0 2px rgba(0,212,170,.25)}
         #peers-dot.multi{background:#00d4aa;box-shadow:0 0 0 3px rgba(0,212,170,.18)}
         #peers-dropdown{display:none;position:absolute;top:calc(100% + .4rem);left:0;min-width:260px;background:#1a1a2e;border:1px solid #2e426a;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.55);z-index:50;overflow:hidden}
         #peers-dropdown.open{display:block}

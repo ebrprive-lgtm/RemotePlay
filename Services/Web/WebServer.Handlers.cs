@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -12,9 +13,16 @@ namespace RemotePlay;
 
 internal sealed partial class WebServer
 {
-    private async Task ListenLoopAsync()
+    private async Task ListenLoopAsync(CancellationToken cancellationToken)
     {
-        while (_listener.IsListening)
+        // Cancelling the token stops the listener, which causes GetContextAsync to throw
+        // HttpListenerException — the loop then exits cleanly.
+        using var registration = cancellationToken.Register(() =>
+        {
+            try { _listener.Stop(); } catch { }
+        });
+
+        while (_listener.IsListening && !cancellationToken.IsCancellationRequested)
         {
             try
             {
@@ -34,13 +42,43 @@ internal sealed partial class WebServer
 
     private async Task HandleRequestSafeAsync(HttpListenerContext ctx)
     {
-        try { await HandleRequestAsync(ctx).ConfigureAwait(false); }
+        var sw = Stopwatch.StartNew();
+        var method = ctx.Request.HttpMethod;
+        var path = ctx.Request.Url?.AbsolutePath ?? "/";
+        var clientIp = ctx.Request.RemoteEndPoint?.Address?.ToString() ?? string.Empty;
+        try
+        {
+            if (IsRateLimited(clientIp))
+            {
+                Logger.Warning("WebServer", $"Rate limit exceeded for {clientIp} on {method} {path}");
+                TrySendResponse(ctx, 429, "text/plain", "Too Many Requests");
+                return;
+            }
+
+            await HandleRequestAsync(ctx).ConfigureAwait(false);
+        }
         catch (Exception ex)
         {
             Logger.Error("Error handling request", ex);
             TrySendResponse(ctx, 500, "text/plain", "Internal server error");
         }
+        finally
+        {
+            // Skip verbose logging for high-frequency polling endpoints to avoid log spam.
+            if (!IsPollingPath(path))
+                Logger.Detail("WebServer", $"{method} {path} {sw.ElapsedMilliseconds}ms [ip={clientIp}]");
+        }
     }
+
+    private static readonly HashSet<string> _pollingPaths = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "/api/status",
+        "/api/thumbnails/status",
+        "/api/version",
+        "/api/peers",
+    };
+
+    private static bool IsPollingPath(string path) => _pollingPaths.Contains(path);
 
     private async Task HandleRequestAsync(HttpListenerContext ctx)
     {
@@ -326,6 +364,10 @@ internal sealed partial class WebServer
                 HandleMusicRecent(ctx);
                 break;
 
+            case "/api/music/recent/clear":
+                HandleMusicRecentClear(ctx);
+                break;
+
             case "/api/music/stream":
                 HandleMusicStream(ctx);
                 break;
@@ -340,8 +382,22 @@ internal sealed partial class WebServer
                 break;
 
             case "/api/music/status":
+            {
+                var pb = _callbacks.GetMusicStatus();
+                if (pb.IsPlaying && !pb.IsPaused
+                    && !string.IsNullOrWhiteSpace(pb.CurrentPath)
+                    && pb.Position >= 10
+                    && pb.Duration > 0)
+                {
+                    GetHistoryForIp(GetClientIp(ctx)).SavePosition(
+                        pb.CurrentPath,
+                        TimeSpan.FromSeconds(pb.Position),
+                        TimeSpan.FromSeconds(pb.Duration),
+                        _config.PlaybackHistoryLimit);
+                }
                 TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(GetMusicScanStatus()));
                 break;
+            }
 
             case "/api/music/play":
                 HandleMusicPlay(ctx);
@@ -834,45 +890,58 @@ internal sealed partial class WebServer
         var runtime = BuildRuntimeHealthJson();
         var musicStatus = _callbacks.GetMusicStatus();
         var radioStatus = _callbacks.RadioGetStatus();
-        var startupWarning = string.IsNullOrWhiteSpace(_startupWarning) ? "None" : _startupWarning;
-        var playbackError = string.IsNullOrWhiteSpace(status.LastError) ? "None" : status.LastError;
-        var scanError = string.IsNullOrWhiteSpace(scanStatus.LastError) ? "None" : scanStatus.LastError;
-        var serverState = string.IsNullOrWhiteSpace(_startupWarning) ? "ok" : "warn";
-        var playbackState = string.IsNullOrWhiteSpace(status.LastError) ? "ok" : "warn";
-        var libraryState = string.IsNullOrWhiteSpace(scanStatus.LastError) ? (_isIndexing ? "warn" : "ok") : "warn";
-        var displayState = displayDiagnostics.NeedsFullscreenRepair ? "warn" : "ok";
-        var certificateState = certificate is not null ? "ok" : "warn";
-        var playbackLabel = status.IsPlaying ? "Playing" : "Idle";
-        var libraryLabel = _isIndexing ? "Indexing" : "Ready";
-        var displayLabel = displayDiagnostics.NeedsFullscreenRepair ? "Repair needed" : "Fullscreen OK";
-        var certificateLabel = certificate is not null ? "Available" : "Missing";
+        var radioFavorites = _callbacks.RadioGetFavorites();
 
-        // Music codec card — only rendered when music is actively playing
-        var musicCodecCard = (musicStatus.IsPlaying || musicStatus.IsPaused) ? $"""
-              <section class="card"><h2>&#127925; Music playing <span class="pill ok">ACTIVE</span></h2><dl class="grid">
-                <div class="metric wide"><dt>Track</dt><dd>{HtmlEncode(string.IsNullOrWhiteSpace(musicStatus.Title) ? Path.GetFileName(musicStatus.CurrentPath) : musicStatus.Title)}</dd></div>
-                <div class="metric wide"><dt>Path</dt><dd class="mono">{HtmlEncode(musicStatus.CurrentPath)}</dd></div>
+        var startupWarning  = string.IsNullOrWhiteSpace(_startupWarning) ? "None" : _startupWarning;
+        var playbackError   = string.IsNullOrWhiteSpace(status.LastError) ? "None" : status.LastError;
+        var scanError       = string.IsNullOrWhiteSpace(scanStatus.LastError) ? "None" : scanStatus.LastError;
+        var serverState     = string.IsNullOrWhiteSpace(_startupWarning) ? "ok" : "warn";
+        var playbackState   = string.IsNullOrWhiteSpace(status.LastError) ? "ok" : "warn";
+        var libraryState    = string.IsNullOrWhiteSpace(scanStatus.LastError) ? (_isIndexing ? "warn" : "ok") : "warn";
+        var displayState    = displayDiagnostics.NeedsFullscreenRepair ? "warn" : "ok";
+        var certificateState = certificate is not null ? "ok" : "warn";
+        var musicState      = string.IsNullOrWhiteSpace(musicStatus.LastError) ? "ok" : "warn";
+        var radioState      = radioStatus.IsStalled || !string.IsNullOrWhiteSpace(radioStatus.Error) ? "warn" : "ok";
+
+        var playbackLabel   = status.IsPlaying ? "Playing" : "Idle";
+        var libraryLabel    = _isIndexing ? "Indexing" : "Ready";
+        var displayLabel    = displayDiagnostics.NeedsFullscreenRepair ? "Repair needed" : "Fullscreen OK";
+        var certificateLabel = certificate is not null ? "Available" : "Missing";
+        var musicLabel      = musicStatus.IsPlaying ? "Playing" : (musicStatus.IsPaused ? "Paused" : "Idle");
+        var radioLabel      = radioStatus.IsPlaying ? (radioStatus.IsStalled ? "Stalled" : "Streaming") : "Idle";
+
+        // Music active card
+        var musicActiveCard = (musicStatus.IsPlaying || musicStatus.IsPaused) ? $"""
+              <section class="card accent-card accent-music"><div class="accent-bar"></div><h2>&#127925; Now playing &mdash; Music <span class="pill ok">ACTIVE</span></h2><dl class="grid">
+                <div class="metric wide"><dt>Track</dt><dd><strong>{HtmlEncode(string.IsNullOrWhiteSpace(musicStatus.Title) ? Path.GetFileName(musicStatus.CurrentPath) : musicStatus.Title)}</strong>{(string.IsNullOrWhiteSpace(musicStatus.Artist) ? "" : $" <span style='color:var(--muted)'>by {HtmlEncode(musicStatus.Artist)}</span>")}</dd></div>
+                <div class="metric wide"><dt>File</dt><dd class="mono">{HtmlEncode(musicStatus.CurrentPath)}</dd></div>
                 <div class="metric"><dt>Format</dt><dd>{HtmlEncode(Path.GetExtension(musicStatus.CurrentPath).TrimStart('.').ToUpperInvariant())}</dd></div>
-                <div class="metric"><dt>State</dt><dd>{(musicStatus.IsPaused ? "Paused" : "Playing")}</dd></div>
+                <div class="metric"><dt>State</dt><dd>{(musicStatus.IsPaused ? "&#9208; Paused" : "&#9654; Playing")}</dd></div>
                 <div class="metric"><dt>Position</dt><dd>{TimeSpan.FromSeconds(musicStatus.Position):hh\\:mm\\:ss}</dd></div>
                 <div class="metric"><dt>Duration</dt><dd>{(musicStatus.Duration > 0 ? TimeSpan.FromSeconds(musicStatus.Duration).ToString(@"hh\:mm\:ss") : "N/A")}</dd></div>
                 {(string.IsNullOrWhiteSpace(musicStatus.LastError) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(musicStatus.LastError)}</dd></div>")}
               </dl></section>
             """ : string.Empty;
 
-        // Radio codec card — only rendered when radio is actively playing or was last active
-        var radioCodecCard = radioStatus.IsPlaying ? $"""
-              <section class="card"><h2>&#128251; Radio playing <span class="pill ok">ACTIVE</span></h2><dl class="grid">
-                <div class="metric wide"><dt>Station</dt><dd>{HtmlEncode(radioStatus.StationName)}</dd></div>
+        // Radio active card
+        var radioActiveCard = radioStatus.IsPlaying ? $"""
+              <section class="card accent-card accent-radio"><div class="accent-bar"></div><h2>&#128251; Now playing &mdash; Radio <span class="pill {(radioStatus.IsStalled ? "warn" : "ok")}">{(radioStatus.IsStalled ? "STALLED" : "LIVE")}</span></h2><dl class="grid">
+                <div class="metric wide"><dt>Station</dt><dd><strong>{HtmlEncode(radioStatus.StationName)}</strong></dd></div>
+                {(string.IsNullOrWhiteSpace(radioStatus.StreamTitle) ? "" : $"<div class=\"metric wide\"><dt>&#127925; Now on air</dt><dd>{HtmlEncode(radioStatus.StreamTitle)}</dd></div>")}
                 <div class="metric wide"><dt>Stream URL</dt><dd class="mono">{HtmlEncode(radioStatus.StationUrl)}</dd></div>
-                {(string.IsNullOrWhiteSpace(radioStatus.StreamTitle) ? "" : $"<div class=\"metric wide\"><dt>Now playing</dt><dd>{HtmlEncode(radioStatus.StreamTitle)}</dd></div>")}
                 <div class="metric"><dt>Elapsed</dt><dd>{TimeSpan.FromSeconds(radioStatus.ElapsedSeconds):hh\\:mm\\:ss}</dd></div>
                 <div class="metric"><dt>Stalled</dt><dd class="{(radioStatus.IsStalled ? "warn-text" : "ok-text")}">{radioStatus.IsStalled}</dd></div>
                 <div class="metric"><dt>Volume</dt><dd>{Math.Round(radioStatus.Volume * 100)}%</dd></div>
-                <div class="metric"><dt>Boost</dt><dd>{radioStatus.Boost:F1}×</dd></div>
+                <div class="metric"><dt>Boost</dt><dd>{radioStatus.Boost:F1}&#215;</dd></div>
                 {(string.IsNullOrWhiteSpace(radioStatus.Error) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(radioStatus.Error)}</dd></div>")}
               </dl></section>
             """ : string.Empty;
+
+        // Radio favorites list
+        var radioFavRows = radioFavorites.Count == 0
+            ? "<p style=\"color:var(--muted);font-size:.88rem;margin:.4rem 0 0\">No radio favorites saved yet.</p>"
+            : string.Join("", radioFavorites.Select(f =>
+                $"<div class=\"fav-row\"><span class=\"fav-flag\">{HtmlEncode(string.IsNullOrWhiteSpace(f.CountryCode) ? "🌐" : f.CountryCode)}</span><span class=\"fav-name\">{HtmlEncode(f.Name)}</span><span class=\"fav-meta\">{HtmlEncode(f.Country)}{(f.Bitrate > 0 ? $" &middot; {f.Bitrate} kbps" : "")}{(string.IsNullOrWhiteSpace(f.Codec) ? "" : $" &middot; {HtmlEncode(f.Codec.ToUpperInvariant())}")}</span></div>"));
 
         var html = $$$$"""
             <!DOCTYPE html>
@@ -883,146 +952,249 @@ internal sealed partial class WebServer
             <meta name="theme-color" content="#0b1020"/>
             <title>RemotePlay Health</title>
             <style>
-            :root{color-scheme:dark;--bg:#090d18;--bg2:#121832;--card:rgba(23,28,53,.82);--card2:rgba(16,20,38,.92);--line:rgba(148,163,184,.18);--text:#eef4ff;--muted:#9aa8c2;--dim:#6f7b94;--accent:#e94560;--cyan:#00d4aa;--warn:#ffaa00;--bad:#ff5c77;--blue:#5b8cff;--shadow:0 20px 60px rgba(0,0,0,.34)}
-            *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at top left,rgba(91,140,255,.22),transparent 34rem),radial-gradient(circle at top right,rgba(233,69,96,.18),transparent 30rem),linear-gradient(135deg,var(--bg),#05070d 70%);color:var(--text);font-family:Segoe UI,Arial,sans-serif}a{color:var(--cyan);text-decoration:none}a:hover{text-decoration:underline}.page{width:min(1440px,100%);margin:0 auto;padding:18px}.hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:1rem;align-items:end;padding:1.1rem;border:1px solid var(--line);border-radius:24px;background:linear-gradient(135deg,rgba(26,32,61,.9),rgba(12,16,32,.86));box-shadow:var(--shadow);position:sticky;top:10px;z-index:3;backdrop-filter:blur(14px)}.eyebrow{color:var(--muted);font-weight:800;font-size:.76rem;text-transform:uppercase;letter-spacing:.1em}.hero h1{margin:.15rem 0 .25rem;font-size:clamp(1.55rem,4vw,3rem);line-height:1;color:#fff}.subtitle{color:var(--muted);font-size:.95rem;line-height:1.35}.actions{display:flex;gap:.55rem;flex-wrap:wrap;justify-content:flex-end}.button,button{display:inline-flex;align-items:center;justify-content:center;gap:.35rem;border:1px solid rgba(255,255,255,.12);border-radius:999px;background:rgba(34,41,76,.9);color:#eaf0ff;padding:.68rem .95rem;font-weight:800;cursor:pointer;min-height:42px}.button.primary,button.primary{background:linear-gradient(135deg,var(--accent),#ff6f61);color:#fff}.button:hover,button:hover{filter:brightness(1.12);text-decoration:none}.overview{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.85rem;margin:1rem 0}.tile{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:1rem;box-shadow:0 12px 30px rgba(0,0,0,.2);min-width:0}.tile-label{color:var(--muted);font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}.tile-value{font-size:1.2rem;font-weight:900;margin:.35rem 0 .45rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pill{display:inline-flex;align-items:center;gap:.35rem;border-radius:999px;padding:.28rem .55rem;font-size:.75rem;font-weight:900;background:rgba(148,163,184,.13);color:var(--muted)}.pill::before{content:'';width:.55rem;height:.55rem;border-radius:50%;background:var(--dim);box-shadow:0 0 0 3px rgba(148,163,184,.12)}.pill.ok{color:#a7ffe9;background:rgba(0,212,170,.12)}.pill.ok::before{background:var(--cyan)}.pill.warn{color:#ffd48a;background:rgba(255,170,0,.13)}.pill.warn::before{background:var(--warn)}.dashboard{display:grid;grid-template-columns:1.1fr .9fr;gap:1rem;align-items:start}.stack{display:grid;gap:1rem}.card{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:1rem;box-shadow:0 12px 32px rgba(0,0,0,.2);overflow:hidden}.card h2{display:flex;align-items:center;justify-content:space-between;gap:.7rem;margin:0 0 .8rem;font-size:1rem}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.55rem .8rem}.metric{background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:.65rem;min-width:0}.metric dt{color:var(--muted);font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.055em;margin:0 0 .3rem}.metric dd{margin:0;color:#fff;word-break:break-word;line-height:1.3}.metric.wide{grid-column:1/-1}.mono{font-family:Consolas,ui-monospace,monospace}.runtime-card{grid-column:1/-1}pre{white-space:pre-wrap;background:rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:1rem;overflow:auto;max-height:420px;color:#dce6ff}.admin-result{min-height:1.2rem;color:#ffd48a;font-weight:700}.footer-note{color:var(--dim);font-size:.78rem;text-align:center;padding:1.2rem}.compact-list{display:grid;gap:.5rem}.divider{height:1px;background:var(--line);margin:.85rem 0}.ok-text{color:var(--cyan)}.warn-text{color:var(--warn)}@media (max-width:1100px){.overview{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard{grid-template-columns:1fr}.runtime-card{grid-column:auto}}@media (max-width:640px){.page{padding:.6rem}.hero{position:static;grid-template-columns:1fr;border-radius:18px;padding:.85rem}.actions{display:grid;grid-template-columns:1fr 1fr;justify-content:stretch}.button,button{width:100%;padding:.72rem .7rem}.overview{grid-template-columns:1fr;gap:.55rem;margin:.65rem 0}.tile{display:grid;grid-template-columns:1fr auto;align-items:center;padding:.75rem;border-radius:16px}.tile-value{font-size:1rem;margin:.1rem 0}.tile .pill{grid-row:1/3;grid-column:2}.card{padding:.75rem;border-radius:16px}.grid{grid-template-columns:1fr;gap:.5rem}.metric{padding:.6rem}.hero h1{font-size:1.55rem}.subtitle{font-size:.84rem}pre{max-height:300px;font-size:.78rem}}
+            :root{color-scheme:dark;--bg:#090d18;--card:rgba(18,24,48,.88);--line:rgba(148,163,184,.16);--text:#eef4ff;--muted:#8898b8;--dim:#5a6880;--accent:#e94560;--cyan:#00d4aa;--warn:#ffaa00;--bad:#ff5c77;--blue:#5b8cff;--purple:#9f7efe;--shadow:0 20px 60px rgba(0,0,0,.4)}
+            *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(ellipse 80% 50% at 0% 0%,rgba(91,140,255,.18),transparent),radial-gradient(ellipse 60% 40% at 100% 0%,rgba(233,69,96,.16),transparent),linear-gradient(160deg,#0a0f1e 0%,#060810 100%);color:var(--text);font-family:Segoe UI,system-ui,Arial,sans-serif}
+            a{color:var(--cyan);text-decoration:none}a:hover{text-decoration:underline}
+            .page{width:min(1480px,100%);margin:0 auto;padding:16px 20px}
+            /* ── Hero ─────────────────────────────────────── */
+            .hero{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:1.2rem;align-items:center;padding:1.1rem 1.4rem;border:1px solid rgba(255,255,255,.1);border-radius:24px;background:linear-gradient(135deg,rgba(24,32,68,.92) 0%,rgba(10,14,30,.94) 100%);box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.06);position:sticky;top:10px;z-index:4;backdrop-filter:blur(18px)}
+            .eyebrow{color:var(--muted);font-weight:800;font-size:.72rem;text-transform:uppercase;letter-spacing:.12em}
+            .hero h1{margin:.12rem 0 .2rem;font-size:clamp(1.5rem,3.5vw,2.6rem);line-height:1;background:linear-gradient(135deg,#fff 40%,var(--muted));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+            .subtitle{color:var(--muted);font-size:.9rem;line-height:1.4}
+            .actions{display:flex;gap:.5rem;flex-wrap:wrap;justify-content:flex-end}
+            .button,button{display:inline-flex;align-items:center;justify-content:center;gap:.35rem;border:1px solid rgba(255,255,255,.1);border-radius:999px;background:rgba(30,40,80,.9);color:#dce8ff;padding:.6rem .95rem;font-size:.88rem;font-weight:800;cursor:pointer;min-height:40px;transition:filter .15s,background .15s}
+            .button.primary,button.primary{background:linear-gradient(135deg,var(--accent),#c4294a);border-color:transparent;color:#fff}
+            .button:hover,button:hover{filter:brightness(1.15);text-decoration:none}
+            /* ── Overview tiles ───────────────────────────── */
+            .overview{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:.7rem;margin:1rem 0}
+            .tile{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:.85rem .9rem;display:flex;flex-direction:column;gap:.35rem;position:relative;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.22)}
+            .tile::after{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(135deg,rgba(255,255,255,.04),transparent 60%);pointer-events:none}
+            .tile-icon{font-size:1.4rem;line-height:1}
+            .tile-label{color:var(--muted);font-size:.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}
+            .tile-value{font-size:1.05rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#fff}
+            .tile-sub{color:var(--dim);font-size:.72rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+            /* ── Pills ────────────────────────────────────── */
+            .pill{display:inline-flex;align-items:center;gap:.3rem;border-radius:999px;padding:.22rem .5rem;font-size:.7rem;font-weight:900;background:rgba(148,163,184,.1);color:var(--muted)}
+            .pill::before{content:'';width:.48rem;height:.48rem;border-radius:50%;background:var(--dim)}
+            .pill.ok{color:#9fffe8;background:rgba(0,212,170,.1)}.pill.ok::before{background:var(--cyan);box-shadow:0 0 6px var(--cyan)}
+            .pill.warn{color:#ffd480;background:rgba(255,170,0,.1)}.pill.warn::before{background:var(--warn);box-shadow:0 0 6px var(--warn)}
+            .pill.live{color:#ff9fba;background:rgba(233,69,96,.12)}.pill.live::before{background:var(--accent);box-shadow:0 0 6px var(--accent)}
+            /* ── Dashboard grid ───────────────────────────── */
+            .dashboard{display:grid;grid-template-columns:1.15fr .85fr;gap:.9rem;align-items:start;margin-top:.2rem}
+            .stack{display:grid;gap:.9rem}
+            /* ── Cards ────────────────────────────────────── */
+            .card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:1rem 1.1rem;box-shadow:0 10px 28px rgba(0,0,0,.22);overflow:hidden;position:relative}
+            .card::before{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(160deg,rgba(255,255,255,.03),transparent 50%);pointer-events:none}
+            .card h2{display:flex;align-items:center;justify-content:space-between;gap:.6rem;margin:0 0 .75rem;font-size:.95rem;font-weight:800;color:#d8e8ff}
+            .card h3{font-size:.8rem;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--accent);margin:.75rem 0 .3rem}
+            /* Accent cards for live state */
+            .accent-card{border-top:none;padding-top:0}
+            .accent-bar{height:3px;margin:-1px -1.1rem .85rem;border-radius:20px 20px 0 0}
+            .accent-music .accent-bar{background:linear-gradient(90deg,var(--purple),var(--cyan))}
+            .accent-radio .accent-bar{background:linear-gradient(90deg,var(--accent),var(--warn))}
+            /* ── Metric grid ──────────────────────────────── */
+            .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem .7rem}
+            .metric{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);border-radius:12px;padding:.6rem .65rem;min-width:0}
+            .metric dt{color:var(--muted);font-size:.67rem;font-weight:800;text-transform:uppercase;letter-spacing:.05em;margin:0 0 .25rem}
+            .metric dd{margin:0;color:#e8f0ff;word-break:break-word;line-height:1.35;font-size:.92rem}
+            .metric.wide{grid-column:1/-1}
+            .mono{font-family:Consolas,ui-monospace,monospace;font-size:.82rem}
+            /* ── Radio favorites ──────────────────────────── */
+            .fav-list{display:grid;gap:.35rem;margin-top:.5rem;max-height:260px;overflow-y:auto;scrollbar-width:thin}
+            .fav-row{display:grid;grid-template-columns:2rem 1fr auto;gap:.4rem .55rem;align-items:baseline;padding:.4rem .55rem;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05)}
+            .fav-flag{font-size:.92rem;text-align:center}
+            .fav-name{font-size:.88rem;font-weight:700;color:#d8e8ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+            .fav-meta{font-size:.72rem;color:var(--dim);white-space:nowrap}
+            /* ── Other ────────────────────────────────────── */
+            .runtime-card{grid-column:1/-1}
+            pre{white-space:pre-wrap;background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:.9rem;overflow:auto;max-height:400px;color:#c8d8f8;font-size:.82rem}
+            .admin-result{min-height:1.1rem;color:#ffd48a;font-weight:700;font-size:.88rem}
+            .footer-note{color:var(--dim);font-size:.75rem;text-align:center;padding:1rem}
+            .divider{height:1px;background:var(--line);margin:.75rem 0}
+            .ok-text{color:var(--cyan)}.warn-text{color:var(--warn)}
+            @media(max-width:1180px){.overview{grid-template-columns:repeat(4,minmax(0,1fr))}.dashboard{grid-template-columns:1fr}.runtime-card{grid-column:auto}}
+            @media(max-width:700px){.overview{grid-template-columns:repeat(2,minmax(0,1fr))}.page{padding:.7rem}.hero{position:static;grid-template-columns:1fr}.actions{display:grid;grid-template-columns:1fr 1fr}}
             </style>
             </head>
             <body>
             <main class="page">
             <section class="hero">
-              <div><div class="eyebrow">RemotePlay diagnostics</div><h1>Health dashboard</h1><div class="subtitle">Live server, playback, display, library, certificate, and runtime checks for this media computer.</div></div>
-              <div class="actions"><a class="button" href="/">Open remote</a><button class="primary" onclick="refreshRuntime()">Refresh</button><button onclick="location.href='/remoteplay.log'">Log</button></div>
+              <div>
+                <div class="eyebrow">RemotePlay &mdash; diagnostics</div>
+                <h1>Health dashboard</h1>
+                <div class="subtitle">Live server, video, music, radio, display, library, and runtime checks for this media computer.</div>
+              </div>
+              <div class="actions">
+                <a class="button" href="/">Open remote</a>
+                <button class="primary" onclick="refreshRuntime()">&#8635; Refresh</button>
+                <button onclick="location.href='/remoteplay.log'">Log</button>
+              </div>
             </section>
+
             <section class="overview" aria-label="Health summary">
-              <article class="tile"><div><div class="tile-label">Server</div><div class="tile-value">{{{{HtmlEncode(_activeScheme.ToUpperInvariant())}}}} : {{{{_config.Port}}}}</div></div><span class="pill {{{{serverState}}}}">{{{{serverState.ToUpperInvariant()}}}}</span></article>
-              <article class="tile"><div><div class="tile-label">Playback</div><div class="tile-value">{{{{HtmlEncode(playbackLabel)}}}}</div></div><span class="pill {{{{playbackState}}}}">{{{{playbackState.ToUpperInvariant()}}}}</span></article>
-              <article class="tile"><div><div class="tile-label">Library</div><div class="tile-value">{{{{_libraryIndex.Length}}}} videos</div></div><span class="pill {{{{libraryState}}}}">{{{{HtmlEncode(libraryLabel)}}}}</span></article>
-              <article class="tile"><div><div class="tile-label">Display</div><div class="tile-value">{{{{HtmlEncode(displayLabel)}}}}</div></div><span class="pill {{{{displayState}}}}">{{{{displayState.ToUpperInvariant()}}}}</span></article>
-              <article class="tile"><div><div class="tile-label">HTTPS cert</div><div class="tile-value">{{{{HtmlEncode(certificateLabel)}}}}</div></div><span class="pill {{{{certificateState}}}}">{{{{certificateState.ToUpperInvariant()}}}}</span></article>
+              <article class="tile"><div class="tile-icon">&#128421;</div><div class="tile-label">Server</div><div class="tile-value">{{{{HtmlEncode(_activeScheme.ToUpperInvariant())}}}}&thinsp;:&thinsp;{{{{_config.Port}}}}</div><span class="pill {{{{serverState}}}}">{{{{serverState.ToUpperInvariant()}}}}</span></article>
+              <article class="tile"><div class="tile-icon">&#127902;</div><div class="tile-label">Video</div><div class="tile-value">{{{{HtmlEncode(playbackLabel)}}}}</div><span class="pill {{{{playbackState}}}}">{{{{playbackState.ToUpperInvariant()}}}}</span></article>
+              <article class="tile"><div class="tile-icon">&#127925;</div><div class="tile-label">Music</div><div class="tile-value">{{{{HtmlEncode(musicLabel)}}}}</div><div class="tile-sub">{{{{_musicIndex.Length}}}} tracks indexed</div><span class="pill {{{{musicState}}}}">{{{{musicState.ToUpperInvariant()}}}}</span></article>
+              <article class="tile"><div class="tile-icon">&#128251;</div><div class="tile-label">Radio</div><div class="tile-value">{{{{HtmlEncode(radioLabel)}}}}</div><div class="tile-sub">{{{{radioFavorites.Count}}}} favorites saved</div><span class="pill {{{{(radioStatus.IsPlaying ? (radioStatus.IsStalled ? "warn" : "live") : radioState)}}}}}">{{{{(radioStatus.IsPlaying ? (radioStatus.IsStalled ? "STALLED" : "LIVE") : radioState.ToUpperInvariant())}}}}</span></article>
+              <article class="tile"><div class="tile-icon">&#128250;</div><div class="tile-label">Video lib</div><div class="tile-value">{{{{_libraryIndex.Length}}}}</div><div class="tile-sub">{{{{HtmlEncode(libraryLabel)}}}}</div><span class="pill {{{{libraryState}}}}">{{{{libraryState.ToUpperInvariant()}}}}</span></article>
+              <article class="tile"><div class="tile-icon">&#127926;</div><div class="tile-label">Music lib</div><div class="tile-value">{{{{_musicIndex.Length}}}}</div><div class="tile-sub">{{{{(_isMusicIndexing ? "Indexing…" : "Ready")}}}}}</div><span class="pill {{{{(_isMusicIndexing ? "warn" : "ok")}}}}">{{{{(_isMusicIndexing ? "SCANNING" : "OK")}}}}</span></article>
+              <article class="tile"><div class="tile-icon">&#128444;</div><div class="tile-label">Display</div><div class="tile-value">{{{{HtmlEncode(displayLabel)}}}}</div><span class="pill {{{{displayState}}}}">{{{{displayState.ToUpperInvariant()}}}}</span></article>
+              <article class="tile"><div class="tile-icon">&#128274;</div><div class="tile-label">HTTPS cert</div><div class="tile-value">{{{{HtmlEncode(certificateLabel)}}}}</div><span class="pill {{{{certificateState}}}}">{{{{certificateState.ToUpperInvariant()}}}}</span></article>
             </section>
+
             <section class="dashboard">
               <div class="stack">
-                <section class="card"><h2>Server <span class="pill {{{{serverState}}}}">{{{{serverState.ToUpperInvariant()}}}}</span></h2><dl class="grid">
-                  <div class="metric"><dt>Requested mode</dt><dd>{{{{HtmlEncode(_config.Scheme.ToUpperInvariant())}}}}</dd></div>
-                  <div class="metric"><dt>Active mode</dt><dd>{{{{HtmlEncode(_activeScheme.ToUpperInvariant())}}}}</dd></div>
-                  <div class="metric"><dt>Port</dt><dd>{{{{_config.Port}}}}</dd></div>
-                  <div class="metric"><dt>Indexed videos</dt><dd>{{{{_libraryIndex.Length}}}}</dd></div>
-                  <div class="metric wide"><dt>Movies folder</dt><dd class="mono">{{{{HtmlEncode(_config.ResolvedMoviesPath)}}}}</dd></div>
-                  <div class="metric wide"><dt>Startup warning</dt><dd class="{{{{(serverState == "ok" ? "ok-text" : "warn-text")}}}}">{{{{HtmlEncode(startupWarning)}}}}</dd></div>
-                </dl></section>
-                <section class="card"><h2>Display diagnostics <span class="pill {{{{displayState}}}}">{{{{HtmlEncode(displayLabel)}}}}</span></h2><dl class="grid">
-                  <div class="metric"><dt>Preferred display</dt><dd>{{{{displayDiagnostics.PreferredDisplayIndex}}}}</dd></div>
-                  <div class="metric"><dt>Target display</dt><dd>{{{{displayDiagnostics.TargetDisplayIndex}}}} &mdash; {{{{HtmlEncode(displayDiagnostics.TargetDisplayName)}}}}</dd></div>
-                  <div class="metric"><dt>Target bounds</dt><dd>{{{{displayDiagnostics.TargetLeft}}}}, {{{{displayDiagnostics.TargetTop}}}}, {{{{displayDiagnostics.TargetWidth}}}}&times;{{{{displayDiagnostics.TargetHeight}}}}</dd></div>
-                  <div class="metric"><dt>Window bounds</dt><dd>{{{{displayDiagnostics.WindowLeft}}}}, {{{{displayDiagnostics.WindowTop}}}}, {{{{displayDiagnostics.WindowWidth}}}}&times;{{{{displayDiagnostics.WindowHeight}}}}</dd></div>
-                  <div class="metric"><dt>DPI scale</dt><dd>{{{{displayDiagnostics.DpiScaleX}}}} &times; {{{{displayDiagnostics.DpiScaleY}}}}</dd></div>
-                  <div class="metric"><dt>Fullscreen repair</dt><dd>{{{{displayDiagnostics.NeedsFullscreenRepair}}}}</dd></div>
-                  <div class="metric wide"><dt>Window state</dt><dd>{{{{HtmlEncode(displayDiagnostics.WindowState)}}}} / {{{{HtmlEncode(displayDiagnostics.WindowStyle)}}}} / {{{{HtmlEncode(displayDiagnostics.ResizeMode)}}}} / Topmost={{{{displayDiagnostics.Topmost}}}}</dd></div>
-                  <div class="metric wide"><dt>Current video</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(displayDiagnostics.CurrentTitle) ? "N/A" : displayDiagnostics.CurrentTitle)}}}}</dd></div>
-                  <div class="metric wide"><dt>Video file</dt><dd class="mono">{{{{HtmlEncode(string.IsNullOrWhiteSpace(displayDiagnostics.CurrentFilePath) ? "N/A" : displayDiagnostics.CurrentFilePath)}}}}</dd></div>
-                  <div class="metric"><dt>Display settings</dt><dd>Zoom {{{{Math.Round(displayDiagnostics.Zoom * 100)}}}}%, Brightness {{{{Math.Round(displayDiagnostics.Brightness * 100)}}}}%, Saturation {{{{Math.Round(displayDiagnostics.Saturation * 100)}}}}%</dd></div>
-                  <div class="metric"><dt>Video surface</dt><dd>Panel {{{{displayDiagnostics.VideoSurfaceWidth}}}}&times;{{{{displayDiagnostics.VideoSurfaceHeight}}}}, Player {{{{displayDiagnostics.VideoPlayerActualWidth}}}}&times;{{{{displayDiagnostics.VideoPlayerActualHeight}}}}</dd></div>
-                </dl><div class="divider"></div><a href="/api/display-diagnostics" target="_blank" rel="noopener">Open display diagnostics JSON</a></section>
-              </div>
-              <div class="stack">
-                <section class="card"><h2>Playback <span class="pill {{{{playbackState}}}}">{{{{HtmlEncode(playbackLabel)}}}}</span></h2><dl class="grid">
+                {{{{musicActiveCard}}}}
+                {{{{radioActiveCard}}}}
+                <section class="card"><h2>&#127902; Video playback <span class="pill {{{{playbackState}}}}">{{{{HtmlEncode(playbackLabel)}}}}</span></h2><dl class="grid">
                   <div class="metric"><dt>Playing</dt><dd>{{{{status.IsPlaying}}}}</dd></div>
                   <div class="metric"><dt>Paused</dt><dd>{{{{status.IsPaused}}}}</dd></div>
-                  <div class="metric"><dt>Previous video</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(status.PreviousTitle) ? "N/A" : status.PreviousTitle)}}}}</dd></div>
-                  <div class="metric"><dt>Next video</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(status.NextTitle) ? "N/A" : status.NextTitle)}}}}</dd></div>
-                  <div class="metric wide"><dt>Last error</dt><dd class="{{{{(playbackState == "ok" ? "ok-text" : "warn-text")}}}}">{{{{HtmlEncode(playbackError)}}}}</dd></div>
-                </dl></section>
-                <section class="card"><h2>Playback preferences</h2><dl class="grid">
+                  <div class="metric"><dt>Previous</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(status.PreviousTitle) ? "N/A" : status.PreviousTitle)}}}}</dd></div>
+                  <div class="metric"><dt>Next</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(status.NextTitle) ? "N/A" : status.NextTitle)}}}}</dd></div>
                   <div class="metric"><dt>End behavior</dt><dd>{{{{HtmlEncode(_config.PlaybackEndBehavior.ToString())}}}}</dd></div>
                   <div class="metric"><dt>Forced subtitles</dt><dd>{{{{_config.PreferForcedSubtitles}}}}</dd></div>
-                  <div class="metric"><dt>Audio language</dt><dd>{{{{HtmlEncode(_config.PreferredAudioLanguage)}}}}</dd></div>
-                  <div class="metric"><dt>Subtitle language</dt><dd>{{{{HtmlEncode(_config.PreferredSubtitleLanguage)}}}}</dd></div>
+                  <div class="metric"><dt>Audio lang</dt><dd>{{{{HtmlEncode(_config.PreferredAudioLanguage)}}}}</dd></div>
+                  <div class="metric"><dt>Subtitle lang</dt><dd>{{{{HtmlEncode(_config.PreferredSubtitleLanguage)}}}}</dd></div>
+                  <div class="metric wide"><dt>Last error</dt><dd class="{{{{(playbackState == "ok" ? "ok-text" : "warn-text")}}}}">{{{{HtmlEncode(playbackError)}}}}</dd></div>
                 </dl></section>
-                <section class="card"><h2>Media codec info <span class="pill {{{{(displayDiagnostics.CodecInfo is not null ? "ok" : "warn")}}}}">{{{{(displayDiagnostics.CodecInfo is not null ? "CAPTURED" : "NO DATA")}}}}</span></h2>
-                  {{{{(displayDiagnostics.CodecInfo is null
-                    ? "<p style=\"color:var(--muted);font-size:.88rem\">Codec information is captured when a video starts playing. Start a movie and refresh this page.</p>"
-                    : $"""
-                      <dl class="grid">
-                        <div class="metric wide"><dt>&#127902; File</dt><dd class="mono">{HtmlEncode(displayDiagnostics.CodecInfo.FileName)}</dd></div>
-                        <div class="metric"><dt>Container</dt><dd>{HtmlEncode(displayDiagnostics.CodecInfo.ContainerFormat)}</dd></div>
-                        <div class="metric"><dt>Total tracks</dt><dd>{displayDiagnostics.CodecInfo.TotalTracks}</dd></div>
-                        <div class="metric"><dt>&#128250; Video tracks</dt><dd>{displayDiagnostics.CodecInfo.VideoTracks.Length}</dd></div>
-                        <div class="metric"><dt>&#127925; Audio tracks</dt><dd>{displayDiagnostics.CodecInfo.AudioTracks.Length}</dd></div>
-                        <div class="metric"><dt>&#128221; Subtitle tracks</dt><dd>{displayDiagnostics.CodecInfo.SubtitleTracks.Length}</dd></div>
-                        <div class="metric"><dt>Captured UTC</dt><dd>{HtmlEncode(displayDiagnostics.CodecInfo.CapturedAtUtc)}</dd></div>
-                      </dl>
-                      {string.Join("", displayDiagnostics.CodecInfo.VideoTracks.Select((t, i) => $"""
-                        <h3 style="margin:.8rem 0 .3rem;font-size:.85rem;text-transform:uppercase;letter-spacing:.04em;color:var(--accent)">&#128250; Video track {i + 1}</h3>
-                        <dl class="grid">
-                          <div class="metric"><dt>Codec</dt><dd><strong>{HtmlEncode(t.CodecDescription)}</strong> <span style="color:var(--muted);font-size:.8rem">({HtmlEncode(t.Codec)})</span></dd></div>
-                          <div class="metric"><dt>Resolution</dt><dd>{t.Width}&times;{t.Height}</dd></div>
-                          <div class="metric"><dt>Frame rate</dt><dd>{HtmlEncode(t.FrameRate)}</dd></div>
-                          <div class="metric"><dt>Aspect ratio (SAR)</dt><dd>{HtmlEncode(t.AspectRatio)}</dd></div>
-                          <div class="metric"><dt>Orientation</dt><dd>{HtmlEncode(t.Orientation)}</dd></div>
-                          {(string.IsNullOrEmpty(t.Language) ? "" : $"<div class=\"metric\"><dt>Language</dt><dd>{HtmlEncode(t.Language)}</dd></div>")}
-                          {(string.IsNullOrEmpty(t.Description) ? "" : $"<div class=\"metric\"><dt>Description</dt><dd>{HtmlEncode(t.Description)}</dd></div>")}
-                        </dl>
-                      """))}
-                      {string.Join("", displayDiagnostics.CodecInfo.AudioTracks.Select((t, i) => $"""
-                        <h3 style="margin:.8rem 0 .3rem;font-size:.85rem;text-transform:uppercase;letter-spacing:.04em;color:var(--accent)">&#127925; Audio track {i + 1}</h3>
-                        <dl class="grid">
-                          <div class="metric"><dt>Codec</dt><dd><strong>{HtmlEncode(t.CodecDescription)}</strong> <span style="color:var(--muted);font-size:.8rem">({HtmlEncode(t.Codec)})</span></dd></div>
-                          <div class="metric"><dt>Channels</dt><dd>{HtmlEncode(t.ChannelLayout)}</dd></div>
-                          <div class="metric"><dt>Sample rate</dt><dd>{t.SampleRate} Hz</dd></div>
-                          {(string.IsNullOrEmpty(t.Language) ? "" : $"<div class=\"metric\"><dt>Language</dt><dd>{HtmlEncode(t.Language)}</dd></div>")}
-                          {(string.IsNullOrEmpty(t.Description) ? "" : $"<div class=\"metric\"><dt>Description</dt><dd>{HtmlEncode(t.Description)}</dd></div>")}
-                        </dl>
-                      """))}
-                      {(displayDiagnostics.CodecInfo.SubtitleTracks.Length == 0 ? "" : string.Join("", displayDiagnostics.CodecInfo.SubtitleTracks.Select((t, i) => $"""
-                        <h3 style="margin:.8rem 0 .3rem;font-size:.85rem;text-transform:uppercase;letter-spacing:.04em;color:var(--accent)">&#128221; Subtitle track {i + 1}</h3>
-                        <dl class="grid">
-                          <div class="metric"><dt>Codec</dt><dd><strong>{HtmlEncode(t.CodecDescription)}</strong> <span style="color:var(--muted);font-size:.8rem">({HtmlEncode(t.Codec)})</span></dd></div>
-                          {(string.IsNullOrEmpty(t.Language) ? "" : $"<div class=\"metric\"><dt>Language</dt><dd>{HtmlEncode(t.Language)}</dd></div>")}
-                          {(string.IsNullOrEmpty(t.Description) ? "" : $"<div class=\"metric\"><dt>Description</dt><dd>{HtmlEncode(t.Description)}</dd></div>")}
-                          {(string.IsNullOrEmpty(t.Encoding) ? "" : $"<div class=\"metric\"><dt>Encoding</dt><dd>{HtmlEncode(t.Encoding)}</dd></div>")}
-                        </dl>
-                      """)))}
-                      """
-                  )}}}}</section>
-                {{{{musicCodecCard}}}}
-                {{{{radioCodecCard}}}}
-                <section class="card"><h2>Library index <span class="pill {{{{libraryState}}}}">{{{{HtmlEncode(libraryLabel)}}}}</span></h2><dl class="grid">
+
+                <section class="card"><h2>&#127925; Music library <span class="pill {{{{(_isMusicIndexing ? "warn" : "ok")}}}}">{{{{(_isMusicIndexing ? "SCANNING" : "READY")}}}}</span></h2><dl class="grid">
+                  <div class="metric"><dt>Indexed tracks</dt><dd>{{{{_musicIndex.Length}}}}</dd></div>
+                  <div class="metric"><dt>Indexing now</dt><dd>{{{{_isMusicIndexing}}}}</dd></div>
+                  <div class="metric"><dt>Scan progress</dt><dd>{{{{(_isMusicIndexing ? $"{_musicScanProgress} files scanned" : "Idle")}}}}</dd></div>
+                  <div class="metric"><dt>Extensions</dt><dd>{{{{HtmlEncode(string.Join(", ", _config.MusicFileExtensions))}}}}</dd></div>
+                  <div class="metric wide"><dt>Music folder</dt><dd class="mono">{{{{HtmlEncode(_config.ResolvedMusicPath)}}}}</dd></div>
+                  {(string.IsNullOrWhiteSpace(musicStatus.LastError) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(musicStatus.LastError)}</dd></div>")}
+                </dl></section>
+
+                <section class="card"><h2>&#128251; Radio <span class="pill {{{{radioState}}}}">{{{{radioState.ToUpperInvariant()}}}}</span></h2><dl class="grid">
+                  <div class="metric"><dt>Playing</dt><dd>{{{{radioStatus.IsPlaying}}}}</dd></div>
+                  <div class="metric"><dt>Stalled</dt><dd class="{{{{(radioStatus.IsStalled ? "warn-text" : "ok-text")}}}}">{{{{radioStatus.IsStalled}}}}</dd></div>
+                  <div class="metric"><dt>Volume</dt><dd>{{{{(radioStatus.IsPlaying ? $"{Math.Round(radioStatus.Volume * 100)}%" : "—")}}}}</dd></div>
+                  <div class="metric"><dt>Boost</dt><dd>{{{{(radioStatus.IsPlaying ? $"{radioStatus.Boost:F1}×" : "—")}}}}</dd></div>
+                  <div class="metric wide"><dt>Current station</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(radioStatus.StationName) ? "None" : radioStatus.StationName)}}}}</dd></div>
+                  {(string.IsNullOrWhiteSpace(radioStatus.Error) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(radioStatus.Error)}</dd></div>")}
+                </dl>
+                <div class="divider"></div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
+                  <span style="color:var(--muted);font-size:.75rem;font-weight:800;text-transform:uppercase;letter-spacing:.07em">&#10084;&#65039; Favorites ({{{{radioFavorites.Count}}}})</span>
+                </div>
+                <div class="fav-list">{{{{radioFavRows}}}}</div></section>
+
+                <section class="card"><h2>&#128250; Video library <span class="pill {{{{libraryState}}}}">{{{{HtmlEncode(libraryLabel)}}}}</span></h2><dl class="grid">
                   <div class="metric"><dt>Indexed videos</dt><dd>{{{{_libraryIndex.Length}}}}</dd></div>
                   <div class="metric"><dt>Indexing now</dt><dd>{{{{_isIndexing}}}}</dd></div>
                   <div class="metric"><dt>Scanned files</dt><dd>{{{{scanStatus.ScannedFiles}}}}</dd></div>
                   <div class="metric"><dt>Scanned folders</dt><dd>{{{{scanStatus.ScannedFolders}}}}</dd></div>
                   <div class="metric"><dt>Scan started UTC</dt><dd>{{{{scanStatus.StartedUtc?.ToString("u") ?? "N/A"}}}}</dd></div>
                   <div class="metric"><dt>Last refresh UTC</dt><dd>{{{{_lastIndexRefreshUtc?.ToString("u") ?? "Never"}}}}</dd></div>
+                  <div class="metric wide"><dt>Movies folder</dt><dd class="mono">{{{{HtmlEncode(_config.ResolvedMoviesPath)}}}}</dd></div>
                   <div class="metric wide"><dt>Last scan error</dt><dd class="{{{{(scanError == "None" ? "ok-text" : "warn-text")}}}}">{{{{HtmlEncode(scanError)}}}}</dd></div>
                 </dl></section>
-                <section class="card"><h2>HTTPS certificate <span class="pill {{{{certificateState}}}}">{{{{HtmlEncode(certificateLabel)}}}}</span></h2><dl class="grid">
-                  <div class="metric"><dt>Certificate present</dt><dd>{{{{certificate is not null}}}}</dd></div>
+              </div>
+
+              <div class="stack">
+                <section class="card"><h2>&#128421; Server <span class="pill {{{{serverState}}}}">{{{{serverState.ToUpperInvariant()}}}}</span></h2><dl class="grid">
+                  <div class="metric"><dt>Requested mode</dt><dd>{{{{HtmlEncode(_config.Scheme.ToUpperInvariant())}}}}</dd></div>
+                  <div class="metric"><dt>Active mode</dt><dd>{{{{HtmlEncode(_activeScheme.ToUpperInvariant())}}}}</dd></div>
+                  <div class="metric"><dt>Port</dt><dd>{{{{_config.Port}}}}</dd></div>
+                  <div class="metric"><dt>Startup warning</dt><dd class="{{{{(serverState == "ok" ? "ok-text" : "warn-text")}}}}">{{{{HtmlEncode(startupWarning)}}}}</dd></div>
+                </dl></section>
+
+                <section class="card"><h2>&#128444; Display diagnostics <span class="pill {{{{displayState}}}}">{{{{HtmlEncode(displayLabel)}}}}</span></h2><dl class="grid">
+                  <div class="metric"><dt>Preferred display</dt><dd>{{{{displayDiagnostics.PreferredDisplayIndex}}}}</dd></div>
+                  <div class="metric"><dt>Target display</dt><dd>{{{{displayDiagnostics.TargetDisplayIndex}}}} &mdash; {{{{HtmlEncode(displayDiagnostics.TargetDisplayName)}}}}</dd></div>
+                  <div class="metric"><dt>Target bounds</dt><dd>{{{{displayDiagnostics.TargetLeft}}}}, {{{{displayDiagnostics.TargetTop}}}}, {{{{displayDiagnostics.TargetWidth}}}}&times;{{{{displayDiagnostics.TargetHeight}}}}</dd></div>
+                  <div class="metric"><dt>Window bounds</dt><dd>{{{{displayDiagnostics.WindowLeft}}}}, {{{{displayDiagnostics.WindowTop}}}}, {{{{displayDiagnostics.WindowWidth}}}}&times;{{{{displayDiagnostics.WindowHeight}}}}</dd></div>
+                  <div class="metric"><dt>DPI scale</dt><dd>{{{{displayDiagnostics.DpiScaleX}}}}&times;{{{{displayDiagnostics.DpiScaleY}}}}</dd></div>
+                  <div class="metric"><dt>Fullscreen repair</dt><dd>{{{{displayDiagnostics.NeedsFullscreenRepair}}}}</dd></div>
+                  <div class="metric wide"><dt>Window state</dt><dd>{{{{HtmlEncode(displayDiagnostics.WindowState)}}}} / {{{{HtmlEncode(displayDiagnostics.WindowStyle)}}}} / {{{{HtmlEncode(displayDiagnostics.ResizeMode)}}}} / Topmost={{{{displayDiagnostics.Topmost}}}}</dd></div>
+                  <div class="metric wide"><dt>Current video</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(displayDiagnostics.CurrentTitle) ? "N/A" : displayDiagnostics.CurrentTitle)}}}}</dd></div>
+                  <div class="metric wide"><dt>Video file</dt><dd class="mono">{{{{HtmlEncode(string.IsNullOrWhiteSpace(displayDiagnostics.CurrentFilePath) ? "N/A" : displayDiagnostics.CurrentFilePath)}}}}</dd></div>
+                  <div class="metric"><dt>Zoom / Brightness / Sat</dt><dd>{{{{Math.Round(displayDiagnostics.Zoom*100)}}}}% / {{{{Math.Round(displayDiagnostics.Brightness*100)}}}}% / {{{{Math.Round(displayDiagnostics.Saturation*100)}}}}%</dd></div>
+                  <div class="metric"><dt>Video surface</dt><dd>{{{{displayDiagnostics.VideoSurfaceWidth}}}}&times;{{{{displayDiagnostics.VideoSurfaceHeight}}}}</dd></div>
+                </dl><div class="divider"></div><a href="/api/display-diagnostics" target="_blank" rel="noopener">Open display diagnostics JSON &#8599;</a></section>
+
+                <section class="card"><h2>&#127502; Media codec info <span class="pill {{{{(displayDiagnostics.CodecInfo is not null ? "ok" : "warn")}}}}">{{{{(displayDiagnostics.CodecInfo is not null ? "CAPTURED" : "NO DATA")}}}}</span></h2>
+                  {{{{(displayDiagnostics.CodecInfo is null
+                    ? "<p style=\"color:var(--muted);font-size:.88rem\">Codec info is captured when a video starts playing. Start a movie and refresh.</p>"
+                    : $"""
+                      <dl class="grid">
+                        <div class="metric wide"><dt>&#127902; File</dt><dd class="mono">{HtmlEncode(displayDiagnostics.CodecInfo.FileName)}</dd></div>
+                        <div class="metric"><dt>Container</dt><dd>{HtmlEncode(displayDiagnostics.CodecInfo.ContainerFormat)}</dd></div>
+                        <div class="metric"><dt>Total tracks</dt><dd>{displayDiagnostics.CodecInfo.TotalTracks}</dd></div>
+                        <div class="metric"><dt>&#128250; Video</dt><dd>{displayDiagnostics.CodecInfo.VideoTracks.Length}</dd></div>
+                        <div class="metric"><dt>&#127925; Audio</dt><dd>{displayDiagnostics.CodecInfo.AudioTracks.Length}</dd></div>
+                        <div class="metric"><dt>&#128221; Subtitles</dt><dd>{displayDiagnostics.CodecInfo.SubtitleTracks.Length}</dd></div>
+                        <div class="metric"><dt>Captured UTC</dt><dd>{HtmlEncode(displayDiagnostics.CodecInfo.CapturedAtUtc)}</dd></div>
+                      </dl>
+                      {string.Join("", displayDiagnostics.CodecInfo.VideoTracks.Select((t, i) => $"""
+                        <h3>&#128250; Video track {i + 1}</h3>
+                        <dl class="grid">
+                          <div class="metric"><dt>Codec</dt><dd><strong>{HtmlEncode(t.CodecDescription)}</strong> <span style="color:var(--muted);font-size:.8rem">({HtmlEncode(t.Codec)})</span></dd></div>
+                          <div class="metric"><dt>Resolution</dt><dd>{t.Width}&times;{t.Height}</dd></div>
+                          <div class="metric"><dt>Frame rate</dt><dd>{HtmlEncode(t.FrameRate)}</dd></div>
+                          <div class="metric"><dt>Aspect ratio</dt><dd>{HtmlEncode(t.AspectRatio)}</dd></div>
+                          {(string.IsNullOrEmpty(t.Language) ? "" : $"<div class=\"metric\"><dt>Language</dt><dd>{HtmlEncode(t.Language)}</dd></div>")}
+                        </dl>
+                      """))}
+                      {string.Join("", displayDiagnostics.CodecInfo.AudioTracks.Select((t, i) => $"""
+                        <h3>&#127925; Audio track {i + 1}</h3>
+                        <dl class="grid">
+                          <div class="metric"><dt>Codec</dt><dd><strong>{HtmlEncode(t.CodecDescription)}</strong> <span style="color:var(--muted);font-size:.8rem">({HtmlEncode(t.Codec)})</span></dd></div>
+                          <div class="metric"><dt>Channels</dt><dd>{HtmlEncode(t.ChannelLayout)}</dd></div>
+                          <div class="metric"><dt>Sample rate</dt><dd>{t.SampleRate} Hz</dd></div>
+                          {(string.IsNullOrEmpty(t.Language) ? "" : $"<div class=\"metric\"><dt>Language</dt><dd>{HtmlEncode(t.Language)}</dd></div>")}
+                        </dl>
+                      """))}
+                      {(displayDiagnostics.CodecInfo.SubtitleTracks.Length == 0 ? "" : string.Join("", displayDiagnostics.CodecInfo.SubtitleTracks.Select((t, i) => $"""
+                        <h3>&#128221; Subtitle track {i + 1}</h3>
+                        <dl class="grid">
+                          <div class="metric"><dt>Codec</dt><dd><strong>{HtmlEncode(t.CodecDescription)}</strong></dd></div>
+                          {(string.IsNullOrEmpty(t.Language) ? "" : $"<div class=\"metric\"><dt>Language</dt><dd>{HtmlEncode(t.Language)}</dd></div>")}
+                          {(string.IsNullOrEmpty(t.Encoding) ? "" : $"<div class=\"metric\"><dt>Encoding</dt><dd>{HtmlEncode(t.Encoding)}</dd></div>")}
+                        </dl>
+                      """)))}
+                      """
+                  )}}}}</section>
+
+                <section class="card"><h2>&#128274; HTTPS certificate <span class="pill {{{{certificateState}}}}">{{{{HtmlEncode(certificateLabel)}}}}</span></h2><dl class="grid">
+                  <div class="metric"><dt>Present</dt><dd>{{{{certificate is not null}}}}</dd></div>
                   <div class="metric"><dt>Expires</dt><dd>{{{{certificate?.NotAfter.ToString("u") ?? "N/A"}}}}</dd></div>
                   <div class="metric wide"><dt>Thumbprint</dt><dd class="mono">{{{{HtmlEncode(certificate?.Thumbprint ?? "N/A")}}}}</dd></div>
-                </dl><div class="divider"></div><a href="/certificate.cer">Download certificate</a></section>
+                </dl><div class="divider"></div><a href="/certificate.cer">Download certificate &#8599;</a></section>
+
+                <section class="card runtime-card"><h2>&#128296; Runtime diagnostics</h2><pre id="runtime-json">{{{{HtmlEncode(runtime)}}}}</pre></section>
+
+                <section class="card runtime-card"><h2>&#9881; Admin actions</h2>
+                  <div class="actions" style="justify-content:flex-start;margin-bottom:.6rem">
+                    <button class="primary" onclick="rescanLibrary()">&#8635; Rescan video lib</button>
+                    <button onclick="location.href='/remoteplay.log'">&#128196; Download log</button>
+                    <button onclick="refreshRuntime()">&#8635; Refresh runtime</button>
+                  </div>
+                  <p id="admin-result" class="admin-result"></p>
+                </section>
               </div>
-              <section class="card runtime-card"><h2>Runtime diagnostics</h2><pre id="runtime-json">{{{{HtmlEncode(runtime)}}}}</pre></section>
-              <section class="card runtime-card"><h2>Admin actions</h2><div class="actions" style="justify-content:flex-start"><button class="primary" onclick="rescanLibrary()">Start rescan</button><button onclick="location.href='/remoteplay.log'">Download log</button><button onclick="refreshRuntime()">Refresh runtime</button></div><p id="admin-result" class="admin-result"></p></section>
             </section>
-            <div class="footer-note">RemotePlay health page generated locally by this media computer.</div>
+            <div class="footer-note">RemotePlay health page &mdash; generated locally by this media computer &middot; <a href="/api/health" target="_blank">API JSON</a></div>
             </main>
             <script>
             async function refreshRuntime(){
               const result=document.getElementById('admin-result');
+              result.textContent='Refreshing…';
               try{
-                const [healthResponse,displayResponse]=await Promise.all([fetch('/api/health'),fetch('/api/display-diagnostics')]);
-                const health=await healthResponse.json();
-                const display=await displayResponse.json();
+                const [h,d]=await Promise.all([fetch('/api/health'),fetch('/api/display-diagnostics')]);
+                const health=await h.json();
+                const display=await d.json();
                 document.getElementById('runtime-json').textContent=JSON.stringify(health.runtime,null,2);
-                result.textContent='Runtime refreshed. Indexed videos: '+health.indexedFiles+'. Fullscreen repair needed: '+display.needsFullscreenRepair+'.';
-              }catch(error){result.textContent='Runtime refresh failed: '+error;}
+                result.textContent='Refreshed. Videos: '+health.indexedFiles+' | Fullscreen repair: '+display.needsFullscreenRepair+'.';
+              }catch(e){result.textContent='Refresh failed: '+e;}
             }
             async function rescanLibrary(){
               const result=document.getElementById('admin-result');
-              try{
-                await fetch('/api/rescan');
-                result.textContent='Library rescan started.';
-              }catch(error){result.textContent='Rescan failed: '+error;}
+              result.textContent='Starting rescan…';
+              try{await fetch('/api/rescan');result.textContent='Video library rescan started.';}
+              catch(e){result.textContent='Rescan failed: '+e;}
             }
             </script>
             </body>
@@ -1479,10 +1651,15 @@ internal sealed partial class WebServer
         var posParam = ctx.Request.QueryString["pos"];
         if (!string.IsNullOrEmpty(posParam))
             MediaControlValueParser.TryParseDouble(posParam, out startPos);
-        _callbacks.Stop();
-        _callbacks.RadioStop();
-        _callbacks.PlayMusic(filePath, startPos);
-        Logger.Info("Playback", $"Playing Music: '{Path.GetFileName(filePath)}' on Server" + (startPos > 0 ? $" at {startPos:F1}s" : ""));
+        var recordOnly = string.Equals(ctx.Request.QueryString["recordOnly"], "1", StringComparison.Ordinal);
+        GetHistoryForIp(GetClientIp(ctx)).RecordPlayed(filePath);
+        if (!recordOnly)
+        {
+            _callbacks.Stop();
+            _callbacks.RadioStop();
+            _callbacks.PlayMusic(filePath, startPos);
+            Logger.Info("Playback", $"Playing Music: '{Path.GetFileName(filePath)}' on Server" + (startPos > 0 ? $" at {startPos:F1}s" : ""));
+        }
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
     }
 
@@ -1620,7 +1797,7 @@ internal sealed partial class WebServer
     private static async Task<(string? lyrics, string? geniusUrl)> FetchGeniusLyricsAsync(string artist, string title)
     {
         var query = string.IsNullOrWhiteSpace(artist) ? title : $"{artist} {title}";
-        Logger.Detail("Lyrics", $"Searching Genius API for: '{query}'");
+        Logger.Detail("Lyrics", $"Searching Genius for: '{query}'");
 
         using var http = new System.Net.Http.HttpClient();
         http.Timeout = TimeSpan.FromSeconds(15);
@@ -1628,9 +1805,37 @@ internal sealed partial class WebServer
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/124.0 Safari/537.36");
         http.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
-        http.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
 
-        // Step 1: use Genius internal JSON search API (not the SPA search page)
+        // ── Step 1: try the direct slug URL (most reliable, avoids search-rank issues) ──
+        // Genius URL pattern: https://genius.com/{Artist}-{Title}-lyrics
+        // with spaces→hyphens and non-alphanumeric chars stripped.
+        if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
+        {
+            var slug = BuildGeniusSlug(artist, title);
+            var directUrl = $"https://genius.com/{slug}-lyrics";
+            Logger.Detail("Lyrics", $"Trying direct URL: {directUrl}");
+            try
+            {
+                var directHtml = await http.GetStringAsync(directUrl).ConfigureAwait(false);
+                if (directHtml.Contains("data-lyrics-container", StringComparison.Ordinal))
+                {
+                    var directLyrics = ExtractGeniusLyricsText(directHtml);
+                    if (directLyrics is not null)
+                    {
+                        Logger.Detail("Lyrics", $"Direct URL hit — extracted {directLyrics.Length} chars");
+                        return (directLyrics, directUrl);
+                    }
+                }
+                Logger.Detail("Lyrics", "Direct URL returned no lyrics container — falling back to search");
+            }
+            catch (Exception ex)
+            {
+                Logger.Detail("Lyrics", $"Direct URL fetch failed ({ex.Message}) — falling back to search");
+            }
+        }
+
+        // ── Step 2: fall back to Genius internal JSON search API ──
+        http.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
         var searchUrl = "https://genius.com/api/search/song?q=" + Uri.EscapeDataString(query);
         Logger.Detail("Lyrics", $"Search URL: {searchUrl}");
         var searchJson = await http.GetStringAsync(searchUrl).ConfigureAwait(false);
@@ -1638,20 +1843,38 @@ internal sealed partial class WebServer
         var songUrl = ExtractFirstGeniusSongUrlFromJson(searchJson, artist, title);
         if (songUrl is null)
         {
-            Logger.Detail("Lyrics", $"No song URL found in Genius API response (response len={searchJson.Length})");
+            Logger.Detail("Lyrics", $"No song URL found in Genius API response (len={searchJson.Length})");
             return (null, null);
         }
-        Logger.Detail("Lyrics", $"Song URL: {songUrl}");
+        Logger.Detail("Lyrics", $"Song URL from search: {songUrl}");
 
-        // Step 2: fetch the lyrics page
+        // ── Step 3: fetch the lyrics page from search result ──
         var lyricsHtml = await http.GetStringAsync(songUrl).ConfigureAwait(false);
-        Logger.Detail("Lyrics", $"Lyrics page fetched ({lyricsHtml.Length} chars), looking for containers...");
-        var containerCount = System.Text.RegularExpressions.Regex.Matches(lyricsHtml, "data-lyrics-container").Count;
-        Logger.Detail("Lyrics", $"Found {containerCount} lyrics container(s)");
-
+        Logger.Detail("Lyrics", $"Lyrics page fetched ({lyricsHtml.Length} chars)");
         var lyrics = ExtractGeniusLyricsText(lyricsHtml);
-        Logger.Detail("Lyrics", lyrics is null ? "Lyrics extraction returned null" : $"Extracted {lyrics.Length} chars of lyrics");
+        Logger.Detail("Lyrics", lyrics is null ? "Lyrics extraction returned null" : $"Extracted {lyrics.Length} chars");
         return lyrics is null ? (null, null) : (lyrics, songUrl);
+    }
+
+    /// <summary>
+    /// Builds the Genius URL slug from artist and title.
+    /// Spaces become hyphens; only alphanumerics and hyphens are kept; runs of hyphens are collapsed.
+    /// Example: "Billy Joel" + "Christie Lee" → "Billy-Joel-Christie-Lee"
+    /// </summary>
+    private static string BuildGeniusSlug(string artist, string title)
+    {
+        static string Slugify(string s)
+        {
+            // Replace any non-alphanumeric character with a hyphen, then collapse runs
+            var sb = new System.Text.StringBuilder();
+            foreach (var ch in s)
+            {
+                if (char.IsLetterOrDigit(ch)) sb.Append(ch);
+                else if (sb.Length > 0 && sb[^1] != '-') sb.Append('-');
+            }
+            return sb.ToString().Trim('-');
+        }
+        return Slugify(artist) + "-" + Slugify(title);
     }
 
     private static string? ExtractFirstGeniusSongUrlFromJson(string json, string artist, string title)
@@ -1895,10 +2118,10 @@ internal sealed partial class WebServer
 
         var indexLookup = _musicIndex.ToDictionary(f => f.FullPath, StringComparer.OrdinalIgnoreCase);
 
-        var files = GetHistoryForIp(GetClientIp(ctx)).GetRecent(_config.PlaybackHistoryLimit)
+        var files = GetHistoryForIp(GetClientIp(ctx)).GetRecent(_config.PlaybackHistoryLimit + 14)
             .Where(item => WebPathHelpers.IsUnderRoot(item.FilePath, root)
                         && musicExts.Contains(Path.GetExtension(item.FilePath)))
-            .Take(10)
+            .Take(7)
             .Select(item =>
             {
                 if (!indexLookup.TryGetValue(item.FilePath, out var musicFile))
@@ -2021,6 +2244,25 @@ internal sealed partial class WebServer
     private void HandleRecentClear(HttpListenerContext ctx)
     {
         GetHistoryForIp(GetClientIp(ctx)).ClearAll();
+        TrySendResponse(ctx, 200, "text/plain", "OK");
+    }
+
+    private void HandleMusicRecentClear(HttpListenerContext ctx)
+    {
+        var root = _config.ResolvedMusicPath;
+        if (!string.IsNullOrWhiteSpace(root))
+        {
+            var musicExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { ".mp3", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".wav", ".opus", ".ape", ".alac" };
+            var history = GetHistoryForIp(GetClientIp(ctx));
+            var toClear = history.GetRecent(int.MaxValue)
+                .Where(item => WebPathHelpers.IsUnderRoot(item.FilePath, root)
+                            && musicExts.Contains(Path.GetExtension(item.FilePath)))
+                .Select(item => item.FilePath)
+                .ToArray();
+            foreach (var path in toClear)
+                history.Clear(path);
+        }
         TrySendResponse(ctx, 200, "text/plain", "OK");
     }
 
@@ -2321,45 +2563,57 @@ internal sealed partial class WebServer
         {
             try
             {
-                var root = _config.ResolvedMoviesPath;
-                if (!Directory.Exists(root))
+                NetworkShareHelper.EnsureConnected(_config.AllResolvedMoviesPaths, _config.NetworkShareCredentials);
+
+                var allFiles = new List<LibraryFile>();
+
+                foreach (var root in _config.AllResolvedMoviesPaths)
+                {
+                    if (!Directory.Exists(root))
+                    {
+                        Logger.Info($"Movie library root not found, skipping: {root}");
+                        continue;
+                    }
+
+                    var rootFiles = EnumerateLibraryVideoFiles(root, _hiddenFolderNames, () => Interlocked.Increment(ref _scannedFolders))
+                        .Select(f =>
+                        {
+                            Interlocked.Increment(ref _scannedFiles);
+                            return f;
+                        })
+                        .ToArray();
+
+                    var videoFiles = rootFiles
+                        .Where(f => WebPathHelpers.IsVideoFile(f, _videoExtensions))
+                        .Select(f => BuildLibraryFile(root, f));
+
+                    var linkFiles = rootFiles
+                        .Where(RplinkHelper.IsRplinkFile)
+                        .Select(f => BuildLibraryFileForLink(root, f))
+                        .Where(f => f is not null)
+                        .Select(f => f!);
+
+                    var folderLinkFiles = rootFiles
+                        .Where(RplinkHelper.IsRplinkFile)
+                        .SelectMany(f =>
+                        {
+                            var items = BuildLibraryFilesForFolderLink(root, f).ToList();
+                            if (items.Count > 0)
+                                Interlocked.Add(ref _scannedFiles, items.Count);
+                            return items;
+                        });
+
+                    allFiles.AddRange(videoFiles.Concat(linkFiles).Concat(folderLinkFiles));
+                }
+
+                if (allFiles.Count == 0 && _config.AllResolvedMoviesPaths.Length == 0)
                 {
                     _libraryIndex = [];
                     _lastIndexRefreshUtc = DateTimeOffset.UtcNow;
                     return;
                 }
 
-                var allFiles = EnumerateLibraryVideoFiles(root, _hiddenFolderNames, () => Interlocked.Increment(ref _scannedFolders))
-                    .Select(f =>
-                    {
-                        Interlocked.Increment(ref _scannedFiles);
-                        return f;
-                    })
-                    .ToArray();
-
-                var videoFiles = allFiles
-                    .Where(f => WebPathHelpers.IsVideoFile(f, _videoExtensions))
-                    .Select(f => BuildLibraryFile(root, f));
-
-                var linkFiles = allFiles
-                    .Where(RplinkHelper.IsRplinkFile)
-                    .Select(f => BuildLibraryFileForLink(root, f))
-                    .Where(f => f is not null)
-                    .Select(f => f!);
-
-                // Index videos that live inside folder-linked directories so
-                // search, thumbnail generation, and favourites all work on them.
-                var folderLinkFiles = allFiles
-                    .Where(RplinkHelper.IsRplinkFile)
-                    .SelectMany(f =>
-                    {
-                        var items = BuildLibraryFilesForFolderLink(root, f).ToList();
-                        if (items.Count > 0)
-                            Interlocked.Add(ref _scannedFiles, items.Count);
-                        return items;
-                    });
-
-                var files = videoFiles.Concat(linkFiles).Concat(folderLinkFiles)
+                var files = allFiles
                     // deduplicate: prefer the link entry over a plain entry for the same real path
                     .GroupBy(f => f.FilePath, StringComparer.OrdinalIgnoreCase)
                     .Select(g => g.OrderByDescending(f => f.IsLink).First())
@@ -2369,7 +2623,7 @@ internal sealed partial class WebServer
                 _libraryIndex = files;
                 _lastIndexRefreshUtc = DateTimeOffset.UtcNow;
                 SaveLibraryIndexCache();
-                Logger.Detail($"Library index refreshed: {files.Length} videos");
+                Logger.Detail($"Library index refreshed: {files.Length} videos across {_config.AllResolvedMoviesPaths.Length} root(s)");
             }
             catch (Exception ex)
             {
@@ -2440,7 +2694,7 @@ internal sealed partial class WebServer
         {
             try
             {
-                var root = _config.ResolvedMusicPath;
+                NetworkShareHelper.EnsureConnected(_config.AllResolvedMusicPaths, _config.NetworkShareCredentials);
 
                 // Accumulate all files; merge each folder's batch into the live index as it arrives
                 var allFiles = new List<MusicFile>();
@@ -2469,7 +2723,19 @@ internal sealed partial class WebServer
                         _musicIndex = snapshot;
                 }
 
+                // Scan the primary root with the live-prioritisable job, then scan
+                // any additional roots with simple independent jobs.
                 MusicScanner.Scan(job, _musicExtensions, onFolderComplete, onFolder, progress, cts.Token, _hiddenFolderNames);
+
+                foreach (var additionalRoot in _config.ResolvedAdditionalMusicPaths)
+                {
+                    if (cts.Token.IsCancellationRequested) break;
+                    if (!Directory.Exists(additionalRoot)) continue;
+
+                    Logger.Info($"Music scan: starting additional root '{additionalRoot}'");
+                    var additionalJob = new MusicScanJob(additionalRoot);
+                    MusicScanner.Scan(additionalJob, _musicExtensions, onFolderComplete, onFolder, progress, cts.Token, _hiddenFolderNames);
+                }
 
                 lock (_musicIndexGate)
                 {
@@ -2789,7 +3055,9 @@ internal sealed partial class WebServer
                 return;
             }
             _callbacks.RadioToggleFavorite(station);
-            var isFav = _callbacks.RadioIsFavorite(station.Uuid);
+            var isFav = _callbacks.RadioIsFavorite(station.Uuid)
+                || _callbacks.RadioIsFavoriteByUrl(station.StreamUrl)
+                || _callbacks.RadioIsFavoriteByName(station.Name, station.Country);
             TrySendResponse(ctx, 200, "application/json",
                 JsonSerializer.Serialize(new { ok = true, isFavorite = isFav }));
         }

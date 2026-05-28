@@ -9,6 +9,131 @@ let pollInterval = null,
 let lastVolumeBeforeMute = 0.7,
   lastBoostBeforeMute = 0.3;
 
+// ── Global sleep timer ───────────────────────────────────────────────
+// One timer shared across all player domains (video, music, radio).
+// The tick detects which domain is active for volume-fade and stop.
+const SLEEP_FADE_SECS = 60;
+let _sleepTimerEnd = 0;
+let _sleepTimerInterval = null;
+let _sleepFadeActive = false;
+let _sleepPreFadeVolume = null;
+
+function sleepSet(minutes) {
+  _sleepTimerEnd = Date.now() + minutes * 60 * 1000;
+  _sleepFadeActive = false;
+  _sleepPreFadeVolume = null;
+  clearInterval(_sleepTimerInterval);
+  _sleepTimerInterval = setInterval(_sleepTimerTick, 1000);
+  _sleepTimerTick();
+  _sleepUpdateUI(false);
+}
+
+function sleepCancel() {
+  if (_sleepFadeActive && _sleepPreFadeVolume !== null) {
+    _sleepSetActiveVolume(_sleepPreFadeVolume);
+  }
+  _sleepTimerEnd = 0;
+  _sleepFadeActive = false;
+  _sleepPreFadeVolume = null;
+  clearInterval(_sleepTimerInterval);
+  _sleepTimerInterval = null;
+  _sleepUpdateUI(true);
+}
+
+// Toggle countdown vs preset buttons in the sleep-timer popup.
+function _sleepUpdateUI(showPresets) {
+  const btns = document.getElementById('sleep-popup-btns');
+  const cd   = document.getElementById('sleep-popup-countdown');
+  if (btns) btns.style.display = showPresets ? '' : 'none';
+  if (cd)   cd.style.display   = showPresets ? 'none' : '';
+  // Reflect active state on the sleep icon button itself
+  const iconBtn = document.getElementById('sleep-icon-btn');
+  if (iconBtn) iconBtn.classList.toggle('active', !showPresets);
+  const badge = document.getElementById('sleep-icon-badge');
+  if (badge) badge.style.display = showPresets ? 'none' : '';
+}
+
+function _sleepTimerTick() {
+  const rem = Math.max(0, _sleepTimerEnd - Date.now());
+  const m = Math.floor(rem / 60000);
+  const s = Math.floor((rem % 60000) / 1000);
+  const txt = 'Stops in ' + m + ':' + (s < 10 ? '0' : '') + s;
+  const el = document.getElementById('sleep-popup-remain');
+  if (el) el.textContent = txt;
+  // Also update the icon button badge so the countdown is visible without opening popup
+  const badge = document.getElementById('sleep-icon-badge');
+  if (badge) badge.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+
+  const fadeSecs = SLEEP_FADE_SECS * 1000;
+  if (!_sleepFadeActive && rem > 0 && rem <= fadeSecs) {
+    _sleepFadeActive = true;
+    _sleepPreFadeVolume = _sleepGetActiveVolume();
+  }
+  if (_sleepFadeActive && rem > 0) {
+    const t = Math.min(1, 1 - rem / fadeSecs);
+    _sleepSetActiveVolume(Math.max(0, (_sleepPreFadeVolume || 0.8) * (1 - t)));
+  }
+
+  if (rem <= 0) {
+    sleepCancel();
+    _sleepStopActive();
+  }
+}
+
+function _sleepGetActiveVolume() {
+  if (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying) {
+    const s = document.getElementById('radio-bar-combined');
+    return s ? Math.min(1.0, parseFloat(s.value)) : 0.8;
+  }
+  const mb = document.getElementById('music-player-bar');
+  if (mb && mb.style.display !== 'none') {
+    const s = document.getElementById('music-bar-combined');
+    return s ? Math.min(1.0, parseFloat(s.value)) : 0.8;
+  }
+  const s = document.getElementById('video-combined-vol');
+  return s ? Math.min(1.0, parseFloat(s.value)) : 1.0;
+}
+
+function _sleepSetActiveVolume(vol) {
+  if (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying) {
+    const s = document.getElementById('radio-bar-combined');
+    if (s) { s.value = vol; if (typeof radioCombinedSlider === 'function') radioCombinedSlider(vol); }
+    return;
+  }
+  const mb = document.getElementById('music-player-bar');
+  if (mb && mb.style.display !== 'none') {
+    const s = document.getElementById('music-bar-combined');
+    if (s) { s.value = vol; if (typeof musicCombinedSlider === 'function') musicCombinedSlider(vol); }
+    return;
+  }
+  const s = document.getElementById('video-combined-vol');
+  if (s) { s.value = vol; if (typeof setVideoCombinedSlider === 'function') setVideoCombinedSlider(vol); }
+}
+
+function _sleepStopActive() {
+  if (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying) {
+    if (typeof radioDismiss === 'function') radioDismiss();
+    return;
+  }
+  const mb = document.getElementById('music-player-bar');
+  if (mb && mb.style.display !== 'none') {
+    if (typeof musicStop === 'function') musicStop();
+    return;
+  }
+  if (typeof stop === 'function') stop();
+}
+
+// Returns a debounced version of fn that delays invocation by `wait` ms.
+// Only the most-recent call within the window fires; use for high-frequency
+// slider events to avoid flooding the API with a request on every tick.
+function debounce(fn, wait) {
+  let timer = null;
+  return function (...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => { timer = null; fn.apply(this, args); }, wait);
+  };
+}
+
 // Decode a server-side Base64-encoded file path back to the raw FS path string.
 function _decodePath(encoded) {
   try {
@@ -239,7 +364,12 @@ document.addEventListener('DOMContentLoaded', () => {
       else if (radioRes && radioRes.isPlaying) targetMode = 'radio';
       else if (videoRes && (videoRes.isPlaying || videoRes.isPaused)) targetMode = 'video';
 
-      if (!targetMode || targetMode === 'video') return; // video is already default; nothing to do
+      if (!targetMode || targetMode === 'video') {
+        // Ensure currentMode is 'video' regardless of what localStorage had,
+        // so render() correctly shows the video command bar.
+        if (typeof switchMode === 'function') switchMode('video', true);
+        return;
+      }
 
       // Apply the correct mode + browse folder. We call this twice:
       //  1. Immediately — for fast rendering when the video browse(null) hasn't fired yet.
@@ -280,6 +410,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize the combined volume/boost slider gradient to its default value.
   if (typeof musicCombinedSlider === 'function') musicCombinedSlider(0.8);
   if (typeof setVideoCombinedSlider === 'function') setVideoCombinedSlider(1.0);
+  if (typeof updateRadioCombinedSliderVisual === 'function') updateRadioCombinedSliderVisual(0.8);
 
   // Keep --header-h in sync so sticky elements below the header don't overlap it.
   const hdr = document.querySelector('header');
@@ -335,6 +466,25 @@ function setTheme(theme, save = true) {
     if (btn) btn.setAttribute('aria-expanded', 'false');
   }
   if (save) localStorage.setItem('remotePlayTheme', activeKey);
+}
+
+function toggleSleepPopup() {
+  const popup = document.getElementById('sleep-popup-panel');
+  const btn   = document.getElementById('sleep-icon-btn');
+  if (!popup) return;
+  const open = popup.classList.toggle('open');
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+  if (open) {
+    const close = e => {
+      const wrap = document.getElementById('sleep-popup-wrap');
+      if (wrap && !wrap.contains(e.target)) {
+        popup.classList.remove('open');
+        btn && btn.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('pointerdown', close, true);
+      }
+    };
+    document.addEventListener('pointerdown', close, true);
+  }
 }
 
 function toggleThemePicker() {

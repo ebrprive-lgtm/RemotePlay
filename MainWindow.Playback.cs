@@ -871,6 +871,7 @@ public partial class MainWindow
     {
         _appUpdater?.Stop();
         _appUpdater = new RemotePlay.Services.AppUpdater();
+        _appUpdater.ShutdownRequested = ExitApplication;
         _appUpdater.Start(config);
 
         return new WebServer(config, new WebServerCallbacks
@@ -922,6 +923,8 @@ public partial class MainWindow
             RadioGetFavorites   = _radioBrowser.GetFavorites,
             RadioToggleFavorite = _radioBrowser.ToggleFavorite,
             RadioIsFavorite     = _radioBrowser.IsFavorite,
+            RadioIsFavoriteByUrl = _radioBrowser.IsFavoriteByUrl,
+            RadioIsFavoriteByName = _radioBrowser.IsFavoriteByName,
             RadioNotifyAlive    = _radioPlayer.NotifyAudioAlive,
             RadioResolveUrl     = (uuid, fallback) => _radioBrowser.ResolveStationUrlAsync(uuid, fallback)
         }, _broadcaster, _playbackHistory, _appUpdater);

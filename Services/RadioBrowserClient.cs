@@ -230,7 +230,23 @@ internal sealed class RadioBrowserClient : IDisposable
     public bool IsFavorite(string uuid)
     {
         EnsureFavoritesLoaded();
-        lock (_favGate) return _favorites.Any(f => f.Uuid == uuid);
+        lock (_favGate) return !string.IsNullOrEmpty(uuid) && _favorites.Any(f => f.Uuid == uuid);
+    }
+
+    public bool IsFavoriteByUrl(string url)
+    {
+        EnsureFavoritesLoaded();
+        lock (_favGate) return _favorites.Any(f =>
+            !string.IsNullOrEmpty(f.StreamUrl) && f.StreamUrl == url);
+    }
+
+    public bool IsFavoriteByName(string name, string country)
+    {
+        EnsureFavoritesLoaded();
+        lock (_favGate) return _favorites.Any(f =>
+            string.Equals(f.Name?.Trim(), name?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+            (string.IsNullOrWhiteSpace(country) || string.IsNullOrWhiteSpace(f.Country) ||
+             string.Equals(f.Country.Trim(), country.Trim(), StringComparison.OrdinalIgnoreCase)));
     }
 
     public void ToggleFavorite(RadioStation station)
@@ -238,7 +254,16 @@ internal sealed class RadioBrowserClient : IDisposable
         EnsureFavoritesLoaded();
         lock (_favGate)
         {
-            var existing = _favorites.FindIndex(f => f.Uuid == station.Uuid);
+            var existing = -1;
+            if (!string.IsNullOrEmpty(station.Uuid))
+                existing = _favorites.FindIndex(f => f.Uuid == station.Uuid);
+            if (existing < 0 && !string.IsNullOrEmpty(station.StreamUrl))
+                existing = _favorites.FindIndex(f => !string.IsNullOrEmpty(f.StreamUrl) && f.StreamUrl == station.StreamUrl);
+            if (existing < 0)
+                existing = _favorites.FindIndex(f =>
+                    string.Equals(f.Name?.Trim(), station.Name?.Trim(), StringComparison.OrdinalIgnoreCase) &&
+                    (string.IsNullOrWhiteSpace(station.Country) || string.IsNullOrWhiteSpace(f.Country) ||
+                     string.Equals(f.Country.Trim(), station.Country.Trim(), StringComparison.OrdinalIgnoreCase)));
             if (existing >= 0) _favorites.RemoveAt(existing);
             else _favorites.Add(station);
             SaveFavoritesLocked();

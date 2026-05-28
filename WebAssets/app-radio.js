@@ -314,7 +314,8 @@ async function radioShowTab(tab) {
     if (bht) bht.classList.toggle('active', !!prevTag && radioIsTagFav(prevTag));
   }
   if (tab === 'favorites') {
-    renderRadioCards(_radioFavorites, false);
+    await radioLoadFavorites();
+    renderRadioCards(_radioFavorites, false, true);
   } else {
     renderRadioRecent();
     await radioFetch();
@@ -426,8 +427,33 @@ async function radioLoadMore() {
   await radioFetch(true);
 }
 
-function radioIsFav(uuid) {
-  return _radioFavorites.some((f) => (f.stationuuid || f.uuid || f.Uuid) === uuid);
+function radioNormalizeUrl(url) {
+  return (url || '').trim().replace(/\/$/, '').toLowerCase();
+}
+
+function radioNormalizeText(value) {
+  return (value || '').trim().toLowerCase();
+}
+
+function radioIsFav(uuid, url, name, country) {
+  if (uuid && _radioFavorites.some((f) => (f.stationuuid || f.uuid || f.Uuid) === uuid)) return true;
+  const normalizedUrl = radioNormalizeUrl(url);
+  if (normalizedUrl) {
+    const urlMatch = _radioFavorites.some((f) =>
+      radioNormalizeUrl(f.url_resolved || f.StreamUrl || f.streamUrl || f.url) === normalizedUrl
+    );
+    if (urlMatch) return true;
+  }
+  const normalizedName = radioNormalizeText(name);
+  const normalizedCountry = radioNormalizeText(country);
+  if (normalizedName) {
+    return _radioFavorites.some((f) => {
+      const favName = radioNormalizeText(f.name || f.Name);
+      const favCountry = radioNormalizeText(f.country || f.Country);
+      return favName === normalizedName && (!normalizedCountry || !favCountry || favCountry === normalizedCountry);
+    });
+  }
+  return false;
 }
 
 function _sortStationsAlpha(arr) {
@@ -483,7 +509,7 @@ function radioSortByColumn(col) {
   renderRadioCards(_radioStations, _radioStations.length === _radioPageSize * (_radioPage + 1));
 }
 
-function _buildStationCard(s) {
+function _buildStationCard(s, isFavTab = false) {
   const uuid = s.stationuuid || s.uuid || s.Uuid || '';
   const name = s.name || s.Name || '';
   const url = s.streamUrl || s.StreamUrl || s.url_resolved || '';
@@ -509,7 +535,8 @@ function _buildStationCard(s) {
   ]
     .filter(Boolean)
     .join('  ');
-  const favIcon = radioIsFav(uuid) ? '&#10084;' : '&#9825;';
+  const isFav = isFavTab || radioIsFav(uuid, url, name, country);
+  const favIcon = isFav ? '&#10084;' : '&#9825;';
   const isPlaying = _radioCurrentUrl && url && _radioCurrentUrl === url;
   const stationJson = encodeURIComponent(
     JSON.stringify({
@@ -558,7 +585,7 @@ function _buildStationCard(s) {
   // sc-votes
   h += `<span class="sc-votes">${votes > 0 ? votes.toLocaleString() : ''}</span>`;
   // sc-fav button
-  h += `<button class="radio-fav-btn sc-fav${radioIsFav(uuid) ? ' active' : ''}" onclick="event.stopPropagation();radioToggleFav(this,'${stationJson}')" title="Favorite">${favIcon}</button>`;
+  h += `<button class="radio-fav-btn sc-fav${isFav ? ' active' : ''}" onclick="event.stopPropagation();radioToggleFav(this,'${stationJson}')" title="Favorite">${favIcon}</button>`;
   // card-only: location + tags subline
   if (location || tags)
     h += `<div class="station-meta card-only">${escHtml([location, tags].filter(Boolean).join(' · '))}</div>`;
@@ -574,7 +601,7 @@ function _buildStationCard(s) {
   return h;
 }
 
-function renderRadioCards(stations, hasMore = false) {
+function renderRadioCards(stations, hasMore = false, isFavTab = false) {
   _radioVisibleStations = stations;
   const cards = document.getElementById('radio-cards');
   if (!cards) return;
@@ -624,16 +651,16 @@ function renderRadioCards(stations, hasMore = false) {
     html += '<div class="radio-section-header">&#11088; Favorite countries</div>';
     html += '<div class="radio-inner-cards' + (isList ? ' list-view' : '') + '">';
     html += listHdr;
-    for (const s of _sortAndFilterStations(pinned)) html += _buildStationCard(s);
+    for (const s of _sortAndFilterStations(pinned)) html += _buildStationCard(s, isFavTab);
     html += '</div><div class="radio-section-header">All stations</div>';
     html += '<div class="radio-inner-cards' + (isList ? ' list-view' : '') + '">';
     html += listHdr;
-    for (const s of _sortAndFilterStations(rest)) html += _buildStationCard(s);
+    for (const s of _sortAndFilterStations(rest)) html += _buildStationCard(s, isFavTab);
     html += '</div>';
   } else {
     html += '<div class="radio-inner-cards' + (isList ? ' list-view' : '') + '">';
     html += listHdr;
-    for (const s of _sortAndFilterStations(stations)) html += _buildStationCard(s);
+    for (const s of _sortAndFilterStations(stations)) html += _buildStationCard(s, isFavTab);
     html += '</div>';
   }
   if (hasMore) {
@@ -761,7 +788,7 @@ async function radioStop() {
 }
 
 async function radioDismiss() {
-  radioSleepCancel();
+  sleepCancel();
   await radioStop();
   _radioCurrentUrl = '';
   _radioCurrentName = '';
@@ -781,6 +808,9 @@ async function radioDismiss() {
   _globeHasStation = false;
 }
 
+const _debouncedRadioVolumeApi = debounce((v) => fetch('/api/radio/volume?v=' + v), 150);
+const _debouncedRadioBoostApi  = debounce((v) => fetch('/api/radio/boost?v='  + v), 150);
+
 function radioVolume(v) {
   const vol = parseFloat(v);
   if (isNaN(vol)) return;
@@ -791,7 +821,7 @@ function radioVolume(v) {
     if (a) a.volume = Math.min(1, Math.max(0, vol));
     return;
   }
-  fetch('/api/radio/volume?v=' + vol.toFixed(3));
+  _debouncedRadioVolumeApi(vol.toFixed(3));
 }
 function radioVolumeReset() {
   const slider = document.getElementById('radio-bar-volume');
@@ -801,22 +831,40 @@ function radioVolumeReset() {
   }
 }
 
+function updateRadioCombinedSliderVisual(value) {
+  const val = parseFloat(value);
+  if (isNaN(val)) return;
+  const slider = document.getElementById('radio-bar-combined');
+  if (!slider) return;
+  const totalRange = 1.3;
+  const fillPct = (Math.max(0, Math.min(totalRange, val)) / totalRange * 100).toFixed(2) + '%';
+  if (val <= 1.0) {
+    slider.classList.remove('slider-boosting');
+    slider.style.setProperty('--cvs-vol', fillPct);
+    slider.style.setProperty('--cvs-boost', fillPct);
+    slider.style.setProperty('--cvs-thumb', 'var(--player-accent,#e94560)');
+  } else {
+    slider.classList.add('slider-boosting');
+    slider.style.setProperty('--cvs-vol', '76.92%');
+    slider.style.setProperty('--cvs-boost', fillPct);
+    slider.style.setProperty('--cvs-thumb', '#f97316');
+  }
+}
+
 // Combined volume/boost slider (0–1.0 = volume, 1.0–1.3 = boost zone)
 function radioCombinedSlider(v) {
   const val = parseFloat(v);
   if (isNaN(val)) return;
-  const slider = document.getElementById('radio-bar-combined');
   const lbl    = document.getElementById('radio-combined-label');
+  updateRadioCombinedSliderVisual(val);
   if (val <= 1.0) {
     // Volume zone
-    if (slider) slider.classList.remove('slider-boosting');
     if (lbl) lbl.textContent = Math.round(val * 100) + '%';
     radioVolume(val);
     radioBoost(1.0);
   } else {
     // Boost zone: map 1.0–1.3 → gain 1–3
     const gain = 1 + (val - 1) * (2 / 0.3);
-    if (slider) slider.classList.add('slider-boosting');
     const db = Math.round(20 * Math.log10(gain));
     if (lbl) lbl.textContent = '100% +' + db + 'dB';
     radioVolume(1.0);
@@ -876,7 +924,7 @@ function radioBoost(v) {
     if (gainNode) gainNode.gain.value = Math.max(0, boost);
     return;
   }
-  fetch('/api/radio/boost?v=' + boost.toFixed(3));
+  _debouncedRadioBoostApi(boost.toFixed(3));
 }
 function radioBoostReset() {
   const slider = document.getElementById('radio-bar-boost');
@@ -886,76 +934,35 @@ function radioBoostReset() {
   }
 }
 
-// ── Sleep timer ──────────────────────────────────────────────────────────
-const SLEEP_FADE_SECS = 60;      // begin fading this many seconds before stop
-let _sleepTimerEnd = 0;
-let _sleepTimerInterval = null;
-let _sleepFadeActive = false;    // true once the fade-out ramp has started
-let _sleepPreFadeVolume = null;  // saved volume so cancel can restore it
-
-function radioSleepSet(minutes) {
-  _sleepTimerEnd = Date.now() + minutes * 60 * 1000;
-  _sleepFadeActive = false;
-  _sleepPreFadeVolume = null;
-  clearInterval(_sleepTimerInterval);
-  _sleepTimerInterval = setInterval(_sleepTimerTick, 1000);
-  _sleepTimerTick();
-  const btns = document.getElementById('radio-sleep-btns');
-  const cd = document.getElementById('radio-sleep-countdown');
-  if (btns) btns.style.display = 'none';
-  if (cd) cd.style.display = '';
+// ── Favorite heart button in the player bar ──────────────────────────────
+function radioToggleCurrentFav() {
+  if (!_radioCurrentStation) return;
+  const btn = document.getElementById('radio-bar-fav-btn');
+  const enc = encodeURIComponent(JSON.stringify(_radioCurrentStation));
+  radioToggleFav(btn, enc).then(() => _radioUpdateBarFavBtn());
 }
-function radioSleepCancel() {
-  // Restore volume if we were already fading
-  if (_sleepFadeActive && _sleepPreFadeVolume !== null) {
-    const vSlider = document.getElementById('radio-bar-combined');
-    if (vSlider) { vSlider.value = _sleepPreFadeVolume; radioCombinedSlider(_sleepPreFadeVolume); }
-    else radioVolume(_sleepPreFadeVolume);
-  }
-  _sleepTimerEnd = 0;
-  _sleepFadeActive = false;
-  _sleepPreFadeVolume = null;
-  clearInterval(_sleepTimerInterval);
-  _sleepTimerInterval = null;
-  const btns = document.getElementById('radio-sleep-btns');
-  const cd = document.getElementById('radio-sleep-countdown');
-  if (btns) btns.style.display = '';
-  if (cd) cd.style.display = 'none';
-}
-function _sleepTimerTick() {
-  const rem = Math.max(0, _sleepTimerEnd - Date.now());
-  const remain = document.getElementById('radio-sleep-remain');
-  if (remain) {
-    const m = Math.floor(rem / 60000);
-    const s = Math.floor((rem % 60000) / 1000);
-    remain.textContent = 'Stops in ' + m + ':' + (s < 10 ? '0' : '') + s;
-  }
 
-  // Begin fade-out when SLEEP_FADE_SECS remain
-  const fadeSecs = SLEEP_FADE_SECS * 1000;
-  if (!_sleepFadeActive && rem > 0 && rem <= fadeSecs) {
-    _sleepFadeActive = true;
-    // Capture current slider position (combined slider, always in volume zone during sleep fade)
-    const vSlider = document.getElementById('radio-bar-combined');
-    _sleepPreFadeVolume = vSlider ? Math.min(1.0, parseFloat(vSlider.value)) : 0.8;
-  }
-  if (_sleepFadeActive && rem > 0) {
-    // Linearly interpolate volume from saved → 0 over SLEEP_FADE_SECS seconds
-    const t = Math.min(1, 1 - rem / fadeSecs);
-    const newVol = Math.max(0, _sleepPreFadeVolume * (1 - t));
-    const vSlider = document.getElementById('radio-bar-combined');
-    if (vSlider) { vSlider.value = newVol; radioCombinedSlider(newVol); }
-    else radioVolume(newVol);
-  }
-
-  if (rem <= 0) {
-    radioSleepCancel();
-    radioDismiss();
-  }
+function _radioUpdateBarFavBtn() {
+  const btn = document.getElementById('radio-bar-fav-btn');
+  if (!btn) return;
+  const uuid = _radioCurrentStation &&
+    (_radioCurrentStation.stationuuid || _radioCurrentStation.uuid || _radioCurrentStation.Uuid);
+  const url = (_radioCurrentStation &&
+    (_radioCurrentStation.url_resolved || _radioCurrentStation.StreamUrl || _radioCurrentStation.streamUrl || _radioCurrentStation.url)) ||
+    _radioCurrentUrl;
+  const name = (_radioCurrentStation && (_radioCurrentStation.name || _radioCurrentStation.Name)) || _radioCurrentName;
+  const country = (_radioCurrentStation && (_radioCurrentStation.country || _radioCurrentStation.Country)) || _radioCurrentCountry;
+  const isFav = radioIsFav(uuid, url, name, country);
+  btn.classList.toggle('active', isFav);
+  btn.innerHTML = isFav ? '&#10084;' : '&#9825;';
+  btn.title = isFav ? 'Remove from favorites' : 'Add to favorites';
+  btn.setAttribute('aria-label', isFav ? 'Remove from favorites' : 'Add to favorites');
+  btn.setAttribute('aria-pressed', String(isFav));
 }
 
 function updateRadioBar(title, country, tag, playing, station) {
   _radioIsPlaying = playing;
+  if (station) _radioCurrentStation = station;
   const t = document.getElementById('radio-bar-title');
   const m = document.getElementById('radio-bar-meta');
   const techText = document.getElementById('radio-bar-tech-text');
@@ -1046,6 +1053,7 @@ function updateRadioBar(title, country, tag, playing, station) {
     if (el) el.style.display = 'none';
   }
   if (btn) btn.innerHTML = playing ? '\u23F8 Pause' : '\u25B6 Play';
+  _radioUpdateBarFavBtn();
 }
 
 async function radioPlayHere() {
@@ -1067,6 +1075,7 @@ function _radioPushRecentStation(station, name, url) {
   try {
     const stored = JSON.parse(localStorage.getItem(_RADIO_RECENT_KEY) || '[]');
     const entry = {
+      stationuuid: (station && (station.stationuuid || station.uuid || station.Uuid)) || '',
       name: name || (station && (station.name || station.Name)) || 'Unknown',
       url,
       favicon: (station && (station.favicon || station.Favicon)) || '',

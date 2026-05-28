@@ -95,11 +95,15 @@ async function playMusic(path, name) {
       coverPath: path,
     });
     localPlay('/api/music/stream?path=' + encodeURIComponent(path), displayName, 'Music');
+    // Record play in history so recent cards update
+    fetch('/api/music/play?path=' + encodeURIComponent(path) + '&recordOnly=1').catch(() => {});
+    setTimeout(() => loadMusicRecent().then((files) => renderMusicRecent(files)), 300);
     return;
   }
 
   await fetch('/api/music/play?path=' + encodeURIComponent(path));
   musicIsPlaying = true;
+  setTimeout(() => loadMusicRecent().then((files) => renderMusicRecent(files)), 300);
   // Immediately tell the server which track comes next so playback continues
   // even when this browser tab is closed before the current song ends.
   _queueNextTrackOnServer();
@@ -162,6 +166,9 @@ async function musicNext() {
   if (t) await playMusic(t.path, t.name);
 }
 
+const _debouncedMusicVolumeApi = debounce((v) => fetch('/api/music/volume?v=' + v), 150);
+const _debouncedMusicBoostApi  = debounce((v) => fetch('/api/music/boost?v='  + v), 150);
+
 function musicVolume(v) {
   const vol = parseFloat(v);
   if (isNaN(vol)) return;
@@ -173,7 +180,7 @@ function musicVolume(v) {
     if (a) a.volume = Math.min(1, Math.max(0, vol));
     return;
   }
-  fetch('/api/music/volume?v=' + vol.toFixed(3));
+  _debouncedMusicVolumeApi(vol.toFixed(3));
 }
 function musicVolumeReset() {
   const slider = document.getElementById('music-bar-volume');
@@ -220,7 +227,7 @@ function musicBoost(v) {
     if (gainNode) gainNode.gain.value = Math.max(0, boost);
     return;
   }
-  fetch('/api/music/boost?v=' + boost.toFixed(3));
+  _debouncedMusicBoostApi(boost.toFixed(3));
 }
 function musicBoostReset() {
   const slider = document.getElementById('music-bar-boost');
@@ -813,11 +820,15 @@ function switchMode(mode) {
   // Always show the nav row; just switch which recent strip is active
   const navRow = document.getElementById('browse-nav-row');
   const vStrip = document.getElementById('video-recent-strip');
+  const vClear = document.getElementById('video-recent-clear');
   const mStrip = document.getElementById('music-recent-strip');
+  const mClear = document.getElementById('music-recent-clear');
   const rStrip = document.getElementById('radio-recent-strip');
   if (navRow) navRow.style.display = '';
   if (vStrip) vStrip.style.display = mode === 'video' ? '' : 'none';
+  if (vClear) vClear.style.display = mode === 'video' && vStrip && vStrip.children.length ? '' : 'none';
   if (mStrip) mStrip.style.display = mode === 'music' ? '' : 'none';
+  if (mClear) mClear.style.display = mode === 'music' && mStrip && mStrip.children.length ? '' : 'none';
   if (rStrip) rStrip.style.display = mode === 'radio' ? '' : 'none';
   if (mode === 'video') {
     if (searchRow) searchRow.style.display = '';
@@ -1374,13 +1385,11 @@ async function browseMusic(folder, offset = 0, append = false, silentRefresh = f
     }
     if (currentMode === 'music') renderMusicHeader(currentMusicData, false);
     renderMusicCards(currentMusicData);
-    // Show recently played strip on the music root, hide in subfolders
-    const mStrip = document.getElementById('music-recent-strip');
-    if (!folder && !append) {
+    // Always refresh recently played strip (non-append navigations)
+    if (!append) {
+      const mStrip = document.getElementById('music-recent-strip');
       if (mStrip) mStrip.style.display = '';
-      loadMusicRecent().then((files) => { if (files.length) renderMusicRecent(files); });
-    } else if (!append && mStrip) {
-      mStrip.style.display = 'none';
+      loadMusicRecent().then((files) => renderMusicRecent(files));
     }
   } catch (e) {
     mb.innerHTML = '<div style="padding:.75rem">Error: ' + e + '</div>';

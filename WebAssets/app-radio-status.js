@@ -293,6 +293,13 @@ async function radioStatusTick() {
     // In local mode the bar state is managed by radioPlayStation/radioToggle — don't let
     // the server poll overwrite it (server reports not-playing when local is active).
     if (!isPlayLocal()) {
+      // If we lost the station object (e.g. page reload), try to recover from favorites by URL.
+      if (!_radioCurrentStation && url && _radioFavorites && _radioFavorites.length) {
+        const match = _radioFavorites.find(
+          (f) => (f.url_resolved || f.StreamUrl || f.streamUrl || '') === url
+        );
+        if (match) _radioCurrentStation = match;
+      }
       updateRadioBar(name, _radioCurrentCountry, _radioCurrentTag, playing, _radioCurrentStation);
     }
     // Sync combined volume/boost slider from server state
@@ -303,14 +310,13 @@ async function radioStatusTick() {
       const combined = boost > 1.0 ? Math.min(1.3, 1.0 + (boost - 1) * (0.3 / 2)) : Math.min(1.0, vol);
       const cSlider = document.getElementById('radio-bar-combined');
       const cLabel  = document.getElementById('radio-combined-label');
+      if (typeof updateRadioCombinedSliderVisual === 'function') updateRadioCombinedSliderVisual(combined);
       if (cSlider && Math.abs(parseFloat(cSlider.value) - combined) > 0.015) {
         cSlider.value = combined;
         if (combined > 1.0) {
-          cSlider.classList.add('slider-boosting');
           const db = Math.round(20 * Math.log10(boost));
           if (cLabel) cLabel.textContent = '100% +' + db + 'dB';
         } else {
-          cSlider.classList.remove('slider-boosting');
           if (cLabel) cLabel.textContent = Math.round(combined * 100) + '%';
         }
       }
@@ -327,15 +333,15 @@ async function radioToggleFav(btn, encStation) {
       body: JSON.stringify(station),
     });
     if (!r.ok) return;
-    const resp = await r.json();
-    const isFav = resp.isFavorite || false;
     await radioLoadFavorites();
     // Re-render so removed favorites disappear from favorites tab, and hearts update elsewhere
     if (_radioTab === 'favorites') {
-      renderRadioCards(_radioFavorites, false);
+      renderRadioCards(_radioFavorites, false, true);
     } else {
       renderRadioCards(_radioStations, _radioStations.length === _radioPageSize * (_radioPage + 1));
     }
+    // Sync the player bar heart button
+    if (typeof _radioUpdateBarFavBtn === 'function') _radioUpdateBarFavBtn();
   } catch {}
 }
 

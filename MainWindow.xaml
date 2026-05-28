@@ -2,6 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vlc="clr-namespace:LibVLCSharp.WPF;assembly=LibVLCSharp.WPF"
+        xmlns:ctrl="clr-namespace:RemotePlay.Controls"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
@@ -352,17 +353,20 @@
             <DockPanel>
                 <TextBlock Text="🎬 RemotePlay" Foreground="#E94560" FontSize="16"
                            FontWeight="Bold" VerticalAlignment="Center" Margin="4,0,16,0"/>
-                <TextBlock x:Name="ServerStatusText" Foreground="#AAAAAA" FontSize="12"
-                           VerticalAlignment="Center" Margin="0,0,16,0"/>
                 <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
                     <Button x:Name="ToggleViewBtn" Content="▶  Switch to Video"
                             Click="OnToggleView"
                             Background="#E94560" Foreground="White" BorderThickness="0"
                             Padding="10,4" Margin="4,0" Cursor="Hand"/>
 
-                    <Button Content="⏹  Stop &amp; Exit" Click="OnStopAndExit"
+                    <Button Content="⏹  Stop" Click="OnStopServer"
                             Background="#7a1a1a" Foreground="White" BorderThickness="0"
                             Padding="10,4" Margin="4,0" Cursor="Hand"/>
+                    <Button x:Name="RestartServerBtn" Content="↻  Restart" Click="OnRestartServer"
+                            Background="#333" Foreground="White" BorderThickness="0"
+                            Padding="10,4" Margin="4,0" Cursor="Hand"/>
+                    <TextBlock x:Name="ServerStatusText" Foreground="#AAAAAA" FontSize="12"
+                               VerticalAlignment="Center" Margin="12,0,4,0"/>
                 </StackPanel>
             </DockPanel>
         </Border>
@@ -634,11 +638,20 @@
                                              Background="#1e1e2e" Foreground="#EEE"
                                              BorderBrush="#444" BorderThickness="1"
                                              Padding="8,6" FontSize="13"
-                                             VerticalContentAlignment="Center"/>
+                                              VerticalContentAlignment="Center"
+                                              LostFocus="OnSettingLostFocus"/>
                                     <Button Grid.Column="1" Content="Browse…" Click="OnBrowseFolder"
                                             Background="#333" Foreground="White" BorderThickness="0"
                                             Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
                                 </Grid>
+
+                                <TextBlock Text="Additional Movies Folders" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"
+                                           Text="Extra roots scanned alongside the primary Movies folder. All sub-folders are included."/>
+                                <ctrl:PathListEditor x:Name="AdditionalMoviesPathsEditor"
+                                                     BrowseTitle="Select an additional movies folder"
+                                                      PathsChanged="OnPathListSettingChanged"
+                                                     Margin="0,0,0,20"/>
 
                                 <TextBlock Text="Music Folder" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
                                 <Grid Margin="0,0,0,4">
@@ -650,13 +663,29 @@
                                              Background="#1e1e2e" Foreground="#EEE"
                                              BorderBrush="#444" BorderThickness="1"
                                              Padding="8,6" FontSize="13"
-                                             VerticalContentAlignment="Center"/>
+                                              VerticalContentAlignment="Center"
+                                              LostFocus="OnSettingLostFocus"/>
                                     <Button Grid.Column="1" Content="Browse…" Click="OnBrowseMusicFolder"
                                             Background="#333" Foreground="White" BorderThickness="0"
                                             Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
                                 </Grid>
                                 <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
                                            Text="Root folder scanned for music files (.mp3 .flac .aac .ogg .wav .m4a .wma .opus). All subfolders are included."/>
+
+                                <TextBlock Text="Additional Music Folders" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"
+                                           Text="Extra roots scanned alongside the primary Music folder."/>
+                                <ctrl:PathListEditor x:Name="AdditionalMusicPathsEditor"
+                                                     BrowseTitle="Select an additional music folder"
+                                                      PathsChanged="OnPathListSettingChanged"
+                                                     Margin="0,0,0,20"/>
+
+                                <TextBlock Text="Network Share Credentials" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"
+                                           Text="Credentials for UNC shares (e.g. \\server\share) that require authentication. The app uses these to connect before scanning. Passwords are stored in plain text — keep the config file private."/>
+                                <ctrl:NetworkCredentialsEditor x:Name="CredentialsEditor"
+                                                               CredentialsChanged="OnPathListSettingChanged"
+                                                               Margin="0,0,0,20"/>
 
                                 <TextBlock Text="Delayed auto-rescan interval" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
                                 <Grid Margin="0,0,0,20">
@@ -668,7 +697,8 @@
                                                  Background="#1e1e2e" Foreground="#EEE"
                                                  BorderBrush="#444" BorderThickness="1"
                                                  Padding="8,6" FontSize="13"
-                                                 VerticalContentAlignment="Center"/>
+                                                  VerticalContentAlignment="Center"
+                                                  LostFocus="OnSettingLostFocus"/>
                                         <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
                                                    VerticalAlignment="Center" Margin="12,0,0,0"
                                                    Text="Minutes between delayed library auto-rescans (0 disables auto-rescan)."/>
@@ -684,7 +714,8 @@
                                                  Background="#1e1e2e" Foreground="#EEE"
                                                  BorderBrush="#444" BorderThickness="1"
                                                  Padding="8,6" FontSize="13"
-                                                 VerticalContentAlignment="Center"/>
+                                                  VerticalContentAlignment="Center"
+                                                  LostFocus="OnSettingLostFocus"/>
                                         <Button Grid.Column="1" Content="Browse…" Click="OnBrowseUpdateSourceFolder"
                                                 Background="#333" Foreground="White" BorderThickness="0"
                                                 Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
@@ -702,7 +733,8 @@
                                                  Background="#1e1e2e" Foreground="#EEE"
                                                  BorderBrush="#444" BorderThickness="1"
                                                  Padding="8,6" FontSize="13"
-                                                 VerticalContentAlignment="Center"/>
+                                                  VerticalContentAlignment="Center"
+                                                  LostFocus="OnSettingLostFocus"/>
                                         <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
                                                    VerticalAlignment="Center" Margin="12,0,0,0"
                                                    Text="Minutes between update checks while the app is running (0 = startup only)."/>
@@ -711,6 +743,67 @@
                                     <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
                                         Background="#E94560" Foreground="White" BorderThickness="0"
                                         Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
+
+                                <!-- ── Advanced library settings ── -->
+                                <TextBlock Text="Advanced" Foreground="#E94560" FontSize="13" FontWeight="Bold" Margin="0,28,0,14"/>
+
+                                <CheckBox x:Name="EnableThumbnailGenerationBox"
+                                          Content="Generate thumbnails for video files"
+                                           Foreground="#EEE" FontSize="13" Margin="0,0,0,6"
+                                           Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
+                                           Text="When enabled, RemotePlay generates preview thumbnails for library videos in the background. Disable if disk space or CPU is a concern."/>
+
+                                <TextBlock Text="Library page size" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="120"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="LibraryPageSizeBox" Grid.Column="0"
+                                             Background="#1e1e2e" Foreground="#EEE"
+                                             BorderBrush="#444" BorderThickness="1"
+                                             Padding="8,6" FontSize="13"
+                                              VerticalContentAlignment="Center"
+                                              LostFocus="OnSettingLostFocus"/>
+                                    <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
+                                               VerticalAlignment="Center" Margin="12,0,0,0"
+                                               Text="Videos per page in the browser (25 – 1000)."/>
+                                </Grid>
+
+                                <TextBlock Text="Ignored sub-folders" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,14,0,6"/>
+                                <TextBox x:Name="IgnoredLibraryFoldersBox"
+                                         Background="#1e1e2e" Foreground="#EEE"
+                                         BorderBrush="#444" BorderThickness="1"
+                                         Padding="8,6" FontSize="13"
+                                         VerticalContentAlignment="Center"
+                                          Margin="0,0,0,6"
+                                          LostFocus="OnSettingLostFocus"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
+                                           Text="Comma-separated folder names to skip during library scans (e.g. Subs, Alt, Extras). Sub-folders matching any name are excluded entirely."/>
+
+                                <TextBlock Text="Video file extensions" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <TextBox x:Name="VideoFileExtensionsBox"
+                                         Background="#1e1e2e" Foreground="#EEE"
+                                         BorderBrush="#444" BorderThickness="1"
+                                         Padding="8,6" FontSize="13"
+                                         VerticalContentAlignment="Center"
+                                          Margin="0,0,0,6"
+                                          LostFocus="OnSettingLostFocus"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
+                                           Text="Comma-separated list of extensions recognised as video files (e.g. .mp4, .mkv, .avi). Leave empty to restore defaults."/>
+
+                                <TextBlock Text="Music file extensions" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <TextBox x:Name="MusicFileExtensionsBox"
+                                         Background="#1e1e2e" Foreground="#EEE"
+                                         BorderBrush="#444" BorderThickness="1"
+                                         Padding="8,6" FontSize="13"
+                                         VerticalContentAlignment="Center"
+                                          Margin="0,0,0,6"
+                                          LostFocus="OnSettingLostFocus"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
+                                           Text="Comma-separated list of extensions recognised as music files (e.g. .mp3, .flac, .ogg). Leave empty to restore defaults."/>
+
                             </StackPanel>
 
                             <!-- ── SERVER panel ── -->
@@ -725,7 +818,8 @@
                                          BorderBrush="#444" BorderThickness="1"
                                          Padding="8,6" FontSize="13"
                                          VerticalContentAlignment="Center"
-                                         Margin="0,0,0,4"/>
+                                          Margin="0,0,0,4"
+                                          LostFocus="OnSettingLostFocus"/>
                                 <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
                                            Text="Friendly label shown when other RemotePlay instances discover this one on the network (e.g. Living Room, Bedroom PC)."/>
 
@@ -739,7 +833,8 @@
                                              Background="#1e1e2e" Foreground="#EEE"
                                              BorderBrush="#444" BorderThickness="1"
                                              Padding="8,6" FontSize="13"
-                                             VerticalContentAlignment="Center"/>
+                                              VerticalContentAlignment="Center"
+                                              LostFocus="OnSettingLostFocus"/>
                                     <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
                                                VerticalAlignment="Center" Margin="12,0,0,0"
                                                Text="(1024 – 65535)"/>
@@ -747,7 +842,8 @@
 
                                 <CheckBox x:Name="UseHttpsBox"
                                           Content="Use secure HTTPS (recommended for mobile PWA)"
-                                          Foreground="#EEE" FontSize="13" Margin="0,12,0,6"/>
+                                           Foreground="#EEE" FontSize="13" Margin="0,12,0,6"
+                                           Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
                                 <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
                                            Text="HTTPS lets mobile browsers install RemotePlay as a PWA. First-time setup may require running as administrator. Browsers may prompt you to trust the local certificate."/>
 
@@ -759,6 +855,43 @@
                                             Background="#333" Foreground="White" BorderThickness="0"
                                             Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
                                 </StackPanel>
+
+                                <!-- ── Rate limiting ── -->
+                                <TextBlock Text="Rate Limiting" Foreground="#E94560" FontSize="13" FontWeight="Bold" Margin="0,8,0,14"/>
+
+                                <TextBlock Text="Max requests per IP per window" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="120"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="MaxRequestsPerIpBox" Grid.Column="0"
+                                             Background="#1e1e2e" Foreground="#EEE"
+                                             BorderBrush="#444" BorderThickness="1"
+                                             Padding="8,6" FontSize="13"
+                                              VerticalContentAlignment="Center"
+                                              LostFocus="OnSettingLostFocus"/>
+                                    <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
+                                               VerticalAlignment="Center" Margin="12,0,0,0"
+                                               Text="Maximum HTTP requests accepted from one IP in the window below. Set to 0 to disable rate limiting."/>
+                                </Grid>
+
+                                <TextBlock Text="Rate limit window (seconds)" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,12,0,6"/>
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="120"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="RateLimitWindowSecondsBox" Grid.Column="0"
+                                             Background="#1e1e2e" Foreground="#EEE"
+                                             BorderBrush="#444" BorderThickness="1"
+                                             Padding="8,6" FontSize="13"
+                                              VerticalContentAlignment="Center"
+                                              LostFocus="OnSettingLostFocus"/>
+                                    <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
+                                               VerticalAlignment="Center" Margin="12,0,0,0"
+                                               Text="Sliding window duration in seconds used to count requests per IP."/>
+                                </Grid>
 
                                 <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
                                         Background="#E94560" Foreground="White" BorderThickness="0"
@@ -774,7 +907,8 @@
                                 <TextBlock Text="When a video ends" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,8"/>
                                 <ComboBox x:Name="PlaybackEndBehaviorCombo"
                                           Style="{StaticResource DarkComboBox}"
-                                          HorizontalAlignment="Left" MinWidth="220" Margin="0,0,0,20">
+                                           HorizontalAlignment="Left" MinWidth="220" Margin="0,0,0,20"
+                                           SelectionChanged="OnSettingChanged">
                                     <ComboBoxItem Content="Stop playback" Tag="Stop"/>
                                     <ComboBoxItem Content="Play next video automatically" Tag="PlayNext"/>
                                     <ComboBoxItem Content="Return to library" Tag="ReturnToLibrary"/>
@@ -790,7 +924,8 @@
                                              Background="#1e1e2e" Foreground="#EEE"
                                              BorderBrush="#444" BorderThickness="1"
                                              Padding="8,6" FontSize="13"
-                                             VerticalContentAlignment="Center"/>
+                                              VerticalContentAlignment="Center"
+                                              LostFocus="OnSettingLostFocus"/>
                                     <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
                                                VerticalAlignment="Center" Margin="12,0,0,0"
                                                Text="Maximum number of movies kept in Continue Watching / recent history."/>
@@ -816,7 +951,8 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Preferred language" Foreground="#888" FontSize="12" VerticalAlignment="Center"/>
                                     <ComboBox x:Name="PreferredAudioLangCombo" Grid.Column="1"
-                                              Style="{StaticResource DarkComboBox}"/>
+                                               Style="{StaticResource DarkComboBox}"
+                                               SelectionChanged="OnSettingChanged"/>
                                     <TextBlock Grid.Column="2" Foreground="#555" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
                                                Text="Blank uses the default audio track."/>
                                 </Grid>
@@ -830,7 +966,8 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Primary language" Foreground="#888" FontSize="12" VerticalAlignment="Center"/>
                                     <ComboBox x:Name="PreferredSubtitleLangCombo" Grid.Column="1"
-                                              Style="{StaticResource DarkComboBox}"/>
+                                               Style="{StaticResource DarkComboBox}"
+                                               SelectionChanged="OnSettingChanged"/>
                                     <TextBlock Grid.Column="2" Foreground="#555" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
                                                Text="Tried first when matching subtitle tracks."/>
                                 </Grid>
@@ -843,14 +980,16 @@
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0" Text="Secondary language" Foreground="#888" FontSize="12" VerticalAlignment="Center"/>
                                     <ComboBox x:Name="SecondarySubtitleLangCombo" Grid.Column="1"
-                                              Style="{StaticResource DarkComboBox}"/>
+                                               Style="{StaticResource DarkComboBox}"
+                                               SelectionChanged="OnSettingChanged"/>
                                     <TextBlock Grid.Column="2" Foreground="#555" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
                                                Text="Optional fallback if the primary subtitle language is unavailable."/>
                                 </Grid>
 
                                 <CheckBox x:Name="PreferForcedSubtitlesBox"
                                           Content="Prefer forced subtitle tracks (dialogue subtitles for foreign language portions)"
-                                          Foreground="#EEE" FontSize="13" Margin="0,0,0,24"/>
+                                           Foreground="#EEE" FontSize="13" Margin="0,0,0,24"
+                                           Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
 
                                 <TextBlock Text="Music Output" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,8"/>
                                 <Grid Margin="0,0,0,8">
@@ -862,7 +1001,8 @@
                                     <TextBlock Grid.Column="0" Text="Audio output device" Foreground="#888" FontSize="12" VerticalAlignment="Center"/>
                                     <ComboBox x:Name="MusicAudioDeviceCombo" Grid.Column="1"
                                               Style="{StaticResource DarkComboBox}"
-                                              DisplayMemberPath="Name"/>
+                                               DisplayMemberPath="Name"
+                                               SelectionChanged="OnSettingChanged"/>
                                     <TextBlock Grid.Column="2" Foreground="#555" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
                                                Text="Select the audio device used for music playback on this server machine."/>
                                 </Grid>
@@ -884,7 +1024,8 @@
                                                  <TextBlock x:Name="CurrentDisplayText" Foreground="#888" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"/>
                                                 <ComboBox x:Name="PreferredDisplayCombo"
                                                           Style="{StaticResource DarkComboBox}"
-                                                          HorizontalAlignment="Left" MinWidth="280" Margin="0,0,0,20"/>
+                                                           HorizontalAlignment="Left" MinWidth="280" Margin="0,0,0,20"
+                                                           SelectionChanged="OnSettingChanged"/>
 
                                                 <Button Content="Apply" Click="OnApplySettings"
                                                         Background="#E94560" Foreground="White" BorderThickness="0"
@@ -899,13 +1040,15 @@
 
                                 <CheckBox x:Name="StartWithWindowsBox"
                                           Content="Start RemotePlay when Windows starts"
-                                          Foreground="#EEE" FontSize="13" Margin="0,0,0,8"/>
+                                           Foreground="#EEE" FontSize="13" Margin="0,0,0,8"
+                                           Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
                                 <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,18" TextWrapping="Wrap"
                                            Text="Adds or removes RemotePlay from your current user's Windows startup apps."/>
 
                                 <CheckBox x:Name="UseTrayIconBox"
                                           Content="Keep RemotePlay in the system tray when closed"
-                                          Foreground="#EEE" FontSize="13" Margin="0,0,0,8"/>
+                                           Foreground="#EEE" FontSize="13" Margin="0,0,0,8"
+                                           Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
                                 <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
                                            Text="When enabled, closing the window hides RemotePlay to the tray instead of exiting. Web playback can restore the app and enter fullscreen."/>
 

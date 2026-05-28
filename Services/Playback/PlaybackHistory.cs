@@ -135,6 +135,23 @@ internal sealed class PlaybackHistory
         Trim(historyLimit);
     }
 
+    /// <summary>
+    /// Records that <paramref name="filePath"/> was opened for playback.
+    /// Creates or refreshes the history entry so the track appears in recent lists
+    /// immediately, even before a full 10-second position save is possible.
+    /// Preserves any existing position/duration already stored for the file.
+    /// </summary>
+    public void RecordPlayed(string filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+            return;
+
+        lock (_gate)
+        {
+            Upsert(filePath, e => e with { UpdatedUtc = DateTimeOffset.UtcNow });
+        }
+    }
+
     public void SavePreferences(string filePath, MoviePlaybackPreferences preferences)
     {
         if (string.IsNullOrWhiteSpace(filePath))

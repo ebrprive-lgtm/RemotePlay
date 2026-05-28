@@ -6,9 +6,33 @@ namespace RemotePlay.Helpers;
 [ExcludeFromCodeCoverage]
 internal static class NativeMethods
 {
+    // ── Window positioning ────────────────────────────────────────────────────
     private const int SWP_NOZORDER      = 0x0004;
     private const int SWP_NOACTIVATE    = 0x0010;
     private const int SWP_FRAMECHANGED  = 0x0020;
+
+    // ── Network share authentication ──────────────────────────────────────────
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct NETRESOURCE
+    {
+        public int    dwScope;
+        public int    dwType;        // RESOURCETYPE_DISK = 1
+        public int    dwDisplayType;
+        public int    dwUsage;
+        public string? lpLocalName;
+        public string  lpRemoteName;
+        public string? lpComment;
+        public string? lpProvider;
+    }
+
+    /// <summary>Authenticates and opens a connection to a network share.</summary>
+    [DllImport("mpr.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern int WNetAddConnection2(
+        ref NETRESOURCE lpNetResource,
+        string?         lpPassword,
+        string?         lpUserName,
+        uint            dwFlags);
 
     /// <summary>
     /// Moves and resizes a window in one atomic call using physical pixel coordinates.

@@ -28,7 +28,17 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         bool useTrayIcon,
         string updateSourcePath,
         int autoUpdateIntervalMinutes,
-        string musicAudioDeviceId)
+        string musicAudioDeviceId,
+        string[] additionalMoviesPaths,
+        string[] additionalMusicPaths,
+        bool enableThumbnailGeneration,
+        int libraryPageSize,
+        string[] ignoredLibraryFolders,
+        string[] videoFileExtensions,
+        string[] musicFileExtensions,
+        int maxRequestsPerIpPerWindow,
+        int rateLimitWindowSeconds,
+        NetworkShareCredential[] networkShareCredentials)
     {
         ArgumentNullException.ThrowIfNull(currentConfig);
         ArgumentException.ThrowIfNullOrWhiteSpace(moviesPath);
@@ -58,6 +68,16 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             UpdateSourcePath          = updateSourcePath.Trim(),
             AutoUpdateIntervalMinutes = Math.Max(0, autoUpdateIntervalMinutes),
             MusicAudioDeviceId        = musicAudioDeviceId ?? string.Empty,
+            AdditionalMoviesPaths     = additionalMoviesPaths ?? [],
+            AdditionalMusicPaths      = additionalMusicPaths ?? [],
+            EnableThumbnailGeneration = enableThumbnailGeneration,
+            LibraryPageSize           = Math.Clamp(libraryPageSize, 25, 1000),
+            IgnoredLibraryFolders     = ignoredLibraryFolders ?? [],
+            VideoFileExtensions       = videoFileExtensions ?? [],
+            MusicFileExtensions       = musicFileExtensions ?? [],
+            MaxRequestsPerIpPerWindow = Math.Max(0, maxRequestsPerIpPerWindow),
+            RateLimitWindowSeconds    = Math.Max(1, rateLimitWindowSeconds),
+            NetworkShareCredentials   = networkShareCredentials ?? [],
         };
     }
 

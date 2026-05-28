@@ -35,7 +35,17 @@ public sealed class AppConfigFactoryTests
             useTrayIcon: false,
             updateSourcePath: @"C:\Updates",
             autoUpdateIntervalMinutes: 30,
-            musicAudioDeviceId: string.Empty);
+            musicAudioDeviceId: string.Empty,
+            additionalMoviesPaths: [],
+            additionalMusicPaths: [],
+            enableThumbnailGeneration: false,
+            libraryPageSize: 100,
+            ignoredLibraryFolders: [],
+            videoFileExtensions: [],
+            musicFileExtensions: [],
+            maxRequestsPerIpPerWindow: 0,
+            rateLimitWindowSeconds: 60,
+            networkShareCredentials: []);
 
         Assert.Equal(5000, config.Port);
         Assert.True(config.UseHttps);
@@ -122,7 +132,8 @@ public sealed class AppConfigFactoryTests
             factory.CreateForSettingsApply(
                 null!, 5000, false, @"C:\Movies", string.Empty, "Test", 1, 1, 1, 1,
                 true, "eng", "eng", string.Empty, true,
-                PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 60, string.Empty));
+                PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 60, string.Empty,
+                [], [], false, 100, [], [], [], 0, 60, []));
     }
 
     [Fact]
@@ -135,7 +146,8 @@ public sealed class AppConfigFactoryTests
             factory.CreateForSettingsApply(
                 current, 5000, false, "   ", string.Empty, "Test", 1, 1, 1, 1,
                 true, "eng", "eng", string.Empty, true,
-                PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 60, string.Empty));
+                PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 60, string.Empty,
+                [], [], false, 100, [], [], [], 0, 60, []));
     }
 
     // ── InstanceName fallback ────────────────────────────────────────────────
@@ -149,7 +161,8 @@ public sealed class AppConfigFactoryTests
         var config = factory.CreateForSettingsApply(
             current, 5000, false, @"C:\Movies", string.Empty, "   ", 1, 1, 1, 1,
             true, "eng", "eng", string.Empty, true,
-            PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 60, string.Empty);
+            PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 60, string.Empty,
+            [], [], false, 100, [], [], [], 0, 60, []);
 
         Assert.Equal("My Server", config.InstanceName);
     }
@@ -165,7 +178,8 @@ public sealed class AppConfigFactoryTests
         var config = factory.CreateForSettingsApply(
             current, 5000, false, @"C:\Movies", string.Empty, "Test", 1, 1, 1, 1,
             true, "eng", "eng", string.Empty, true,
-            PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, -99, string.Empty);
+            PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, -99, string.Empty,
+            [], [], false, 100, [], [], [], 0, 60, []);
 
         Assert.Equal(0, config.AutoUpdateIntervalMinutes);
     }
@@ -179,7 +193,8 @@ public sealed class AppConfigFactoryTests
         var config = factory.CreateForSettingsApply(
             current, 5000, false, @"C:\Movies", string.Empty, "Test", 1, 1, 1, 1,
             true, "eng", "eng", string.Empty, true,
-            PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 0, string.Empty);
+            PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 0, string.Empty,
+            [], [], false, 100, [], [], [], 0, 60, []);
 
         Assert.Equal(0, config.AutoUpdateIntervalMinutes);
     }

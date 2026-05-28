@@ -1,6 +1,18 @@
+using System.Collections.Generic;
 using System.IO;
 
 namespace RemotePlay;
+
+/// <summary>
+/// Credentials for a specific UNC network share (e.g. <c>\\\\server\\share</c>).
+/// The <see cref="Path"/> value is matched as a prefix against the paths being scanned.
+/// </summary>
+internal sealed record NetworkShareCredential
+{
+    public string Path { get; init; } = string.Empty;
+    public string Username { get; init; } = string.Empty;
+    public string Password { get; init; } = string.Empty;
+}
 
 internal sealed record AppConfig
 {
@@ -54,6 +66,42 @@ internal sealed record AppConfig
     /// </summary>
     public int AutoUpdateIntervalMinutes { get; init; } = 60;
 
+    /// <summary>
+    /// Credentials for UNC network shares that require authentication.
+    /// Each entry's <see cref="NetworkShareCredential.Path"/> is matched as a prefix
+    /// against the paths being scanned (e.g. <c>\\\\server\\share</c>).
+    /// Credentials are stored in plain text — keep the config file private.
+    /// </summary>
+    public NetworkShareCredential[] NetworkShareCredentials { get; init; } = [];
+
+    /// <summary>
+    /// Additional movie library roots scanned alongside <see cref="MoviesPath"/>.
+    /// Accepts absolute paths or paths relative to the application directory.
+    /// </summary>
+    public string[] AdditionalMoviesPaths { get; init; } = [];
+
+    /// <summary>
+    /// Additional music library roots scanned alongside <see cref="MusicPath"/>.
+    /// Accepts absolute paths or paths relative to the application directory.
+    /// </summary>
+    public string[] AdditionalMusicPaths { get; init; } = [];
+
+    /// <summary>
+    /// Maps a video file extension (e.g. ".mkv") to an optional VLC/FFmpeg decoder hint.
+    /// The hints are surfaced on the health page and can help diagnose codec failures.
+    /// Example: { ".mkv": "h264", ".ts": "mpeg2video" }
+    /// </summary>
+    public Dictionary<string, string> VideoCodecHints { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Maximum number of HTTP requests accepted from a single IP address within
+    /// <see cref="RateLimitWindowSeconds"/>. Set to 0 to disable rate limiting.
+    /// </summary>
+    public int MaxRequestsPerIpPerWindow { get; init; } = 300;
+
+    /// <summary>Duration of the per-IP rate-limit sliding window in seconds.</summary>
+    public int RateLimitWindowSeconds { get; init; } = 10;
+
     /// <summary>Last visited folder in the Links tab left (video) browser.</summary>
     public string LinkBrowserLeftDir { get; init; } = string.Empty;
 
@@ -78,11 +126,35 @@ internal sealed record AppConfig
             ? MoviesPath
             : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, MoviesPath));
 
+    /// <summary>Returns all additional movie roots with relative paths resolved against the exe directory.</summary>
+    public string[] ResolvedAdditionalMoviesPaths =>
+        AdditionalMoviesPaths
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, p)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    /// <summary>Returns all movie library roots: primary path first, then any additional paths.</summary>
+    public string[] AllResolvedMoviesPaths =>
+        new[] { ResolvedMoviesPath }.Concat(ResolvedAdditionalMoviesPaths).ToArray();
+
     /// <summary>Returns the fully-resolved music library path (relative paths are resolved against the exe directory).</summary>
     public string ResolvedMusicPath =>
         Path.IsPathRooted(MusicPath)
             ? MusicPath
             : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, MusicPath));
+
+    /// <summary>Returns all additional music roots with relative paths resolved against the exe directory.</summary>
+    public string[] ResolvedAdditionalMusicPaths =>
+        AdditionalMusicPaths
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, p)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    /// <summary>Returns all music library roots: primary path first, then any additional paths.</summary>
+    public string[] AllResolvedMusicPaths =>
+        new[] { ResolvedMusicPath }.Concat(ResolvedAdditionalMusicPaths).ToArray();
 
     public string Scheme => UseHttps ? "https" : "http";
 

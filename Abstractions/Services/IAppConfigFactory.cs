@@ -26,7 +26,17 @@ internal interface IAppConfigFactory
         bool useTrayIcon,
         string updateSourcePath,
         int autoUpdateIntervalMinutes,
-        string musicAudioDeviceId);
+        string musicAudioDeviceId,
+        string[] additionalMoviesPaths,
+        string[] additionalMusicPaths,
+        bool enableThumbnailGeneration,
+        int libraryPageSize,
+        string[] ignoredLibraryFolders,
+        string[] videoFileExtensions,
+        string[] musicFileExtensions,
+        int maxRequestsPerIpPerWindow,
+        int rateLimitWindowSeconds,
+        NetworkShareCredential[] networkShareCredentials);
 
     AppConfig CreateForPlaybackPreferences(
         AppConfig currentConfig,

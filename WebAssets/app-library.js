@@ -157,11 +157,15 @@ async function playMusic(path, name) {
       coverPath: path,
     });
     localPlay('/api/music/stream?path=' + encodeURIComponent(path), displayName, 'Music');
+    // Record play in history so recent cards update
+    fetch('/api/music/play?path=' + encodeURIComponent(path) + '&recordOnly=1').catch(() => {});
+    setTimeout(() => loadMusicRecent().then((files) => renderMusicRecent(files)), 300);
     return;
   }
 
   await fetch('/api/music/play?path=' + encodeURIComponent(path));
   musicIsPlaying = true;
+  setTimeout(() => loadMusicRecent().then((files) => renderMusicRecent(files)), 300);
   // Immediately tell the server which track comes next so playback continues
   // even when this browser tab is closed before the current song ends.
   _queueNextTrackOnServer();
@@ -224,6 +228,9 @@ async function musicNext() {
   if (t) await playMusic(t.path, t.name);
 }
 
+const _debouncedMusicVolumeApi = debounce((v) => fetch('/api/music/volume?v=' + v), 150);
+const _debouncedMusicBoostApi  = debounce((v) => fetch('/api/music/boost?v='  + v), 150);
+
 function musicVolume(v) {
   const vol = parseFloat(v);
   if (isNaN(vol)) return;
@@ -235,7 +242,7 @@ function musicVolume(v) {
     if (a) a.volume = Math.min(1, Math.max(0, vol));
     return;
   }
-  fetch('/api/music/volume?v=' + vol.toFixed(3));
+  _debouncedMusicVolumeApi(vol.toFixed(3));
 }
 function musicVolumeReset() {
   const slider = document.getElementById('music-bar-volume');
@@ -294,7 +301,7 @@ function musicBoost(v) {
     if (gainNode) gainNode.gain.value = Math.max(0, boost);
     return;
   }
-  fetch('/api/music/boost?v=' + boost.toFixed(3));
+  _debouncedMusicBoostApi(boost.toFixed(3));
 }
 function musicBoostReset() {
   const slider = document.getElementById('music-bar-boost');
@@ -988,7 +995,7 @@ function stopMusicPlaybackPoll() {
   }
 }
 
-function switchMode(mode) {
+function switchMode(mode, skipInitialBrowse = false) {
   // Stop whichever player is active before switching away from it.
   const leavingVideo = currentMode === 'video' && mode !== 'video';
   const leavingMusic = currentMode === 'music' && mode !== 'music';
@@ -1020,11 +1027,15 @@ function switchMode(mode) {
   // Always show the nav row; just switch which recent strip is active
   const navRow = document.getElementById('browse-nav-row');
   const vStrip = document.getElementById('video-recent-strip');
+  const vClear = document.getElementById('video-recent-clear');
   const mStrip = document.getElementById('music-recent-strip');
+  const mClear = document.getElementById('music-recent-clear');
   const rStrip = document.getElementById('radio-recent-strip');
   if (navRow) navRow.style.display = '';
   if (vStrip) vStrip.style.display = mode === 'video' ? '' : 'none';
+  if (vClear) vClear.style.display = mode === 'video' && vStrip && vStrip.children.length ? '' : 'none';
   if (mStrip) mStrip.style.display = mode === 'music' ? '' : 'none';
+  if (mClear) mClear.style.display = mode === 'music' && mStrip && mStrip.children.length ? '' : 'none';
   if (rStrip) rStrip.style.display = mode === 'radio' ? '' : 'none';
   if (mode === 'video') {
     if (searchRow) searchRow.style.display = '';
@@ -1040,6 +1051,7 @@ function switchMode(mode) {
     if (rcb) rcb.style.display = 'none';
     refreshLibraryStatus();
     if (currentData) render(currentData);
+    else if (skipInitialBrowse) setMusicHeaderForMode('video');
     else browse(null);
   } else if (mode === 'music') {
     if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
@@ -1060,7 +1072,7 @@ function switchMode(mode) {
     // restore music bar if already playing
     if (musicIsPlaying) startMusicPlaybackPoll();
     _ensureMusicKeyboardNav();
-    if (!currentMusicData) browseMusic(null);
+    if (!currentMusicData && !skipInitialBrowse) browseMusic(null);
     else renderMusicHeader(currentMusicData, false);
   } else if (mode === 'radio') {
     if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
@@ -1549,13 +1561,11 @@ async function browseMusic(folder, offset = 0, append = false) {
     } else {
       _stopMusicFolderFastPoll();
     }
-    // Show recently played strip on the music root, hide in subfolders
-    const mStrip = document.getElementById('music-recent-strip');
-    if (!folder && !append) {
+    // Always refresh the recently played strip on non-append navigations
+    if (!append) {
+      const mStrip = document.getElementById('music-recent-strip');
       if (mStrip) mStrip.style.display = '';
-      loadMusicRecent().then((files) => { if (files.length) renderMusicRecent(files); });
-    } else if (!append && mStrip) {
-      mStrip.style.display = 'none';
+      loadMusicRecent().then((files) => renderMusicRecent(files));
     }
   } catch (e) {
     mb.innerHTML = '<div style="padding:.75rem">Error: ' + e + '</div>';
@@ -2300,10 +2310,17 @@ async function loadMusicRecent() {
 }
 function renderMusicRecent(files) {
   const strip = document.getElementById('music-recent-strip');
+  const clearBtn = document.getElementById('music-recent-clear');
   if (!strip) return;
   strip.innerHTML = '';
-  if (!files.length) return;
-  strip.innerHTML = files.slice(0, 5).map((f) => {
+  if (!files.length) {
+    strip.style.display = 'none';
+    if (clearBtn) clearBtn.style.display = 'none';
+    return;
+  }
+  strip.style.display = '';
+  if (clearBtn) clearBtn.style.display = '';
+  strip.innerHTML = files.slice(0, 7).map((f) => {
     const title   = f.tagTitle ? f.tagTitle : _titleFromName(f.name);
     const pct     = Math.max(0, Math.min(99, Math.round((Number(f.progress) || 0) * 100)));
     const isCont  = pct > 0 && pct < 95;
@@ -2311,8 +2328,9 @@ function renderMusicRecent(files) {
     const thumb   = hasCover ? '/api/music/cover?path=' + encodeURIComponent(f.path) : '';
     return (
       '<div class="vr-card" role="button" tabindex="0"' +
+      ' data-recent-music-path="' + esc(f.path) + '"' +
+      ' data-recent-music-title="' + esc(title) + '"' +
       ' title="' + esc(title) + '"' +
-      ' onclick="playMusic(' + jsStr(f.path) + ',' + jsStr(title) + ')"' +
       ' onkeydown="activateKeyboardClick(event,this)">' +
       (hasCover
         ? '<div class="vr-thumb" style="background-image:url(\'' + thumb + '\')"></div>'
@@ -2322,6 +2340,25 @@ function renderMusicRecent(files) {
       '</div>'
     );
   }).join('');
+  // Wire clicks via delegation — navigate to folder then play
+  if (strip._recentMusicHandler) strip.removeEventListener('click', strip._recentMusicHandler);
+  strip._recentMusicHandler = async (e) => {
+    const card = e.target.closest('[data-recent-music-path]');
+    if (!card) return;
+    const encodedPath = card.dataset.recentMusicPath;
+    const title = card.dataset.recentMusicTitle;
+    const path = decodeURIComponent(escape(atob(encodedPath)));
+    const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    const folder = lastSlash > 0 ? path.substring(0, lastSlash) : null;
+    if (currentMode !== 'music') switchMode('music', true);
+    await browseMusic(folder);
+    await playMusic(encodedPath, title);
+  };
+  strip.addEventListener('click', strip._recentMusicHandler);
+}
+async function clearRecentMusic() {
+  await fetch('/api/music/recent/clear', { method: 'POST' });
+  renderMusicRecent([]);
 }
 async function clearRecentVideos() {
   await fetch('/api/recent/clear', { method: 'POST' });
@@ -2333,9 +2370,11 @@ function renderRecent(files) {
   const clearBtn = document.getElementById('video-recent-clear');
   strip.innerHTML = '';
   if (!files.length) {
+    strip.style.display = 'none';
     if (clearBtn) clearBtn.style.display = 'none';
     return;
   }
+  strip.style.display = '';
   if (clearBtn) clearBtn.style.display = '';
   strip.innerHTML = files.slice(0, 5).map((f) => {
     const isCont  = Number(f.progress) > 0 && Number(f.progress) < 0.95;
@@ -2344,8 +2383,9 @@ function renderRecent(files) {
     const thumb   = '/api/thumb?path=' + encodeURIComponent(f.path);
     return (
       '<div class="vr-card" role="button" tabindex="0"' +
+      ' data-recent-video-path="' + esc(f.path) + '"' +
+      ' data-recent-video-title="' + esc(title) + '"' +
       ' title="' + esc(title) + '"' +
-      ' onclick="onCardClick(event,\'' + f.path + '\')"' +
       ' onkeydown="activateKeyboardClick(event,this)">' +
       '<div class="vr-thumb" style="background-image:url(\'' + thumb + '\')"></div>' +
       '<div class="vr-label">' + esc(title) + '</div>' +
@@ -2353,6 +2393,22 @@ function renderRecent(files) {
       '</div>'
     );
   }).join('');
+  // Wire clicks via delegation — navigate to folder then play
+  if (strip._recentVideoHandler) strip.removeEventListener('click', strip._recentVideoHandler);
+  strip._recentVideoHandler = async (e) => {
+    const card = e.target.closest('[data-recent-video-path]');
+    if (!card) return;
+    const encodedPath = card.dataset.recentVideoPath;
+    const path = decodeURIComponent(escape(atob(encodedPath)));
+    const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    const rawFolder = lastSlash > 0 ? path.substring(0, lastSlash) : null;
+    // browse() expects Base64-encoded path (server calls DecodePath on it)
+    const folderArg = rawFolder ? btoa(unescape(encodeURIComponent(rawFolder))) : null;
+    if (currentMode !== 'video') switchMode('video', true);
+    await browse(folderArg);
+    await play(encodedPath, card.dataset.recentVideoTitle);
+  };
+  strip.addEventListener('click', strip._recentVideoHandler);
 }
 function renderFavorites(files) {
   if (!files.length) return;
@@ -2501,6 +2557,7 @@ async function play(p, name) {
     setQueuedCard(p, false);
   }
   await api('/api/play?path=' + encodeURIComponent(p));
+  setTimeout(() => loadRecent().then((files) => renderRecent(files)), 300);
   startPolling();
   await pollStatus();
 }
@@ -2986,8 +3043,8 @@ async function refreshPeers() {
     const count = others.length;
     dot.className = count > 0 ? 'multi' : '';
     const label = count > 0 ? `Instances (${count})` : 'Instances';
-    document.getElementById('peers-btn').innerHTML =
-      `<span id="peers-dot" class="${dot.className}"></span>${label}`;
+    const labelEl = document.querySelector('#peers-btn .im-label');
+    if (labelEl) labelEl.textContent = label;
     document.getElementById('peers-btn').title =
       count > 0 ? `${count} other instance(s) on the network` : 'No other instances found';
     renderPeersDropdown(peers);

@@ -19,17 +19,20 @@
           <div id="brand">
             <h1>&#127916; RemotePlay <span id="version-chip" class="version-chip"></span></h1>
             <div id="brand-actions">
-              <div id="brand-row">
-                <a id="health-link" href="/health" target="_blank" rel="noopener"><span id="diag-dot"></span>Health</a>
-                <a id="setup-link" href="/setup" target="_blank" rel="noopener">Setup</a>
-                <div id="peers-wrap">
-                  <button id="peers-btn" onclick="togglePeers()" aria-expanded="false" aria-haspopup="true"><span id="peers-dot"></span>Instances</button>
+              <!-- ── Icon matrix (replaces old pill buttons + mode tabs) ── -->
+              <div id="icon-matrix">
+                <!-- Row 1: navigation / utility -->
+                <a id="health-link" class="im-btn" href="/health" target="_blank" rel="noopener" title="Health / diagnostics" aria-label="Health"><span class="im-icon"><span id="diag-dot"></span>&#10084;&#65039;</span><span class="im-label">Health</span></a>
+                <a id="setup-link"  class="im-btn" href="/setup"  target="_blank" rel="noopener" title="Setup"               aria-label="Setup"><span class="im-icon">&#9881;&#65039;</span><span class="im-label">Setup</span></a>
+                <div id="peers-wrap" class="im-btn-wrap">
+                  <button id="peers-btn" class="im-btn" onclick="togglePeers()" aria-expanded="false" aria-haspopup="true" title="Instances"><span class="im-icon"><span id="peers-dot"></span>&#128279;</span><span class="im-label">Instances</span></button>
                   <div id="peers-dropdown" role="menu"></div>
                 </div>
-              </div>
-              <div id="brand-controls-row">
-                <div id="theme-picker" class="theme-picker">
-                  <button id="theme-picker-btn" class="theme-picker-btn" onclick="toggleThemePicker()" aria-haspopup="true" aria-expanded="false" aria-label="Choose theme"><span class="theme-picker-btn-label">🎨 <span id="theme-picker-label">Dark</span></span><span class="theme-picker-btn-arrow">▾</span></button>
+                <!-- Theme picker as icon button -->
+                <div id="theme-picker" class="theme-picker im-btn-wrap">
+                  <button id="theme-picker-btn" class="im-btn theme-picker-btn" onclick="toggleThemePicker()" aria-haspopup="true" aria-expanded="false" aria-label="Choose theme" title="Theme">
+                    <span class="im-icon">&#127912;</span><span class="im-label"><span id="theme-picker-label">Theme</span></span>
+                  </button>
                   <div id="theme-picker-panel" class="theme-picker-panel" role="listbox" aria-label="Theme">
                     <div class="tp-group-label">🌸 Pastel</div>
                     <div class="tp-grid">
@@ -74,17 +77,43 @@
                     </div>
                   </div>
                 </div>
-                <button id="play-local-toggle" onclick="togglePlayLocal()" title="Playing on server — click to play on this device" aria-pressed="false">&#128266; Local</button>
+                <!-- Local playback toggle -->
+                <button id="play-local-toggle" class="im-btn" onclick="togglePlayLocal()" title="Playing on server — click to play on this device" aria-pressed="false"><span class="im-icon">&#128266;</span><span class="im-label">Local</span></button>
+                <!-- Sleep timer -->
+                <div id="sleep-popup-wrap" class="im-btn-wrap">
+                  <button id="sleep-icon-btn" class="im-btn" onclick="toggleSleepPopup()" aria-expanded="false" aria-haspopup="true" title="Sleep timer" aria-label="Sleep timer">
+                    <span class="im-icon">&#9201;<span id="sleep-icon-badge" class="sleep-icon-badge" style="display:none"></span></span>
+                    <span class="im-label">Sleep</span>
+                  </button>
+                  <div id="sleep-popup-panel" class="sleep-popup-panel" role="dialog" aria-label="Sleep timer">
+                    <div class="sleep-popup-title">&#9201; Sleep Timer</div>
+                    <div id="sleep-popup-btns" class="radio-sleep-grid">
+                      <button class="btn radio-sleep-preset" onclick="sleepSet(1)">1 m</button>
+                      <button class="btn radio-sleep-preset" onclick="sleepSet(15)">15 m</button>
+                      <button class="btn radio-sleep-preset" onclick="sleepSet(30)">30 m</button>
+                      <button class="btn radio-sleep-preset" onclick="sleepSet(60)">1 h</button>
+                      <button class="btn radio-sleep-preset" onclick="sleepSet(90)">90 m</button>
+                    </div>
+                    <div id="sleep-popup-countdown" style="display:none">
+                      <div class="radio-sleep-active-row">
+                        <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" style="flex-shrink:0;width:14px;height:14px;opacity:.7"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zm.01 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
+                        <span id="sleep-popup-remain" class="radio-sleep-remain-text"></span>
+                        <button class="radio-sleep-cancel-btn" onclick="sleepCancel()" title="Cancel sleep timer" aria-label="Cancel sleep timer">&#10005;</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <!-- ── Mode tabs (Video / Music / Radio) as icon row ── -->
+              <div id="mode-tabs">
+                <button id="tab-video" class="mode-tab active" onclick="switchMode('video')">&#127916; Video</button>
+                <button id="tab-music" class="mode-tab" onclick="switchMode('music')">&#127925; Music</button>
+                <button id="tab-radio" class="mode-tab" onclick="switchMode('radio')">&#128251; Radio</button>
               </div>
               <span id="indexing-badge" style="display:none">Indexing</span>
             </div>
           </div>
           <div id="search-wrap">
-            <div id="mode-tabs">
-              <button id="tab-video" class="mode-tab active" onclick="switchMode('video')">&#127916; Video</button>
-              <button id="tab-music" class="mode-tab" onclick="switchMode('music')">&#127925; Music</button>
-              <button id="tab-radio" class="mode-tab" onclick="switchMode('radio')">&#128251; Radio</button>
-            </div>
             <div id="radio-tab-bar-header" style="display:none;gap:.35rem;flex-wrap:wrap">
               <button id="header-tab-stations" class="radio-tab active" onclick="radioShowTab('top')">&#128251; Stations</button>
               <button id="header-tab-favorites" class="radio-tab" onclick="radioShowTab('favorites')">&#10084; Favorites</button>
@@ -246,7 +275,7 @@
                 <div id="queue-list" class="queue-list"><div class="queue-empty">Queue is empty</div></div>
                 <div class="control-actions"><button class="btn btn-dim" onclick="clearQueue()">Clear queue</button></div>
               </div>
-            </div>
+              </div>
             <div id="error"></div>
           </div>
         </header>
@@ -255,8 +284,8 @@
           <button id="back-button" class="crumb-back" onclick="goBack()" style="display:none">&#8592; Back</button>
           <div id="video-recent-strip"></div>
           <button id="video-recent-clear" class="vr-clear-btn" style="display:none" title="Clear recently played" onclick="clearRecentVideos()">&#x2715;</button>
-          <div class="browse-nav-spacer"></div>
           <div id="music-recent-strip" style="display:none"></div>
+          <button id="music-recent-clear" class="vr-clear-btn" style="display:none" title="Clear recently played" onclick="clearRecentMusic()">&#x2715;</button>
           <div id="radio-recent-strip" style="display:none"></div>
         </div>
         <div id="browser"></div>
@@ -271,6 +300,7 @@
                 <div id="radio-bar-title-row" style="display:flex;align-items:center;gap:.4rem;min-width:0">
                   <div id="radio-health-dot" class="radio-health-dot" title="Stream health"></div>
                   <div id="radio-bar-title">—</div>
+                  <button id="radio-bar-fav-btn" class="radio-bar-fav-btn" onclick="radioToggleCurrentFav()" title="Add to favorites" aria-label="Add to favorites" aria-pressed="false">&#9825;</button>
                 </div>
                 <div id="radio-bar-song" class="radio-bar-song-marquee" style="display:none">
                   <span id="radio-bar-song-text"></span>
@@ -314,23 +344,7 @@
                 </span>
               </div>
             </div>
-            <div class="control-card" style="width:100%;box-sizing:border-box">
-              <div class="control-title">Sleep Timer</div>
-              <div id="radio-sleep-btns" class="radio-sleep-grid">
-                <button class="btn radio-sleep-preset" onclick="radioSleepSet(15)">15 m</button>
-                <button class="btn radio-sleep-preset" onclick="radioSleepSet(30)">30 m</button>
-                <button class="btn radio-sleep-preset" onclick="radioSleepSet(60)">1 h</button>
-                <button class="btn radio-sleep-preset" onclick="radioSleepSet(90)">90 m</button>
-              </div>
-              <div id="radio-sleep-countdown" style="display:none">
-                <div class="radio-sleep-active-row">
-                  <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true" style="flex-shrink:0;width:14px;height:14px;opacity:.7"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zm.01 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z"/></svg>
-                  <span id="radio-sleep-remain" class="radio-sleep-remain-text"></span>
-                  <button class="radio-sleep-cancel-btn" onclick="radioSleepCancel()" title="Cancel sleep timer" aria-label="Cancel sleep timer">&#10005;</button>
-                </div>
-              </div>
             </div>
-          </div>
           <div id="radio-bar-geo" style="display:none;flex-direction:column;align-items:center;gap:.4rem;padding-top:.6rem;border-top:1px solid var(--player-card-border,#292941)">
             <div style="position:relative;display:inline-block">
               <canvas id="radio-globe-canvas" width="180" height="180" aria-hidden="true" style="display:block;border-radius:50%;cursor:crosshair" onclick="radioGlobeClick(event)" onmousemove="radioGlobeMouseMove(event)" onmouseleave="radioGlobeMouseLeave()"></canvas>
@@ -399,7 +413,7 @@
               <div class="control-title">Up Next</div>
               <div id="music-queue-peek-list"></div>
             </div>
-          </div>
+            </div>
         </div>
         <div id="browse-loading" aria-hidden="true"><div class="browse-spinner"></div><span>Loading…</span></div>
         <div id="music-lyrics-panel" aria-label="Lyrics" style="display:none">

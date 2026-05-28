@@ -65,6 +65,12 @@ function updateAudioBoostIcon(value) {
 
 // Combined volume/boost slider (0–1.0 = volume, 1.0–1.3 = boost zone)
 // Boost mapping: slider 1.0 → gain 1.0, slider 1.3 → gain 2.0 (linear)
+
+const _debouncedVideoVolumeApi = debounce((vol, boost) => {
+  api('/api/volume?value=' + vol);
+  api('/api/audio-boost?value=' + boost);
+}, 150);
+
 async function setVideoCombinedSlider(v) {
   const val = parseFloat(v);
   if (isNaN(val)) return;
@@ -84,8 +90,7 @@ async function setVideoCombinedSlider(v) {
     if (volume > 0.001) lastVolumeBeforeMute = volume;
     if (lbl) lbl.textContent = Math.round(volume * 100) + '%';
     updateVolumeIcon(volume);
-    await api('/api/volume?value=' + volume.toFixed(2));
-    await api('/api/audio-boost?value=1.00');
+    _debouncedVideoVolumeApi(volume.toFixed(2), '1.00');
   } else {
     if (slider) {
       slider.classList.add('slider-boosting');
@@ -98,8 +103,7 @@ async function setVideoCombinedSlider(v) {
     const db = Math.round(20 * Math.log10(gain));
     if (lbl) lbl.textContent = '100% +' + db + 'dB';
     updateVolumeIcon(1);
-    await api('/api/volume?value=1.00');
-    await api('/api/audio-boost?value=' + gain.toFixed(2));
+    _debouncedVideoVolumeApi('1.00', gain.toFixed(2));
   }
 }
 async function setVideoCombinedReset() {
@@ -625,7 +629,8 @@ async function browse(d, offset = 0, append = false, pushHistory = true, isLinke
       currentData.hasMoreFiles = nextData.hasMoreFiles;
     } else currentData = nextData;
     render(currentData);
-    if (currentData.isRoot) {
+    setBrowseLoading(false); // dismiss overlay as soon as content is rendered
+    if (!append) {
       renderFavorites(await loadFavorites());
       renderRecent(await loadRecent());
     }
@@ -633,7 +638,7 @@ async function browse(d, offset = 0, append = false, pushHistory = true, isLinke
   } catch (e) {
     setStatus('Error: ' + e);
   } finally {
-    setBrowseLoading(false);
+    setBrowseLoading(false); // safety: ensure overlay is gone even on error path
   }
 }
 function setBrowseLoading(on) {

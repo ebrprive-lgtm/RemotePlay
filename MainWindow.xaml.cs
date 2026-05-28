@@ -71,6 +71,9 @@ public partial class MainWindow : Window
     private bool _hasSubtitles;
     private bool _preferredSubtitleApplied;
     private bool _forceSwAudio;
+    private bool _isInitializingSettings;
+    private bool _isPersistingSettings;
+    private bool _restartNeeded;
     private TimeSpan _duration = TimeSpan.Zero;
     private bool _isApplyingMoviePreferences;
     private CancellationTokenSource? _videoTransitionCts;
@@ -254,6 +257,7 @@ public partial class MainWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        _isInitializingSettings = true;
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         var version = System.Reflection.Assembly.GetExecutingAssembly()
             .GetName().Version;
@@ -270,41 +274,8 @@ public partial class MainWindow : Window
 
         MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
 
-        MoviesFolderBox.Text = _config.ResolvedMoviesPath;
-        MusicFolderBox.Text = _config.ResolvedMusicPath;
-        PortBox.Text = _config.Port.ToString();
-        if (FindName("InstanceNameBox") is System.Windows.Controls.TextBox instanceNameBox)
-            instanceNameBox.Text = _config.InstanceName;
-        if (FindName("UseHttpsBox") is System.Windows.Controls.CheckBox useHttpsBox)
-            useHttpsBox.IsChecked = _config.UseHttps;
-        PopulateLanguageCombo("PreferredAudioLangCombo", _config.PreferredAudioLanguage);
-        PopulateLanguageCombo("PreferredSubtitleLangCombo", _config.PreferredSubtitleLanguage);
-        PopulateLanguageCombo("SecondarySubtitleLangCombo", _config.SecondarySubtitleLanguage);
-        if (FindName("PreferForcedSubtitlesBox") is System.Windows.Controls.CheckBox forcedBox)
-            forcedBox.IsChecked = _config.PreferForcedSubtitles;
-        if (FindName("PlaybackEndBehaviorCombo") is System.Windows.Controls.ComboBox endCombo)
-        {
-            foreach (System.Windows.Controls.ComboBoxItem item in endCombo.Items)
-                if (item.Tag?.ToString() == _config.PlaybackEndBehavior.ToString())
-                    endCombo.SelectedItem = item;
-            if (endCombo.SelectedItem is null && endCombo.Items.Count > 0)
-                endCombo.SelectedIndex = 0;
-        }
-        if (FindName("PlaybackHistoryLimitBox") is System.Windows.Controls.TextBox historyLimitBox)
-            historyLimitBox.Text = _config.PlaybackHistoryLimit.ToString();
-        if (FindName("AutoRescanIntervalMinutesBox") is System.Windows.Controls.TextBox rescanIntervalBox)
-            rescanIntervalBox.Text = _config.LibraryRescanDelayMinutes.ToString();
-        if (FindName("UpdateSourcePathBox") is System.Windows.Controls.TextBox updateSourcePathBox)
-            updateSourcePathBox.Text = _config.UpdateSourcePath;
-        if (FindName("AutoUpdateIntervalMinutesBox") is System.Windows.Controls.TextBox autoUpdateIntervalBox)
-            autoUpdateIntervalBox.Text = _config.AutoUpdateIntervalMinutes.ToString();
-        if (FindName("StartWithWindowsBox") is System.Windows.Controls.CheckBox startWithWindowsBox)
-            startWithWindowsBox.IsChecked = _config.StartWithWindows;
-        if (FindName("UseTrayIconBox") is System.Windows.Controls.CheckBox useTrayIconBox)
-            useTrayIconBox.IsChecked = _config.UseTrayIcon;
-        if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo)
-            PopulateDisplayCombo(displayCombo, _config.PreferredDisplayIndex);
-        PopulateMusicAudioDeviceCombo(_config.MusicAudioDeviceId);
+        PopulateSettingsFromConfig();
+        _isInitializingSettings = false;
 
         AppendLog($"RemotePlay started");
         AppendLog($"Movies: {_config.ResolvedMoviesPath}");
@@ -337,6 +308,69 @@ public partial class MainWindow : Window
             var targetPath = args[linkArgIndex + 1];
             NavigateToLinksTab(targetPath);
         }
+    }
+
+    private void PopulateSettingsFromConfig()
+    {
+        MoviesFolderBox.Text = _config.ResolvedMoviesPath;
+        MusicFolderBox.Text = _config.ResolvedMusicPath;
+        PortBox.Text = _config.Port.ToString();
+        if (FindName("InstanceNameBox") is System.Windows.Controls.TextBox instanceNameBox)
+            instanceNameBox.Text = _config.InstanceName;
+        if (FindName("UseHttpsBox") is System.Windows.Controls.CheckBox useHttpsBox)
+            useHttpsBox.IsChecked = _config.UseHttps;
+        PopulateLanguageCombo("PreferredAudioLangCombo", _config.PreferredAudioLanguage);
+        PopulateLanguageCombo("PreferredSubtitleLangCombo", _config.PreferredSubtitleLanguage);
+        PopulateLanguageCombo("SecondarySubtitleLangCombo", _config.SecondarySubtitleLanguage);
+        if (FindName("PreferForcedSubtitlesBox") is System.Windows.Controls.CheckBox forcedBox)
+            forcedBox.IsChecked = _config.PreferForcedSubtitles;
+        if (FindName("PlaybackEndBehaviorCombo") is System.Windows.Controls.ComboBox endCombo)
+        {
+            foreach (System.Windows.Controls.ComboBoxItem item in endCombo.Items)
+                if (item.Tag?.ToString() == _config.PlaybackEndBehavior.ToString())
+                    endCombo.SelectedItem = item;
+            if (endCombo.SelectedItem is null && endCombo.Items.Count > 0)
+                endCombo.SelectedIndex = 0;
+        }
+        if (FindName("PlaybackHistoryLimitBox") is System.Windows.Controls.TextBox historyLimitBox)
+            historyLimitBox.Text = _config.PlaybackHistoryLimit.ToString();
+        if (FindName("AutoRescanIntervalMinutesBox") is System.Windows.Controls.TextBox rescanIntervalBox)
+            rescanIntervalBox.Text = _config.LibraryRescanDelayMinutes.ToString();
+        if (FindName("UpdateSourcePathBox") is System.Windows.Controls.TextBox updateSourcePathBox)
+            updateSourcePathBox.Text = _config.UpdateSourcePath;
+        if (FindName("AutoUpdateIntervalMinutesBox") is System.Windows.Controls.TextBox autoUpdateIntervalBox)
+            autoUpdateIntervalBox.Text = _config.AutoUpdateIntervalMinutes.ToString();
+
+        AdditionalMoviesPathsEditor.Paths.Clear();
+        foreach (var p in _config.AdditionalMoviesPaths)
+            AdditionalMoviesPathsEditor.Paths.Add(p);
+        AdditionalMusicPathsEditor.Paths.Clear();
+        foreach (var p in _config.AdditionalMusicPaths)
+            AdditionalMusicPathsEditor.Paths.Add(p);
+
+        CredentialsEditor.LoadEntries(_config.NetworkShareCredentials);
+
+        if (FindName("EnableThumbnailGenerationBox") is System.Windows.Controls.CheckBox thumbBox)
+            thumbBox.IsChecked = _config.EnableThumbnailGeneration;
+        if (FindName("LibraryPageSizeBox") is System.Windows.Controls.TextBox pageSizeBox)
+            pageSizeBox.Text = _config.LibraryPageSize.ToString();
+        if (FindName("IgnoredLibraryFoldersBox") is System.Windows.Controls.TextBox ignoredBox)
+            ignoredBox.Text = string.Join(", ", _config.IgnoredLibraryFolders);
+        if (FindName("VideoFileExtensionsBox") is System.Windows.Controls.TextBox videoExtBox)
+            videoExtBox.Text = string.Join(", ", _config.VideoFileExtensions);
+        if (FindName("MusicFileExtensionsBox") is System.Windows.Controls.TextBox musicExtBox)
+            musicExtBox.Text = string.Join(", ", _config.MusicFileExtensions);
+        if (FindName("MaxRequestsPerIpBox") is System.Windows.Controls.TextBox maxReqBox)
+            maxReqBox.Text = _config.MaxRequestsPerIpPerWindow.ToString();
+        if (FindName("RateLimitWindowSecondsBox") is System.Windows.Controls.TextBox rateLimitBox)
+            rateLimitBox.Text = _config.RateLimitWindowSeconds.ToString();
+        if (FindName("StartWithWindowsBox") is System.Windows.Controls.CheckBox startWithWindowsBox)
+            startWithWindowsBox.IsChecked = _config.StartWithWindows;
+        if (FindName("UseTrayIconBox") is System.Windows.Controls.CheckBox useTrayIconBox)
+            useTrayIconBox.IsChecked = _config.UseTrayIcon;
+        if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo)
+            PopulateDisplayCombo(displayCombo, _config.PreferredDisplayIndex);
+        PopulateMusicAudioDeviceCombo(_config.MusicAudioDeviceId);
     }
 
     private void RestoreWindowLayout()
@@ -1400,10 +1434,23 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnStopAndExit(object sender, RoutedEventArgs e)
+    private void OnStopServer(object sender, RoutedEventArgs e)
     {
         _webServer?.Stop();
-        System.Windows.Application.Current.Shutdown();
+        _broadcaster?.Stop();
+        _musicPlayer.Stop();
+        _radioPlayer.Stop();
+        StopMovie();
+        _serverReady = false;
+        ServerStatusText.Text = "Server stopped";
+        UpdateServerReadiness(isReady: false, "Server: stopped");
+        UpdateLibraryReadiness("Library: unavailable until server starts", isReady: false, isBusy: false);
+        AppendLog("Server stopped.");
+    }
+
+    private void OnRestartServer(object sender, RoutedEventArgs e)
+    {
+        SaveSettingsFromUi(restartServer: true, showFeedback: true);
     }
 
 
@@ -1526,6 +1573,29 @@ public partial class MainWindow : Window
 
     private void OnApplySettings(object sender, RoutedEventArgs e)
     {
+        SaveSettingsFromUi(restartServer: true, showFeedback: true);
+    }
+
+    private void OnSettingChanged(object sender, RoutedEventArgs e)
+    {
+        SaveSettingsFromUi(restartServer: false, showFeedback: true);
+    }
+
+    private void OnSettingLostFocus(object sender, RoutedEventArgs e)
+    {
+        SaveSettingsFromUi(restartServer: false, showFeedback: true);
+    }
+
+    private void OnPathListSettingChanged(object? sender, EventArgs e)
+    {
+        SaveSettingsFromUi(restartServer: false, showFeedback: true);
+    }
+
+    private void SaveSettingsFromUi(bool restartServer, bool showFeedback)
+    {
+        if (_isInitializingSettings || _isPersistingSettings)
+            return;
+
         var folder = MoviesFolderBox.Text.Trim();
         var musicFolder = MusicFolderBox.Text.Trim();
         var portText = PortBox.Text.Trim();
@@ -1599,6 +1669,61 @@ public partial class MainWindow : Window
         if (MusicAudioDeviceCombo.SelectedItem is MusicAudioDevice selectedDev)
             musicAudioDeviceId = selectedDev.DeviceNumber == -1 ? string.Empty : selectedDev.Name;
 
+        var enableThumbnailGeneration = FindName("EnableThumbnailGenerationBox") is System.Windows.Controls.CheckBox thumbBox2
+            ? thumbBox2.IsChecked == true
+            : _config.EnableThumbnailGeneration;
+
+        var libraryPageSize = _config.LibraryPageSize;
+        if (FindName("LibraryPageSizeBox") is System.Windows.Controls.TextBox pageSizeBox2)
+        {
+            if (!int.TryParse(pageSizeBox2.Text.Trim(), out libraryPageSize) || libraryPageSize < 25)
+            {
+                ShowSettingsFeedback("Library page size must be a number of at least 25.", isError: true);
+                return;
+            }
+        }
+
+        var ignoredLibraryFolders = _config.IgnoredLibraryFolders;
+        if (FindName("IgnoredLibraryFoldersBox") is System.Windows.Controls.TextBox ignoredBox2)
+            ignoredLibraryFolders = ignoredBox2.Text
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .ToArray();
+
+        var videoFileExtensions = _config.VideoFileExtensions;
+        if (FindName("VideoFileExtensionsBox") is System.Windows.Controls.TextBox videoExtBox2)
+            videoFileExtensions = videoExtBox2.Text
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .ToArray();
+
+        var musicFileExtensions = _config.MusicFileExtensions;
+        if (FindName("MusicFileExtensionsBox") is System.Windows.Controls.TextBox musicExtBox2)
+            musicFileExtensions = musicExtBox2.Text
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(s => !string.IsNullOrWhiteSpace(s))
+                .ToArray();
+
+        var maxRequestsPerIpPerWindow = _config.MaxRequestsPerIpPerWindow;
+        if (FindName("MaxRequestsPerIpBox") is System.Windows.Controls.TextBox maxReqBox2)
+        {
+            if (!int.TryParse(maxReqBox2.Text.Trim(), out maxRequestsPerIpPerWindow) || maxRequestsPerIpPerWindow < 0)
+            {
+                ShowSettingsFeedback("Max requests per IP must be 0 or more (0 = disabled).", isError: true);
+                return;
+            }
+        }
+
+        var rateLimitWindowSeconds = _config.RateLimitWindowSeconds;
+        if (FindName("RateLimitWindowSecondsBox") is System.Windows.Controls.TextBox rateLimitBox2)
+        {
+            if (!int.TryParse(rateLimitBox2.Text.Trim(), out rateLimitWindowSeconds) || rateLimitWindowSeconds < 1)
+            {
+                ShowSettingsFeedback("Rate limit window must be at least 1 second.", isError: true);
+                return;
+            }
+        }
+
         var validation = _settingsValidationService.Validate(folder, portText);
         if (!validation.IsValid)
         {
@@ -1610,6 +1735,8 @@ public partial class MainWindow : Window
 
         try
         {
+            _isPersistingSettings = true;
+            var previousConfig = _config;
             var updatedConfig = _appConfigFactory.CreateForSettingsApply(
                 _config,
                 port,
@@ -1634,27 +1761,108 @@ public partial class MainWindow : Window
                 useTrayIcon,
                 updateSourcePath,
                 autoUpdateIntervalMinutes,
-                musicAudioDeviceId);
+                musicAudioDeviceId,
+                AdditionalMoviesPathsEditor.Paths.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray(),
+                AdditionalMusicPathsEditor.Paths.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray(),
+                enableThumbnailGeneration,
+                libraryPageSize,
+                ignoredLibraryFolders,
+                videoFileExtensions,
+                musicFileExtensions,
+                maxRequestsPerIpPerWindow,
+                rateLimitWindowSeconds,
+                CredentialsEditor.Entries
+                    .Where(e => !string.IsNullOrWhiteSpace(e.Path))
+                    .Select(e => new NetworkShareCredential { Path = e.Path.Trim(), Username = e.Username.Trim(), Password = e.Password })
+                    .ToArray());
 
             _config = _settingsApplyService.ApplyAndReload(updatedConfig);
-            ApplyWindowsAutostart(_config.StartWithWindows);
-            InitializeTrayIcon();
-            if (!_config.UseTrayIcon)
-                ShowInTaskbar = true;
-            _playbackHistory.Trim(_config.PlaybackHistoryLimit);
-            _musicPlayer.SetDevice(_config.MusicAudioDeviceId);
+            ApplySettingsSideEffects();
 
-            MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
-            RefreshDisplaySettings();
-            ShowSettingsFeedback("Saving\u2026 restarting server.", isError: false);
+            var requiresRestart = SettingsRequireServerRestart(previousConfig, _config);
+            if (restartServer)
+            {
+                ClearRestartNeededCue();
+                if (showFeedback)
+                    ShowSettingsFeedback("Saving\u2026 restarting server.", isError: false);
 
-            var configSnapshot = _config;
-            _ = RestartServerAfterSettingsApplyAsync(configSnapshot, folder);
+                var configSnapshot = _config;
+                _ = RestartServerAfterSettingsApplyAsync(configSnapshot, folder);
+            }
+            else
+            {
+                if (requiresRestart)
+                    ShowRestartNeededCue();
+                else if (!_restartNeeded && showFeedback)
+                    ShowSettingsFeedback("Settings saved.", isError: false);
+            }
         }
         catch (Exception ex)
         {
             Logger.Error("Failed to apply settings", ex);
             ShowSettingsFeedback($"Error: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            _isPersistingSettings = false;
+        }
+    }
+
+    private void ApplySettingsSideEffects()
+    {
+        ApplyWindowsAutostart(_config.StartWithWindows);
+        InitializeTrayIcon();
+        if (!_config.UseTrayIcon)
+            ShowInTaskbar = true;
+        _playbackHistory.Trim(_config.PlaybackHistoryLimit);
+        _musicPlayer.SetDevice(_config.MusicAudioDeviceId);
+        _radioPlayer.SetDevice(_config.MusicAudioDeviceId);
+
+        MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
+        RefreshDisplaySettings();
+        UpdateUpdateReadiness();
+        RefreshBothBrowsers();
+    }
+
+    private static bool SettingsRequireServerRestart(AppConfig previousConfig, AppConfig currentConfig)
+    {
+        return previousConfig.Port != currentConfig.Port
+            || previousConfig.UseHttps != currentConfig.UseHttps
+            || !string.Equals(previousConfig.InstanceName, currentConfig.InstanceName, StringComparison.Ordinal)
+            || !string.Equals(previousConfig.MoviesPath, currentConfig.MoviesPath, StringComparison.Ordinal)
+            || !string.Equals(previousConfig.MusicPath, currentConfig.MusicPath, StringComparison.Ordinal)
+            || !previousConfig.AdditionalMoviesPaths.SequenceEqual(currentConfig.AdditionalMoviesPaths, StringComparer.Ordinal)
+            || !previousConfig.AdditionalMusicPaths.SequenceEqual(currentConfig.AdditionalMusicPaths, StringComparer.Ordinal)
+            || previousConfig.LibraryRescanDelayMinutes != currentConfig.LibraryRescanDelayMinutes
+            || previousConfig.EnableThumbnailGeneration != currentConfig.EnableThumbnailGeneration
+            || previousConfig.LibraryPageSize != currentConfig.LibraryPageSize
+            || !previousConfig.IgnoredLibraryFolders.SequenceEqual(currentConfig.IgnoredLibraryFolders, StringComparer.Ordinal)
+            || !previousConfig.VideoFileExtensions.SequenceEqual(currentConfig.VideoFileExtensions, StringComparer.Ordinal)
+            || !previousConfig.MusicFileExtensions.SequenceEqual(currentConfig.MusicFileExtensions, StringComparer.Ordinal)
+            || previousConfig.MaxRequestsPerIpPerWindow != currentConfig.MaxRequestsPerIpPerWindow
+            || previousConfig.RateLimitWindowSeconds != currentConfig.RateLimitWindowSeconds;
+    }
+
+    private void ShowRestartNeededCue()
+    {
+        _restartNeeded = true;
+        ShowSettingsFeedback("Settings saved. Restart the server to apply server changes.", isError: true);
+
+        if (FindName("RestartServerBtn") is System.Windows.Controls.Button restartButton)
+        {
+            restartButton.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xFF, 0xAA, 0x00));
+            restartButton.Foreground = System.Windows.Media.Brushes.Black;
+        }
+    }
+
+    private void ClearRestartNeededCue()
+    {
+        _restartNeeded = false;
+
+        if (FindName("RestartServerBtn") is System.Windows.Controls.Button restartButton)
+        {
+            restartButton.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x33, 0x33, 0x33));
+            restartButton.Foreground = System.Windows.Media.Brushes.White;
         }
     }
 
@@ -1666,6 +1874,7 @@ public partial class MainWindow : Window
             if (_webServer is null)
                 return;
 
+            ClearRestartNeededCue();
             AppendLog($"Settings applied \u2014 folder: {folder}, scheme: {_webServer.ActiveScheme}, port: {configSnapshot.Port}");
             Logger.Info($"Settings updated \u2014 MoviesPath: {folder}, Scheme: {_webServer.ActiveScheme}, Port: {configSnapshot.Port}");
             if (string.IsNullOrWhiteSpace(_webServer.StartupWarning))

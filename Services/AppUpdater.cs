@@ -23,6 +23,12 @@ internal sealed class AppUpdater
     public string AvailableVersion => _availableVersion;
     public string LastUpdateError => _lastUpdateError;
 
+    /// <summary>
+    /// Invoked on the UI thread just before the process shuts down for an update.
+    /// Hook this up to the main window's clean-exit path so the tray icon is disposed.
+    /// </summary>
+    public Action? ShutdownRequested { get; set; }
+
     public AppUpdater()
     {
         _currentVersion = UpdateFileHelper.ReadVersionFile(AppContext.BaseDirectory)
@@ -162,7 +168,13 @@ internal sealed class AppUpdater
             WindowStyle = ProcessWindowStyle.Hidden
         });
 
-        System.Windows.Application.Current.Dispatcher.Invoke(() => System.Windows.Application.Current.Shutdown());
+        System.Windows.Application.Current.Dispatcher.Invoke(() =>
+        {
+            if (ShutdownRequested is { } shutdown)
+                shutdown();
+            else
+                System.Windows.Application.Current.Shutdown();
+        });
     }
 
     }
