@@ -21,6 +21,10 @@ internal sealed class MusicPlayer : IDisposable
     private string? _nextTrackPath;
     private string _tagArtist = string.Empty;
     private string _tagTitle  = string.Empty;
+    private ReverbSampleProvider? _reverb;
+    private EqualizerSampleProvider? _eq;
+    private int _reverbPreset = 0;
+    private int _eqPreset = -1;
 
     /// <summary>Fired (outside the lock) when the player auto-advances to the next track.</summary>
     public event Action<string>? TrackAdvanced;
@@ -85,7 +89,18 @@ internal sealed class MusicPlayer : IDisposable
                     provider = afr;
                 }
                 _output = new WaveOutEvent { DeviceNumber = _deviceNumber };
-                _output.Init(provider);
+                // Convert to sample provider: AudioFileReader is already ISampleProvider;
+                // WaveChannel32 (opus path) needs explicit float conversion.
+                ISampleProvider sampleProvider = provider is ISampleProvider sp
+                    ? sp
+                    : new NAudio.Wave.SampleProviders.WaveToSampleProvider(provider);
+                if (sampleProvider.WaveFormat.Channels == 1)
+                    sampleProvider = sampleProvider.ToStereo();
+                _eq = new EqualizerSampleProvider(sampleProvider);
+                _eq.ApplyPreset(_eqPreset);
+                _reverb = new ReverbSampleProvider(_eq);
+                _reverb.ApplyPreset(_reverbPreset);
+                _output.Init(_reverb);
                 _output.PlaybackStopped += OnPlaybackStopped;
                 _output.Play();
                 _isPlaying = true;
@@ -119,7 +134,7 @@ internal sealed class MusicPlayer : IDisposable
                 ? _tagTitle
                 : (string.IsNullOrEmpty(_currentPath) ? string.Empty : Path.GetFileNameWithoutExtension(_currentPath));
             return new MusicStatus(_isPlaying && !_isPaused, _isPaused, _currentPath,
-                displayTitle, _tagArtist, pos, dur, _lastError);
+                displayTitle, _tagArtist, pos, dur, _lastError, _eqPreset, _reverbPreset);
         }
     }
 
@@ -140,6 +155,24 @@ internal sealed class MusicPlayer : IDisposable
             _boost = Math.Clamp(boost, 0, 4);
             if (_reader is AudioFileReader afr) afr.Volume = (float)(_volume * _boost);
             else if (_volumeChannel is not null) _volumeChannel.Volume = (float)(_volume * _boost);
+        }
+    }
+
+    public void SetReverbPreset(int preset)
+    {
+        lock (_lock)
+        {
+            _reverbPreset = Math.Clamp(preset, 0, ReverbSampleProvider.PresetNames.Length - 1);
+            _reverb?.ApplyPreset(_reverbPreset);
+        }
+    }
+
+    public void SetEqPreset(int preset)
+    {
+        lock (_lock)
+        {
+            _eqPreset = Math.Clamp(preset, -1, EqualizerSampleProvider.PresetCount - 1);
+            _eq?.ApplyPreset(_eqPreset);
         }
     }
 
@@ -196,6 +229,8 @@ internal sealed class MusicPlayer : IDisposable
         _isPlaying = false; _isPaused = false; _currentPath = string.Empty;
         _tagArtist = string.Empty; _tagTitle = string.Empty;
         if (_output is not null) { _output.PlaybackStopped -= OnPlaybackStopped; _output.Stop(); _output.Dispose(); _output = null; }
+        _reverb = null;
+        _eq = null;
         if (_volumeChannel is not null) { _volumeChannel.Dispose(); _volumeChannel = null; }
         if (_reader is not null) { _reader.Dispose(); _reader = null; }
     }
@@ -203,4 +238,4 @@ internal sealed class MusicPlayer : IDisposable
     public void Dispose() { lock (_lock) { DisposePlayback(); } }
 }
 
-internal sealed record MusicStatus(bool IsPlaying, bool IsPaused, string CurrentPath, string Title, string Artist, double Position, double Duration, string LastError);
+internal sealed record MusicStatus(bool IsPlaying, bool IsPaused, string CurrentPath, string Title, string Artist, double Position, double Duration, string LastError, int EqPreset, int ReverbPreset);

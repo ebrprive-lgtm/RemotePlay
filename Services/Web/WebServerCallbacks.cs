@@ -23,6 +23,9 @@ internal sealed class WebServerCallbacks
     public required Action ToggleSubtitles { get; init; }
     public required Action<int> SetAudioTrack { get; init; }
     public required Action<int> SetSubtitleTrack { get; init; }
+    public required Action<int> SeekToChapter { get; init; }
+    public required Action<int> SetEqPreset { get; init; }
+    public required Action<int> SetReverbPreset { get; init; }
     public required Action<int> PlayAdjacent { get; init; }
     public required Action<string> Enqueue { get; init; }
     public required Action<string> RemoveFromQueue { get; init; }
@@ -42,6 +45,8 @@ internal sealed class WebServerCallbacks
     public required Action<double>        SetMusicVolume { get; init; }
     public required Action<double>        SetMusicBoost  { get; init; }
     public required Action<string?>       SetMusicNextTrack { get; init; }
+    public required Action<int>           SetMusicReverbPreset { get; init; }
+    public required Action<int>           SetMusicEqPreset     { get; init; }
 
     // ── Radio ─────────────────────────────────────────────────────────────────
     public required Func<string, string, string, int, int, Task<List<RadioStation>>> RadioSearch        { get; init; }
@@ -60,4 +65,6 @@ internal sealed class WebServerCallbacks
     public required Func<string, string, bool>                                  RadioIsFavoriteByName { get; init; }
     public required Action                                                      RadioNotifyAlive   { get; init; }
     public required Func<string, string, Task<string>>                          RadioResolveUrl    { get; init; }
+    public required Action<int>                                                 RadioSetReverbPreset { get; init; }
+    public required Action<int>                                                 RadioSetEqPreset     { get; init; }
 }

@@ -153,6 +153,52 @@ public partial class MainWindow
         });
     }
 
+    /// <summary>
+    /// Re-opens the currently playing media with updated VLC options (e.g. reverb preset)
+    /// without any UI transition — no loading overlay, no banner flash, no preference re-apply.
+    /// Seeks back to the position that was active before the restart.
+    /// Must be called on the dispatcher thread.
+    /// </summary>
+    private void RestartMediaQuietly()
+    {
+        var filePath = _currentFilePath;
+        if (string.IsNullOrWhiteSpace(filePath)) return;
+        try
+        {
+            var posMs = _mediaPlayer.Time;
+            _pendingResumePosition = posMs > 0 ? TimeSpan.FromMilliseconds(posMs) : null;
+
+            _mediaPlayer.Stop();
+            using var media = new Media(_libVlc, new Uri(filePath, UriKind.Absolute));
+            media.AddOption(":avcodec-hw=none");
+            if (_forceSwAudio)
+            {
+                media.AddOption(":audio-resampler=soxr");
+                media.AddOption(":no-spdif");
+            }
+            _hasSubtitles = TryAttachSubtitle(media, filePath);
+            _mediaPlayer.Play(media);
+            _mediaPlayer.SetRate((float)_playbackSpeed);
+            // Re-apply equalizer — it is lost when media is re-opened.
+            if (_currentEqPreset >= 0)
+            {
+                try
+                {
+                    using var eq = new Equalizer((uint)_currentEqPreset);
+                    _mediaPlayer.SetEqualizer(eq);
+                }
+                catch (Exception eqEx) { Logger.Error("Re-apply EQ after quiet restart failed", eqEx); }
+            }
+            ApplyAudioLevel();
+            ApplyVideoZoom();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Error restarting media for reverb change", ex);
+            AppendLog($"ERROR restarting media: {ex.Message}");
+        }
+    }
+
     private void RestoreWindowForPlayback()
     {
         if (!IsVisible || WindowState == WindowState.Minimized)
@@ -214,6 +260,52 @@ public partial class MainWindow
             _preferredSubtitleApplied = true;
             SavePlaybackPreferences();
         });
+
+    private void SeekToChapter(int chapterId)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            try
+            {
+                _mediaPlayer.Chapter = chapterId;
+            }
+            catch (Exception ex) { Logger.Error("SeekToChapter failed", ex); }
+        });
+    }
+
+    private void SetEqPreset(int presetId)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            try
+            {
+                if (presetId < 0)
+                {
+                    // Negative = flat (no EQ)
+                    _mediaPlayer.UnsetEqualizer();
+                    _currentEqPreset = -1;
+                }
+                else
+                {
+                    using var eq = new Equalizer((uint)presetId);
+                    _mediaPlayer.SetEqualizer(eq);
+                    _currentEqPreset = presetId;
+                }
+            }
+            catch (Exception ex) { Logger.Error("SetEqPreset failed", ex); }
+        });
+    }
+
+    private void SetReverbPreset(int presetId)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            _currentReverbPreset = Math.Clamp(presetId, 0, Services.Audio.ReverbSampleProvider.PresetNames.Length - 1);
+            AppendLog(_currentReverbPreset == 0
+                ? "Video room effect disabled."
+                : "Video room effect unavailable with the current VLC audio output; audio left unchanged.");
+        });
+    }
 
     /// <summary>Resets all in-flight playback state. Must be called on the UI thread.</summary>
     private void ResetPlaybackState()
@@ -566,6 +658,8 @@ public partial class MainWindow
             var subtitleTracks = Array.Empty<TrackOption>();
             var currentAudioTrackId = -1;
             var currentSubtitleTrackId = -1;
+            var chapters = Array.Empty<ChapterInfo>();
+            var currentChapter = -1;
             try
             {
                 // Guard: AudioTrackDescription and SpuDescription call into native
@@ -592,6 +686,28 @@ public partial class MainWindow
                     subtitlesEnabled = currentSpu != -1;
                     if (currentSpu >= 0)
                         _lastSubtitleTrackId = currentSpu;
+
+                    // Chapter navigation
+                    var chapterCount = _mediaPlayer.ChapterCount;
+                    if (chapterCount > 1)
+                    {
+                        currentChapter = _mediaPlayer.Chapter;
+                        try
+                        {
+                            var descs = _mediaPlayer.FullChapterDescriptions(-1);
+                            chapters = descs.Select((d, i) => new ChapterInfo(
+                                i,
+                                string.IsNullOrWhiteSpace(d.Name) ? $"Chapter {i + 1}" : d.Name,
+                                d.TimeOffset / 1000d,
+                                d.Duration / 1000d)).ToArray();
+                        }
+                        catch
+                        {
+                            chapters = Enumerable.Range(0, chapterCount)
+                                .Select(i => new ChapterInfo(i, $"Chapter {i + 1}", 0, 0))
+                                .ToArray();
+                        }
+                    }
                 }
             }
             catch (Exception ex)
@@ -627,7 +743,11 @@ public partial class MainWindow
                 NextTitle = GetAdjacentVideoTitle(1),
                 FilePath = _currentFilePath,
                 Queue = GetPlaybackQueue(),
-                QueueCount = _playbackQueue.Count
+                QueueCount = _playbackQueue.Count,
+                Chapters = chapters,
+                CurrentChapter = currentChapter,
+                EqPreset = _currentEqPreset,
+                ReverbPreset = _currentReverbPreset
             };
         });
         return result;
@@ -892,6 +1012,9 @@ public partial class MainWindow
             ToggleSubtitles = ToggleSubtitles,
             SetAudioTrack = SetAudioTrack,
             SetSubtitleTrack = SetSubtitleTrack,
+            SeekToChapter = SeekToChapter,
+            SetEqPreset = SetEqPreset,
+            SetReverbPreset = SetReverbPreset,
             PlayAdjacent = PlayAdjacent,
             Enqueue = EnqueueMovie,
             RemoveFromQueue = RemoveFromPlaybackQueue,
@@ -910,6 +1033,8 @@ public partial class MainWindow
             SetMusicVolume = _musicPlayer.SetVolume,
             SetMusicBoost  = _musicPlayer.SetBoost,
             SetMusicNextTrack = _musicPlayer.SetNextTrack,
+            SetMusicReverbPreset = _musicPlayer.SetReverbPreset,
+            SetMusicEqPreset     = _musicPlayer.SetEqPreset,
             // Radio — backed by RadioPlayer + RadioBrowserClient
             RadioSearch         = (q, c, t, l, o) => _radioBrowser.SearchAsync(q, c, t, l, o),
             RadioTopStations    = (l, o) => _radioBrowser.TopStationsAsync(l, o),
@@ -926,7 +1051,9 @@ public partial class MainWindow
             RadioIsFavoriteByUrl = _radioBrowser.IsFavoriteByUrl,
             RadioIsFavoriteByName = _radioBrowser.IsFavoriteByName,
             RadioNotifyAlive    = _radioPlayer.NotifyAudioAlive,
-            RadioResolveUrl     = (uuid, fallback) => _radioBrowser.ResolveStationUrlAsync(uuid, fallback)
+            RadioResolveUrl     = (uuid, fallback) => _radioBrowser.ResolveStationUrlAsync(uuid, fallback),
+            RadioSetReverbPreset = _radioPlayer.SetReverbPreset,
+            RadioSetEqPreset     = _radioPlayer.SetEqPreset
         }, _broadcaster, _playbackHistory, _appUpdater);
     }
 

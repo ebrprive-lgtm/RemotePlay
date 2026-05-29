@@ -1,5 +1,6 @@
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
+using RemotePlay.Services.Audio;
 
 namespace RemotePlay.Services;
 
@@ -17,6 +18,10 @@ internal sealed class RadioPlayer : IDisposable
     private double _volume       = 0.8;
     private double _boost        = 1.0;
     private VolumeSampleProvider? _boostProvider;
+    private ReverbSampleProvider? _reverb;
+    private EqualizerSampleProvider? _eq;
+    private int _reverbPreset = 0;
+    private int _eqPreset = -1;
     private DateTime _playStartUtc = DateTime.MinValue;
     private DateTime _lastSampleUtc = DateTime.MinValue; // updated when audio data flows
 
@@ -69,8 +74,16 @@ internal sealed class RadioPlayer : IDisposable
                 // Wrap through a VolumeSampleProvider for combined volume+boost gain,
                 // matching the gain model used by MusicPlayer (sample-level, same curve).
                 var sampleSrc = reader.ToSampleProvider();
-                var boostProv = new VolumeSampleProvider(sampleSrc) { Volume = (float)(_volume * _boost) };
-                output.Init(boostProv);
+                // Ensure stereo for reverb
+                ISampleProvider stereoSrc = sampleSrc.WaveFormat.Channels == 1
+                    ? sampleSrc.ToStereo()
+                    : sampleSrc;
+                var boostProv = new VolumeSampleProvider(stereoSrc) { Volume = (float)(_volume * _boost) };
+                var eq = new EqualizerSampleProvider(boostProv);
+                eq.ApplyPreset(_eqPreset);
+                var reverb = new ReverbSampleProvider(eq);
+                reverb.ApplyPreset(_reverbPreset);
+                output.Init(reverb);
 
                 lock (_lock)
                 {
@@ -85,6 +98,8 @@ internal sealed class RadioPlayer : IDisposable
                     _reader         = reader;
                     _output         = output;
                     _boostProvider  = boostProv;
+                    _eq             = eq;
+                    _reverb         = reverb;
                     _isPlaying      = true;
                 }
                 output.Play();
@@ -144,8 +159,25 @@ internal sealed class RadioPlayer : IDisposable
         }
     }
 
+    public void SetReverbPreset(int preset)
+    {
+        lock (_lock)
+        {
+            _reverbPreset = Math.Clamp(preset, 0, ReverbSampleProvider.PresetNames.Length - 1);
+            _reverb?.ApplyPreset(_reverbPreset);
+        }
+    }
+
+    public void SetEqPreset(int preset)
+    {
+        lock (_lock)
+        {
+            _eqPreset = Math.Clamp(preset, -1, EqualizerSampleProvider.PresetCount - 1);
+            _eq?.ApplyPreset(_eqPreset);
+        }
+    }
+
     /// <summary>
-    /// Update the stream title shown on the now-playing bar (called externally if ICY metadata is parsed).
     /// </summary>
     public void SetStreamTitle(string title)
     {
@@ -178,7 +210,9 @@ internal sealed class RadioPlayer : IDisposable
                 Boost:       _boost,
                 ElapsedSeconds: elapsed,
                 IsStalled:   stalled,
-                Error:       _lastError);
+                Error:       _lastError,
+                EqPreset:    _eqPreset,
+                ReverbPreset: _reverbPreset);
         }
     }
 
@@ -203,6 +237,8 @@ internal sealed class RadioPlayer : IDisposable
         _output = null;
         _reader = null;
         _boostProvider = null;
+        _eq = null;
+        _reverb = null;
     }
 
     public void Dispose()
@@ -226,4 +262,6 @@ internal sealed record RadioStatus(
     double Boost,
     int    ElapsedSeconds,
     bool   IsStalled,
-    string Error);
+    string Error,
+    int    EqPreset,
+    int    ReverbPreset);

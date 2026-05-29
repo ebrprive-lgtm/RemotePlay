@@ -246,6 +246,22 @@ async function radioStatusTick() {
       setRadioHealthDot('warn');
     }
 
+    // Quality badge stall overlay — show reconnecting state
+    if (!isPlayLocal()) {
+      const qBadge = document.getElementById('radio-bar-quality-badge');
+      if (qBadge) {
+        if (stalled) {
+          qBadge.dataset.stalled = '1';
+          qBadge.title = 'Stream stalled — reconnecting…';
+          qBadge.classList.add('stalled');
+        } else {
+          qBadge.dataset.stalled = '';
+          qBadge.title = '';
+          qBadge.classList.remove('stalled');
+        }
+      }
+    }
+
     // Song title marquee (server mode only — local streams rarely carry ICY metadata via proxy)
     const songEl = document.getElementById('radio-bar-song');
     const songTextEl = document.getElementById('radio-bar-song-text');
@@ -320,6 +336,17 @@ async function radioStatusTick() {
           if (cLabel) cLabel.textContent = Math.round(combined * 100) + '%';
         }
       }
+    }
+
+    // Sync EQ and reverb selectors from server state without resetting user selection
+    const radioEqPreset = s.eqPreset ?? s.EqPreset ?? -1;
+    if (typeof renderEqPresets === 'function') {
+      const sel = document.getElementById('radio-eq-select');
+      if (sel && sel.value !== String(radioEqPreset)) renderEqPresets(radioEqPreset);
+    }
+    const radioReverbPreset = s.reverbPreset ?? s.ReverbPreset ?? 0;
+    if (typeof _renderRadioReverbPreset === 'function') {
+      _renderRadioReverbPreset(radioReverbPreset);
     }
   } catch {}
 }

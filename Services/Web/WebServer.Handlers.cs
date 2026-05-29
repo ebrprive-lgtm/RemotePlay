@@ -326,6 +326,18 @@ internal sealed partial class WebServer
                 HandleSubtitleTrack(ctx);
                 break;
 
+            case "/api/chapter":
+                HandleChapter(ctx);
+                break;
+
+            case "/api/eq-preset":
+                HandleEqPreset(ctx);
+                break;
+
+            case "/api/reverb-preset":
+                HandleReverbPreset(ctx);
+                break;
+
             case "/api/adjacent":
                 HandleAdjacent(ctx);
                 break;
@@ -437,6 +449,14 @@ internal sealed partial class WebServer
                 HandleMusicBoost(ctx);
                 break;
 
+            case "/api/music/reverb-preset":
+                HandleMusicReverbPreset(ctx);
+                break;
+
+            case "/api/music/eq-preset":
+                HandleMusicEqPreset(ctx);
+                break;
+
             // ── Radio ─────────────────────────────────────────────────────
             case "/api/radio/search":
                 await HandleRadioSearchAsync(ctx).ConfigureAwait(false);
@@ -470,6 +490,14 @@ internal sealed partial class WebServer
 
             case "/api/radio/boost":
                 HandleRadioBoost(ctx);
+                break;
+
+            case "/api/radio/reverb-preset":
+                HandleRadioReverbPreset(ctx);
+                break;
+
+            case "/api/radio/eq-preset":
+                HandleRadioEqPreset(ctx);
                 break;
 
             case "/api/radio/playback-status":
@@ -618,6 +646,10 @@ internal sealed partial class WebServer
                 title = q.Title
             }).ToArray(),
             queueCount = s.QueueCount,
+            chapters = s.Chapters.Select(c => new { id = c.Id, name = c.Name, startSeconds = Math.Round(c.StartSeconds, 1), durationSeconds = Math.Round(c.DurationSeconds, 1) }).ToArray(),
+            currentChapter = s.CurrentChapter,
+            eqPreset = s.EqPreset,
+            reverbPreset = s.ReverbPreset,
             playbackEndBehavior = _config.PlaybackEndBehavior.ToString(),
             preferredAudioLanguage = _config.PreferredAudioLanguage,
             preferredSubtitleLanguage = _config.PreferredSubtitleLanguage,
@@ -773,6 +805,104 @@ internal sealed partial class WebServer
         else
         {
             TrySendResponse(ctx, 400, "text/plain", "Bad subtitle track");
+        }
+    }
+
+    private void HandleChapter(HttpListenerContext ctx)
+    {
+        var idParam = ctx.Request.QueryString["id"];
+        if (MediaControlValueParser.TryParseInteger(idParam, out var chapterId))
+        {
+            _callbacks.SeekToChapter(chapterId);
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+        }
+        else
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad chapter id");
+        }
+    }
+
+    private void HandleEqPreset(HttpListenerContext ctx)
+    {
+        var idParam = ctx.Request.QueryString["id"];
+        if (MediaControlValueParser.TryParseInteger(idParam, out var presetId))
+        {
+            _callbacks.SetEqPreset(presetId);
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+        }
+        else
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad eq-preset id");
+        }
+    }
+
+    private void HandleMusicEqPreset(HttpListenerContext ctx)
+    {
+        var idParam = ctx.Request.QueryString["id"];
+        if (MediaControlValueParser.TryParseInteger(idParam, out var presetId))
+        {
+            _callbacks.SetMusicEqPreset(presetId);
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+        }
+        else
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad eq-preset id");
+        }
+    }
+
+    private void HandleRadioEqPreset(HttpListenerContext ctx)
+    {
+        var idParam = ctx.Request.QueryString["id"];
+        if (MediaControlValueParser.TryParseInteger(idParam, out var presetId))
+        {
+            _callbacks.RadioSetEqPreset(presetId);
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+        }
+        else
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad eq-preset id");
+        }
+    }
+
+    private void HandleReverbPreset(HttpListenerContext ctx)
+    {
+        var idParam = ctx.Request.QueryString["id"];
+        if (MediaControlValueParser.TryParseInteger(idParam, out var presetId))
+        {
+            _callbacks.SetReverbPreset(presetId);
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+        }
+        else
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad reverb-preset id");
+        }
+    }
+
+    private void HandleMusicReverbPreset(HttpListenerContext ctx)
+    {
+        var idParam = ctx.Request.QueryString["id"];
+        if (MediaControlValueParser.TryParseInteger(idParam, out var presetId))
+        {
+            _callbacks.SetMusicReverbPreset(presetId);
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+        }
+        else
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad reverb-preset id");
+        }
+    }
+
+    private void HandleRadioReverbPreset(HttpListenerContext ctx)
+    {
+        var idParam = ctx.Request.QueryString["id"];
+        if (MediaControlValueParser.TryParseInteger(idParam, out var presetId))
+        {
+            _callbacks.RadioSetReverbPreset(presetId);
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+        }
+        else
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad reverb-preset id");
         }
     }
 
@@ -1629,7 +1759,9 @@ internal sealed partial class WebServer
             artist        = pb.Artist,
             position      = pb.Position,
             duration      = pb.Duration,
-            playbackError = pb.LastError
+            playbackError = pb.LastError,
+            eqPreset      = pb.EqPreset,
+            reverbPreset  = pb.ReverbPreset
         };
     }
 

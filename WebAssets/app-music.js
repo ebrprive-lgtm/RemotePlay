@@ -1112,48 +1112,34 @@ function _musicKbdFocus(cards, idx) {
 }
 
 // â”€â”€ Music context menu â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-let _musicCtxMenu = null;
 let _musicCtxLongPressTimer = null;
 
 function _musicShowContextMenu(e, path, name) {
-  e.preventDefault();
-  _musicDismissContextMenu();
-  const menu = document.createElement('div');
-  menu.className = 'music-ctx-menu';
-  menu.innerHTML =
-    `<button onclick="_musicCtxPlay('${jsStr(path)}','${jsStr(name)}')">&#9654; Play</button>` +
-    `<button onclick="_musicCtxQueue('${jsStr(path)}','${jsStr(name)}')">&#43; Add to Queue</button>` +
-    `<button onclick="_musicCtxCopy('${jsStr(path)}')">&#128203; Copy path</button>`;
-  document.body.appendChild(menu);
-  _musicCtxMenu = menu;
-  // Position near pointer
-  const x = e.clientX ?? (e.touches?.[0]?.clientX ?? 0);
-  const y = e.clientY ?? (e.touches?.[0]?.clientY ?? 0);
-  menu.style.left = Math.min(x, window.innerWidth - 180) + 'px';
-  menu.style.top  = Math.min(y, window.innerHeight - 100) + 'px';
-  // Dismiss on outside click
-  setTimeout(() => document.addEventListener('pointerdown', _musicDismissContextMenu, { once: true }), 50);
+  if (typeof _ctxShow !== 'function') return;
+  const isQueued = window._musicQueue ? window._musicQueue.some((q) => q.path === path) : false;
+  _ctxShow(e, 'music-file', { path, name, queued: isQueued });
 }
 
 function _musicDismissContextMenu() {
-  if (_musicCtxMenu) { _musicCtxMenu.remove(); _musicCtxMenu = null; }
+  // The shared #ctx-menu owns dismissal.
 }
 
 function _musicCtxPlay(path, name) {
-  _musicDismissContextMenu();
   playMusic(path, name);
 }
 
 function _musicCtxQueue(path, name) {
-  _musicDismissContextMenu();
   if (!window._musicQueue) window._musicQueue = [];
-  window._musicQueue.push({ path, name });
+  const existing = window._musicQueue.findIndex((q) => q.path === path);
+  if (existing >= 0) window._musicQueue.splice(existing, 1);
+  else window._musicQueue.push({ path, name });
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
   _refreshMusicNavLabels();
+  if (typeof _renderMusicQueuePeek === 'function') _renderMusicQueuePeek();
+  if (typeof _updateMusicQueuePendingBar === 'function') _updateMusicQueuePendingBar();
 }
 
 function _musicCtxCopy(path) {
-  _musicDismissContextMenu();
   try { navigator.clipboard.writeText(path); } catch (_) {}
 }
 
@@ -1508,7 +1494,9 @@ function renderMusicCards(data, searching) {
     html += '<div class="folder-list">';
     data.folders.forEach((f) => {
       html +=
-        '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" onclick="browseMusic(\'' +
+        '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"' +
+        ' oncontextmenu="_ctxShow(event,\'music-folder\',{dir:btoa(unescape(encodeURIComponent(\'' + jsStr(f.folder) + '\'))),name:\'' + jsStr(f.name) + '\'})"' +
+        ' onclick="browseMusic(\'' +
         jsStr(f.folder) +
         '\')">' +
         '<span class="folder-icon">&#128193;</span><span class="folder-name">' +
@@ -1555,7 +1543,8 @@ function renderMusicCards(data, searching) {
       // Merged genre Â· year single line
       const genreYear = [genre, year].filter(Boolean).join(' Â· ');
 
-      let card = `<div class="music-track-card${isPlaying ? ' playing' : ''}${isSelected ? ' selected' : ''}${isList && idx % 2 === 1 ? ' alt-row' : ''}" data-path="${esc(f.path)}" data-idx="${idx}" title="${esc(title)}">`;
+      const isQueued   = window._musicQueue ? window._musicQueue.some((q) => q.path === f.path) : false;
+      let card = `<div class="music-track-card${isPlaying ? ' playing' : ''}${isSelected ? ' selected' : ''}${isQueued ? ' queued' : ''}${isList && idx % 2 === 1 ? ' alt-row' : ''}" data-path="${esc(f.path)}" data-idx="${idx}" title="${esc(title)}">`;
 
       // â”€â”€ Checkbox (for multi-select) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       card += `<input type="checkbox" class="mtc-checkbox" data-path="${esc(f.path)}" data-idx="${idx}"${isSelected ? ' checked' : ''} tabindex="-1" aria-label="Select ${esc(title)}" />`;
@@ -1576,7 +1565,7 @@ function renderMusicCards(data, searching) {
       }
 
       // â”€â”€ Col 2: title â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      card += `<span class="mtc-title">${esc(title)}</span>`;
+      card += `<span class="mtc-title">${esc(title)}${isList && isQueued ? ' <span class="mtc-queued-badge">Q</span>' : ''}</span>`;
 
       // â”€â”€ Col 3: format badge + duration (together in top-right) â”€â”€â”€â”€â”€â”€â”€â”€â”€
       const durHtml = duration ? `<span class="mtc-badge-dur">${esc(duration)}</span>` : '';
@@ -1604,7 +1593,7 @@ function renderMusicCards(data, searching) {
     html += '</div>';
     if (data.hasMore) {
       const shown = data.files.length;
-      const total = totalInFolder;
+      const total = data.totalInFolder || shown;
       html +=
         '<button class="load-more-btn" onclick="loadMoreMusic()">Load more tracks (' +
         shown + ' of ' + total + ' loaded)</button>';

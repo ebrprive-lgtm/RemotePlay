@@ -420,6 +420,13 @@ function updateMusicBar(s) {
   }
 
   if (s.lastError && !active) bar.style.display = 'none';
+  if (typeof _syncEqWrapVisibility === 'function') _syncEqWrapVisibility();
+  if (typeof renderEqPresets === 'function') {
+    const eqP = s.eqPreset ?? s.EqPreset ?? -1;
+    if (_lastEqPreset !== eqP) renderEqPresets(eqP);
+  }
+  if (typeof _renderMusicReverbPreset === 'function')
+    _renderMusicReverbPreset(s.reverbPreset ?? s.ReverbPreset);
 }
 
 async function musicPlayHere() {
@@ -1003,6 +1010,7 @@ function switchMode(mode, skipInitialBrowse = false) {
   if (leavingVideo && playingPath && typeof stop !== 'undefined') stop();
   if (leavingMusic && musicIsPlaying && typeof musicStop !== 'undefined') musicStop();
   if (leavingRadio && typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying && typeof radioStop !== 'undefined') radioStop();
+  if (typeof _hideSearchFilterBar === 'function') _hideSearchFilterBar();
 
   currentMode = mode;
   localStorage.setItem('remotePlayMode', mode);
@@ -1028,14 +1036,18 @@ function switchMode(mode, skipInitialBrowse = false) {
   const navRow = document.getElementById('browse-nav-row');
   const vStrip = document.getElementById('video-recent-strip');
   const vClear = document.getElementById('video-recent-clear');
+  const vPinned = document.getElementById('video-pinned-strip');
   const mStrip = document.getElementById('music-recent-strip');
   const mClear = document.getElementById('music-recent-clear');
+  const mPinned = document.getElementById('music-pinned-strip');
   const rStrip = document.getElementById('radio-recent-strip');
   if (navRow) navRow.style.display = '';
   if (vStrip) vStrip.style.display = mode === 'video' ? '' : 'none';
   if (vClear) vClear.style.display = mode === 'video' && vStrip && vStrip.children.length ? '' : 'none';
+  if (vPinned) vPinned.style.display = mode === 'video' ? '' : 'none';
   if (mStrip) mStrip.style.display = mode === 'music' ? '' : 'none';
   if (mClear) mClear.style.display = mode === 'music' && mStrip && mStrip.children.length ? '' : 'none';
+  if (mPinned) mPinned.style.display = mode === 'music' ? '' : 'none';
   if (rStrip) rStrip.style.display = mode === 'radio' ? '' : 'none';
   if (mode === 'video') {
     if (searchRow) searchRow.style.display = '';
@@ -1072,6 +1084,8 @@ function switchMode(mode, skipInitialBrowse = false) {
     // restore music bar if already playing
     if (musicIsPlaying) startMusicPlaybackPoll();
     _ensureMusicKeyboardNav();
+    if (typeof renderMusicPinnedStrip === 'function') renderMusicPinnedStrip();
+    if (typeof _updateMusicPinButton === 'function') _updateMusicPinButton();
     if (!currentMusicData && !skipInitialBrowse) browseMusic(null);
     else renderMusicHeader(currentMusicData, false);
   } else if (mode === 'radio') {
@@ -1346,49 +1360,34 @@ function _musicKbdFocus(cards, idx) {
   cards[idx]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
-// ── Music context menu ─────────────────────────────────────────────────────
-let _musicCtxMenu = null;
+// ── Music context menu — delegates to universal #ctx-menu ──────────────────
 let _musicCtxLongPressTimer = null;
 
 function _musicShowContextMenu(e, path, name) {
-  e.preventDefault();
-  _musicDismissContextMenu();
-  const menu = document.createElement('div');
-  menu.className = 'music-ctx-menu';
-  menu.innerHTML =
-    `<button onclick="_musicCtxPlay('${jsStr(path)}','${jsStr(name)}')">&#9654; Play</button>` +
-    `<button onclick="_musicCtxQueue('${jsStr(path)}','${jsStr(name)}')">&#43; Add to Queue</button>` +
-    `<button onclick="_musicCtxCopy('${jsStr(path)}')">&#128203; Copy path</button>`;
-  document.body.appendChild(menu);
-  _musicCtxMenu = menu;
-  // Position near pointer
-  const x = e.clientX ?? (e.touches?.[0]?.clientX ?? 0);
-  const y = e.clientY ?? (e.touches?.[0]?.clientY ?? 0);
-  menu.style.left = Math.min(x, window.innerWidth - 180) + 'px';
-  menu.style.top  = Math.min(y, window.innerHeight - 100) + 'px';
-  // Dismiss on outside click
-  setTimeout(() => document.addEventListener('pointerdown', _musicDismissContextMenu, { once: true }), 50);
+  if (typeof _ctxShow === 'function') {
+    const isQueued = window._musicQueue ? window._musicQueue.some((q) => q.path === path) : false;
+    _ctxShow(e, 'music-file', { path, name, queued: isQueued });
+  }
 }
 
 function _musicDismissContextMenu() {
-  if (_musicCtxMenu) { _musicCtxMenu.remove(); _musicCtxMenu = null; }
+  // no-op: universal menu handles its own dismissal
 }
 
-function _musicCtxPlay(path, name) {
-  _musicDismissContextMenu();
-  playMusic(path, name);
-}
+function _musicCtxPlay(path, name) { playMusic(path, name); }
 
 function _musicCtxQueue(path, name) {
-  _musicDismissContextMenu();
   if (!window._musicQueue) window._musicQueue = [];
-  window._musicQueue.push({ path, name });
+  const existing = window._musicQueue.findIndex((q) => q.path === path);
+  if (existing >= 0) window._musicQueue.splice(existing, 1);
+  else window._musicQueue.push({ path, name });
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
+  if (typeof _refreshMusicNavLabels === 'function') _refreshMusicNavLabels();
   _renderMusicQueuePeek();
+  if (typeof _updateMusicQueuePendingBar === 'function') _updateMusicQueuePendingBar();
 }
 
 function _musicCtxCopy(path) {
-  _musicDismissContextMenu();
   try { navigator.clipboard.writeText(path); } catch (_) {}
 }
 
@@ -1519,6 +1518,8 @@ async function browseMusic(folder, offset = 0, append = false) {
   if (!append) {
     _musicSelectionClear();
     _stopMusicFolderFastPoll();
+    // Hide search filter bar whenever we navigate away from search results
+    if (typeof _hideSearchFilterBar === 'function') _hideSearchFilterBar();
     // Push current folder to history before navigating
     if (currentMusicFolder !== folder) {
       if (currentMusicFolder !== null) musicBrowseHistory.push(currentMusicFolder);
@@ -1566,6 +1567,8 @@ async function browseMusic(folder, offset = 0, append = false) {
       const mStrip = document.getElementById('music-recent-strip');
       if (mStrip) mStrip.style.display = '';
       loadMusicRecent().then((files) => renderMusicRecent(files));
+      if (typeof renderMusicPinnedStrip === 'function') renderMusicPinnedStrip();
+      if (typeof _updateMusicPinButton === 'function') _updateMusicPinButton();
     }
   } catch (e) {
     mb.innerHTML = '<div style="padding:.75rem">Error: ' + e + '</div>';
@@ -1593,6 +1596,9 @@ async function searchMusicLibrary(q, offset = 0, append = false) {
     setSearchBusy(false);
     if (currentMode === 'music') renderMusicHeader(currentMusicData, true);
     renderMusicCards(currentMusicData, true);
+    if (typeof _lastSearchQuery !== 'undefined') _lastSearchQuery = q;
+    if (typeof _showSearchFilterBar === 'function') _showSearchFilterBar(true);
+    if (typeof _applySearchFilter === 'function') _applySearchFilter();
   } catch (e) {
     setSearchBusy(false);
   }
@@ -1684,7 +1690,9 @@ function renderMusicCards(data, searching) {
     html += '<div class="folder-list">';
     data.folders.forEach((f) => {
       html +=
-        '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" onclick="browseMusic(\'' +
+        '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"' +
+        ' oncontextmenu="_ctxShow(event,\'music-folder\',{dir:btoa(unescape(encodeURIComponent(\'' + jsStr(f.folder) + '\'))),name:\'' + jsStr(f.name) + '\'})"' +
+        ' onclick="browseMusic(\'' +
         jsStr(f.folder) +
         '\')">' +
         '<span class="folder-icon">&#128193;</span><span class="folder-name">' +
@@ -1732,7 +1740,7 @@ function renderMusicCards(data, searching) {
       // Merged genre · year single line
       const genreYear = [genre, year].filter(Boolean).join(' · ');
 
-      let card = `<div class="music-track-card${isPlaying ? ' playing' : ''}${isSelected ? ' selected' : ''}${isQueued ? ' queued' : ''}${isList && idx % 2 === 1 ? ' alt-row' : ''}" data-path="${esc(f.path)}" data-idx="${idx}" title="${esc(title)}">`;
+      let card = `<div class="music-track-card${isPlaying ? ' playing' : ''}${isSelected ? ' selected' : ''}${isQueued ? ' queued' : ''}${isList && idx % 2 === 1 ? ' alt-row' : ''}" data-path="${esc(f.path)}" data-idx="${idx}" data-sr-title="${esc(title)}" data-sr-artist="${esc(artist)}" data-sr-album="${esc(album)}" title="${esc(title)}">`;
 
       // ── Checkbox (for multi-select) ────────────────────────────────────
       card += `<input type="checkbox" class="mtc-checkbox" data-path="${esc(f.path)}" data-idx="${idx}"${isSelected ? ' checked' : ''} tabindex="-1" aria-label="Select ${esc(title)}" />`;
@@ -1781,7 +1789,7 @@ function renderMusicCards(data, searching) {
     html += '</div>';
     if (data.hasMore) {
       const shown = data.files.length;
-      const total = totalInFolder;
+      const total = data.totalInFolder || shown;
       html +=
         '<button class="load-more-btn" onclick="loadMoreMusic()">Load more tracks (' +
         shown + ' of ' + total + ' loaded)</button>';
@@ -2071,7 +2079,7 @@ function render(data, searching) {
       html += data.folders
         .map(
           (f) =>
-            '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" onclick="this.classList.add(\'folder-row-active\');searchLibrary(\'' +
+            '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" oncontextmenu="_showFolderCtxMenu(event,null,\'' + esc(f.folder || f.name) + '\',true)" onclick="this.classList.add(\'folder-row-active\');searchLibrary(\'' +
             esc(f.folder || f.name) +
             '\')">' +
             '<span class="folder-icon">&#128193;</span><span class="folder-name">' +
@@ -2085,7 +2093,7 @@ function render(data, searching) {
       html += data.folders
         .map(
           (f) =>
-            '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" onclick="this.classList.add(\'folder-row-active\');browse(\'' +
+            '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" oncontextmenu="_showFolderCtxMenu(event,\'' + f.dir + '\',\'' + esc(f.name) + '\',false)" onclick="this.classList.add(\'folder-row-active\');browse(\'' +
             f.dir +
             "',0,false,true," +
             (f.isLink ? 'true' : 'false') +
@@ -2232,6 +2240,7 @@ function _renderVideoFileRows(files) {
         '" data-thumb="' + esc(thumbUrl) + '"' +
         action +
         ' onkeydown="activateKeyboardClick(event,this)"' +
+        ' oncontextmenu="_ctxShow(event,\'video-file\',{path:\'' + esc(f.path) + '\',name:\'' + esc(displayName) + '\',played:' + played + ',queued:' + queued + ',favorite:' + favorite + '})"' +
         ' onpointerdown="beginCardHold(event,\'' + f.path + '\')"' +
         ' onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">' +
         // List-mode columns (CSS grid)
@@ -2331,6 +2340,7 @@ function renderMusicRecent(files) {
       ' data-recent-music-path="' + esc(f.path) + '"' +
       ' data-recent-music-title="' + esc(title) + '"' +
       ' title="' + esc(title) + '"' +
+      ' oncontextmenu="_ctxShow(event,\'music-recent\',{path:\'' + esc(f.path) + '\',name:\'' + esc(title) + '\'})"' +
       ' onkeydown="activateKeyboardClick(event,this)">' +
       (hasCover
         ? '<div class="vr-thumb" style="background-image:url(\'' + thumb + '\')"></div>'
@@ -2386,6 +2396,7 @@ function renderRecent(files) {
       ' data-recent-video-path="' + esc(f.path) + '"' +
       ' data-recent-video-title="' + esc(title) + '"' +
       ' title="' + esc(title) + '"' +
+      ' oncontextmenu="_ctxShow(event,\'video-recent\',{path:\'' + esc(f.path) + '\',name:\'' + esc(title) + '\'})"' +
       ' onkeydown="activateKeyboardClick(event,this)">' +
       '<div class="vr-thumb" style="background-image:url(\'' + thumb + '\')"></div>' +
       '<div class="vr-label">' + esc(title) + '</div>' +
@@ -2925,7 +2936,53 @@ async function releaseWakeLock() {
 }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && playingPath) requestWakeLock();
+  if (document.visibilityState === 'visible') _onPageVisible();
 });
+window.addEventListener('pageshow', (e) => {
+  // bfcache restore (common on mobile Safari/Chrome after tab switch or screen-off)
+  if (e.persisted) _onPageVisible();
+});
+
+// Called when the page/tab becomes visible again (tablet wake, app-switch back, etc.).
+// Re-syncs server playback state so music that ended while the screen was off gets
+// advanced and the poll is restarted if needed.
+async function _onPageVisible() {
+  if (isPlayLocal()) return; // local audio is handled by the browser itself
+  try {
+    const res = await fetch('/api/music/status');
+    if (!res.ok) return;
+    const s = await res.json();
+
+    const playing = s.isPlaying || s.isPaused;
+    musicIsPlaying = playing;
+
+    if (playing) {
+      // Music is still going on the server — make sure the poll is running and
+      // re-register the lookahead so auto-advance will keep working.
+      musicCurrentPath = s.currentPath || musicCurrentPath;
+      if (!musicPlaybackPollTimer) startMusicPlaybackPoll();
+      _queueNextTrackOnServer();
+      return;
+    }
+
+    // Music stopped while the screen was off.
+    if (!musicCurrentPath) return; // nothing was playing from this client's perspective
+
+    // If auto-advance is enabled, kick off the next track now.
+    if (_musicAutoPlay || _musicShuffle || _musicRepeat !== 'none') {
+      const nextT = _musicNextTrack();
+      if (nextT) {
+        await playMusic(nextT.path, nextT.name);
+        return;
+      }
+    }
+
+    // Nothing left to advance — update the bar to reflect stopped state.
+    musicCurrentPath = null;
+    updateMusicBar(s);
+    stopMusicPlaybackPoll();
+  } catch {}
+}
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () =>
     navigator.serviceWorker
@@ -3073,12 +3130,21 @@ function renderPeersDropdown(peers) {
     dd.appendChild(el);
   } else {
     others.forEach((p) => {
+      const row = document.createElement('div');
+      row.className = 'peer-item-row';
       const a = document.createElement('a');
       a.className = 'peer-item';
       a.href = p.url;
       a.title = `Switch to ${esc(p.name)} — ${p.url}`;
       a.innerHTML = `<span class="peer-dot"></span><span class="peer-info"><div class="peer-name">${esc(p.name)}</div><div class="peer-addr">${esc(p.host)}:${p.port}</div></span>`;
-      dd.appendChild(a);
+      row.appendChild(a);
+      const syncBtn = document.createElement('button');
+      syncBtn.className = 'peer-sync-btn';
+      syncBtn.title = `Sync current playback to ${esc(p.name)}`;
+      syncBtn.textContent = '⇒ Sync';
+      syncBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); syncToPeer(p.url); };
+      row.appendChild(syncBtn);
+      dd.appendChild(row);
     });
   }
 }
@@ -3094,6 +3160,27 @@ function togglePeers() {
 function closePeers() {
   document.getElementById('peers-dropdown').classList.remove('open');
   document.getElementById('peers-btn').setAttribute('aria-expanded', 'false');
+}
+
+async function syncToPeer(peerUrl) {
+  closePeers();
+  try {
+    const res = await fetch('/api/status');
+    if (!res.ok) return;
+    const s = await res.json();
+    if (!s.isPlaying || !s.filePath) {
+      alert('Nothing is currently playing to sync.');
+      return;
+    }
+    const base = peerUrl.replace(/\/$/, '');
+    // Play the same file on the peer
+    await fetch(`${base}/api/play?` + new URLSearchParams({ path: s.filePath }));
+    // Allow the peer a moment to start, then seek to match our position
+    await new Promise((r) => setTimeout(r, 800));
+    await fetch(`${base}/api/seek?` + new URLSearchParams({ position: String(Math.round(s.position)) }));
+  } catch (err) {
+    alert('Sync failed: ' + err.message);
+  }
 }
 
 let _loadedVersion = null;

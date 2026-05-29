@@ -46,10 +46,17 @@ internal sealed record PlaybackStatus
     public string? FilePath { get; init; }
     public PlaybackQueueItem[] Queue { get; init; } = [];
     public int QueueCount { get; init; }
+    public ChapterInfo[] Chapters { get; init; } = [];
+    public int CurrentChapter { get; init; } = -1;
+    public int EqPreset { get; init; } = -1;
+    public int ReverbPreset { get; init; } = 0;
 }
 
 [ExcludeFromCodeCoverage]
 internal sealed record TrackOption(int Id, string Name, string Language = "", bool IsForced = false, bool IsDefault = false);
+
+[ExcludeFromCodeCoverage]
+internal sealed record ChapterInfo(int Id, string Name, double StartSeconds, double DurationSeconds);
 
 [ExcludeFromCodeCoverage]
 internal sealed record PlaybackQueueItem(string Path, string Title);
@@ -143,6 +150,7 @@ internal sealed partial class WebServer
         "app-core.js",
         "app-diagnostics.js",
         "app-playback.js",
+        "app-context-menu.js",
         "app-library.js",
         "app-radio.js",
         "app-globe.js",

@@ -125,6 +125,12 @@
             </div>
             <div id="breadcrumb"></div>
             <div id="count-line" style="display:flex;align-items:center;gap:.5rem"><span id="count-text"></span><button id="view-toggle-video" class="radio-reset-btn view-toggle-btn" onclick="_setViewMode('video',_viewMode.video==='grid'?'list':'grid')" style="display:none" title="Toggle view"></button><button id="view-toggle-music" class="radio-reset-btn view-toggle-btn" onclick="_setViewMode('music',_viewMode.music==='grid'?'list':'grid')" style="display:none" title="Toggle view"></button></div>
+            <div id="search-filter-bar" style="display:none" role="group" aria-label="Search filter">
+              <label class="sf-chip"><input type="radio" name="sf" value="all"    checked onchange="setSearchFilter('all')"   /><span>All</span></label>
+              <label class="sf-chip"><input type="radio" name="sf" value="title"         onchange="setSearchFilter('title')" /><span>Title</span></label>
+              <label class="sf-chip sf-music-only"><input type="radio" name="sf" value="artist"        onchange="setSearchFilter('artist')"/><span>Artist</span></label>
+              <label class="sf-chip sf-music-only"><input type="radio" name="sf" value="album"         onchange="setSearchFilter('album')" /><span>Album</span></label>
+            </div>
             <div id="scan-status" style="display:none"></div>
           </div>
           <div id="radio-filter-sticky" style="display:none"></div>
@@ -133,6 +139,7 @@
             <div class="cb-inner" id="mcb-normal">
             <div id="mcb-left">
               <button id="mcb-view-btn" class="vcb-view-btn" onclick="_setViewMode('music',_viewMode.music==='grid'?'list':'grid')" title="Toggle list / grid view"></button>
+              <button id="mcb-pin-btn" class="vcb-pin-btn" onclick="toggleMusicPinFolder(currentMusicFolder)" title="Pin this folder"></button>
             </div>
             <div id="mcb-filters">
               <button id="mcb-play-all" class="vcb-pill mcb-play-all" onclick="playMusicAll()" style="display:none">&#9654; Play All</button>
@@ -180,6 +187,7 @@
             <div class="cb-inner" id="vcb-normal">
             <div id="vcb-left">
               <button id="vcb-view-btn" class="vcb-view-btn" onclick="_setViewMode('video',_viewMode.video==='grid'?'list':'grid')" title="Toggle list / grid view"></button>
+              <button id="vcb-pin-btn" class="vcb-pin-btn" onclick="togglePinFolder(currentDir)" title="Pin this folder"></button>
             </div>
             <div id="vcb-filters">
               <button class="vcb-pill active" data-vf="all"    onclick="setVideoFilter('all')">All</button>
@@ -247,6 +255,15 @@
                          oninput="setVideoCombinedSlider(this.value)" onchange="setVideoCombinedSlider(this.value)" aria-label="Volume / boost"/>
                   <span id="volume-label">100%</span>
                 </span>
+                <div class="eq-reverb-row">
+                  <div id="eq-select-wrap" class="eq-select-wrap" style="display:none">
+                    <label class="eq-select-label" for="eq-select">EQ</label>
+                    <div class="eq-select-inner">
+                       <select id="eq-select" class="track-select" onchange="setEqPreset(+this.value)" aria-label="Equalizer preset"></select>
+                       <canvas id="eq-sparkline" class="eq-sparkline" width="52" height="22" aria-hidden="true"></canvas>
+                    </div>
+                  </div>
+                </div>
               </div>
               <div class="control-card">
                 <div class="control-title">Display</div>
@@ -268,6 +285,10 @@
                     <div class="track-group-label">Subtitles</div>
                     <select id="subtitle-track-select" class="track-select" onchange="setSubtitleTrack(this.value)" aria-label="Subtitles"></select>
                   </div>
+                  <div id="chapter-track-group" class="track-group" style="display:none">
+                    <div class="track-group-label">Chapters</div>
+                    <select id="chapter-track-select" class="track-select" onchange="setChapter(this.value)" aria-label="Chapters"></select>
+                  </div>
                 </div>
               </div>
               <div id="queue-card" class="control-card">
@@ -282,8 +303,10 @@
         <div id="status" style="display:none">Loading...</div>
         <div id="browse-nav-row">
           <button id="back-button" class="crumb-back" onclick="goBack()" style="display:none">&#8592; Back</button>
+          <div id="video-pinned-strip" style="display:none"></div>
           <div id="video-recent-strip"></div>
           <button id="video-recent-clear" class="vr-clear-btn" style="display:none" title="Clear recently played" onclick="clearRecentVideos()">&#x2715;</button>
+          <div id="music-pinned-strip" style="display:none"></div>
           <div id="music-recent-strip" style="display:none"></div>
           <button id="music-recent-clear" class="vr-clear-btn" style="display:none" title="Clear recently played" onclick="clearRecentMusic()">&#x2715;</button>
           <div id="radio-recent-strip" style="display:none"></div>
@@ -342,10 +365,23 @@
                          oninput="radioCombinedSlider(this.value)" aria-label="Radio volume / boost"/>
                   <button class="radio-slider-reset-btn" id="radio-combined-label" onclick="radioCombinedReset()" title="Click to reset to 80%">80%</button>
                 </span>
+                <div class="eq-reverb-row">
+                  <div id="radio-eq-select-wrap" class="eq-select-wrap" style="display:none">
+                    <label class="eq-select-label" for="radio-eq-select">EQ</label>
+                    <div class="eq-select-inner">
+                       <select id="radio-eq-select" class="track-select" onchange="setEqPreset(+this.value)" aria-label="Equalizer preset"></select>
+                       <canvas id="radio-eq-sparkline" class="eq-sparkline" width="52" height="22" aria-hidden="true"></canvas>
+                    </div>
+                  </div>
+                  <div id="radio-reverb-select-wrap" class="eq-select-wrap" style="display:none">
+                    <label class="eq-select-label" for="radio-reverb-select">Room</label>
+                    <select id="radio-reverb-select" class="track-select" onchange="setReverbPreset(+this.value,'radio')" aria-label="Reverb room preset"></select>
+                  </div>
+                </div>
               </div>
             </div>
             </div>
-          <div id="radio-bar-geo" style="display:none;flex-direction:column;align-items:center;gap:.4rem;padding-top:.6rem;border-top:1px solid var(--player-card-border,#292941)">
+          <div id="radio-bar-geo"
             <div style="position:relative;display:inline-block">
               <canvas id="radio-globe-canvas" width="180" height="180" aria-hidden="true" style="display:block;border-radius:50%;cursor:crosshair" onclick="radioGlobeClick(event)" onmousemove="radioGlobeMouseMove(event)" onmouseleave="radioGlobeMouseLeave()"></canvas>
               <div id="radio-globe-tooltip"></div>
@@ -407,9 +443,22 @@
                          oninput="musicCombinedSlider(this.value)" aria-label="Volume / boost"/>
                   <button class="radio-slider-reset-btn" id="music-combined-label" onclick="musicCombinedReset()" title="Click to reset to 80%">80%</button>
                 </span>
+                <div class="eq-reverb-row">
+                  <div id="music-eq-select-wrap" class="eq-select-wrap" style="display:none">
+                    <label class="eq-select-label" for="music-eq-select">EQ</label>
+                    <div class="eq-select-inner">
+                       <select id="music-eq-select" class="track-select" onchange="setEqPreset(+this.value)" aria-label="Equalizer preset"></select>
+                       <canvas id="music-eq-sparkline" class="eq-sparkline" width="52" height="22" aria-hidden="true"></canvas>
+                    </div>
+                  </div>
+                  <div id="music-reverb-select-wrap" class="eq-select-wrap" style="display:none">
+                    <label class="eq-select-label" for="music-reverb-select">Room</label>
+                    <select id="music-reverb-select" class="track-select" onchange="setReverbPreset(+this.value,'music')" aria-label="Reverb room preset"></select>
+                  </div>
+                </div>
               </div>
             </div>
-            <div class="control-card" id="music-queue-peek-card" style="display:none">
+            <div class="control-card" id="music-queue-peek-card"
               <div class="control-title">Up Next</div>
               <div id="music-queue-peek-list"></div>
             </div>
@@ -486,6 +535,19 @@
           </div>
         </div>
         <script src="/app.js?v=__ASSET_VERSION__" defer></script>
+
+        <!-- Universal context menu -->
+        <div id="ctx-menu" role="menu" style="display:none">
+          <button class="fctx-item" data-action="open">📂 Open</button>
+          <button class="fctx-item" data-action="play">▶ Play</button>
+          <button class="fctx-item" data-action="queue">➕ Add to queue</button>
+          <button class="fctx-item" data-action="pin">📌 Pin folder</button>
+          <button class="fctx-item" data-action="unpin">📌 Unpin folder</button>
+          <button class="fctx-item" data-action="fav">♥ Toggle favourite</button>
+          <button class="fctx-item" data-action="watched">✔ Toggle watched</button>
+          <button class="fctx-item" data-action="search">🔍 Search inside</button>
+          <button class="fctx-item" data-action="copy">📋 Copy path</button>
+        </div>
 
         </body></html>
 

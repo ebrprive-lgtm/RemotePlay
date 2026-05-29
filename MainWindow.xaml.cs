@@ -40,7 +40,6 @@ public partial class MainWindow : Window
     private PresenceBroadcaster? _broadcaster;
     private RemotePlay.Services.AppUpdater? _appUpdater;
     private System.Windows.Forms.NotifyIcon? _trayIcon;
-    private bool _isExiting;
     private double _windowedLeft = double.NaN;
     private double _windowedTop  = double.NaN;
     private double _windowedWidth  = double.NaN;
@@ -54,6 +53,8 @@ public partial class MainWindow : Window
     private readonly string _miniPreviewSnapshotPath =
         Path.Combine(Path.GetTempPath(), "remoteplay_preview.png");
     private bool _isPaused;
+    private int _currentEqPreset = -1; // -1 = flat / no EQ
+    private int _currentReverbPreset = 0; // 0 = Off
     private bool _isVideoMode;
     private string? _currentFilePath;
     private TimeSpan? _pendingResumePosition;
@@ -222,7 +223,8 @@ public partial class MainWindow : Window
             var label = $"Screen {i + 1}  ({s.Bounds.Width}x{s.Bounds.Height}){(s.Primary ? "  [Primary]" : "")}";
             combo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = label, Tag = i });
         }
-        foreach (System.Windows.Controls.ComboBoxItem item in combo.Items)
+        var items = combo.Items.Cast<System.Windows.Controls.ComboBoxItem>().ToList();
+        foreach (var item in items)
             if (item.Tag is int tag && tag == savedIdx)
                 combo.SelectedItem = item;
         if (combo.SelectedItem is null)
@@ -601,24 +603,13 @@ public partial class MainWindow : Window
         Activate();
     }
 
-    private void ExitApplication()
-    {
-        _isExiting = true;
-        Close();
-    }
+    private void ExitApplication() => Close();
 
     private void OnClosing(object? sender, CancelEventArgs e)
     {
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         SaveWindowLayout();
-        if (!_isExiting && _config.UseTrayIcon)
-        {
-            e.Cancel = true;
-            Hide();
-            ShowInTaskbar = false;
-            _trayIcon?.ShowBalloonTip(1500, "RemotePlay", "RemotePlay is still running in the tray.", System.Windows.Forms.ToolTipIcon.Info);
-            return;
-        }
+
 
         SaveCurrentPlaybackPosition();
         _webServer?.Stop();

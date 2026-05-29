@@ -94,6 +94,7 @@ function radioToggleTagFav(tag, evt) {
 // Build a native <select> with favorites grouped at top + divider,
 // plus a heart button beside it to toggle the currently selected value as a favorite.
 function _buildFavSelect(id, items, favList, toggleFn, allLabel) {
+  const ctxType = id === 'radio-country' ? 'radio-country' : 'radio-tag';
   const favSet = new Set(favList);
   const favItems = [...items]
     .filter((it) => favSet.has(it.value))
@@ -101,7 +102,7 @@ function _buildFavSelect(id, items, favList, toggleFn, allLabel) {
   const restItems = [...items]
     .filter((it) => !favSet.has(it.value))
     .sort((a, b) => a.label.localeCompare(b.label));
-  let h = `<div class="radio-fav-select-wrap"><select id="${id}" onchange="${id === 'radio-country' ? 'radioOnCountryChange()' : "_syncFavSelectHeart('" + id + "','" + toggleFn + "')"}">`;
+  let h = `<div class="radio-fav-select-wrap" oncontextmenu="_ctxShow(event,'${ctxType}',{value:document.getElementById('${id}')?.value||'',name:document.getElementById('${id}')?.selectedOptions?.[0]?.text||'${escHtml(allLabel)}',isFav:${id === 'radio-country' ? 'radioIsCountryFav(document.getElementById(\'' + id + '\')?.value||\'\')' : 'radioIsTagFav(document.getElementById(\'' + id + '\')?.value||\'\')'}})"><select id="${id}" onchange="${id === 'radio-country' ? 'radioOnCountryChange()' : "_syncFavSelectHeart('" + id + "','" + toggleFn + "')"}">`;
   h += `<option value="">${allLabel}</option>`;
   if (favItems.length && restItems.length) {
     h += '<optgroup label="\u2764 Favorites">';
@@ -563,7 +564,7 @@ function _buildStationCard(s, isFavTab = false) {
   const encTagFirst = encodeURIComponent(
     (s.tags || s.Tags || '').split(',').filter(Boolean)[0] || ''
   );
-  let h = `<div class="radio-station-card${isPlaying ? ' playing' : ''}" data-url="${escHtml(url)}" onclick="radioPlayStation('${encodeURIComponent(url)}','${encodeURIComponent(name)}','${encCountry}','${encTagFirst}','${stationJson}')">`;
+  let h = `<div class="radio-station-card${isPlaying ? ' playing' : ''}" data-url="${escHtml(url)}" onclick="radioPlayStation('${encodeURIComponent(url)}','${encodeURIComponent(name)}','${encCountry}','${encTagFirst}','${stationJson}')" oncontextmenu="_ctxShow(event,'radio-station',{name:'${escHtml(name)}',extra:${JSON.stringify(decodeURIComponent(stationJson))},isFav:${isFav}})">`;
   // sc-icon
   const faviconSrc = s.favicon || s.Favicon || '';
   h += `<span class="sc-icon">${faviconSrc ? `<img src="${escHtml(faviconSrc)}" alt="" onerror="this.style.display='none'" />` : '<span></span>'}</span>`;
@@ -1054,6 +1055,7 @@ function updateRadioBar(title, country, tag, playing, station) {
   }
   if (btn) btn.innerHTML = playing ? '\u23F8 Pause' : '\u25B6 Play';
   _radioUpdateBarFavBtn();
+  if (typeof _syncEqWrapVisibility === 'function') _syncEqWrapVisibility();
 }
 
 async function radioPlayHere() {
@@ -1113,6 +1115,7 @@ function renderRadioRecent() {
     const encTag = encodeURIComponent((s.tags || '').split(',')[0] || '');
     return (
       '<div class="vr-card" role="button" tabindex="0" title="' + safeName + '"' +
+      ' oncontextmenu="_ctxShow(event,\'radio-recent\',{name:' + JSON.stringify(s.name) + ',extra:' + JSON.stringify(encS) + '})"' +
       ' onclick="radioPlayStation(\'' + encUrl + '\',\'' + encName + '\',\'' + encCountry + '\',\'' + encTag + '\',\'' + encS + '\')"' +
       ' onkeydown="activateKeyboardClick(event,this)">' +
       (s.favicon

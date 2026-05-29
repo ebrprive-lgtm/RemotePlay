@@ -354,20 +354,32 @@ async function setPlaybackSpeed(value) {
 function updateTrackControls(s) {
   const audioSelect = document.getElementById('audio-track-select');
   const subtitleSelect = document.getElementById('subtitle-track-select');
+  const chapterSelect = document.getElementById('chapter-track-select');
   const audioGroup = document.getElementById('audio-track-group');
   const subtitleGroup = document.getElementById('subtitle-track-group');
+  const chapterGroup = document.getElementById('chapter-track-group');
   const trackControls = document.getElementById('track-controls');
   const audioTracks = Array.isArray(s.audioTracks) ? s.audioTracks : [];
   const subtitleTracks = Array.isArray(s.subtitleTracks) ? s.subtitleTracks : [];
+  const chapters = Array.isArray(s.chapters) ? s.chapters : [];
   const showAudio = audioTracks.length > 1;
   const showSubtitles = subtitleTracks.some((t) => Number(t.id) >= 0);
+  const showChapters = chapters.length > 1;
   renderTrackSelect(audioSelect, audioTracks, s.currentAudioTrackId);
   renderTrackSelect(subtitleSelect, subtitleTracks, s.currentSubtitleTrackId);
+  if (showChapters) renderTrackSelect(chapterSelect, chapters, s.currentChapter ?? -1);
   audioGroup.style.display = showAudio ? 'flex' : 'none';
   subtitleGroup.style.display = showSubtitles ? 'flex' : 'none';
-  trackControls.style.display = showAudio || showSubtitles ? 'flex' : 'none';
+  if (chapterGroup) chapterGroup.style.display = showChapters ? 'flex' : 'none';
+  const showAny = showAudio || showSubtitles || showChapters;
+  trackControls.style.display = showAny ? 'flex' : 'none';
+  renderEqPresets(s.eqPreset ?? -1);
+  const eqWrap = document.getElementById('eq-select-wrap');
+  if (eqWrap) eqWrap.style.display = s.isPlaying ? '' : 'none';
+  if (s.isPlaying) _drawEqSparkline('eq-sparkline', s.eqPreset ?? -1);
+  _syncEqWrapVisibility();
   document.getElementById('options-card').style.display =
-    showAudio || showSubtitles ? 'flex' : 'none';
+    showAny || s.isPlaying ? 'flex' : 'none';
 }
 function renderTrackSelect(select, tracks, currentId) {
   const signature = JSON.stringify((tracks || []).map((t) => [t.id, t.name]));
@@ -529,6 +541,182 @@ async function setSubtitleTrack(id) {
   haptic(8);
   await api('/api/subtitle-track?id=' + encodeURIComponent(id));
 }
+async function setChapter(id) {
+  haptic(8);
+  await api('/api/chapter?id=' + encodeURIComponent(id));
+}
+async function setEqPreset(id) {
+  haptic(8);
+  // Route to the domain-specific endpoint so music/radio also hear the change.
+  let endpoint = '/api/eq-preset';
+  if (typeof currentMode !== 'undefined') {
+    if (currentMode === 'music') endpoint = '/api/music/eq-preset';
+    else if (currentMode === 'radio') endpoint = '/api/radio/eq-preset';
+  }
+  await api(endpoint + '?id=' + encodeURIComponent(id));
+  _lastEqPreset = Number(id);
+  renderEqPresets(_lastEqPreset);
+}
+
+// Room reverb preset names (index matches ReverbSampleProvider.PresetNames)
+const _reverbPresetNames = ['Off', 'Booth', 'Small Room', 'Medium Room', 'Large Room', 'Hall', 'Cathedral',
+  'Arena', 'Cavern', 'Cave', 'Underwater', 'Pipe'];
+let _lastReverbPreset = 0;       // video
+let _lastMusicReverbPreset = 0;  // music
+let _lastRadioReverbPreset = 0;  // radio
+
+function _populateReverbSelect(id) {
+  const sel = document.getElementById(id);
+  if (!sel || sel.options.length) return;
+  sel.innerHTML = _reverbPresetNames
+    .map((name, i) => '<option value="' + i + '">' + esc(name) + '</option>')
+    .join('');
+}
+
+function renderReverbPresets(currentPreset) {
+  _lastReverbPreset = currentPreset;
+  _populateReverbSelect('reverb-select');
+  const sel = document.getElementById('reverb-select');
+  if (sel) sel.value = String(currentPreset);
+}
+
+function _renderMusicReverbPreset(preset) {
+  if (preset == null || preset === _lastMusicReverbPreset) { _populateReverbSelect('music-reverb-select'); return; }
+  _lastMusicReverbPreset = preset;
+  _populateReverbSelect('music-reverb-select');
+  const sel = document.getElementById('music-reverb-select');
+  if (sel && sel.value !== String(preset)) sel.value = String(preset);
+}
+
+function _renderRadioReverbPreset(preset) {
+  if (preset == null || preset === _lastRadioReverbPreset) { _populateReverbSelect('radio-reverb-select'); return; }
+  _lastRadioReverbPreset = preset;
+  _populateReverbSelect('radio-reverb-select');
+  const sel = document.getElementById('radio-reverb-select');
+  if (sel && sel.value !== String(preset)) sel.value = String(preset);
+}
+
+async function setReverbPreset(id, domain) {
+  haptic(8);
+  if (domain === 'music') {
+    await api('/api/music/reverb-preset?id=' + encodeURIComponent(id));
+    _lastMusicReverbPreset = Number(id);
+  } else if (domain === 'radio') {
+    await api('/api/radio/reverb-preset?id=' + encodeURIComponent(id));
+    _lastRadioReverbPreset = Number(id);
+  } else {
+    await api('/api/reverb-preset?id=' + encodeURIComponent(id));
+    _lastReverbPreset = Number(id);
+    renderReverbPresets(_lastReverbPreset);
+  }
+}
+
+// VLC built-in equalizer preset names (order matches VLC preset index 0-17)
+const _eqPresetNames = [
+  'Flat (EQ on)', 'Classical', 'Club', 'Dance', 'Full Bass', 'Full Bass & Treble',
+  'Full Treble', 'Headphones', 'Large Hall', 'Live', 'Party', 'Pop',
+  'Reggae', 'Rock', 'Ska', 'Soft', 'Soft Rock', 'Techno'
+];
+// VLC built-in preset gain values (dB, 10 bands: 60Hz 170Hz 310Hz 600Hz 1kHz 3kHz 6kHz 12kHz 14kHz 16kHz)
+// Source: vlc/modules/audio_filter/equalizer_presets.h
+const _eqPresetGains = [
+  [ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],           // 0 Flat (EQ on)
+  [ 4, 4, 4, 0, 0, 0, 0, 0,-4,-4],           // 1 Classical
+  [ 0, 0, 8, 5, 5, 5, 3, 0, 0, 0],           // 2 Club
+  [ 8, 6, 5, 0,-2,-3, 6, 9, 10, 8],          // 3 Dance
+  [10, 9, 8, 1,-2,-4,-4,-2, 0, 0],           // 4 Full Bass
+  [ 7, 5, 0,-6,-4, 2, 8, 11,12,12],          // 5 Full Bass & Treble
+  [-8,-6,-4,-3, 0, 7, 9, 10,11,12],          // 6 Full Treble
+  [ 5, 4, 1, 0,-2, 3, 5, 9, 10, 9],          // 7 Headphones
+  [12, 8, 5, 0, 0,-4,-7,-8,-7,-7],           // 8 Large Hall
+  [-4,-3,-1, 3, 4, 3, 0,-2,-2,-2],           // 9 Live
+  [ 5, 5, 0, 0, 0, 0, 5, 5, 5, 5],           // 10 Party
+  [-2,-1, 0, 2, 4, 4, 1, 0, 0, 0],           // 11 Pop
+  [ 0, 0, 0,-2,-5, 0, 6, 6, 6, 2],           // 12 Reggae
+  [ 8, 5,-5,-8,-3, 4, 8, 8, 5, 2],           // 13 Rock
+  [-3,-1, 3, 5, 3,-1,-3,-3,-3,-3],           // 14 Ska
+  [-2,-2, 0, 2, 3, 3, 2, 0, 0, 0],           // 15 Soft
+  [ 4, 4, 2, 0,-4,-3, 0, 2, 8, 9],           // 16 Soft Rock
+  [ 8, 5, 0,-6,-4, 4, 9, 9, 8, 7]            // 17 Techno
+];
+function _drawEqSparkline(canvasId, presetIndex) {
+  const cv = document.getElementById(canvasId);
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const w = cv.width, h = cv.height;
+  ctx.clearRect(0, 0, w, h);
+  // Resolve CSS variable now (Canvas 2D does not support CSS custom properties in strokeStyle)
+  const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--player-accent').trim() || '#e94560';
+  if (presetIndex < 0 || presetIndex >= _eqPresetGains.length) {
+    // Off (flat) — draw a flat midline
+    ctx.strokeStyle = 'rgba(158,162,184,0.45)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+    return;
+  }
+  const gains = _eqPresetGains[presetIndex];
+  const maxDb = 12, n = gains.length;
+  const pad = 2;
+  ctx.strokeStyle = accentColor;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = pad + (i / (n - 1)) * (w - pad * 2);
+    const y = pad + ((maxDb - gains[i]) / (maxDb * 2)) * (h - pad * 2);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  // zero-db reference line (faint)
+  ctx.strokeStyle = 'rgba(158,162,184,0.25)';
+  ctx.lineWidth = 0.7;
+  ctx.setLineDash([2, 2]);
+  const midY = pad + (h - pad * 2) / 2;
+  ctx.beginPath(); ctx.moveTo(pad, midY); ctx.lineTo(w - pad, midY); ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+let _lastEqPreset = -1;
+
+function renderEqPresets(currentPreset) {
+  _lastEqPreset = currentPreset;
+  const ids = ['eq-select', 'radio-eq-select', 'music-eq-select'];
+  const sparkIds = ['eq-sparkline', 'radio-eq-sparkline', 'music-eq-sparkline'];
+  ids.forEach((id, idx) => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    if (!sel.options.length) {
+      const opts = [{ id: -1, name: 'Off (Flat)' }].concat(
+        _eqPresetNames.map((name, i) => ({ id: i, name }))
+      );
+      sel.innerHTML = opts
+        .map((o) => '<option value="' + o.id + '">' + esc(o.name) + '</option>')
+        .join('');
+    }
+    sel.value = String(currentPreset);
+    _drawEqSparkline(sparkIds[idx], currentPreset);
+  });
+}
+function _syncEqWrapVisibility() {
+  // Ensure all selects are populated (no-op if already done)
+  renderEqPresets(_lastEqPreset);
+  _populateReverbSelect('music-reverb-select');
+  _populateReverbSelect('radio-reverb-select');
+  const radioPlaying = typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying;
+  const musicPlaying = typeof musicIsPlaying !== 'undefined' && musicIsPlaying;
+  const radioWrap = document.getElementById('radio-eq-select-wrap');
+  if (radioWrap) radioWrap.style.display = radioPlaying ? '' : 'none';
+  const musicWrap = document.getElementById('music-eq-select-wrap');
+  if (musicWrap) musicWrap.style.display = musicPlaying ? '' : 'none';
+  const radioReverbWrap = document.getElementById('radio-reverb-select-wrap');
+  if (radioReverbWrap) radioReverbWrap.style.display = radioPlaying ? '' : 'none';
+  const musicReverbWrap = document.getElementById('music-reverb-select-wrap');
+  if (musicReverbWrap) musicReverbWrap.style.display = musicPlaying ? '' : 'none';
+  // Sparklines must be redrawn after the canvas becomes visible
+  if (radioPlaying) _drawEqSparkline('radio-eq-sparkline', _lastEqPreset);
+  if (musicPlaying) _drawEqSparkline('music-eq-sparkline', _lastEqPreset);
+}
 async function playAdjacent(direction) {
   haptic(10);
   await api('/api/adjacent?direction=' + encodeURIComponent(direction));
@@ -603,6 +791,7 @@ async function browse(d, offset = 0, append = false, pushHistory = true, isLinke
     browseHistory.push(currentDir);
   if (!append && d === null) browseHistory = [];
   if (!append) currentIsLinkedDir = isLinked;
+  if (!append) _hideSearchFilterBar();
   setStatus('Loading...');
   currentDir = d;
   document.getElementById('search').value = '';
@@ -630,6 +819,8 @@ async function browse(d, offset = 0, append = false, pushHistory = true, isLinke
     } else currentData = nextData;
     render(currentData);
     setBrowseLoading(false); // dismiss overlay as soon as content is rendered
+    if (typeof renderPinnedStrip === 'function') renderPinnedStrip();
+    if (typeof _updatePinButton === 'function') _updatePinButton();
     if (!append) {
       renderFavorites(await loadFavorites());
       renderRecent(await loadRecent());
@@ -650,22 +841,109 @@ function setSearchBusy(on) {
   inp.classList.toggle('searching', on);
   sp.classList.toggle('visible', on);
 }
+
+// ── Search filter bar ─────────────────────────────────────────────────────
+let _searchFilterMode   = 'all'; // 'all' | 'title' | 'artist' | 'album'
+let _lastSearchQuery    = '';    // kept in sync with the last query that produced results
+let _totalSearchResults = 0;     // total cards before any filter is applied
+
+function _updateSearchCountText(visible, total) {
+  const txt = document.getElementById('count-text');
+  if (!txt) return;
+  if (_searchFilterMode === 'all' || visible === total) {
+    txt.textContent = total + ' result' + (total !== 1 ? 's' : '') + ' found';
+  } else {
+    const modeName = { title: 'title', artist: 'artist', album: 'album' }[_searchFilterMode] || _searchFilterMode;
+    txt.textContent = visible + ' of ' + total + ' result' + (total !== 1 ? 's' : '') + ' (filter: ' + modeName + ')';
+  }
+}
+
+function _showSearchFilterBar(isMusic) {
+  const bar = document.getElementById('search-filter-bar');
+  if (!bar) return;
+  // artist / album chips are only meaningful for music
+  bar.querySelectorAll('.sf-music-only').forEach(el => {
+    el.style.display = isMusic ? '' : 'none';
+  });
+  bar.style.display = 'flex';
+  // Capture total result count (called right after results are rendered)
+  _totalSearchResults = document.querySelectorAll('.music-track-card, .movie-card').length;
+}
+
+function _hideSearchFilterBar() {
+  const bar = document.getElementById('search-filter-bar');
+  if (!bar) return;
+  bar.style.display = 'none';
+  // reset selection to "All" so next search starts clean
+  _searchFilterMode = 'all';
+  _totalSearchResults = 0;
+  const allRadio = bar.querySelector('input[value="all"]');
+  if (allRadio) allRadio.checked = true;
+}
+
+function setSearchFilter(mode) {
+  _searchFilterMode = mode;
+  _applySearchFilter();
+}
+
+function _applySearchFilter() {
+  const q = _lastSearchQuery.toLowerCase().trim();
+  if (!q || _searchFilterMode === 'all') {
+    // show everything
+    document.querySelectorAll('.music-track-card, .movie-card').forEach(c => c.style.display = '');
+    _updateSearchCountText(_totalSearchResults, _totalSearchResults);
+    return;
+  }
+  let visible = 0;
+  if (_searchFilterMode === 'title') {
+    document.querySelectorAll('.music-track-card').forEach(c => {
+      const t = (c.dataset.srTitle || '').toLowerCase();
+      const show = t.includes(q);
+      c.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    document.querySelectorAll('.movie-card').forEach(c => {
+      const t = (c.dataset.srTitle || '').toLowerCase();
+      const show = t.includes(q);
+      c.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+  } else if (_searchFilterMode === 'artist') {
+    document.querySelectorAll('.music-track-card').forEach(c => {
+      const a = (c.dataset.srArtist || '').toLowerCase();
+      const show = a.includes(q);
+      c.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+  } else if (_searchFilterMode === 'album') {
+    document.querySelectorAll('.music-track-card').forEach(c => {
+      const a = (c.dataset.srAlbum || '').toLowerCase();
+      const show = a.includes(q);
+      c.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+  }
+  _updateSearchCountText(visible, _totalSearchResults);
+}
 function onSearch() {
   const q = document.getElementById('search').value.toLowerCase().trim();
   clearTimeout(searchTimer);
   if (currentMode === 'music') {
     if (!q) {
-      if (currentMusicData) renderMusic(currentMusicData);
-      else browseMusic(null);
+      _hideSearchFilterBar();
+      browseMusic(null);
       return;
     }
+    setSearchBusy(true);
     searchTimer = setTimeout(() => searchMusicLibrary(q), 300);
     return;
   }
   if (currentMode === 'radio') return;
   if (!q) {
     setSearchBusy(false);
-    if (currentData) render(currentData);
+    _hideSearchFilterBar();
+    if (pendingSearchAbort) { pendingSearchAbort.abort(); pendingSearchAbort = null; }
+    browse(null);
     return;
   }
   clearPendingThumbnails();
@@ -718,3 +996,194 @@ function observeMovieCards() {
   );
   cards.forEach((card) => thumbnailObserver.observe(card));
 }
+
+// ── Pinned folders (feature 11) ─────────────────────────────────────────────
+const PINNED_FOLDERS_KEY = 'pinnedFolders';
+
+function _getPinnedFolders() {
+  try { return JSON.parse(localStorage.getItem(PINNED_FOLDERS_KEY) || '[]'); } catch { return []; }
+}
+function _setPinnedFolders(list) {
+  try { localStorage.setItem(PINNED_FOLDERS_KEY, JSON.stringify(list)); } catch {}
+}
+
+function isFolderPinned(encodedDir) {
+  return _getPinnedFolders().some((p) => (typeof p === 'string' ? p : p.path) === encodedDir);
+}
+
+function _decodeDirName(encodedDir) {
+  try {
+    // currentDir values are base64-encoded absolute paths
+    return atob(encodedDir);
+  } catch { return encodedDir; }
+}
+
+function togglePinFolder(encodedDir) {
+  let pins = _getPinnedFolders();
+  // Normalise legacy string format
+  pins = pins.map((p) => (typeof p === 'string' ? { path: p, name: _decodeDirName(p) } : p));
+  const idx = pins.findIndex((p) => p.path === encodedDir);
+  if (idx >= 0) {
+    pins.splice(idx, 1);
+  } else {
+    const decodedName = _decodeDirName(encodedDir);
+    pins.unshift({ path: encodedDir, name: decodedName });
+  }
+  _setPinnedFolders(pins);
+  renderPinnedStrip();
+  _updatePinButton();
+}
+
+function _unpinFolder(encodedDir) {
+  let pins = _getPinnedFolders();
+  pins = pins.map((p) => (typeof p === 'string' ? { path: p, name: _decodeDirName(p) } : p));
+  pins = pins.filter((p) => p.path !== encodedDir);
+  _setPinnedFolders(pins);
+  renderPinnedStrip();
+  _updatePinButton();
+}
+
+function renderPinnedStrip() {
+  const strip = document.getElementById('video-pinned-strip');
+  if (!strip) return;
+  let pins;
+  try { pins = JSON.parse(localStorage.getItem(PINNED_FOLDERS_KEY) || '[]'); } catch { pins = []; }
+  // Normalise legacy string format
+  pins = pins.map((p) => (typeof p === 'string' ? { path: p, name: _decodeDirName(p) } : p));
+  if (!pins.length) { strip.style.display = 'none'; return; }
+  strip.style.display = '';
+  strip.innerHTML =
+    pins.map((p) => {
+      const parts = _folderParts(p.name);
+      return (
+        '<div class="vr-card pinned-card" role="button" tabindex="0" title="' + esc(p.name) + '"' +
+        ' data-pin-path="' + esc(p.path) + '"' +
+        ' oncontextmenu="_ctxShow(event,\'video-pinned\',{dir:\'' + esc(p.path) + '\',name:\'' + esc(p.name) + '\'})"' +
+        ' onkeydown="activateKeyboardClick(event,this)">' +
+        '<div class="vr-thumb vr-thumb-placeholder">📁</div>' +
+        '<div class="vr-label pinned-label-wrap">' +
+        (parts.parent ? '<span class="pinned-parent">' + esc(parts.parent) + '</span>' : '') +
+        '<span class="pinned-name">' + esc(parts.name) + '</span>' +
+        '</div>' +
+        '<button class="pinned-card-remove" title="Unpin" data-unpin-path="' + esc(p.path) + '">×</button>' +
+        '</div>'
+      );
+    }).join('');
+  if (strip._pinHandler) strip.removeEventListener('click', strip._pinHandler);
+  strip._pinHandler = (e) => {
+    const removeBtn = e.target.closest('[data-unpin-path]');
+    if (removeBtn) { e.stopPropagation(); _unpinFolder(removeBtn.dataset.unpinPath); return; }
+    const card = e.target.closest('[data-pin-path]');
+    if (card) browse(card.dataset.pinPath);
+  };
+  strip.addEventListener('click', strip._pinHandler);
+}
+
+function _folderParts(name) {
+  try {
+    const parts = name.replace(/\\/g, '/').split('/').filter(Boolean);
+    return {
+      name: parts[parts.length - 1] || name,
+      parent: parts.length >= 2 ? parts[parts.length - 2] : null,
+    };
+  } catch { return { name, parent: null }; }
+}
+
+function _shortFolderName(name) {
+  return _folderParts(name).name;
+}
+
+function _updatePinButton() {
+  const btn = document.getElementById('vcb-pin-btn');
+  if (!btn) return;
+  const pinned = currentDir ? isFolderPinned(currentDir) : false;
+  btn.classList.toggle('active', pinned);
+  btn.title = pinned ? 'Unpin this folder' : 'Pin this folder';
+  btn.innerHTML = pinned ? '📌 Pinned' : '📁 Pin folder';
+  btn.disabled = !currentDir;
+}
+
+// ── Music pinned folders ─────────────────────────────────────────────────────
+const MUSIC_PINNED_FOLDERS_KEY = 'musicPinnedFolders';
+
+function _getMusicPinnedFolders() {
+  try { return JSON.parse(localStorage.getItem(MUSIC_PINNED_FOLDERS_KEY) || '[]'); } catch { return []; }
+}
+function _setMusicPinnedFolders(list) {
+  try { localStorage.setItem(MUSIC_PINNED_FOLDERS_KEY, JSON.stringify(list)); } catch {}
+}
+
+function isMusicFolderPinned(encodedDir) {
+  return _getMusicPinnedFolders().some((p) => (typeof p === 'string' ? p : p.path) === encodedDir);
+}
+
+function toggleMusicPinFolder(encodedDir) {
+  if (!encodedDir) return;
+  let pins = _getMusicPinnedFolders();
+  pins = pins.map((p) => (typeof p === 'string' ? { path: p, name: _decodeDirName(p) } : p));
+  const idx = pins.findIndex((p) => p.path === encodedDir);
+  if (idx >= 0) {
+    pins.splice(idx, 1);
+  } else {
+    const decodedName = _decodeDirName(encodedDir);
+    pins.unshift({ path: encodedDir, name: decodedName });
+  }
+  _setMusicPinnedFolders(pins);
+  renderMusicPinnedStrip();
+  _updateMusicPinButton();
+}
+
+function _unpinMusicFolder(encodedDir) {
+  let pins = _getMusicPinnedFolders();
+  pins = pins.map((p) => (typeof p === 'string' ? { path: p, name: _decodeDirName(p) } : p));
+  pins = pins.filter((p) => p.path !== encodedDir);
+  _setMusicPinnedFolders(pins);
+  renderMusicPinnedStrip();
+  _updateMusicPinButton();
+}
+
+function renderMusicPinnedStrip() {
+  const strip = document.getElementById('music-pinned-strip');
+  if (!strip) return;
+  let pins = _getMusicPinnedFolders();
+  pins = pins.map((p) => (typeof p === 'string' ? { path: p, name: _decodeDirName(p) } : p));
+  if (!pins.length) { strip.style.display = 'none'; return; }
+  strip.style.display = '';
+  strip.innerHTML =
+    pins.map((p) => {
+      const parts = _folderParts(p.name);
+      return (
+        '<div class="vr-card pinned-card" role="button" tabindex="0" title="' + esc(p.name) + '"' +
+        ' data-music-pin-path="' + esc(p.path) + '"' +
+        ' oncontextmenu="_ctxShow(event,\'music-pinned\',{dir:\'' + esc(p.path) + '\',name:\'' + esc(p.name) + '\'})"' +
+        ' onkeydown="activateKeyboardClick(event,this)">' +
+        '<div class="vr-thumb vr-thumb-placeholder">📁</div>' +
+        '<div class="vr-label pinned-label-wrap">' +
+        (parts.parent ? '<span class="pinned-parent">' + esc(parts.parent) + '</span>' : '') +
+        '<span class="pinned-name">' + esc(parts.name) + '</span>' +
+        '</div>' +
+        '<button class="pinned-card-remove" title="Unpin" data-music-unpin-path="' + esc(p.path) + '">×</button>' +
+        '</div>'
+      );
+    }).join('');
+  if (strip._pinHandler) strip.removeEventListener('click', strip._pinHandler);
+  strip._pinHandler = (e) => {
+    const removeBtn = e.target.closest('[data-music-unpin-path]');
+    if (removeBtn) { e.stopPropagation(); _unpinMusicFolder(removeBtn.dataset.musicUnpinPath); return; }
+    const card = e.target.closest('[data-music-pin-path]');
+    if (card && typeof browseMusic === 'function') browseMusic(card.dataset.musicPinPath);
+  };
+  strip.addEventListener('click', strip._pinHandler);
+}
+
+function _updateMusicPinButton() {
+  const btn = document.getElementById('mcb-pin-btn');
+  if (!btn) return;
+  const dir = typeof currentMusicFolder !== 'undefined' ? currentMusicFolder : null;
+  const pinned = dir ? isMusicFolderPinned(dir) : false;
+  btn.classList.toggle('active', pinned);
+  btn.title = pinned ? 'Unpin this folder' : 'Pin this folder';
+  btn.innerHTML = pinned ? '📌 Pinned' : '📁 Pin folder';
+  btn.disabled = !dir;
+}
+

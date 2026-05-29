@@ -35,6 +35,9 @@ async function searchLibrary(q, offset = 0, append = false) {
     }
     currentData = rendered;
     render(rendered, true);
+    if (typeof _lastSearchQuery !== 'undefined') _lastSearchQuery = q;
+    if (typeof _showSearchFilterBar === 'function') _showSearchFilterBar(false);
+    if (typeof _applySearchFilter === 'function') _applySearchFilter();
     updateLibraryStatus({
       isScanning: data.indexing,
       indexedFiles: data.indexedFiles,
@@ -102,7 +105,12 @@ function _applyVcbViewBtn() {
   btn.textContent = isList ? '⊞ Grid' : '☰ List';
   btn.title = isList ? 'Switch to grid view' : 'Switch to list view';
   // Re-sync sort-block visibility based on new view mode
-  if (currentData) _setCbRightVisible('vcb-right', (currentData.files?.length || 0) > 0 && !isList);
+  const sortEl = document.getElementById('vcb-sort');
+  if (sortEl) sortEl.style.display = isList ? 'none' : '';
+  if (currentData) {
+    const cnt = document.getElementById('vcb-count');
+    if (cnt) cnt.style.display = (currentData.files?.length || 0) > 0 ? '' : 'none';
+  }
 }
 function _sortedFiles(files) {
   const arr = files.slice();
@@ -222,7 +230,7 @@ function render(data, searching) {
       html += data.folders
         .map(
           (f) =>
-            '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" onclick="this.classList.add(\'folder-row-active\');searchLibrary(\'' +
+            '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" oncontextmenu="_showFolderCtxMenu(event,null,\'' + esc(f.folder || f.name) + '\',true)" onclick="this.classList.add(\'folder-row-active\');searchLibrary(\'' +
             esc(f.folder || f.name) +
             '\')">' +
             '<span class="folder-icon">&#128193;</span><span class="folder-name">' +
@@ -236,7 +244,7 @@ function render(data, searching) {
       html += data.folders
         .map(
           (f) =>
-            '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" onclick="this.classList.add(\'folder-row-active\');browse(\'' +
+            '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)" oncontextmenu="_showFolderCtxMenu(event,\'' + f.dir + '\',\'' + esc(f.name) + '\',false)" onclick="this.classList.add(\'folder-row-active\');browse(\'' +
             f.dir +
             "',0,false,true," +
             (f.isLink ? 'true' : 'false') +
@@ -251,7 +259,10 @@ function render(data, searching) {
       html += '</div>';
     }
   }
-  _setCbRightVisible('vcb-right', data.files.length > 0 && _viewMode.video !== 'list');
+  const sortElR = document.getElementById('vcb-sort');
+  if (sortElR) sortElR.style.display = _viewMode.video === 'list' ? 'none' : '';
+  const cntEl = document.getElementById('vcb-count');
+  if (cntEl) cntEl.style.display = data.files.length > 0 ? '' : 'none';
   if (data.files.length) {
     // Store raw files for filter/sort; render via helper
     _currentRawFiles = data.files;
@@ -377,12 +388,14 @@ function _renderVideoFileRows(files) {
       return '<div class="' + cardClass +
         '" id="' + cardIdFor(f.path) +
         '" data-path="' + esc(f.path) +
+        '" data-sr-title="' + esc((displayName || '').toLowerCase()) +
         '" role="button" tabindex="0" aria-label="Play ' + esc(displayName) +
         '" data-thumb="' + esc(thumbUrl) + '"' +
         action +
         ' onkeydown="activateKeyboardClick(event,this)"' +
+        ' oncontextmenu="_ctxShow(event,\'video-file\',{path:\'' + esc(f.path) + '\',name:\'' + esc(displayName) + '\',played:' + played + ',queued:' + queued + ',favorite:' + favorite + '})"' +
         ' onpointerdown="beginCardHold(event,\'' + f.path + '\')"' +
-        ' onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">' +
+        ' onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">'
         // List-mode columns (CSS grid)
         titleCol + progCol + yearCol + cbCol + extCol + durCol + actionsCol +
         // Grid-mode inner card (hidden in list mode)
@@ -431,3 +444,219 @@ function _scheduleDurationPatch(files) {
     } catch (_) { /* ignore */ }
   }, 2500);
 }
+
+// ── Universal context menu ────────────────────────────────────────────────────
+(function () {
+  /*
+   * _ctx holds the current item info:
+   *   type   : 'video-folder' | 'music-folder' | 'video-recent' | 'music-recent' | 'radio-recent' | 'video-pinned'
+   *   dir    : base64-encoded folder path  (folder types + video-pinned)
+   *   path   : base64-encoded file path    (recent types)
+   *   name   : display name
+   *   extra  : arbitrary extra data (radio station JSON, etc.)
+   */
+  let _ctx = null;
+
+  const menu = () => document.getElementById('ctx-menu');
+
+  // Actions visible per type
+  const _VISIBLE = {
+    'video-folder':   ['open', 'pin', 'unpin', 'search', 'copy'],
+    'video-file':     ['play', 'queue', 'fav', 'watched', 'copy'],
+    'music-folder':   ['open', 'copy'],
+    'music-file':     ['play', 'queue', 'copy'],
+    'video-recent':   ['play', 'queue', 'fav', 'watched', 'copy'],
+    'music-recent':   ['play', 'queue', 'copy'],
+    'radio-station':  ['play', 'fav', 'copy'],
+    'radio-recent':   ['play', 'fav', 'copy'],
+    'radio-country':  ['open', 'fav', 'copy'],
+    'radio-tag':      ['open', 'fav', 'copy'],
+    'video-pinned':   ['open', 'unpin', 'copy'],
+  };
+
+  function _show(e, type, ctx) {
+    e.preventDefault();
+    e.stopPropagation();
+    _ctx = { type, ...ctx };
+    const m = menu();
+    if (!m) return;
+
+    const visible = new Set(_VISIBLE[type] || []);
+
+    // Dynamic pin/unpin for video folders
+    if (type === 'video-folder') {
+      const pinned = typeof isFolderPinned === 'function' && isFolderPinned(ctx.dir);
+      visible.delete(pinned ? 'pin' : 'unpin');
+    }
+
+    // Dynamic labels based on current item state
+    if (type === 'video-file' || type === 'video-recent') {
+      const favBtn = m.querySelector('[data-action="fav"]');
+      if (favBtn) favBtn.textContent = ctx.favorite ? '♥ Unfavourite' : '♥ Favourite';
+      const watchedBtn = m.querySelector('[data-action="watched"]');
+      if (watchedBtn) watchedBtn.textContent = ctx.played ? '✔ Mark unwatched' : '✔ Mark watched';
+      const queueBtn = m.querySelector('[data-action="queue"]');
+      if (queueBtn) queueBtn.textContent = ctx.queued ? '➕ Remove from queue' : '➕ Add to queue';
+    } else if (type === 'music-file' || type === 'music-recent') {
+      const queueBtn = m.querySelector('[data-action="queue"]');
+      if (queueBtn) queueBtn.textContent = ctx.queued ? '➕ Remove from queue' : '➕ Add to queue';
+    } else if (type === 'radio-station' || type === 'radio-recent' || type === 'radio-country' || type === 'radio-tag') {
+      const favBtn = m.querySelector('[data-action="fav"]');
+      if (favBtn) favBtn.textContent = ctx.isFav ? '♥ Unfavourite' : '♥ Favourite';
+    }
+
+    m.querySelectorAll('[data-action]').forEach((btn) => {
+      btn.style.display = visible.has(btn.dataset.action) ? '' : 'none';
+    });
+
+    // Position menu near cursor, keeping inside viewport
+    m.style.display = 'block';
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const mw = m.offsetWidth || 180, mh = m.offsetHeight || 200;
+    m.style.left = Math.min(e.clientX, vw - mw - 8) + 'px';
+    m.style.top  = Math.min(e.clientY, vh - mh - 8) + 'px';
+  }
+
+  function _hide() {
+    const m = menu();
+    if (m) m.style.display = 'none';
+    _ctx = null;
+  }
+
+  // ── Global dismiss ────────────────────────────────────────────────────────
+  document.addEventListener('click',       (e) => { if (!e.target.closest('#ctx-menu')) _hide(); });
+  document.addEventListener('keydown',     (e) => { if (e.key === 'Escape') _hide(); });
+  // Suppress native context menu everywhere; only show ours when triggered via _show
+  document.addEventListener('contextmenu', (e) => {
+    if (!e.target.closest('#ctx-menu')) { e.preventDefault(); _hide(); }
+  });
+
+  // ── Action dispatch ───────────────────────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', () => {
+    const m = menu();
+    if (!m) return;
+    // Re-parent to <body> so position:fixed isn't trapped by any overflow/stacking context
+    if (m.parentElement !== document.body) document.body.appendChild(m);
+    m.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-action]');
+      if (!btn || !_ctx) return;
+      const action = btn.dataset.action;
+      const ctx = _ctx;
+      _hide();
+
+      const decodePath = (b64) => { try { return atob(b64); } catch { return b64; } };
+
+      if (action === 'open') {
+        if (ctx.type === 'video-folder') {
+          if (ctx.isSearch) searchLibrary(ctx.name || decodePath(ctx.dir));
+          else browse(ctx.dir);
+        }
+        else if (ctx.type === 'music-folder') browseMusic(ctx.dir);
+        else if (ctx.type === 'video-pinned') browse(ctx.dir);
+        else if (ctx.type === 'radio-country') {
+          if (currentMode !== 'radio') switchMode('radio', true);
+          const country = document.getElementById('radio-country');
+          if (country) country.value = ctx.value || '';
+          if (typeof radioOnCountryChange === 'function') await radioOnCountryChange();
+        } else if (ctx.type === 'radio-tag') {
+          if (currentMode !== 'radio') switchMode('radio', true);
+          const tag = document.getElementById('radio-tag');
+          if (tag) tag.value = ctx.value || '';
+          if (typeof _syncFavSelectHeart === 'function') _syncFavSelectHeart('radio-tag', 'radioToggleTagFav');
+        }
+      } else if (action === 'play') {
+        if (ctx.type === 'video-file') {
+          if (typeof onCardClick === 'function') onCardClick({ stopPropagation: () => {} }, ctx.path);
+          else if (typeof play === 'function') play(ctx.path, ctx.name);
+        } else if (ctx.type === 'video-recent') {
+          const path = decodePath(ctx.path);
+          const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+          const rawFolder = lastSlash > 0 ? path.substring(0, lastSlash) : null;
+          const folderArg = rawFolder ? btoa(unescape(encodeURIComponent(rawFolder))) : null;
+          if (currentMode !== 'video') switchMode('video', true);
+          await browse(folderArg);
+          await play(ctx.path, ctx.name);
+        } else if (ctx.type === 'music-file' || ctx.type === 'music-recent') {
+          if (currentMode !== 'music') switchMode('music', true);
+          await playMusic(ctx.path, ctx.name);
+        } else if (ctx.type === 'radio-station') {
+          if (ctx.extra && typeof radioPlayStation === 'function') {
+            const s = JSON.parse(ctx.extra);
+            radioPlayStation(encodeURIComponent(s.url_resolved || s.url || ''),
+              encodeURIComponent(s.name || ''), encodeURIComponent(s.country || ''),
+              encodeURIComponent((s.tags || '').split(',')[0] || ''),
+              encodeURIComponent(ctx.extra));
+          }
+        } else if (ctx.type === 'radio-recent') {
+          if (ctx.extra) {
+            const s = JSON.parse(ctx.extra);
+            if (typeof radioPlayStation === 'function')
+              radioPlayStation(encodeURIComponent(s.url), encodeURIComponent(s.name),
+                encodeURIComponent(s.country || ''), encodeURIComponent((s.tags || '').split(',')[0] || ''),
+                encodeURIComponent(ctx.extra));
+          }
+        }
+      } else if (action === 'queue') {
+        if ((ctx.type === 'video-recent' || ctx.type === 'video-file') && typeof queueCardAction === 'function') {
+          await queueCardAction({ stopPropagation: () => {} }, ctx.path);
+        } else if (ctx.type === 'music-file' || ctx.type === 'music-recent') {
+          if (!window._musicQueue) window._musicQueue = [];
+          const existing = window._musicQueue.findIndex((q) => q.path === ctx.path);
+          if (existing >= 0) window._musicQueue.splice(existing, 1);
+          else window._musicQueue.push({ path: ctx.path, name: ctx.name });
+          if (typeof renderMusicCards === 'function' && typeof currentMusicData !== 'undefined' && currentMusicData)
+            renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
+          if (typeof _refreshMusicNavLabels === 'function') _refreshMusicNavLabels();
+          if (typeof _renderMusicQueuePeek === 'function') _renderMusicQueuePeek();
+          if (typeof _updateMusicQueuePendingBar === 'function') _updateMusicQueuePendingBar();
+        }
+      } else if (action === 'fav') {
+        if ((ctx.type === 'video-recent' || ctx.type === 'video-file') && typeof toggleFavoriteCard === 'function')
+          await toggleFavoriteCard({ stopPropagation: () => {} }, ctx.path);
+        else if ((ctx.type === 'radio-station' || ctx.type === 'radio-recent') && ctx.extra && typeof radioToggleFav === 'function') {
+          // radio-recent extra is already encodeURIComponent'd; radio-station extra is raw JSON
+          const enc = ctx.type === 'radio-recent' ? ctx.extra : encodeURIComponent(ctx.extra);
+          await radioToggleFav(null, enc);
+        } else if (ctx.type === 'radio-country' && typeof radioToggleCountryFav === 'function') {
+          radioToggleCountryFav(ctx.value);
+        } else if (ctx.type === 'radio-tag' && typeof radioToggleTagFav === 'function') {
+          radioToggleTagFav(ctx.value);
+        }
+      } else if (action === 'watched') {
+        if (ctx.type === 'video-file' && typeof toggleWatchedCard === 'function')
+          await toggleWatchedCard({ stopPropagation: () => {} }, ctx.path);
+      } else if (action === 'pin') {
+        if (typeof togglePinFolder === 'function') togglePinFolder(ctx.dir);
+      } else if (action === 'unpin') {
+        if (ctx.type === 'video-pinned') {
+          if (typeof _unpinFolder === 'function') _unpinFolder(ctx.dir);
+        } else {
+          if (typeof togglePinFolder === 'function') togglePinFolder(ctx.dir);
+        }
+      } else if (action === 'search') {
+        const decoded = ctx.isSearch ? (ctx.name || decodePath(ctx.dir)) : decodePath(ctx.dir);
+        const srch = document.getElementById('search');
+        if (srch) { srch.value = decoded; srch.dispatchEvent(new Event('input')); }
+      } else if (action === 'copy') {
+        let raw = ctx.path ? decodePath(ctx.path)
+                : ctx.dir  ? decodePath(ctx.dir)
+                : ctx.name || '';
+        if ((ctx.type === 'radio-station' || ctx.type === 'radio-recent') && ctx.extra) {
+          try {
+            const parsed = JSON.parse(ctx.type === 'radio-recent' ? decodeURIComponent(ctx.extra) : ctx.extra);
+            raw = parsed.url_resolved || parsed.url || raw;
+          } catch {}
+        } else if (ctx.type === 'radio-country' || ctx.type === 'radio-tag') {
+          raw = ctx.value || ctx.name || '';
+        }
+        navigator.clipboard?.writeText(raw).catch(() => {});
+      }
+    });
+  });
+
+  // ── Public API (called from inline oncontextmenu handlers) ────────────────
+  window._ctxShow = _show;
+  // Legacy alias kept for any existing inline handlers
+  window._showFolderCtxMenu = (e, dir, name, isSearch) =>
+    _show(e, 'video-folder', { dir, name, isSearch });
+})();
