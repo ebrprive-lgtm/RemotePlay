@@ -209,6 +209,7 @@ internal sealed partial class WebServer
     private bool _isIndexing;
     private bool _isMusicIndexing;
     private bool _browserLocalPlaying;   // true while browser is playing audio locally
+    private string? _musicPlayInitiatorIp; // IP of the client that last triggered /api/music/play
     private string _lastMusicScanError = string.Empty;
     private int _musicScanProgress;
     private string _musicScanFolder = string.Empty;

@@ -1171,7 +1171,7 @@ function renderMusicPinnedStrip() {
     const removeBtn = e.target.closest('[data-music-unpin-path]');
     if (removeBtn) { e.stopPropagation(); _unpinMusicFolder(removeBtn.dataset.musicUnpinPath); return; }
     const card = e.target.closest('[data-music-pin-path]');
-    if (card && typeof browseMusic === 'function') browseMusic(card.dataset.musicPinPath);
+    if (card && typeof browseMusic === 'function') browseMusic(_decodeDirName(card.dataset.musicPinPath));
   };
   strip.addEventListener('click', strip._pinHandler);
 }

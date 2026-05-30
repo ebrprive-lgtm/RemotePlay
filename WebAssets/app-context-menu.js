@@ -106,9 +106,9 @@
           if (ctx.isSearch) searchLibrary(ctx.name || decodePath(ctx.dir));
           else browse(ctx.dir);
         } else if (ctx.type === 'music-folder') {
-          browseMusic(ctx.dir);
+          browseMusic(typeof _decodeDirName === 'function' ? _decodeDirName(ctx.dir) : ctx.dir);
         } else if (ctx.type === 'music-pinned') {
-          browseMusic(ctx.dir);
+          browseMusic(typeof _decodeDirName === 'function' ? _decodeDirName(ctx.dir) : ctx.dir);
         } else if (ctx.type === 'video-pinned') {
           browse(ctx.dir);
         } else if (ctx.type === 'radio-country') {

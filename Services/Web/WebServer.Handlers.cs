@@ -372,6 +372,10 @@ internal sealed partial class WebServer
                 HandleMusicBrowse(ctx);
                 break;
 
+            case "/api/music/playlist":
+                HandleMusicPlaylist(ctx);
+                break;
+
             case "/api/music/recent":
                 HandleMusicRecent(ctx);
                 break;
@@ -401,11 +405,18 @@ internal sealed partial class WebServer
                     && pb.Position >= 10
                     && pb.Duration > 0)
                 {
-                    GetHistoryForIp(GetClientIp(ctx)).SavePosition(
-                        pb.CurrentPath,
-                        TimeSpan.FromSeconds(pb.Position),
-                        TimeSpan.FromSeconds(pb.Duration),
-                        _config.PlaybackHistoryLimit);
+                    // Only save position for the client that initiated this playback session.
+                    // Saving to every IP that polls would re-add a cleared entry for bystander clients.
+                    var pollerIp = GetClientIp(ctx);
+                    if (_musicPlayInitiatorIp is null || _musicPlayInitiatorIp == pollerIp
+                        || pollerIp == "127.0.0.1" || pollerIp == "::1" || pollerIp == "localhost")
+                    {
+                        GetHistoryForIp(pollerIp).SavePosition(
+                            pb.CurrentPath,
+                            TimeSpan.FromSeconds(pb.Position),
+                            TimeSpan.FromSeconds(pb.Duration),
+                            _config.PlaybackHistoryLimit);
+                    }
                 }
                 TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(GetMusicScanStatus()));
                 break;
@@ -1561,9 +1572,43 @@ internal sealed partial class WebServer
             .Select(f => (object)BuildMusicFileObj(f))
             .ToArray();
 
+        var scanDir = string.IsNullOrEmpty(folderParam) ? musicRoot : folderParam;
+        object[] playlists = [];
+        if (Directory.Exists(scanDir))
+        {
+            try
+            {
+                playlists = Directory.EnumerateFiles(scanDir, "*.*", SearchOption.TopDirectoryOnly)
+                    .Where(f =>
+                    {
+                        var ext = Path.GetExtension(f);
+                        return string.Equals(ext, ".m3u", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(ext, ".m3u8", StringComparison.OrdinalIgnoreCase);
+                    })
+                    .OrderBy(f => f, _naturalComparer)
+                    .Select(f =>
+                    {
+                        int trackCount = 0;
+                        try
+                        {
+                            trackCount = File.ReadLines(f)
+                                .Count(l => !string.IsNullOrWhiteSpace(l) && !l.TrimStart().StartsWith('#'));
+                        }
+                        catch { /* ignore unreadable playlists */ }
+                        return (object)new { name = Path.GetFileNameWithoutExtension(f), path = WebPathHelpers.EncodePath(f), trackCount };
+                    })
+                    .ToArray();
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("MusicBrowse", $"Cannot scan playlists in '{scanDir}': {ex.Message}");
+            }
+        }
+
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new
         {
             folders,
+            playlists,
             files,
             total = files.Length,
             totalInFolder = filteredAll.Length,
@@ -1577,6 +1622,46 @@ internal sealed partial class WebServer
             musicRoot = musicRoot,
             folder = string.IsNullOrEmpty(folderParam) ? musicRoot : folderParam
         }));
+    }
+
+    private void HandleMusicPlaylist(HttpListenerContext ctx)
+    {
+        var encodedPath = (ctx.Request.QueryString["path"] ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(encodedPath))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing path");
+            return;
+        }
+        var filePath = WebPathHelpers.DecodePath(encodedPath);
+        if (!File.Exists(filePath))
+        {
+            TrySendResponse(ctx, 404, "text/plain", "Playlist not found");
+            return;
+        }
+        var dir = Path.GetDirectoryName(filePath) ?? string.Empty;
+        var name = Path.GetFileNameWithoutExtension(filePath);
+        var tracks = new List<object>();
+        try
+        {
+            foreach (var raw in File.ReadLines(filePath))
+            {
+                var line = raw.Trim();
+                if (string.IsNullOrEmpty(line) || line.StartsWith('#'))
+                    continue;
+                // Resolve relative or absolute path; normalise any forward-slash separators
+                var normalised = line.Replace('/', Path.DirectorySeparatorChar);
+                var resolved = Path.IsPathRooted(normalised)
+                    ? normalised
+                    : Path.GetFullPath(Path.Combine(dir, normalised));
+                if (File.Exists(resolved))
+                    tracks.Add(new { path = WebPathHelpers.EncodePath(resolved), name = Path.GetFileNameWithoutExtension(resolved) });
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("MusicPlaylist", $"Error reading playlist '{filePath}': {ex.Message}");
+        }
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { name, tracks }));
     }
 
     private void HandleMusicSearch(HttpListenerContext ctx)
@@ -1784,9 +1869,11 @@ internal sealed partial class WebServer
         if (!string.IsNullOrEmpty(posParam))
             MediaControlValueParser.TryParseDouble(posParam, out startPos);
         var recordOnly = string.Equals(ctx.Request.QueryString["recordOnly"], "1", StringComparison.Ordinal);
-        GetHistoryForIp(GetClientIp(ctx)).RecordPlayed(filePath);
+        var initiatorIp = GetClientIp(ctx);
+        GetHistoryForIp(initiatorIp).RecordPlayed(filePath);
         if (!recordOnly)
         {
+            _musicPlayInitiatorIp = initiatorIp;
             _callbacks.Stop();
             _callbacks.RadioStop();
             _callbacks.PlayMusic(filePath, startPos);

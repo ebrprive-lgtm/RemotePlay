@@ -98,15 +98,33 @@ async function _videoSelectionQueue() {
 
 // ── Music playback ─────────────────────────────────────────────────────
 let _musicTrackListFolder = null; // folder the current musicTrackList was built from
+// Persistent queue cursor: -1 = not in queue mode; >= 0 = index into _musicQueue
+window._musicQueue    = window._musicQueue    || [];
+window._musicQueuePos = (window._musicQueuePos != null) ? window._musicQueuePos : -1;
 async function playMusic(path, name) {
   musicCurrentPath = path;
+  // If this path is not in the current queue, this is a manual play — reset queue cursor.
+  if (window._musicQueue && window._musicQueue.length > 0) {
+    const qIdx = window._musicQueue.findIndex((q) => q.path === path);
+    if (qIdx < 0) {
+      // Playing something outside the queue — clear queue entirely
+      window._musicQueue = [];
+      window._musicQueuePos = -1;
+    } else {
+      // Jumping to a specific queue item — cursor is already set by the caller,
+      // but ensure it matches the found index for any direct playMusic() call.
+      window._musicQueuePos = qIdx;
+    }
+  }
   // Update the .playing highlight immediately on click
   document.querySelectorAll('.music-track-card').forEach((card) => {
     card.classList.toggle('playing', card.dataset.path === path);
   });
   // Build/update track list from current browse data for prev/next.
-  // Only rebuild shuffle order when the folder (track list) changes.
-  if (currentMusicData && currentMusicData.files && currentMusicData.files.length) {
+  // Skip when a playlist queue is driving playback — rebuilding musicTrackList
+  // from the browse folder would corrupt the queue-next lookahead.
+  const _hasActiveQueue = window._musicQueue && window._musicQueue.length > 0;
+  if (!_hasActiveQueue && currentMusicData && currentMusicData.files && currentMusicData.files.length) {
     const newFolder = currentMusicData.folder || currentMusicFolder || null;
     const folderChanged = newFolder !== _musicTrackListFolder;
     _musicTrackListFolder = newFolder;
@@ -223,7 +241,7 @@ async function musicPrev() {
 }
 
 async function musicNext() {
-  if (musicTrackList.length === 0) return;
+  if (musicTrackList.length === 0 && !(window._musicQueue && window._musicQueue.length)) return;
   const t = _musicNextTrack();
   if (t) await playMusic(t.path, t.name);
 }
@@ -722,12 +740,24 @@ function _refreshMusicNavLabels() {
 function _musicNextTrack() {
   if (!musicTrackList.length && !(window._musicQueue && window._musicQueue.length)) return null;
   if (_musicRepeat === 'one' && musicTrackIndex >= 0) return musicTrackList[musicTrackIndex] || null;
-  // Consume from the explicit queue first
+  // Advance through the explicit queue (cursor-based, non-destructive)
   if (window._musicQueue && window._musicQueue.length) {
-    const next = window._musicQueue.shift();
-    // Refresh queue count badge
-    if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
-    return next || null;
+    const nextPos = window._musicQueuePos + 1;
+    if (nextPos < window._musicQueue.length) {
+      window._musicQueuePos = nextPos;
+      _updateMusicQueuePendingBar();
+      return window._musicQueue[nextPos];
+    }
+    // Queue exhausted — wrap if repeat=all, otherwise fall through to track list or stop
+    if (_musicRepeat === 'all' || _musicRepeat === 'one') {
+      window._musicQueuePos = 0;
+      _updateMusicQueuePendingBar();
+      return window._musicQueue[0];
+    }
+    window._musicQueuePos = window._musicQueue.length; // mark past end
+    _updateMusicQueuePendingBar();
+    if (!musicTrackList.length) return null;
+    // continue to track-list logic below
   }
   if (_musicShuffle) {
     if (!_musicShuffleOrder.length) _buildShuffleOrder();
@@ -751,6 +781,14 @@ function _musicPeekPrev() {
   return idx >= 0 ? musicTrackList[idx] : null;
 }
 function _musicPeekNext() {
+  // Queue takes priority — peek the next item without consuming it
+  if (window._musicQueue && window._musicQueue.length > 0) {
+    const nextPos = window._musicQueuePos + 1;
+    if (nextPos < window._musicQueue.length) return window._musicQueue[nextPos];
+    // When repeat=all, the next after the last is the first
+    if (_musicRepeat === 'all') return window._musicQueue[0];
+    return null; // queue is exhausted
+  }
   if (!musicTrackList.length) return null;
   if (_musicShuffle && _musicShuffleOrder.length) {
     const pos = (_musicShufflePos + 1) % _musicShuffleOrder.length;
@@ -777,12 +815,17 @@ function _updateMusicSeekFill() {
 
 function _musicQueueRemove(idx) {
   if (!window._musicQueue || idx < 0 || idx >= window._musicQueue.length) return;
+  // If removing the currently-playing item or one before it, adjust the cursor
+  if (idx <= window._musicQueuePos) {
+    window._musicQueuePos = Math.max(-1, window._musicQueuePos - 1);
+  }
   window._musicQueue.splice(idx, 1);
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
   _renderMusicQueuePeek();
 }
 function _musicQueueClear() {
   window._musicQueue = [];
+  window._musicQueuePos = -1;
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
   _renderMusicQueuePeek();
 }
@@ -793,87 +836,94 @@ function _renderMusicQueuePeek() {
   if (!card || !list) return;
 
   const queueItems = window._musicQueue || [];
-  const peekCount = 3;
+  const queuePos   = (window._musicQueuePos != null) ? window._musicQueuePos : -1;
+
+  // Up Next from track list (only when no explicit queue is active)
   const upNextItems = [];
-  for (let i = 1; i <= peekCount; i++) {
-    let t = null, listIdx = -1;
-    if (_musicShuffle && _musicShuffleOrder.length) {
-      const pos = (_musicShufflePos + i);
-      if (pos < _musicShuffleOrder.length) { listIdx = _musicShuffleOrder[pos]; t = musicTrackList[listIdx] || null; }
-    } else {
-      listIdx = musicTrackIndex + i;
-      if (listIdx < musicTrackList.length) t = musicTrackList[listIdx] || null;
-      else if (_musicRepeat === 'all' && musicTrackList.length) { listIdx = listIdx % musicTrackList.length; t = musicTrackList[listIdx] || null; }
+  if (!queueItems.length) {
+    const peekCount = 3;
+    for (let i = 1; i <= peekCount; i++) {
+      let t = null, listIdx = -1;
+      if (_musicShuffle && _musicShuffleOrder.length) {
+        const p = (_musicShufflePos + i);
+        if (p < _musicShuffleOrder.length) { listIdx = _musicShuffleOrder[p]; t = musicTrackList[listIdx] || null; }
+      } else {
+        listIdx = musicTrackIndex + i;
+        if (listIdx < musicTrackList.length) t = musicTrackList[listIdx] || null;
+        else if (_musicRepeat === 'all' && musicTrackList.length) { listIdx = listIdx % musicTrackList.length; t = musicTrackList[listIdx] || null; }
+      }
+      if (t) upNextItems.push({ t, listIdx });
     }
-    if (t) upNextItems.push({ t, listIdx });
   }
 
   if (!queueItems.length && !upNextItems.length) { card.style.display = 'none'; return; }
   card.style.display = '';
 
-  // Store for delegated click handler
   list._queuePeekItems = upNextItems;
-  list._queueItems = queueItems.slice();
+  list._queueItems = queueItems; // live reference
 
   let html = '';
 
-  // --- Queued section ---
   if (queueItems.length) {
-    html += `<div class="music-queue-section-header">`
-      + `<span>Queue (${queueItems.length})</span>`
-      + `<button class="music-queue-clear-btn" data-action="clear-all" title="Clear queue">✕ Clear all</button>`
-      + `</div>`;
-    html += queueItems.map((item, i) => {
-      const safeTitle = (item.name || item.path || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-      const displayName = (item.name || item.path || '').replace(/&/g, '&amp;').replace(/</g, '&lt;');
-      return `<div class="music-queue-peek-item music-queue-peek-queued" data-qi="${i}" title="${safeTitle}">`
-        + `<span class="music-queue-peek-num">${i + 1}</span>`
-        + `<span class="music-queue-peek-name">${displayName}</span>`
-        + `<button class="music-queue-remove-btn" data-action="remove" data-qi="${i}" title="Remove from queue">✕</button>`
-        + `</div>`;
+    const esc = (s) => (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    html += '<div class="music-queue-section-header">'
+      + '<span>Queue (' + queueItems.length + ')</span>'
+      + '<button class="music-queue-clear-btn" data-action="clear-all" title="Clear queue">&#10005; Clear all</button>'
+      + '</div>';
+    html += queueItems.map(function(item, i) {
+      const isPlaying = (i === queuePos);
+      const isPlayed  = (i < queuePos);
+      let cls = 'music-queue-peek-item music-queue-peek-queued';
+      if (isPlaying) cls += ' music-queue-peek-playing';
+      else if (isPlayed) cls += ' music-queue-peek-played';
+      const nowIcon = isPlaying ? '<span class="music-queue-now-icon">&#9654;</span>' : '';
+      return '<div class="' + cls + '" data-qi="' + i + '" title="' + esc(item.name || item.path) + '">'
+        + '<span class="music-queue-peek-num">' + (i + 1) + '</span>'
+        + '<span class="music-queue-peek-name">' + nowIcon + esc(item.name || item.path) + '</span>'
+        + '<button class="music-queue-remove-btn" data-action="remove" data-qi="' + i + '" title="Remove from queue">&#10005;</button>'
+        + '</div>';
     }).join('');
   }
 
-  // --- Up Next section --- only shown when autoplay is on AND no explicit queue items
   if (upNextItems.length && _musicAutoPlay && !queueItems.length) {
-    if (queueItems.length) html += `<div class="music-queue-section-header"><span>Up Next</span></div>`;
-    html += upNextItems.map(({ t, listIdx }, i) => {
+    html += '<div class="music-queue-section-header"><span>Up Next</span></div>';
+    html += upNextItems.map(function(obj, i) {
+      const t = obj.t; const listIdx = obj.listIdx;
       const num = listIdx >= 0 ? listIdx + 1 : '?';
       const dur = t.durationSec ? fmtSec(t.durationSec) : '';
-      const safeTitle = t.name.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-      return `<div class="music-queue-peek-item" data-qi-next="${i}" title="${safeTitle}">`
-        + `<span class="music-queue-peek-num">${num}</span>`
-        + `<span class="music-queue-peek-name">${t.name.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</span>`
-        + (dur ? `<span class="music-queue-peek-dur">${dur}</span>` : '')
-        + `</div>`;
+      const esc = (s) => (s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+      return '<div class="music-queue-peek-item" data-qi-next="' + i + '" title="' + esc(t.name) + '">'
+        + '<span class="music-queue-peek-num">' + num + '</span>'
+        + '<span class="music-queue-peek-name">' + esc(t.name) + '</span>'
+        + (dur ? '<span class="music-queue-peek-dur">' + dur + '</span>' : '')
+        + '</div>';
     }).join('');
   }
 
   list.innerHTML = html;
 
-  // Delegated event handling — no inline onclick
+  const playingEl = list.querySelector('.music-queue-peek-playing');
+  if (playingEl) playingEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
   list.onclick = (e) => {
     const btn = e.target.closest('[data-action]');
     if (btn) {
       e.stopPropagation();
       const action = btn.dataset.action;
       if (action === 'clear-all') { _musicQueueClear(); return; }
-      if (action === 'remove') { _musicQueueRemove(parseInt(btn.dataset.qi, 10)); return; }
+      if (action === 'remove')    { _musicQueueRemove(parseInt(btn.dataset.qi, 10)); return; }
     }
-    // Click on queued row — discard everything before it, play it
     const qRow = e.target.closest('[data-qi]');
     if (qRow && !qRow.dataset.qiNext) {
       const idx = parseInt(qRow.dataset.qi, 10);
-      const item = (list._queueItems || [])[idx];
+      const item = (window._musicQueue || [])[idx];
       if (item) {
-        // Remove this item and all that preceded it (they are skipped)
-        window._musicQueue.splice(0, idx + 1);
+        window._musicQueuePos = idx;
         if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
         playMusic(item.path, item.name);
       }
       return;
     }
-    // Click on up-next row
     const nextRow = e.target.closest('[data-qi-next]');
     if (nextRow) {
       const entry = (list._queuePeekItems || [])[parseInt(nextRow.dataset.qiNext, 10)];
@@ -940,6 +990,15 @@ function startMusicPlaybackPoll() {
     // new lookahead so the chain keeps going.
     if (s.currentPath && s.currentPath !== musicCurrentPath && s.isPlaying) {
       musicCurrentPath = s.currentPath;
+      // If the new track is the next queue item, advance the cursor to stay in sync.
+      if (window._musicQueue && window._musicQueue.length > 0) {
+        const nextPos = (window._musicQueuePos != null ? window._musicQueuePos : -1) + 1;
+        if (nextPos < window._musicQueue.length && window._musicQueue[nextPos].path === s.currentPath) {
+          window._musicQueuePos = nextPos;
+          _updateMusicQueuePendingBar();
+          _renderMusicQueuePeek();
+        }
+      }
       const advancedIdx = musicTrackList.findIndex(t => t.path === s.currentPath);
       if (advancedIdx >= 0) {
         musicTrackIndex = advancedIdx;
@@ -980,7 +1039,8 @@ function startMusicPlaybackPoll() {
     // Skip in local mode — the ended event on the <audio> element drives advancement there.
     if (!isPlayLocal() && !s.isPlaying && !s.isPaused && wasPlaying && musicCurrentPath && !s.currentPath) {
       musicCurrentPath = null;
-      if (_musicAutoPlay || _musicShuffle || _musicRepeat !== 'none') {
+      const hasQueue = window._musicQueue && window._musicQueue.length > 0;
+      if (hasQueue || _musicAutoPlay || _musicShuffle || _musicRepeat !== 'none') {
         const nextT = _musicNextTrack();
         if (nextT) {
           await playMusic(nextT.path, nextT.name);
@@ -1379,8 +1439,13 @@ function _musicCtxPlay(path, name) { playMusic(path, name); }
 function _musicCtxQueue(path, name) {
   if (!window._musicQueue) window._musicQueue = [];
   const existing = window._musicQueue.findIndex((q) => q.path === path);
-  if (existing >= 0) window._musicQueue.splice(existing, 1);
-  else window._musicQueue.push({ path, name });
+  if (existing >= 0) {
+    // Use the shared remove helper so cursor stays consistent
+    _musicQueueRemove(existing);
+    return; // _musicQueueRemove already re-renders
+  } else {
+    window._musicQueue.push({ path, name });
+  }
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
   if (typeof _refreshMusicNavLabels === 'function') _refreshMusicNavLabels();
   _renderMusicQueuePeek();
@@ -1446,10 +1511,10 @@ function _musicSelectionPlay() {
     const sorted = _musicSortFiles(currentMusicData.files);
     const selected = sorted.filter((f) => _musicSelected.has(f.path));
     if (!selected.length) return;
-    // Play the first selected track; queue the rest
-    const [first, ...rest] = selected;
-    window._musicQueue = rest.map((f) => ({ path: f.path, name: f.name }));
-    playMusic(first.path, first.name);
+    // Put the full selection into the persistent queue and start at index 0
+    window._musicQueue = selected.map((f) => ({ path: f.path, name: f.name }));
+    window._musicQueuePos = 0;
+    playMusic(selected[0].path, selected[0].name);
   }
   _musicSelectionClear();
 }
@@ -1465,6 +1530,21 @@ function _updateMusicQueuePendingBar() {
     bar.textContent = `\u23F3 ${count} track${count !== 1 ? 's' : ''} queued — start a song to begin playback`;
   } else {
     bar.style.display = 'none';
+  }
+  // Show the yellow queue-next button (replacing Prev/Next) when queue has items
+  const navNormal      = document.getElementById('music-nav-normal');
+  const btnQueueNext   = document.getElementById('music-btn-queue-next');
+  const queueNextTitle = document.getElementById('music-queue-next-title');
+  if (navNormal && btnQueueNext) {
+    const hasQueue = count > 0;
+    navNormal.style.display    = hasQueue ? 'none' : '';
+    btnQueueNext.style.display = hasQueue ? ''     : 'none';
+    if (queueNextTitle) {
+      const _qnPos = (window._musicQueuePos != null) ? window._musicQueuePos : -1;
+      const _qnNext = _qnPos + 1;
+      const peek = hasQueue ? ((_qnNext < count) ? window._musicQueue[_qnNext] : (_musicRepeat === 'all' ? window._musicQueue[0] : null)) : null;
+      queueNextTitle.textContent = peek ? (peek.name || '') : '';
+    }
   }
 }
 
@@ -1682,6 +1762,13 @@ function musicSortBy(col) {
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
 }
 
+// Parse a playlist filename: if it matches YYYY_RestOfName, return { displayName, year };
+// otherwise return { displayName: name, year: null }.
+function _parsePlName(name) {
+  const m = /^(\d{4})_(.+)$/.exec(name);
+  return m ? { displayName: m[2], year: m[1] } : { displayName: name, year: null };
+}
+
 function renderMusicCards(data, searching) {
   const mb = document.getElementById('music-browser');
   if (!mb) return;
@@ -1700,6 +1787,42 @@ function renderMusicCards(data, searching) {
         '</span></div>';
     });
     html += '</div>';
+  }
+  if (!searching && data.playlists && data.playlists.length) {
+    const _isList = _viewMode.music === 'list';
+    if (_isList) {
+      html += '<div class="music-playlist-list">';
+      data.playlists.forEach((pl, idx) => {
+        const count = pl.trackCount > 0 ? pl.trackCount + ' track' + (pl.trackCount !== 1 ? 's' : '') : '';
+        const { displayName, year } = _parsePlName(pl.name);
+        html += `<div class="music-playlist-list-row${idx % 2 === 1 ? ' alt-row' : ''}${year ? ' has-year' : ''}" role="button" tabindex="0" title="${esc(displayName)}"` +
+          ` onkeydown="activateKeyboardClick(event,this)" data-plpath="${esc(pl.path)}">` +
+          `<span class="mpl-icon">&#127911;</span>` +
+          `<span class="mpl-list-name">${esc(displayName)}</span>` +
+          (year ? `<span class="mpl-list-year">${esc(year)}</span>` : `<span></span>`) +
+          `<span class="mpl-badge">PLAYLIST</span>` +
+          (count ? `<span class="mpl-list-count">${esc(count)}</span>` : '<span></span>') +
+          `</div>`;
+      });
+      html += '</div>';
+    } else {
+      html += '<div class="music-playlist-row">';
+      data.playlists.forEach((pl) => {
+        const count = pl.trackCount > 0 ? pl.trackCount + ' track' + (pl.trackCount !== 1 ? 's' : '') : '';
+        const { displayName, year } = _parsePlName(pl.name);
+        html += `<div class="music-playlist-card" role="button" tabindex="0" title="${esc(displayName)}"
+            onkeydown="activateKeyboardClick(event,this)"
+            data-plpath="${esc(pl.path)}">` +
+          `<span class="mpl-icon">&#127911;</span>` +
+          `<span class="mpl-info"><span class="mpl-name">${esc(displayName)}</span>` +
+          (year ? `<span class="mpl-year">${esc(year)}</span>` : '') +
+          (count ? `<span class="mpl-count">${esc(count)}</span>` : '') +
+          `</span>` +
+          `<span class="mpl-badge">PLAYLIST</span>` +
+          `</div>`;
+      });
+      html += '</div>';
+    }
   }
   if (data.files && data.files.length) {
     const isList = _viewMode.music === 'list';
@@ -1797,12 +1920,21 @@ function renderMusicCards(data, searching) {
   } else if (data.folder && data.indexing && !(data.folders && data.folders.length > 0)) {
     html +=
       '<div style="padding:1rem;color:var(--muted,#9aa8c2)">&#128197; Still indexing \u2014 tracks will appear here when the scan reaches this folder.</div>';
-  } else if (data.folder && !data.indexing) {
+  } else if (data.folder && !data.indexing && !(data.playlists && data.playlists.length)) {
     html += '<div style="padding:1rem;color:var(--muted,#9aa8c2)">No tracks found.</div>';
   }
   mb.innerHTML =
     html ||
     '<div style="padding:1rem;color:var(--muted,#9aa8c2)">Select a folder to browse tracks.</div>';
+
+  // Attach click handlers for playlist cards and list rows
+  document.querySelectorAll('.music-playlist-card, .music-playlist-list-row').forEach((el) => {
+    el.addEventListener('click', () => {
+      const path = el.dataset.plpath;
+      const name = el.querySelector('.mpl-name, .mpl-list-name')?.textContent || path;
+      playMusicPlaylist(path, name);
+    });
+  });
 
   // Attach context-menu bindings and click handlers (can't use inline attrs with complex args)
   if (data.files) {
@@ -1830,6 +1962,23 @@ function renderMusicCards(data, searching) {
   }
 }
 
+async function playMusicPlaylist(path, name) {
+  try {
+    const res = await fetch('/api/music/playlist?path=' + encodeURIComponent(path));
+    if (!res.ok) { setStatus('Playlist error ' + res.status); return; }
+    const data = await res.json();
+    const tracks = data.tracks;
+    if (!tracks || !tracks.length) { setStatus('Playlist is empty.'); return; }
+    // Load all tracks into a fresh persistent queue; cursor starts at 0
+    window._musicQueue = tracks.map((t) => ({ path: t.path, name: t.name }));
+    window._musicQueuePos = 0;
+    _updateMusicQueuePendingBar();
+    playMusic(tracks[0].path, tracks[0].name || name);
+  } catch (e) {
+    setStatus('Playlist error: ' + e.message);
+  }
+}
+
 function loadMoreMusic() {
   if (!currentMusicData) return;
   const offset = (currentMusicData.files || []).length;
@@ -1847,11 +1996,11 @@ function playMusicAll() {
   if (!currentMusicData || !currentMusicData.files || !currentMusicData.files.length) return;
   const sorted = _musicSortFiles(currentMusicData.files);
   if (!sorted.length) return;
-  const first = sorted[0];
-  playMusic(first.path, first.name);
-  // queue remaining — stored for auto-advance
-  window._musicQueue = sorted.slice(1);
-  // refresh to show queue count badge
+  // Put all tracks into the persistent queue with cursor at 0
+  window._musicQueue = sorted.map((f) => ({ path: f.path, name: f.name }));
+  window._musicQueuePos = 0;
+  _updateMusicQueuePendingBar();
+  playMusic(sorted[0].path, sorted[0].name);
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
 }
 
