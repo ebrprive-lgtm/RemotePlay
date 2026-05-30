@@ -198,6 +198,28 @@ internal sealed class PlaybackHistory
         }
     }
 
+    /// <summary>
+    /// Removes all individual music-track entries (non-.m3u audio files) from history.
+    /// Call this when recording a playlist so individual song cards don't appear alongside it.
+    /// </summary>
+    public void ClearMusicTracks()
+    {
+        var audioExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { ".mp3", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".wav", ".opus", ".ape", ".alac" };
+
+        lock (_gate)
+        {
+            var toRemove = _entries.Keys
+                .Where(k => audioExts.Contains(Path.GetExtension(k)))
+                .ToArray();
+            if (toRemove.Length == 0)
+                return;
+            foreach (var key in toRemove)
+                _entries.Remove(key);
+            SaveEntries();
+        }
+    }
+
     public void Trim(int historyLimit)
     {
         var limit = Math.Max(1, historyLimit);

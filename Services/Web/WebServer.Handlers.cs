@@ -434,6 +434,18 @@ internal sealed partial class WebServer
                 HandleMusicCover(ctx);
                 break;
 
+            case "/api/music/album-art":
+                await HandleMusicAlbumArtAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/music/album-art/export":
+                await HandleMusicAlbumArtExportAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/music/album-art/import":
+                await HandleMusicAlbumArtImportAsync(ctx).ConfigureAwait(false);
+                break;
+
             case "/api/music/lyrics":
                 await HandleMusicLyricsAsync(ctx).ConfigureAwait(false);
                 break;
@@ -1022,6 +1034,18 @@ internal sealed partial class WebServer
         }
     }
 
+    private static (int files, long bytes) BuildAlbumArtCacheHealth()
+    {
+        try
+        {
+            if (!Directory.Exists(AlbumArtCacheDir)) return (0, 0);
+            var files = Directory.EnumerateFiles(AlbumArtCacheDir, "*.jpg")
+                                 .Where(f => new FileInfo(f).Length > 0).ToArray();
+            return (files.Length, files.Sum(TryGetFileLength));
+        }
+        catch { return (0, 0); }
+    }
+
     private void HandleHealthPage(HttpListenerContext ctx)
     {
         var status = _callbacks.GetStatus();
@@ -1043,6 +1067,17 @@ internal sealed partial class WebServer
         var certificateState = certificate is not null ? "ok" : "warn";
         var musicState      = string.IsNullOrWhiteSpace(musicStatus.LastError) ? "ok" : "warn";
         var radioState      = radioStatus.IsStalled || !string.IsNullOrWhiteSpace(radioStatus.Error) ? "warn" : "ok";
+
+        var (artFiles, artBytes) = BuildAlbumArtCacheHealth();
+        var artSizeLabel = artBytes >= 1024 * 1024
+            ? $"{artBytes / (1024.0 * 1024):F1} MB"
+            : $"{artBytes / 1024.0:F0} KB";
+
+        // Serialise known peers for the export UI dropdown (exclude self)
+        var peersJson = _broadcaster is null ? "[]" : JsonSerializer.Serialize(
+            _broadcaster.GetPeers()
+                .Where(p => !p.IsSelf)
+                .Select(p => new { p.Name, p.Url }));
 
         var playbackLabel   = status.IsPlaying ? "Playing" : "Idle";
         var libraryLabel    = _isIndexing ? "Indexing" : "Ready";
@@ -1205,7 +1240,7 @@ internal sealed partial class WebServer
                   <div class="metric"><dt>Scan progress</dt><dd>{{{{(_isMusicIndexing ? $"{_musicScanProgress} files scanned" : "Idle")}}}}</dd></div>
                   <div class="metric"><dt>Extensions</dt><dd>{{{{HtmlEncode(string.Join(", ", _config.MusicFileExtensions))}}}}</dd></div>
                   <div class="metric wide"><dt>Music folder</dt><dd class="mono">{{{{HtmlEncode(_config.ResolvedMusicPath)}}}}</dd></div>
-                  {(string.IsNullOrWhiteSpace(musicStatus.LastError) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(musicStatus.LastError)}</dd></div>")}
+                  {{{{(string.IsNullOrWhiteSpace(musicStatus.LastError) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(musicStatus.LastError)}</dd></div>")}}}}
                 </dl></section>
 
                 <section class="card"><h2>&#128251; Radio <span class="pill {{{{radioState}}}}">{{{{radioState.ToUpperInvariant()}}}}</span></h2><dl class="grid">
@@ -1214,7 +1249,7 @@ internal sealed partial class WebServer
                   <div class="metric"><dt>Volume</dt><dd>{{{{(radioStatus.IsPlaying ? $"{Math.Round(radioStatus.Volume * 100)}%" : "—")}}}}</dd></div>
                   <div class="metric"><dt>Boost</dt><dd>{{{{(radioStatus.IsPlaying ? $"{radioStatus.Boost:F1}×" : "—")}}}}</dd></div>
                   <div class="metric wide"><dt>Current station</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(radioStatus.StationName) ? "None" : radioStatus.StationName)}}}}</dd></div>
-                  {(string.IsNullOrWhiteSpace(radioStatus.Error) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(radioStatus.Error)}</dd></div>")}
+                  {{{{(string.IsNullOrWhiteSpace(radioStatus.Error) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(radioStatus.Error)}</dd></div>")}}}}
                 </dl>
                 <div class="divider"></div>
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
@@ -1315,6 +1350,28 @@ internal sealed partial class WebServer
                   </div>
                   <p id="admin-result" class="admin-result"></p>
                 </section>
+
+                <section class="card runtime-card" id="art-export-card">
+                  <h2>&#127912; Album art cache export</h2>
+                  <dl class="grid">
+                    <div class="metric"><dt>Cached covers</dt><dd>{{{{artFiles}}}} images</dd></div>
+                    <div class="metric"><dt>Cache size</dt><dd>{{{{artSizeLabel}}}}</dd></div>
+                    <div class="metric wide"><dt>Cache directory</dt><dd class="mono" style="font-size:.72rem">{{{{HtmlEncode(AlbumArtCacheDir)}}}}</dd></div>
+                  </dl>
+                  <div class="divider"></div>
+                  <p style="color:var(--muted);font-size:.82rem;margin:0 0 .6rem">Push all cached covers to another RemotePlay instance. The target server will store them immediately — no re-download needed.</p>
+                  <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.5rem">
+                    <input id="art-export-url" type="url" placeholder="http://192.168.1.x:8080" style="flex:1;min-width:200px;padding:.4rem .6rem;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.15);border-radius:8px;color:#d8e8ff;font-size:.88rem" />
+                    <select id="art-export-peer" style="padding:.4rem .5rem;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.15);border-radius:8px;color:#d8e8ff;font-size:.82rem" onchange="artExportPeerPick(this)">
+                      <option value="">— pick peer —</option>
+                    </select>
+                    <button class="primary" id="art-export-btn" onclick="startArtExport()">&#8679; Export covers</button>
+                  </div>
+                  <div id="art-export-bar-wrap" style="display:none;margin-bottom:.4rem">
+                    <div id="art-export-bar" style="height:6px;border-radius:3px;background:rgba(255,255,255,.1)"><div id="art-export-fill" style="height:100%;border-radius:3px;background:var(--cyan,#22d3ee);width:0%;transition:width .3s"></div></div>
+                  </div>
+                  <p id="art-export-result" class="admin-result"></p>
+                </section>
               </div>
             </section>
             <div class="footer-note">RemotePlay health page &mdash; generated locally by this media computer &middot; <a href="/api/health" target="_blank">API JSON</a></div>
@@ -1336,6 +1393,59 @@ internal sealed partial class WebServer
               result.textContent='Starting rescan…';
               try{await fetch('/api/rescan');result.textContent='Video library rescan started.';}
               catch(e){result.textContent='Rescan failed: '+e;}
+            }
+            // ---- Album art export ----
+            (function(){
+              const peers={{{{peersJson}}}};
+              const sel=document.getElementById('art-export-peer');
+              peers.forEach(p=>{
+                const o=document.createElement('option');
+                o.value=p.Url||p.url;
+                o.textContent=(p.Name||p.name)+' ('+((p.Url||p.url).replace(/^https?:\/\//,''))+')';
+                sel.appendChild(o);
+              });
+            })();
+            function artExportPeerPick(sel){
+              if(sel.value) document.getElementById('art-export-url').value=sel.value;
+            }
+            async function startArtExport(){
+              const url=(document.getElementById('art-export-url').value||'').trim();
+              const result=document.getElementById('art-export-result');
+              const btn=document.getElementById('art-export-btn');
+              const barWrap=document.getElementById('art-export-bar-wrap');
+              const fill=document.getElementById('art-export-fill');
+              if(!url){result.textContent='Please enter a target URL.';return;}
+              btn.disabled=true;
+              barWrap.style.display='';
+              fill.style.width='5%';
+              result.textContent='Exporting…';
+              try{
+                const r=await fetch('/api/music/album-art/export',{
+                  method:'POST',
+                  headers:{'Content-Type':'application/json'},
+                  body:JSON.stringify({targetUrl:url})
+                });
+                fill.style.width='100%';
+                const d=await r.json();
+                if(d.ok){
+                  result.textContent='✔ Done — Sent: '+d.sent+' | Skipped: '+d.skipped+' | Failed: '+d.failed+' | Total: '+d.total;
+                  if(d.failed>0&&d.failSamples&&d.failSamples.length){
+                    const det=document.createElement('details');
+                    det.style.cssText='margin-top:.4rem;font-size:.78rem;color:#ffb86c';
+                    const sum=document.createElement('summary');
+                    sum.textContent='Show failure details ('+d.failSamples.length+' samples)';
+                    det.appendChild(sum);
+                    const pre=document.createElement('pre');
+                    pre.style.cssText='white-space:pre-wrap;margin:.3rem 0 0;font-size:.75rem;max-height:180px;overflow:auto';
+                    pre.textContent=d.failSamples.join('\n');
+                    det.appendChild(pre);
+                    result.parentNode.insertBefore(det,result.nextSibling);
+                  }
+                }else{
+                  result.textContent='Export failed: '+(d.error||'unknown error');
+                }
+              }catch(e){result.textContent='Export failed: '+e;}
+              finally{btn.disabled=false;setTimeout(()=>{barWrap.style.display='none';fill.style.width='0%';},4000);}
             }
             </script>
             </body>
@@ -1539,8 +1649,9 @@ internal sealed partial class WebServer
                 folders = Directory.Exists(musicRoot)
                     ? Directory.GetDirectories(musicRoot)
                         .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)))
-                        .OrderBy(d => d, _naturalComparer)
-                        .Select(d => (object)new { name = Path.GetFileName(d), folder = d })
+                        .OrderBy(d => string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                        .ThenBy(d => d, _naturalComparer)
+                        .Select(d => (object)new { name = Path.GetFileName(d), folder = d, isAll = string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase) })
                         .ToArray()
                     : [];
             }
@@ -1557,8 +1668,9 @@ internal sealed partial class WebServer
                 folders = Directory.Exists(folderParam)
                     ? Directory.GetDirectories(folderParam)
                         .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)))
-                        .OrderBy(d => d, _naturalComparer)
-                        .Select(d => (object)new { name = Path.GetFileName(d), folder = d })
+                        .OrderBy(d => string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+                        .ThenBy(d => d, _naturalComparer)
+                        .Select(d => (object)new { name = Path.GetFileName(d), folder = d, isAll = string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase) })
                         .ToArray()
                     : [];
             }
@@ -1589,13 +1701,34 @@ internal sealed partial class WebServer
                     .Select(f =>
                     {
                         int trackCount = 0;
+                        string? artist = null;
                         try
                         {
-                            trackCount = File.ReadLines(f)
-                                .Count(l => !string.IsNullOrWhiteSpace(l) && !l.TrimStart().StartsWith('#'));
+                            var lines = File.ReadLines(f).Where(l => !string.IsNullOrWhiteSpace(l) && !l.TrimStart().StartsWith('#')).ToList();
+                            trackCount = lines.Count;
+                            // Peek at the first track to extract the artist tag
+                            if (lines.Count > 0)
+                            {
+                                var firstEntry = lines[0].Trim();
+                                var firstPath = Path.IsPathRooted(firstEntry)
+                                    ? firstEntry
+                                    : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(f)!, firstEntry));
+                                if (File.Exists(firstPath))
+                                {
+                                    try
+                                    {
+                                        using var tagFile = TagLib.File.Create(firstPath);
+                                        var performers = tagFile.Tag.AlbumArtists.Length > 0
+                                            ? tagFile.Tag.AlbumArtists
+                                            : tagFile.Tag.Performers;
+                                        artist = performers.Length > 0 ? performers[0] : null;
+                                    }
+                                    catch { /* tag read failed, leave artist null */ }
+                                }
+                            }
                         }
                         catch { /* ignore unreadable playlists */ }
-                        return (object)new { name = Path.GetFileNameWithoutExtension(f), path = WebPathHelpers.EncodePath(f), trackCount };
+                        return (object)new { name = Path.GetFileNameWithoutExtension(f), path = WebPathHelpers.EncodePath(f), trackCount, artist };
                     })
                     .ToArray();
             }
@@ -1824,6 +1957,688 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 404, "text/plain", "no cover");
     }
 
+    // ── Album Art Cache ──────────────────────────────────────────────────────────
+    // In-memory: null = confirmed-miss, byte[] = image bytes (already on disk too)
+    // Disk:      %AppData%\RemotePlay\AlbumArtCache\<safeKey>.jpg
+    // ─────────────────────────────────────────────────────────────────────────────
+    private static readonly Dictionary<string, byte[]?> _albumArtCache = new(StringComparer.OrdinalIgnoreCase);
+    // On first use, purge stale zero-byte miss-sentinels written by older logic (e.g. before release-group fallback)
+    private static int _albumArtMissPurged = 0;
+    private static void PurgeStaleAlbumArtMisses()
+    {
+        if (Interlocked.Exchange(ref _albumArtMissPurged, 1) != 0) return;
+        try
+        {
+            var dir = Path.Combine(AppPaths.UserDataDirectory, "AlbumArtCache");
+            if (!Directory.Exists(dir)) return;
+            int count = 0;
+            foreach (var f in Directory.EnumerateFiles(dir, "*.jpg"))
+            {
+                if (new FileInfo(f).Length == 0) { File.Delete(f); count++; }
+            }
+            if (count > 0) Logger.Detail("AlbumArt", $"Purged {count} stale miss-sentinel(s) from disk cache");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("AlbumArt", $"Miss-sentinel purge failed: {ex.Message}");
+        }
+    }
+    private static readonly SemaphoreSlim _albumArtLock = new(1, 1);
+    // In-flight deduplication: if N requests arrive for the same key simultaneously,
+    // only one fetch runs; the rest await the same Task.
+    private static readonly Dictionary<string, Task<byte[]?>> _albumArtInflight = new(StringComparer.OrdinalIgnoreCase);
+    // MusicBrainz rate-limit: max 1 request per second
+    private static readonly SemaphoreSlim _mbRateLimit = new(1, 1);
+    private static long _mbLastRequestTick = 0;
+    private static readonly System.Net.Http.HttpClient _albumArtHttpClient = CreateAlbumArtHttpClient();
+
+    private static string AlbumArtCacheDir =>
+        Path.Combine(AppPaths.UserDataDirectory, "AlbumArtCache");
+
+    private static System.Net.Http.HttpClient CreateAlbumArtHttpClient()
+    {
+        var client = new System.Net.Http.HttpClient();
+        client.Timeout = TimeSpan.FromSeconds(15);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("RemotePlay/1.0 (album-art-lookup)");
+        client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+        return client;
+    }
+
+    /// <summary>Returns a filesystem-safe filename for a cache key.</summary>
+    private static string AlbumArtCacheFile(string cacheKey)
+    {
+        // Replace characters that are invalid in filenames
+        var safe = string.Concat(cacheKey.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c));
+        return Path.Combine(AlbumArtCacheDir, safe + ".jpg");
+    }
+
+    // ── Album art export / import ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Accepts a JPEG body and stores it in the local AlbumArtCache under the provided key.
+    /// Called by a remote server's export push. No auth required beyond network access.
+    /// Query params: key (the cache key, e.g. "artist|album")
+    /// </summary>
+    private static async Task HandleMusicAlbumArtImportAsync(HttpListenerContext ctx)
+    {
+        var key = (ctx.Request.QueryString["key"] ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(key))
+        { TrySendResponse(ctx, 400, "application/json", "{\"error\":\"missing key\"}"); return; }
+
+        if (ctx.Request.ContentLength64 <= 0 || ctx.Request.ContentLength64 > 5 * 1024 * 1024)
+        { TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid content length\"}"); return; }
+
+        try
+        {
+            using var ms = new System.IO.MemoryStream();
+            await ctx.Request.InputStream.CopyToAsync(ms).ConfigureAwait(false);
+            var bytes = ms.ToArray();
+
+            if (bytes.Length == 0)
+            { TrySendResponse(ctx, 400, "application/json", "{\"error\":\"empty body\"}"); return; }
+
+            // Validate it looks like a JPEG (FF D8 FF)
+            if (bytes.Length < 3 || bytes[0] != 0xFF || bytes[1] != 0xD8 || bytes[2] != 0xFF)
+            { TrySendResponse(ctx, 400, "application/json", "{\"error\":\"not a JPEG\"}"); return; }
+
+            Directory.CreateDirectory(AlbumArtCacheDir);
+            var destFile = AlbumArtCacheFile(key);
+            await File.WriteAllBytesAsync(destFile, bytes).ConfigureAwait(false);
+
+            // Update in-memory cache so it's immediately available
+            lock (_albumArtCache) _albumArtCache[key] = bytes;
+
+            Logger.Detail("AlbumArt", $"Import: stored '{key}' ({bytes.Length} bytes)");
+            TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("AlbumArt", $"Import failed for key '{key}': {ex.Message}");
+            TrySendResponse(ctx, 500, "application/json", "{\"error\":\"write failed\"}");
+        }
+    }
+
+    /// <summary>
+    /// Iterates AlbumArtCache on disk and pushes every non-empty JPEG to the target server's
+    /// /api/music/album-art/import endpoint. Returns a JSON summary with totals.
+    /// Body (JSON): { "targetUrl": "http://host:port" }
+    /// </summary>
+    private static async Task HandleMusicAlbumArtExportAsync(HttpListenerContext ctx)
+    {
+        string targetUrl;
+        try
+        {
+            using var sr = new System.IO.StreamReader(ctx.Request.InputStream);
+            var body = await sr.ReadToEndAsync().ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(body);
+            targetUrl = (doc.RootElement.TryGetProperty("targetUrl", out var el)
+                ? el.GetString() : null) ?? string.Empty;
+        }
+        catch
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid JSON body\"}");
+            return;
+        }
+
+        targetUrl = targetUrl.TrimEnd('/');
+        if (!Uri.TryCreate(targetUrl, UriKind.Absolute, out var targetUri)
+            || (targetUri.Scheme != "http" && targetUri.Scheme != "https"))
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid targetUrl\"}");
+            return;
+        }
+
+        if (!Directory.Exists(AlbumArtCacheDir))
+        {
+            TrySendResponse(ctx, 200, "application/json",
+                JsonSerializer.Serialize(new { ok = true, sent = 0, skipped = 0, failed = 0, total = 0 }));
+            return;
+        }
+
+        var files = Directory.EnumerateFiles(AlbumArtCacheDir, "*.jpg")
+            .Where(f => new FileInfo(f).Length > 0)
+            .ToArray();
+
+        Logger.Info("AlbumArt", $"Export: pushing {files.Length} cached images to {targetUrl}");
+
+        using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("RemotePlay/1.0 (album-art-export)");
+
+        int sent = 0, skipped = 0, failed = 0;
+        var importBase = $"{targetUrl}/api/music/album-art/import";
+        var failReasons = new System.Collections.Generic.List<string>();
+        // Throttle to ~20 req/s to stay well under the target's default 300-req/10-s rate limit.
+        const int InterRequestDelayMs = 50;
+        const int MaxRetries          = 3;
+
+        foreach (var file in files)
+        {
+            // Derive the original cache key from the filename (strip .jpg extension)
+            var fileName = Path.GetFileNameWithoutExtension(file);
+            try
+            {
+                var bytes = await File.ReadAllBytesAsync(file).ConfigureAwait(false);
+                if (bytes.Length < 3 || bytes[0] != 0xFF || bytes[1] != 0xD8 || bytes[2] != 0xFF)
+                { skipped++; continue; }
+
+                var url = $"{importBase}?key={Uri.EscapeDataString(fileName)}";
+
+                System.Net.Http.HttpResponseMessage resp;
+                int retryDelayMs = 2000;
+                int attempt = 0;
+                while (true)
+                {
+                    using var content = new System.Net.Http.ByteArrayContent(bytes);
+                    content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg");
+                    resp = await http.PostAsync(url, content).ConfigureAwait(false);
+
+                    if ((int)resp.StatusCode != 429 || attempt >= MaxRetries)
+                        break;
+
+                    // Honour Retry-After if present, otherwise use exponential back-off.
+                    if (resp.Headers.RetryAfter?.Delta is { } delta)
+                        retryDelayMs = (int)delta.TotalMilliseconds + 200;
+
+                    Logger.Warning("AlbumArt", $"Export: 429 for '{fileName}', retrying in {retryDelayMs}ms (attempt {attempt + 1}/{MaxRetries})");
+                    await Task.Delay(retryDelayMs).ConfigureAwait(false);
+                    retryDelayMs = Math.Min(retryDelayMs * 2, 30_000);
+                    attempt++;
+                }
+
+                if (resp.IsSuccessStatusCode)
+                {
+                    sent++;
+                }
+                else
+                {
+                    var body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    var reason = $"HTTP {(int)resp.StatusCode} for '{fileName}': {body.Trim()}";
+                    Logger.Warning("AlbumArt", $"Export: {reason}");
+                    if (failReasons.Count < 10) failReasons.Add(reason);
+                    failed++;
+                }
+            }
+            catch (Exception ex)
+            {
+                var reason = $"Exception for '{fileName}': {ex.Message}";
+                Logger.Warning("AlbumArt", $"Export: {reason}");
+                if (failReasons.Count < 10) failReasons.Add(reason);
+                failed++;
+            }
+
+            await Task.Delay(InterRequestDelayMs).ConfigureAwait(false);
+        }
+
+        Logger.Info("AlbumArt", $"Export complete: sent={sent} skipped={skipped} failed={failed} total={files.Length}");
+        TrySendResponse(ctx, 200, "application/json",
+            JsonSerializer.Serialize(new { ok = true, sent, skipped, failed, total = files.Length, failSamples = failReasons }));
+    }
+
+    /// <summary>Proxy-fetches album art from MusicBrainz/CAA. Cached in memory + on disk.</summary>
+    private async Task HandleMusicAlbumArtAsync(HttpListenerContext ctx)
+    {
+        // One-time purge of zero-byte miss-sentinels written before the release-group fallback was added
+        PurgeStaleAlbumArtMisses();
+
+        var album  = (ctx.Request.QueryString["album"]  ?? string.Empty).Trim();
+        var artist = (ctx.Request.QueryString["artist"] ?? string.Empty).Trim();
+
+        if (string.IsNullOrWhiteSpace(album))
+        { TrySendResponse(ctx, 400, "text/plain", "missing album"); return; }
+
+        // Cap the wait time so a navigating-away client doesn't hold the queue open indefinitely.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var ct = cts.Token;
+
+        var cacheKey  = $"{artist}|{album}".ToLowerInvariant();
+        var cacheFile = AlbumArtCacheFile(cacheKey);
+
+        // 1. Fast path — in-memory cache
+        await _albumArtLock.WaitAsync(ct).ConfigureAwait(false);
+        bool hasCached = _albumArtCache.TryGetValue(cacheKey, out var cached);
+        _albumArtLock.Release();
+
+        if (hasCached)
+        {
+            if (cached is null) { TrySendResponse(ctx, 404, "text/plain", "not found"); return; }
+            ctx.Response.ContentType = "image/jpeg";
+            ctx.Response.ContentLength64 = cached.Length;
+            await ctx.Response.OutputStream.WriteAsync(cached, ct).ConfigureAwait(false);
+            ctx.Response.OutputStream.Close();
+            return;
+        }
+
+        // 2. Disk cache — load without going to the network
+        if (File.Exists(cacheFile))
+        {
+            try
+            {
+                var diskBytes = await File.ReadAllBytesAsync(cacheFile, ct).ConfigureAwait(false);
+                if (diskBytes.Length > 0)
+                {
+                    await _albumArtLock.WaitAsync(ct).ConfigureAwait(false);
+                    _albumArtCache[cacheKey] = diskBytes;
+                    _albumArtLock.Release();
+                    Logger.Detail("AlbumArt", $"Served from disk cache: '{cacheKey}'");
+                    ctx.Response.ContentType = "image/jpeg";
+                    ctx.Response.ContentLength64 = diskBytes.Length;
+                    await ctx.Response.OutputStream.WriteAsync(diskBytes, ct).ConfigureAwait(false);
+                    ctx.Response.OutputStream.Close();
+                    return;
+                }
+                // Zero-byte file = persisted miss — don't hit network again
+                await _albumArtLock.WaitAsync(ct).ConfigureAwait(false);
+                _albumArtCache[cacheKey] = null;
+                _albumArtLock.Release();
+                TrySendResponse(ctx, 404, "text/plain", "not found");
+                return;
+            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex)
+            {
+                Logger.Warning("AlbumArt", $"Failed to read disk cache '{cacheFile}': {ex.Message}");
+            }
+        }
+
+        // 3. Fetch from MusicBrainz / Cover Art Archive.
+        //    In-flight deduplication: if another request is already fetching this key, await its
+        //    Task instead of firing a second network fetch.  This is the primary fix for the hang
+        //    when many playlist cards load at the same time — only one outbound chain runs per key.
+        Task<byte[]?> fetchTask;
+        bool isOwner = false;
+        await _albumArtLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_albumArtInflight.TryGetValue(cacheKey, out var existing))
+            {
+                fetchTask = existing;   // join the already-running fetch
+            }
+            else
+            {
+                fetchTask = FetchAndCacheAlbumArtAsync(artist, album, cacheKey, cacheFile);
+                _albumArtInflight[cacheKey] = fetchTask;
+                isOwner = true;
+            }
+        }
+        finally
+        {
+            _albumArtLock.Release();
+        }
+
+        byte[]? imageBytes;
+        try
+        {
+            imageBytes = await fetchTask.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;  // client navigated away — drop silently
+        }
+        finally
+        {
+            // Owner cleans up the inflight entry once the task finishes
+            if (isOwner)
+            {
+                await _albumArtLock.WaitAsync().ConfigureAwait(false);
+                _albumArtInflight.Remove(cacheKey);
+                _albumArtLock.Release();
+            }
+        }
+
+        if (imageBytes is null) { TrySendResponse(ctx, 404, "text/plain", "not found"); return; }
+
+        ctx.Response.ContentType = "image/jpeg";
+        ctx.Response.ContentLength64 = imageBytes.Length;
+        try
+        {
+            await ctx.Response.OutputStream.WriteAsync(imageBytes, ct).ConfigureAwait(false);
+            ctx.Response.OutputStream.Close();
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    /// <summary>
+    /// Performs the actual MusicBrainz/CAA network fetch and persists the result to disk and
+    /// in-memory cache.  Extracted so multiple concurrent requests for the same key can share
+    /// a single Task via <c>_albumArtInflight</c>.
+    /// </summary>
+    private static async Task<byte[]?> FetchAndCacheAlbumArtAsync(
+        string artist, string album, string cacheKey, string cacheFile)
+    {
+        byte[]? imageBytes = null;
+        bool fetchWasTransient = false;
+        try
+        {
+            imageBytes = await FetchAlbumArtFromMusicBrainzAsync(artist, album).ConfigureAwait(false);
+        }
+        catch (AlbumArtTransientException ex)
+        {
+            Logger.Warning("AlbumArt", $"Fetch failed (transient) for '{artist} - {album}': {ex.Message}");
+            fetchWasTransient = true;
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("AlbumArt", $"Fetch failed for '{artist} - {album}': {ex.Message}");
+        }
+
+        // Persist to disk
+        //   image found        → write bytes (positive hit)
+        //   permanent miss     → write 0-byte sentinel so we don't retry
+        //   transient failure  → don't write; allow retry on next request
+        if (imageBytes is not null)
+        {
+            try
+            {
+                Directory.CreateDirectory(AlbumArtCacheDir);
+                await File.WriteAllBytesAsync(cacheFile, imageBytes).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("AlbumArt", $"Failed to write disk cache '{cacheFile}': {ex.Message}");
+            }
+        }
+        else if (!fetchWasTransient)
+        {
+            try
+            {
+                Directory.CreateDirectory(AlbumArtCacheDir);
+                await File.WriteAllBytesAsync(cacheFile, []).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("AlbumArt", $"Failed to write miss sentinel '{cacheFile}': {ex.Message}");
+            }
+        }
+
+        // Update in-memory cache (don't cache transient failures)
+        if (!fetchWasTransient)
+        {
+            await _albumArtLock.WaitAsync().ConfigureAwait(false);
+            _albumArtCache[cacheKey] = imageBytes;
+            _albumArtLock.Release();
+        }
+
+        return imageBytes;
+    }
+
+    /// <summary>Thrown when the failure is transient (rate-limit/timeout) — must not be persisted as a miss sentinel.</summary>
+    private sealed class AlbumArtTransientException(string message) : Exception(message) { }
+
+    /// <summary>Enforces MusicBrainz 1-request-per-second policy before each HTTP call.</summary>
+    private static async Task ThrottleMusicBrainzAsync(CancellationToken ct = default)
+    {
+        await _mbRateLimit.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var now   = Environment.TickCount64;
+            var delta = now - Interlocked.Read(ref _mbLastRequestTick);
+            if (delta >= 0 && delta < 1100)
+                await Task.Delay((int)(1100 - delta), ct).ConfigureAwait(false);
+            Interlocked.Exchange(ref _mbLastRequestTick, Environment.TickCount64);
+        }
+        finally
+        {
+            _mbRateLimit.Release();
+        }
+    }
+
+    private static async Task<byte[]?> FetchAlbumArtFromMusicBrainzAsync(string artist, string album,
+        CancellationToken ct = default)
+    {
+        // Step 1: Search MusicBrainz for matching releases (up to 5), including release-group ids
+        var searchTerms = string.IsNullOrWhiteSpace(artist)
+            ? Uri.EscapeDataString($"release:\"{album}\"")
+            : Uri.EscapeDataString($"release:\"{album}\" AND artist:\"{artist}\"");
+
+        var searchUrl = $"https://musicbrainz.org/ws/2/release/?query={searchTerms}&limit=5&fmt=json&inc=release-groups";
+        Logger.Detail("AlbumArt", $"MusicBrainz search: {searchUrl}");
+
+        await ThrottleMusicBrainzAsync(ct).ConfigureAwait(false);
+
+        System.Net.Http.HttpResponseMessage searchResponse;
+        try
+        {
+            searchResponse = await _albumArtHttpClient.GetAsync(searchUrl, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            throw new AlbumArtTransientException($"MB search request failed: {ex.Message}");
+        }
+
+        if ((int)searchResponse.StatusCode == 503 || (int)searchResponse.StatusCode == 429)
+            throw new AlbumArtTransientException($"MB search returned {(int)searchResponse.StatusCode}");
+
+        if (!searchResponse.IsSuccessStatusCode)
+        {
+            Logger.Detail("AlbumArt", $"MB search non-success {(int)searchResponse.StatusCode} for '{artist} - {album}'");
+            return null;
+        }
+
+        var searchJson = await searchResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var (releaseIds, releaseGroupIds) = ExtractMusicBrainzIds(searchJson);
+
+        if (releaseIds.Count == 0 && releaseGroupIds.Count == 0)
+        {
+            Logger.Detail("AlbumArt", $"No MBID found for '{artist} - {album}'");
+            return null;
+        }
+        Logger.Detail("AlbumArt", $"Found {releaseIds.Count} release(s) + {releaseGroupIds.Count} release-group(s) for '{artist} - {album}'");
+
+        // Step 2a: Try each release MBID against Cover Art Archive
+        var result = await TryCaaUrlsAsync(
+            releaseIds.Select(id => $"https://coverartarchive.org/release/{id}/front-500"),
+            artist, album, ct).ConfigureAwait(false);
+        if (result is not null) return result;
+
+        // Step 2b: Fall back to release-group CAA endpoint (covers the common case where
+        //          individual releases have no art but the release group does)
+        result = await TryCaaUrlsAsync(
+            releaseGroupIds.Select(id => $"https://coverartarchive.org/release-group/{id}/front-500"),
+            artist, album, ct).ConfigureAwait(false);
+        if (result is not null) return result;
+
+        // Step 3: Recording search — finds the parent album when the title is a single track,
+        //         not an album/EP name.  E.g. "Three Drinks Behind" by George Strait exists as
+        //         a single release with no CAA art, but the same recording appears on the album
+        //         "Cowboys and Dreamers" which does have CAA art.
+        result = await FetchAlbumArtViaRecordingSearchAsync(artist, album, ct).ConfigureAwait(false);
+        if (result is not null) return result;
+
+        Logger.Detail("AlbumArt", $"No CAA cover found for '{artist} - {album}'");
+        return null;
+    }
+
+    /// <summary>
+    /// Searches MusicBrainz by recording (track) name, collects the release-groups of every
+    /// release the recording appears on, then tries Cover Art Archive on those groups.
+    /// Results are ordered so Album release-groups are tried before EP, then Single.
+    /// </summary>
+    private static async Task<byte[]?> FetchAlbumArtViaRecordingSearchAsync(string artist, string trackName,
+        CancellationToken ct = default)
+    {
+        var searchTerms = string.IsNullOrWhiteSpace(artist)
+            ? Uri.EscapeDataString($"recording:\"{trackName}\"")
+            : Uri.EscapeDataString($"recording:\"{trackName}\" AND artist:\"{artist}\"");
+
+        var searchUrl = $"https://musicbrainz.org/ws/2/recording/?query={searchTerms}&limit=10&fmt=json&inc=releases+release-groups";
+        Logger.Detail("AlbumArt", $"MB recording search: {searchUrl}");
+
+        await ThrottleMusicBrainzAsync(ct).ConfigureAwait(false);
+
+        System.Net.Http.HttpResponseMessage searchResponse;
+        try
+        {
+            searchResponse = await _albumArtHttpClient.GetAsync(searchUrl, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            throw new AlbumArtTransientException($"MB recording search failed: {ex.Message}");
+        }
+
+        if ((int)searchResponse.StatusCode == 503 || (int)searchResponse.StatusCode == 429)
+            throw new AlbumArtTransientException($"MB recording search returned {(int)searchResponse.StatusCode}");
+
+        if (!searchResponse.IsSuccessStatusCode)
+        {
+            Logger.Detail("AlbumArt", $"MB recording search non-success {(int)searchResponse.StatusCode} for '{artist} - {trackName}'");
+            return null;
+        }
+
+        var json = await searchResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var releaseGroupIds = ExtractReleaseGroupsFromRecordingSearch(json);
+
+        if (releaseGroupIds.Count == 0)
+        {
+            Logger.Detail("AlbumArt", $"No release-groups found via recording search for '{artist} - {trackName}'");
+            return null;
+        }
+
+        Logger.Detail("AlbumArt", $"Recording search found {releaseGroupIds.Count} release-group(s) for '{artist} - {trackName}'");
+
+        return await TryCaaUrlsAsync(
+            releaseGroupIds.Select(id => $"https://coverartarchive.org/release-group/{id}/front-500"),
+            artist, trackName, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Parses a MusicBrainz recording-search JSON response and returns release-group IDs
+    /// ordered by primary-type preference: Album first, then EP, then others (e.g. Single).
+    /// Duplicate release-group IDs are removed.
+    /// </summary>
+    private static List<string> ExtractReleaseGroupsFromRecordingSearch(string json)
+    {
+        // MB JSON structure:
+        // { "recordings": [ { "releases": [ { "id": "...", "release-group": { "id": "...", "primary-type": "Album" } } ] } ] }
+        var seen    = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var albums  = new List<string>();
+        var eps     = new List<string>();
+        var others  = new List<string>();
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("recordings", out var recordings)) return albums;
+
+            foreach (var recording in recordings.EnumerateArray())
+            {
+                if (!recording.TryGetProperty("releases", out var releases)) continue;
+                foreach (var release in releases.EnumerateArray())
+                {
+                    if (!release.TryGetProperty("release-group", out var rg)) continue;
+                    if (!rg.TryGetProperty("id", out var idProp)) continue;
+                    var rgId = idProp.GetString() ?? string.Empty;
+                    if (string.IsNullOrEmpty(rgId) || !seen.Add(rgId)) continue;
+
+                    var primaryType = rg.TryGetProperty("primary-type", out var pt)
+                        ? (pt.GetString() ?? string.Empty)
+                        : string.Empty;
+
+                    if (string.Equals(primaryType, "Album", StringComparison.OrdinalIgnoreCase))
+                        albums.Add(rgId);
+                    else if (string.Equals(primaryType, "EP", StringComparison.OrdinalIgnoreCase))
+                        eps.Add(rgId);
+                    else
+                        others.Add(rgId);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("AlbumArt", $"Failed to parse MB recording JSON: {ex.Message}");
+        }
+
+        // Prefer Album > EP > Single/other
+        albums.AddRange(eps);
+        albums.AddRange(others);
+        return albums;
+    }
+
+    /// <summary>Tries a sequence of CAA URLs, returning the first successful image bytes.</summary>
+    private static async Task<byte[]?> TryCaaUrlsAsync(IEnumerable<string> urls, string artist, string album,
+        CancellationToken ct = default)
+    {
+        foreach (var coverUrl in urls)
+        {
+            Logger.Detail("AlbumArt", $"CAA fetch: {coverUrl}");
+
+            System.Net.Http.HttpResponseMessage coverResponse;
+            try
+            {
+                coverResponse = await _albumArtHttpClient.GetAsync(coverUrl, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                throw new AlbumArtTransientException($"CAA request failed: {ex.Message}");
+            }
+
+            if ((int)coverResponse.StatusCode == 503 || (int)coverResponse.StatusCode == 429)
+                throw new AlbumArtTransientException($"CAA returned {(int)coverResponse.StatusCode}");
+
+            if (coverResponse.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                Logger.Detail("AlbumArt", $"CAA 404 for {coverUrl}, trying next");
+                continue;
+            }
+
+            if (!coverResponse.IsSuccessStatusCode)
+            {
+                Logger.Detail("AlbumArt", $"CAA {(int)coverResponse.StatusCode} for {coverUrl}, trying next");
+                continue;
+            }
+
+            var imageBytes = await coverResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            if (imageBytes.Length > 0)
+            {
+                Logger.Detail("AlbumArt", $"Got {imageBytes.Length} bytes for '{artist} - {album}' via {coverUrl}");
+                return imageBytes;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Parses a MusicBrainz release-search JSON response and returns
+    /// (releaseIds, releaseGroupIds) — both in result order, deduplicated.
+    /// </summary>
+    private static (List<string> ReleaseIds, List<string> ReleaseGroupIds) ExtractMusicBrainzIds(string json)
+    {
+        // MB JSON structure (simplified):
+        // { "releases": [ { "id": "<release-mbid>", "release-group": { "id": "<rg-mbid>" }, ... } ] }
+        var releaseIds      = new List<string>();
+        var releaseGroupIds = new List<string>();
+        var seenRg          = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("releases", out var releases)) return (releaseIds, releaseGroupIds);
+
+            foreach (var release in releases.EnumerateArray())
+            {
+                if (release.TryGetProperty("id", out var idProp))
+                    releaseIds.Add(idProp.GetString() ?? string.Empty);
+
+                if (release.TryGetProperty("release-group", out var rg) &&
+                    rg.TryGetProperty("id", out var rgId))
+                {
+                    var rgIdStr = rgId.GetString() ?? string.Empty;
+                    if (!string.IsNullOrEmpty(rgIdStr) && seenRg.Add(rgIdStr))
+                        releaseGroupIds.Add(rgIdStr);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("AlbumArt", $"Failed to parse MB JSON: {ex.Message}");
+        }
+
+        releaseIds.RemoveAll(string.IsNullOrEmpty);
+        return (releaseIds, releaseGroupIds);
+    }
+
     private object GetMusicScanStatus()
     {
         var pb = _callbacks.GetMusicStatus();
@@ -1869,8 +2684,16 @@ internal sealed partial class WebServer
         if (!string.IsNullOrEmpty(posParam))
             MediaControlValueParser.TryParseDouble(posParam, out startPos);
         var recordOnly = string.Equals(ctx.Request.QueryString["recordOnly"], "1", StringComparison.Ordinal);
+        var skipRecord = string.Equals(ctx.Request.QueryString["skipRecord"], "1", StringComparison.Ordinal);
         var initiatorIp = GetClientIp(ctx);
-        GetHistoryForIp(initiatorIp).RecordPlayed(filePath);
+        if (!skipRecord)
+        {
+            var history = GetHistoryForIp(initiatorIp);
+            // Recording a playlist: wipe individual track entries so only the playlist card appears in recent
+            if (recordOnly && string.Equals(Path.GetExtension(filePath), ".m3u", StringComparison.OrdinalIgnoreCase))
+                history.ClearMusicTracks();
+            history.RecordPlayed(filePath);
+        }
         if (!recordOnly)
         {
             _musicPlayInitiatorIp = initiatorIp;
@@ -1981,7 +2804,7 @@ internal sealed partial class WebServer
         }
     }
 
-    /// <summary>Fetches lyrics for a track from Genius by scraping the search result page.</summary>
+    /// <summary>Fetches lyrics for a track — tries LRCLib (synced) first, falls back to Genius.</summary>
     private async Task HandleMusicLyricsAsync(HttpListenerContext ctx)
     {
         var artist = ctx.Request.QueryString["artist"] ?? string.Empty;
@@ -1995,21 +2818,96 @@ internal sealed partial class WebServer
 
         try
         {
-            var (lyrics, geniusUrl) = await FetchGeniusLyricsAsync(artist, title).ConfigureAwait(false);
-            if (lyrics is null)
+            // --- Primary: LRCLib (free, no auth, provides synced LRC lyrics) ---
+            var lrcResult = await FetchLrcLibLyricsAsync(artist, title).ConfigureAwait(false);
+            if (lrcResult.HasValue)
+            {
+                var (plain, synced) = lrcResult.Value;
+                Logger.Detail("Lyrics", $"LRCLib hit for '{artist} - {title}' (plain={plain?.Length ?? 0} synced={synced?.Length ?? 0})");
+                TrySendResponse(ctx, 200, "application/json",
+                    JsonSerializer.Serialize(new
+                    {
+                        found        = true,
+                        lyrics       = plain ?? string.Empty,
+                        syncedLyrics = synced,
+                        source       = "lrclib"
+                    }));
+                return;
+            }
+
+            // --- Fallback: Genius (plain text scrape) ---
+            Logger.Detail("Lyrics", $"LRCLib miss — falling back to Genius for '{artist} - {title}'");
+            var (gLyrics, geniusUrl) = await FetchGeniusLyricsAsync(artist, title).ConfigureAwait(false);
+            if (gLyrics is null)
             {
                 Logger.Detail("Lyrics", $"No lyrics found for '{artist} - {title}'");
                 TrySendResponse(ctx, 200, "application/json", "{\"found\":false}");
                 return;
             }
-            Logger.Detail("Lyrics", $"Found lyrics for '{artist} - {title}' ({lyrics.Length} chars) url={geniusUrl}");
+            Logger.Detail("Lyrics", $"Genius hit for '{artist} - {title}' ({gLyrics.Length} chars) url={geniusUrl}");
             TrySendResponse(ctx, 200, "application/json",
-                JsonSerializer.Serialize(new { found = true, lyrics, geniusUrl }));
+                JsonSerializer.Serialize(new { found = true, lyrics = gLyrics, geniusUrl, source = "genius" }));
         }
         catch (Exception ex)
         {
-            Logger.Detail("Lyrics", $"Genius fetch exception for '{artist} - {title}': {ex.Message}");
+            Logger.Detail("Lyrics", $"Lyrics fetch exception for '{artist} - {title}': {ex.Message}");
             TrySendResponse(ctx, 200, "application/json", "{\"found\":false}");
+        }
+    }
+
+    /// <summary>
+    /// Queries LRCLib for plain and synced (LRC) lyrics. Returns null when not found.
+    /// API: GET https://lrclib.net/api/get?artist_name=X&track_name=Y
+    /// </summary>
+    private static async Task<(string? plain, string? synced)?> FetchLrcLibLyricsAsync(string artist, string title)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return null;
+
+        using var http = new System.Net.Http.HttpClient();
+        http.Timeout = TimeSpan.FromSeconds(10);
+        // LRCLib requests a descriptive client identifier in the header.
+        http.DefaultRequestHeaders.Add("Lrclib-Client", "RemotePlay/1.0 (https://github.com/ebrprive-lgtm/RemotePlay)");
+
+        var query = new System.Collections.Specialized.NameValueCollection();
+        query["track_name"] = title.Trim();
+        if (!string.IsNullOrWhiteSpace(artist))
+            query["artist_name"] = artist.Trim();
+
+        var qs = string.Join("&", Array.ConvertAll(query.AllKeys!, k =>
+            Uri.EscapeDataString(k!) + "=" + Uri.EscapeDataString(query[k!] ?? string.Empty)));
+
+        var url = "https://lrclib.net/api/get?" + qs;
+        Logger.Detail("Lyrics", $"LRCLib request: {url}");
+
+        try
+        {
+            var response = await http.GetAsync(url).ConfigureAwait(false);
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                Logger.Detail("Lyrics", "LRCLib: 404 not found");
+                return null;
+            }
+            response.EnsureSuccessStatusCode();
+            var json    = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+            var root    = doc.RootElement;
+
+            // Response contains null for missing lyrics fields — check explicitly.
+            var plain  = root.TryGetProperty("plainLyrics",  out var pEl) && pEl.ValueKind == JsonValueKind.String ? pEl.GetString() : null;
+            var synced = root.TryGetProperty("syncedLyrics", out var sEl) && sEl.ValueKind == JsonValueKind.String ? sEl.GetString() : null;
+
+            if (string.IsNullOrWhiteSpace(plain) && string.IsNullOrWhiteSpace(synced))
+            {
+                Logger.Detail("Lyrics", "LRCLib: response has no lyric content");
+                return null;
+            }
+
+            return (plain, synced);
+        }
+        catch (System.Net.Http.HttpRequestException ex)
+        {
+            Logger.Detail("Lyrics", $"LRCLib HTTP error: {ex.Message}");
+            return null;
         }
     }
 
@@ -2339,10 +3237,14 @@ internal sealed partial class WebServer
 
         var files = GetHistoryForIp(GetClientIp(ctx)).GetRecent(_config.PlaybackHistoryLimit + 14)
             .Where(item => WebPathHelpers.IsUnderRoot(item.FilePath, root)
-                        && musicExts.Contains(Path.GetExtension(item.FilePath)))
+                        && (musicExts.Contains(Path.GetExtension(item.FilePath))
+                            || string.Equals(Path.GetExtension(item.FilePath), ".m3u", StringComparison.OrdinalIgnoreCase)))
             .Take(7)
             .Select(item =>
             {
+                var ext = Path.GetExtension(item.FilePath);
+                if (string.Equals(ext, ".m3u", StringComparison.OrdinalIgnoreCase))
+                    return BuildPlaylistRecentObj(item.FilePath);
                 if (!indexLookup.TryGetValue(item.FilePath, out var musicFile))
                     musicFile = new MusicFile(Path.GetFileName(item.FilePath), item.FilePath);
                 return BuildMusicRecentObj(musicFile, item.PositionSeconds, item.DurationSeconds);
@@ -2397,6 +3299,54 @@ internal sealed partial class WebServer
             position    = Math.Round(positionSeconds, 1),
             duration    = Math.Round(durationSeconds, 1),
             progress    = durationSeconds > 0 ? Math.Round(positionSeconds / durationSeconds, 3) : 0
+        };
+    }
+
+    private static object BuildPlaylistRecentObj(string filePath)
+    {
+        var name = Path.GetFileNameWithoutExtension(filePath);
+        var dir  = Path.GetDirectoryName(filePath) ?? string.Empty;
+        string artist = string.Empty;
+        try
+        {
+            var lines = File.ReadLines(filePath)
+                .Where(l => !string.IsNullOrWhiteSpace(l) && !l.TrimStart().StartsWith('#'))
+                .Take(1).ToList();
+            if (lines.Count > 0)
+            {
+                var entry = lines[0].Trim();
+                var firstPath = Path.IsPathRooted(entry)
+                    ? entry
+                    : Path.GetFullPath(Path.Combine(dir, entry));
+                if (File.Exists(firstPath))
+                {
+                    using var tagFile = TagLib.File.Create(firstPath);
+                    var performers = tagFile.Tag.AlbumArtists.Length > 0
+                        ? tagFile.Tag.AlbumArtists
+                        : tagFile.Tag.Performers;
+                    artist = performers.Length > 0 ? performers[0] : string.Empty;
+                }
+            }
+        }
+        catch { /* leave artist empty */ }
+
+        return new
+        {
+            name,
+            tagTitle    = name,
+            path        = WebPathHelpers.EncodePath(filePath),
+            folder      = Path.GetFileName(Path.GetDirectoryName(filePath)) ?? string.Empty,
+            ext         = "m3u",
+            album       = name,
+            artist,
+            genre       = string.Empty,
+            year        = (int?)null,
+            durationSec = (int?)null,
+            hasCover    = false,
+            position    = 0.0,
+            duration    = 0.0,
+            progress    = 0.0,
+            isPlaylist  = true
         };
     }
 
@@ -2472,7 +3422,7 @@ internal sealed partial class WebServer
         if (!string.IsNullOrWhiteSpace(root))
         {
             var musicExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { ".mp3", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".wav", ".opus", ".ape", ".alac" };
+                { ".mp3", ".flac", ".aac", ".m4a", ".ogg", ".wma", ".wav", ".opus", ".ape", ".alac", ".m3u" };
             var history = GetHistoryForIp(GetClientIp(ctx));
             var toClear = history.GetRecent(int.MaxValue)
                 .Where(item => WebPathHelpers.IsUnderRoot(item.FilePath, root)

@@ -101,6 +101,8 @@ let _musicTrackListFolder = null; // folder the current musicTrackList was built
 // Persistent queue cursor: -1 = not in queue mode; >= 0 = index into _musicQueue
 window._musicQueue    = window._musicQueue    || [];
 window._musicQueuePos = (window._musicQueuePos != null) ? window._musicQueuePos : -1;
+// Album art URL for the currently-active playlist (blob URL or null)
+window._playlistArtUrl = window._playlistArtUrl || null;
 async function playMusic(path, name) {
   musicCurrentPath = path;
   // If this path is not in the current queue, this is a manual play — reset queue cursor.
@@ -110,6 +112,7 @@ async function playMusic(path, name) {
       // Playing something outside the queue — clear queue entirely
       window._musicQueue = [];
       window._musicQueuePos = -1;
+      window._playlistArtUrl = null;
     } else {
       // Jumping to a specific queue item — cursor is already set by the caller,
       // but ensure it matches the found index for any direct playMusic() call.
@@ -175,15 +178,22 @@ async function playMusic(path, name) {
       coverPath: path,
     });
     localPlay('/api/music/stream?path=' + encodeURIComponent(path), displayName, 'Music');
-    // Record play in history so recent cards update
-    fetch('/api/music/play?path=' + encodeURIComponent(path) + '&recordOnly=1').catch(() => {});
-    setTimeout(() => loadMusicRecent().then((files) => renderMusicRecent(files)), 300);
+    // Only record individual tracks when NOT in playlist-queue mode
+    if (!(window._musicQueue && window._musicQueue.length > 0)) {
+      fetch('/api/music/play?path=' + encodeURIComponent(path) + '&recordOnly=1').catch(() => {});
+      setTimeout(() => loadMusicRecent().then((files) => renderMusicRecent(files)), 300);
+    }
+    // In local mode the stream is handled by the browser; no server-side play call needed for queue tracks
     return;
   }
 
-  await fetch('/api/music/play?path=' + encodeURIComponent(path));
+  const _inQueue = window._musicQueue && window._musicQueue.length > 0;
+  await fetch('/api/music/play?path=' + encodeURIComponent(path) + (_inQueue ? '&skipRecord=1' : ''));
   musicIsPlaying = true;
-  setTimeout(() => loadMusicRecent().then((files) => renderMusicRecent(files)), 300);
+  // Only refresh recent strip when NOT in playlist-queue mode (playlist was recorded once on launch)
+  if (!_inQueue) {
+    setTimeout(() => loadMusicRecent().then((files) => renderMusicRecent(files)), 300);
+  }
   // Immediately tell the server which track comes next so playback continues
   // even when this browser tab is closed before the current song ends.
   _queueNextTrackOnServer();
@@ -334,6 +344,7 @@ function pathToName(p) {
 }
 
 function updateMusicBar(s) {
+  window._lastMusicBarState = s;
   const bar = document.getElementById('music-player-bar');
   if (!bar) return;
   const active = s.isPlaying || s.isPaused;
@@ -384,6 +395,7 @@ function updateMusicBar(s) {
   const artBars = document.getElementById('music-bar-art-bars');
   if (artEl) {
     const cp = s.coverPath || s.currentPath || musicCurrentPath;
+    const plArt = window._playlistArtUrl || null;
     if (s.hasCover && cp) {
       // Only refresh img if cover path changed to avoid flicker
       const existing = artEl.querySelector('.music-bar-art-img');
@@ -395,6 +407,19 @@ function updateMusicBar(s) {
         img.className = 'music-bar-art-img';
         img.onerror = () => { artEl.classList.add('music-bar-art-empty'); img.remove(); };
         // Remove previous img / text
+        artEl.querySelectorAll('.music-bar-art-img').forEach(el => el.remove());
+        artEl.classList.remove('music-bar-art-empty');
+        artEl.appendChild(img);
+      }
+    } else if (plArt) {
+      // No embedded cover — use playlist album art in the player bar
+      const existing = artEl.querySelector('.music-bar-art-img');
+      if (!existing || existing.getAttribute('data-pl-art') !== plArt) {
+        const img = document.createElement('img');
+        img.src = plArt;
+        img.setAttribute('data-pl-art', plArt);
+        img.className = 'music-bar-art-img music-bar-art-playlist';
+        img.onerror = () => { artEl.classList.add('music-bar-art-empty'); img.remove(); };
         artEl.querySelectorAll('.music-bar-art-img').forEach(el => el.remove());
         artEl.classList.remove('music-bar-art-empty');
         artEl.appendChild(img);
@@ -436,6 +461,8 @@ function updateMusicBar(s) {
   if (lyricsPath && lyricsPath !== _musicLyricsCurrentPath) {
     _onMusicTrackChangedLyrics(lyricsPath, s.artist || '', s.title || '');
   }
+  // Advance synced-lyrics highlight
+  if (typeof _lrcTick === 'function') _lrcTick(s.position || 0);
 
   if (s.lastError && !active) bar.style.display = 'none';
   if (typeof _syncEqWrapVisibility === 'function') _syncEqWrapVisibility();
@@ -462,7 +489,7 @@ async function musicPlayHere() {
 }
 
 // -- Lyrics -------------------------------------------------------------------
-const _musicLyricsCache = new Map(); // path -> { found, lyrics, geniusUrl } | 'loading'
+const _musicLyricsCache = new Map(); // path -> { found, lyrics, syncedLyrics, source, geniusUrl } | 'loading'
 let _musicLyricsCurrentPath = null;
 let _musicLyricsPanelOpen = false; // persists across track changes
 
@@ -480,28 +507,36 @@ async function _fetchMusicLyrics(path, artist, title) {
     if (artist) params.set('artist', artist);
     const res  = await fetch('/api/music/lyrics?' + params.toString());
     const data = await res.json();
-    _musicLyricsCache.set(path, data);
+    _musicLyricsCache.set(path, { ...data, _searchTitle: cleanTitle });
   } catch (_e) {
-    _musicLyricsCache.set(path, { found: false });
+    _musicLyricsCache.set(path, { found: false, _searchTitle: cleanTitle });
   }
   if (path === _musicLyricsCurrentPath) _applyMusicLyricsState(path);
 }
 
 function _applyMusicLyricsState(path) {
-  const btn   = document.getElementById('music-btn-lyrics');
-  const panel = document.getElementById('music-lyrics-panel');
-  const body  = document.getElementById('music-lyrics-body');
-  const src   = document.getElementById('music-lyrics-source');
+  const btn        = document.getElementById('music-btn-lyrics');
+  const panel      = document.getElementById('music-lyrics-panel');
+  const body       = document.getElementById('music-lyrics-body');
+  const src        = document.getElementById('music-lyrics-source');
+  const titleEl    = document.getElementById('music-lyrics-title');
   if (!btn) return;
 
   if (!path) {
     btn.style.display = 'none';
+    if (titleEl) titleEl.textContent = '';
     _closeLyricsPanel();
     return;
   }
 
   btn.style.display = '';
   const entry = _musicLyricsCache.get(path);
+
+  // Show the title that was searched for (or a fallback from the path)
+  const searchTitle = (entry && entry !== 'loading' && entry._searchTitle)
+    ? entry._searchTitle
+    : ((path.split(/[\/\\]/).pop() || '').replace(/\.[^.]+$/, '').replace(/^\d{1,3}[\s._-]+/, '').trim());
+  if (titleEl) titleEl.textContent = searchTitle || '';
 
   if (!entry || entry === 'loading') {
     btn.textContent = '\u23F3 Lyrics';
@@ -531,10 +566,8 @@ function _applyMusicLyricsState(path) {
   // Restore open state
   if (_musicLyricsPanelOpen) {
     _openLyricsPanel();
-    if (body) body.textContent = entry.lyrics || '';
-    if (src)  src.innerHTML = entry.geniusUrl
-      ? '<a class="lyrics-genius-link" href="' + entry.geniusUrl + '" target="_blank" rel="noopener">View on Genius \u2197</a>'
-      : '';
+    _renderLyricsBody(body, entry);
+    if (src) src.innerHTML = _buildLyricsSourceHtml(entry);
   }
 }
 
@@ -582,10 +615,8 @@ function toggleMusicLyricsPanel() {
         _closeLyricsPanelVisual();
       } else {
         _openLyricsPanel();
-        if (body) body.textContent = entry.lyrics || '';
-        if (src)  src.innerHTML = entry.geniusUrl
-          ? '<a class="lyrics-genius-link" href="' + entry.geniusUrl + '" target="_blank" rel="noopener">View on Genius \u2197</a>'
-          : '';
+        if (body) _renderLyricsBody(body, entry);
+        if (src)  src.innerHTML = _buildLyricsSourceHtml(entry);
       }
     } else {
       _openLyricsPanel();
@@ -593,7 +624,79 @@ function toggleMusicLyricsPanel() {
   }
 }
 
+// -- LRC synced-lyrics helpers ------------------------------------------------
+
+/** Parses an LRC string into [{time, text}] sorted by time. */
+function _parseLrc(lrc) {
+  const lines = [];
+  for (const raw of lrc.split('\n')) {
+    const m = raw.match(/^\[(\d{2}):(\d{2}(?:\.\d+)?)\](.*)$/);
+    if (!m) continue;
+    const t = parseInt(m[1], 10) * 60 + parseFloat(m[2]);
+    lines.push({ time: t, text: m[3].trim() });
+  }
+  return lines.sort((a, b) => a.time - b.time);
+}
+
+/** Renders lyrics into the body element. Synced lyrics become <div> lines; plain text is textContent. */
+function _renderLyricsBody(body, entry) {
+  if (!body) return;
+  if (entry && entry.syncedLyrics) {
+    const lines = _parseLrc(entry.syncedLyrics);
+    body.innerHTML = lines.map((l, i) =>
+      `<div class="lrc-line" data-idx="${i}" data-time="${l.time}">${l.text || '&nbsp;'}</div>`
+    ).join('');
+    _lrcLines = lines;
+    _lrcCurrentIdx = -1;
+  } else {
+    body.textContent = (entry && entry.lyrics) || '';
+    _lrcLines = null;
+    _lrcCurrentIdx = -1;
+  }
+}
+
+/** Builds source attribution HTML. */
+function _buildLyricsSourceHtml(entry) {
+  if (!entry) return '';
+  if (entry.source === 'lrclib') return '<span class="lyrics-source-label">Lyrics via LRCLib</span>';
+  if (entry.geniusUrl)
+    return `<a class="lyrics-genius-link" href="${entry.geniusUrl}" target="_blank" rel="noopener">View on Genius \u2197</a>`;
+  return '';
+}
+
+// Synced LRC tick state
+let _lrcLines = null;        // parsed [{time,text}] for current track, or null
+let _lrcCurrentIdx = -1;     // last highlighted index
+
+/** Called from updateMusicBar with current position (seconds). Highlights the active LRC line. */
+function _lrcTick(posSeconds) {
+  if (!_lrcLines || !_musicLyricsPanelOpen) return;
+  const body = document.getElementById('music-lyrics-body');
+  if (!body) return;
+
+  // Find the last line whose time <= posSeconds
+  let idx = -1;
+  for (let i = 0; i < _lrcLines.length; i++) {
+    if (_lrcLines[i].time <= posSeconds) idx = i;
+    else break;
+  }
+  if (idx === _lrcCurrentIdx) return;
+  _lrcCurrentIdx = idx;
+
+  const els = body.querySelectorAll('.lrc-line');
+  els.forEach((el, i) => el.classList.toggle('lrc-line-active', i === idx));
+
+  // Scroll active line into view (centre it)
+  if (idx >= 0 && els[idx]) {
+    els[idx].scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+}
+
+// -------------------------------------------------------------------------------
+
 function _onMusicTrackChangedLyrics(path, artist, title) {
+  _lrcLines = null;
+  _lrcCurrentIdx = -1;
   _musicLyricsCurrentPath = path;
   const btn = document.getElementById('music-btn-lyrics');
 
@@ -739,9 +842,38 @@ function _refreshMusicNavLabels() {
 }
 function _musicNextTrack() {
   if (!musicTrackList.length && !(window._musicQueue && window._musicQueue.length)) return null;
-  if (_musicRepeat === 'one' && musicTrackIndex >= 0) return musicTrackList[musicTrackIndex] || null;
+  // Repeat-one: restart the current queue item (if queue active) or current track-list item
+  if (_musicRepeat === 'one') {
+    if (window._musicQueue && window._musicQueue.length && window._musicQueuePos >= 0) {
+      return window._musicQueue[window._musicQueuePos] || null;
+    }
+    if (musicTrackIndex >= 0) return musicTrackList[musicTrackIndex] || null;
+  }
   // Advance through the explicit queue (cursor-based, non-destructive)
   if (window._musicQueue && window._musicQueue.length) {
+    // Shuffle mode: pick a random queue index that hasn't been played yet
+    if (_musicShuffle) {
+      const visited = window._musicQueueVisited || (window._musicQueueVisited = new Set());
+      visited.add(window._musicQueuePos);
+      const unvisited = window._musicQueue.map((_, i) => i).filter(i => !visited.has(i));
+      if (unvisited.length > 0) {
+        const pick = unvisited[Math.floor(Math.random() * unvisited.length)];
+        window._musicQueuePos = pick;
+        _updateMusicQueuePendingBar();
+        return window._musicQueue[pick];
+      }
+      // All visited — wrap if repeat=all
+      if (_musicRepeat === 'all') {
+        window._musicQueueVisited = new Set();
+        const pick = Math.floor(Math.random() * window._musicQueue.length);
+        window._musicQueuePos = pick;
+        _updateMusicQueuePendingBar();
+        return window._musicQueue[pick];
+      }
+      window._musicQueuePos = window._musicQueue.length;
+      _updateMusicQueuePendingBar();
+      return null;
+    }
     const nextPos = window._musicQueuePos + 1;
     if (nextPos < window._musicQueue.length) {
       window._musicQueuePos = nextPos;
@@ -749,7 +881,7 @@ function _musicNextTrack() {
       return window._musicQueue[nextPos];
     }
     // Queue exhausted — wrap if repeat=all, otherwise fall through to track list or stop
-    if (_musicRepeat === 'all' || _musicRepeat === 'one') {
+    if (_musicRepeat === 'all') {
       window._musicQueuePos = 0;
       _updateMusicQueuePendingBar();
       return window._musicQueue[0];
@@ -783,6 +915,8 @@ function _musicPeekPrev() {
 function _musicPeekNext() {
   // Queue takes priority — peek the next item without consuming it
   if (window._musicQueue && window._musicQueue.length > 0) {
+    // Repeat-one: the 'next' is the same current item (it will restart)
+    if (_musicRepeat === 'one' && window._musicQueuePos >= 0) return window._musicQueue[window._musicQueuePos] || null;
     const nextPos = window._musicQueuePos + 1;
     if (nextPos < window._musicQueue.length) return window._musicQueue[nextPos];
     // When repeat=all, the next after the last is the first
@@ -826,6 +960,7 @@ function _musicQueueRemove(idx) {
 function _musicQueueClear() {
   window._musicQueue = [];
   window._musicQueuePos = -1;
+  window._musicQueueVisited = new Set();
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
   _renderMusicQueuePeek();
 }
@@ -1542,7 +1677,15 @@ function _updateMusicQueuePendingBar() {
     if (queueNextTitle) {
       const _qnPos = (window._musicQueuePos != null) ? window._musicQueuePos : -1;
       const _qnNext = _qnPos + 1;
-      const peek = hasQueue ? ((_qnNext < count) ? window._musicQueue[_qnNext] : (_musicRepeat === 'all' ? window._musicQueue[0] : null)) : null;
+      let peek = null;
+      if (hasQueue) {
+        if (_musicRepeat === 'one' && _qnPos >= 0) {
+          // Repeat-one: the next play is a restart of the current item
+          peek = window._musicQueue[_qnPos] || null;
+        } else {
+          peek = (_qnNext < count) ? window._musicQueue[_qnNext] : (_musicRepeat === 'all' ? window._musicQueue[0] : null);
+        }
+      }
       queueNextTitle.textContent = peek ? (peek.name || '') : '';
     }
   }
@@ -1766,7 +1909,76 @@ function musicSortBy(col) {
 // otherwise return { displayName: name, year: null }.
 function _parsePlName(name) {
   const m = /^(\d{4})_(.+)$/.exec(name);
-  return m ? { displayName: m[2], year: m[1] } : { displayName: name, year: null };
+  const raw = m ? m[2] : name;
+  const year = m ? m[1] : null;
+  // Try to split "Artist - Album" or "Artist – Album"
+  const sep = /^(.+?)\s+[-\u2013\u2014]\s+(.+)$/.exec(raw);
+  const artist = sep ? sep[1].trim() : null;
+  const displayName = sep ? sep[2].trim() : raw;
+  return { displayName, year, artist };
+}
+
+/**
+ * Attempts to fetch album art from the backend proxy (MusicBrainz/CAA) and
+ * applies it as the background of the playlist card's art area.
+ * Falls back silently to the existing gradient if art is not found.
+ */
+async function _loadPlaylistAlbumArt(cardEl, signal) {
+  const album  = cardEl.dataset.plalbum  || '';
+  const artist = cardEl.dataset.plartist || '';
+  if (!album) return;
+
+  const artEl = cardEl.querySelector('.mpl-card-art');
+  if (!artEl) return;
+
+  try {
+    const params = new URLSearchParams({ album });
+    if (artist) params.set('artist', artist);
+    const res = await fetch('/api/music/album-art?' + params.toString(), { signal });
+    if (!res.ok) return; // 404 = not found, stay with gradient
+
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+
+    // Apply the image as a cover-fill background on the art area
+    artEl.style.backgroundImage  = `url(${url})`;
+    artEl.style.backgroundSize   = 'cover';
+    artEl.style.backgroundPosition = 'center';
+    // Dim the note glyph so the artwork reads clearly
+    const note = artEl.querySelector('.mpl-card-note');
+    if (note) note.style.opacity = '0';
+    cardEl.classList.add('has-album-art');
+    // Stash resolved URL so the player bar can use it when this playlist is active
+    cardEl._albumArtUrl = url;
+  } catch (e) {
+    if (e.name !== 'AbortError') { /* Network failure — keep gradient, no error surfaced */ }
+  }
+}
+
+async function _loadPlaylistListThumb(rowEl, signal) {
+  const album  = rowEl.dataset.plalbum  || '';
+  const artist = rowEl.dataset.plartist || '';
+  if (!album) return;
+
+  const thumbEl = rowEl.querySelector('.mpl-list-thumb');
+  if (!thumbEl) return;
+
+  try {
+    const params = new URLSearchParams({ album });
+    if (artist) params.set('artist', artist);
+    const res = await fetch('/api/music/album-art?' + params.toString(), { signal });
+    if (!res.ok) return; // 404 = not found, keep note glyph
+
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+
+    thumbEl.style.backgroundImage = `url(${url})`;
+    thumbEl.textContent = ''; // hide the fallback note glyph
+    // Stash on row element so playMusicPlaylist can pick it up
+    rowEl._albumArtUrl = url;
+  } catch (e) {
+    if (e.name !== 'AbortError') { /* keep fallback glyph */ }
+  }
 }
 
 function renderMusicCards(data, searching) {
@@ -1776,13 +1988,14 @@ function renderMusicCards(data, searching) {
   if (!searching && data.folders && data.folders.length) {
     html += '<div class="folder-list">';
     data.folders.forEach((f) => {
+      const isAll = f.isAll || f.name === 'All';
       html +=
-        '<div class="folder-row" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"' +
+        '<div class="folder-row' + (isAll ? ' folder-row-all' : '') + '" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"' +
         ' oncontextmenu="_ctxShow(event,\'music-folder\',{dir:btoa(unescape(encodeURIComponent(\'' + jsStr(f.folder) + '\'))),name:\'' + jsStr(f.name) + '\'})"' +
         ' onclick="browseMusic(\'' +
         jsStr(f.folder) +
         '\')">' +
-        '<span class="folder-icon">&#128193;</span><span class="folder-name">' +
+        '<span class="folder-icon">' + (isAll ? '\uD83D\uDCC2' : '&#128193;') + '</span><span class="folder-name">' +
         esc(f.name) +
         '</span></div>';
     });
@@ -1792,12 +2005,20 @@ function renderMusicCards(data, searching) {
     const _isList = _viewMode.music === 'list';
     if (_isList) {
       html += '<div class="music-playlist-list">';
+      html += '<div class="music-playlist-list-header">' +
+        '<span></span>' +
+        '<span>Name</span>' +
+        '<span>Year</span>' +
+        '<span>Type</span>' +
+        '<span class="mpl-list-count">Tracks</span>' +
+        '</div>';
       data.playlists.forEach((pl, idx) => {
         const count = pl.trackCount > 0 ? pl.trackCount + ' track' + (pl.trackCount !== 1 ? 's' : '') : '';
         const { displayName, year } = _parsePlName(pl.name);
+        const artist = (pl.artist && pl.artist.trim()) || '';
         html += `<div class="music-playlist-list-row${idx % 2 === 1 ? ' alt-row' : ''}${year ? ' has-year' : ''}" role="button" tabindex="0" title="${esc(displayName)}"` +
-          ` onkeydown="activateKeyboardClick(event,this)" data-plpath="${esc(pl.path)}">` +
-          `<span class="mpl-icon">&#127911;</span>` +
+          ` onkeydown="activateKeyboardClick(event,this)" data-plpath="${esc(pl.path)}" data-plalbum="${esc(displayName)}"${artist ? ` data-plartist="${esc(artist)}"` : ''}>` +
+          `<span class="mpl-list-thumb">&#9835;</span>` +
           `<span class="mpl-list-name">${esc(displayName)}</span>` +
           (year ? `<span class="mpl-list-year">${esc(year)}</span>` : `<span></span>`) +
           `<span class="mpl-badge">PLAYLIST</span>` +
@@ -1807,18 +2028,23 @@ function renderMusicCards(data, searching) {
       html += '</div>';
     } else {
       html += '<div class="music-playlist-row">';
-      data.playlists.forEach((pl) => {
-        const count = pl.trackCount > 0 ? pl.trackCount + ' track' + (pl.trackCount !== 1 ? 's' : '') : '';
-        const { displayName, year } = _parsePlName(pl.name);
-        html += `<div class="music-playlist-card" role="button" tabindex="0" title="${esc(displayName)}"
-            onkeydown="activateKeyboardClick(event,this)"
-            data-plpath="${esc(pl.path)}">` +
-          `<span class="mpl-icon">&#127911;</span>` +
-          `<span class="mpl-info"><span class="mpl-name">${esc(displayName)}</span>` +
-          (year ? `<span class="mpl-year">${esc(year)}</span>` : '') +
-          (count ? `<span class="mpl-count">${esc(count)}</span>` : '') +
-          `</span>` +
-          `<span class="mpl-badge">PLAYLIST</span>` +
+      data.playlists.forEach((pl, idx) => {
+        const count = pl.trackCount > 0 ? pl.trackCount : null;
+        const { displayName, year, artist: parsedArtist } = _parsePlName(pl.name);
+        // Prefer artist from tag (returned by backend), fall back to filename-parsed artist
+        const artist = (pl.artist && pl.artist.trim()) || parsedArtist || '';
+        const gradIdx = idx % 8;
+        html += `<div class="music-playlist-card mpl-grad-${gradIdx}" role="button" tabindex="0" title="${esc(displayName)}"` +
+          ` onkeydown="activateKeyboardClick(event,this)" data-plpath="${esc(pl.path)}" data-plalbum="${esc(displayName)}"${artist ? ` data-plartist="${esc(artist)}"` : ''}>` +
+          `<div class="mpl-card-top-pills">` +
+          (year ? `<span class="mpl-card-year">${esc(year)}</span>` : '<span></span>') +
+          `<span class="mpl-badge-footer">PLAYLIST</span>` +
+          `</div>` +
+          `<div class="mpl-card-art"><span class="mpl-card-note">&#9835;</span></div>` +
+          `<div class="mpl-card-footer">` +
+          `<span class="mpl-card-name">${esc(displayName)}</span>` +
+          `</div>` +
+          (count ? `<span class="mpl-card-count">Tracks: ${count}</span>` : '') +
           `</div>`;
       });
       html += '</div>';
@@ -1932,11 +2158,23 @@ function renderMusicCards(data, searching) {
     el.addEventListener('click', () => {
       const path = el.dataset.plpath;
       const name = el.querySelector('.mpl-name, .mpl-list-name')?.textContent || path;
-      playMusicPlaylist(path, name);
+      playMusicPlaylist(path, name, el);
     });
   });
 
-  // Attach context-menu bindings and click handlers (can't use inline attrs with complex args)
+  // Async: attempt to load album art from the internet for each playlist card and list-row thumb.
+  // Abort any still-pending requests from the previous folder so they don't block the server.
+  if (window._artLoadAbortCtrl) window._artLoadAbortCtrl.abort();
+  const artAC = new AbortController();
+  window._artLoadAbortCtrl = artAC;
+  document.querySelectorAll('.music-playlist-card').forEach((el) => {
+    _loadPlaylistAlbumArt(el, artAC.signal);
+  });
+  document.querySelectorAll('.music-playlist-list-row').forEach((el) => {
+    _loadPlaylistListThumb(el, artAC.signal);
+  });
+
+  // Attach context-menu bindings
   if (data.files) {
     const sortedForCtx = _musicSortFiles(data.files);
     document.querySelectorAll('.music-track-card').forEach((el, i) => {
@@ -1962,16 +2200,40 @@ function renderMusicCards(data, searching) {
   }
 }
 
-async function playMusicPlaylist(path, name) {
+async function playMusicPlaylist(path, name, cardEl) {
   try {
     const res = await fetch('/api/music/playlist?path=' + encodeURIComponent(path));
     if (!res.ok) { setStatus('Playlist error ' + res.status); return; }
     const data = await res.json();
     const tracks = data.tracks;
     if (!tracks || !tracks.length) { setStatus('Playlist is empty.'); return; }
+
+    // Resolve album art URL before starting playback so the player bar shows it immediately.
+    // Browse-grid cards have _albumArtUrl already set; recent-strip cards don't, so fetch now.
+    window._playlistArtUrl = (cardEl && cardEl._albumArtUrl) || null;
+    if (!window._playlistArtUrl) {
+      const album  = (cardEl && cardEl.dataset.plalbum)  || '';
+      const artist = (cardEl && cardEl.dataset.plartist) || '';
+      if (album) {
+        try {
+          const params = new URLSearchParams({ album });
+          if (artist) params.set('artist', artist);
+          const artRes = await fetch('/api/music/album-art?' + params.toString());
+          if (artRes.ok) {
+            const blob = await artRes.blob();
+            window._playlistArtUrl = URL.createObjectURL(blob);
+          }
+        } catch (_) {}
+      }
+    }
+
+    // Record the playlist itself in history (not the individual tracks)
+    fetch('/api/music/play?path=' + encodeURIComponent(path) + '&recordOnly=1').catch(() => {});
+    setTimeout(() => loadMusicRecent().then((files) => renderMusicRecent(files)), 400);
     // Load all tracks into a fresh persistent queue; cursor starts at 0
     window._musicQueue = tracks.map((t) => ({ path: t.path, name: t.name }));
     window._musicQueuePos = 0;
+    window._musicQueueVisited = new Set([0]);
     _updateMusicQueuePendingBar();
     playMusic(tracks[0].path, tracks[0].name || name);
   } catch (e) {
@@ -1999,6 +2261,7 @@ function playMusicAll() {
   // Put all tracks into the persistent queue with cursor at 0
   window._musicQueue = sorted.map((f) => ({ path: f.path, name: f.name }));
   window._musicQueuePos = 0;
+  window._musicQueueVisited = new Set([0]);
   _updateMusicQueuePendingBar();
   playMusic(sorted[0].path, sorted[0].name);
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
@@ -2479,6 +2742,24 @@ function renderMusicRecent(files) {
   strip.style.display = '';
   if (clearBtn) clearBtn.style.display = '';
   strip.innerHTML = files.slice(0, 7).map((f) => {
+    if (f.isPlaylist) {
+      const { displayName, artist: parsedArtist } = _parsePlName(f.name || f.tagTitle || f.folder || 'Playlist');
+      const albumForArt  = displayName;
+      const artistForArt = (f.artist && f.artist.trim()) || parsedArtist || '';
+      return (
+        '<div class="vr-card vr-card-playlist" role="button" tabindex="0"' +
+        ' data-recent-playlist-path="' + esc(f.path) + '"' +
+        ' data-recent-playlist-name="' + esc(displayName) + '"' +
+        ' data-plalbum="' + esc(albumForArt) + '"' +
+        ' data-plartist="' + esc(artistForArt) + '"' +
+        ' title="' + esc(displayName) + '"' +
+        ' onkeydown="activateKeyboardClick(event,this)">' +
+        '<div class="vr-thumb vr-thumb-placeholder vr-thumb-playlist">&#9835;</div>' +
+        '<div class="vr-label">' + esc(displayName) + '</div>' +
+        '<div class="vr-badge-overlay">PLAYLIST</div>' +
+        '</div>'
+      );
+    }
     const title   = f.tagTitle ? f.tagTitle : _titleFromName(f.name);
     const pct     = Math.max(0, Math.min(99, Math.round((Number(f.progress) || 0) * 100)));
     const isCont  = pct > 0 && pct < 95;
@@ -2499,9 +2780,19 @@ function renderMusicRecent(files) {
       '</div>'
     );
   }).join('');
-  // Wire clicks via delegation — navigate to folder then play
+  // Wire clicks via delegation — navigate to folder then play, or relaunch playlist
   if (strip._recentMusicHandler) strip.removeEventListener('click', strip._recentMusicHandler);
   strip._recentMusicHandler = async (e) => {
+    // Playlist card
+    const plCard = e.target.closest('[data-recent-playlist-path]');
+    if (plCard) {
+      const encodedPath = plCard.dataset.recentPlaylistPath;
+      const name = plCard.dataset.recentPlaylistName;
+      if (currentMode !== 'music') switchMode('music', true);
+      playMusicPlaylist(encodedPath, name, plCard);
+      return;
+    }
+    // Regular track card
     const card = e.target.closest('[data-recent-music-path]');
     if (!card) return;
     const encodedPath = card.dataset.recentMusicPath;

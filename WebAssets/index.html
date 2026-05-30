@@ -467,7 +467,10 @@
         <div id="browse-loading" aria-hidden="true"><div class="browse-spinner"></div><span>Loading…</span></div>
         <div id="music-lyrics-panel" aria-label="Lyrics" style="display:none">
           <div id="music-lyrics-panel-header">
-            <span>&#127908; Lyrics</span>
+            <div id="music-lyrics-header-left">
+              <span>&#127908; Lyrics</span>
+              <span id="music-lyrics-title"></span>
+            </div>
             <button class="vr-clear-btn" onclick="toggleMusicLyricsPanel()" title="Close lyrics" aria-label="Close lyrics">&#x2715;</button>
           </div>
           <div id="music-lyrics-body" class="music-lyrics-body"></div>

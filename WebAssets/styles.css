@@ -628,9 +628,12 @@
         .music-queue-remove-btn{background:transparent;border:none;color:var(--muted,#9aa8c2);padding:.05rem .22rem;font-size:.72rem;cursor:pointer;border-radius:3px;opacity:0;transition:opacity .12s,color .12s,background .12s;flex-shrink:0;line-height:1}
         .music-queue-peek-item:hover .music-queue-remove-btn{opacity:1}
         .music-queue-remove-btn:hover{background:rgba(233,69,96,.25);color:#fff;opacity:1}
-        .music-lyrics-body{white-space:pre-wrap;font-size:.82rem;line-height:1.65;color:var(--player-text,#e0e4f5)!important;max-height:340px;overflow-y:auto;margin-top:.4rem;padding-right:.25rem}
+        .music-lyrics-body{white-space:pre-wrap;font-size:.82rem;line-height:1.65;color:var(--player-text,#e0e4f5)!important;max-height:340px;overflow-y:auto;margin-top:.4rem;padding-right:.25rem;scroll-behavior:smooth}
         .music-lyrics-body::-webkit-scrollbar{width:4px}.music-lyrics-body::-webkit-scrollbar-thumb{background:var(--pill-border,rgba(255,255,255,.2));border-radius:2px}
-        .music-lyrics-source{margin-top:.45rem;font-size:.7rem;text-align:right}.lyrics-genius-link{color:var(--player-accent,#e94560);text-decoration:none;opacity:.8}.lyrics-genius-link:hover{opacity:1;text-decoration:underline}
+        .music-lyrics-source{margin-top:.45rem;font-size:.7rem;text-align:right}.lyrics-genius-link{color:var(--player-accent,#e94560);text-decoration:none;opacity:.8}.lyrics-genius-link:hover{opacity:1;text-decoration:underline}.lyrics-source-label{color:var(--player-text,#e0e4f5);opacity:.5}
+        /* Synced LRC lyrics */
+        .lrc-line{padding:.18rem .1rem;border-radius:3px;transition:background .2s,color .2s,font-size .15s;opacity:.45;font-size:.8rem;line-height:1.6;cursor:default}
+        .lrc-line-active{opacity:1!important;color:#fff!important;font-size:.87rem;font-weight:600;background:rgba(233,69,96,.18)}
         #music-btn-lyrics.lyrics-not-found{opacity:.45;cursor:default}
         #music-btn-lyrics:disabled{opacity:.6;cursor:wait}
         /* Lyrics side panel */
@@ -646,6 +649,8 @@
         }
         #music-lyrics-panel.open{transform:translateX(0);opacity:1;pointer-events:auto}
         #music-lyrics-panel-header{display:flex;align-items:center;justify-content:space-between;font-size:.8rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--pill-text,#b0b8e0);margin-bottom:.2rem}
+        #music-lyrics-header-left{display:flex;flex-direction:column;gap:.1rem;min-width:0}
+        #music-lyrics-title{font-size:.9rem;font-weight:700;letter-spacing:0;text-transform:none;color:var(--folder-text,#eee);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:22ch;line-height:1.2}
         @media(max-width:900px){
           #music-lyrics-panel{position:fixed;bottom:0;left:0;right:0;top:auto;width:100%;max-height:55vh;border-radius:14px 14px 0 0;transform:translateY(20px);right:auto}
           #music-lyrics-panel.open{transform:translateY(0)}
@@ -960,6 +965,9 @@
         @media(hover:hover){.vr-card:hover{transform:translateY(-2px);box-shadow:0 3px 12px color-mix(in srgb,var(--player-accent,#2d8cff) 38%,transparent);border-color:var(--player-accent,#2d8cff)}}
         .vr-thumb{width:74px;height:46px;background:var(--header-bg,#161822) center/cover no-repeat;flex-shrink:0}
         .vr-thumb-placeholder{display:flex;align-items:center;justify-content:center;font-size:1.4rem;color:var(--muted,#9aa8c2);background:var(--header-bg,#161822)}
+        .vr-thumb-playlist{background:linear-gradient(145deg,#1a0533 0%,#5b21b6 55%,#7c3aed 100%);color:#c4b5fd}
+        .vr-card-playlist{position:relative}
+        .vr-badge-overlay{position:absolute;top:.22rem;right:.22rem;background:color-mix(in srgb,var(--accent2,#8b5cf6) 22%,rgba(0,0,0,.55));border:1px solid color-mix(in srgb,var(--accent2,#8b5cf6) 55%,transparent);color:color-mix(in srgb,var(--accent2,#8b5cf6) 100%,#fff);border-radius:3px;padding:.02rem .22rem;font-size:.52rem;font-weight:800;letter-spacing:.06em;line-height:1.5;pointer-events:none}
         .vr-label{width:100%;padding:.15rem .25rem .18rem;font-size:.6rem;font-weight:600;color:var(--player-text,#e0e4f5);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;line-height:1.2;background:var(--card-bg,#1e1e2e)}
         .vr-clear-btn{align-self:flex-start;margin-top:2px;margin-left:2px;flex-shrink:0;width:18px;height:18px;padding:0;border:1px solid var(--pill-border,rgba(255,255,255,.18));border-radius:4px;background:rgba(0,0,0,.35);color:var(--muted,#9aa8c2);font-size:.62rem;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s,color .15s}
         .vr-clear-btn:hover{background:rgba(220,60,60,.6);color:#fff;border-color:rgba(220,60,60,.8)}
@@ -1009,27 +1017,58 @@
         .folder-row{display:flex;align-items:center;gap:.6rem;background:var(--folder-bg);color:var(--folder-text);border-radius:6px;padding:.55rem .9rem;cursor:pointer;transition:background .15s,color .15s}
         .folder-row:hover{background:var(--folder-hover)}
         .folder-row.folder-row-active{opacity:.6;pointer-events:none}
+        .folder-row-all{border-color:rgba(255,140,0,.45)!important;margin-bottom:.35rem;padding-bottom:.6rem}
+        .folder-row-all+.folder-row{margin-top:.1rem}
+        .folder-row-all .folder-icon{filter:sepia(1) saturate(8) hue-rotate(5deg)}
         #music-browser .folder-list{padding:0 .75rem}
         #music-browser{padding-top:.35rem}
         #music-browser .folder-row{border:1px solid var(--pill-border,rgba(255,255,255,.12))}
         .folder-icon{font-size:1.1rem}
         .folder-name{font-size:.9rem;word-break:break-word;color:var(--folder-text)}
-        .music-playlist-row{display:flex;flex-wrap:wrap;gap:.45rem;padding:.3rem .75rem .5rem}
-        .music-playlist-card{display:flex;align-items:center;gap:.5rem;background:color-mix(in srgb,var(--accent2,#8b5cf6) 12%,var(--card-bg,#1a1f3a));border:1px solid color-mix(in srgb,var(--accent2,#8b5cf6) 35%,transparent);border-left:3px solid var(--accent2,#8b5cf6);border-radius:8px;padding:.4rem .7rem .4rem .5rem;cursor:pointer;transition:background .15s,border-color .15s;min-width:180px;max-width:320px}
-        .music-playlist-card:hover{background:color-mix(in srgb,var(--accent2,#8b5cf6) 22%,var(--card-bg,#1a1f3a));border-color:var(--accent2,#8b5cf6)}
-        .music-playlist-list{display:flex;flex-direction:column;padding:.2rem .75rem .3rem}
-        .music-playlist-list-row{display:grid;grid-template-columns:1.4rem 1fr auto auto auto;align-items:center;gap:.5rem .75rem;padding:.35rem .5rem;border-left:3px solid var(--accent2,#8b5cf6);border-radius:4px;cursor:pointer;transition:background .12s}
+        .music-playlist-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:.75rem;padding:.3rem .75rem .6rem}
+        /* Album-art style playlist card */
+        .music-playlist-card{position:relative;isolation:isolate;border-radius:10px;overflow:hidden;display:flex;flex-direction:column;aspect-ratio:3/4;cursor:pointer;border:2px solid transparent;transition:transform .14s,box-shadow .14s,border-color .14s;-webkit-user-select:none;user-select:none}
+        .music-playlist-card:hover{transform:translateY(-4px);box-shadow:0 8px 28px color-mix(in srgb,var(--accent2,#8b5cf6) 55%,transparent);border-color:color-mix(in srgb,var(--accent2,#8b5cf6) 80%,transparent)}
+        /* Per-card gradient palettes */
+        .mpl-grad-0{background:linear-gradient(145deg,#1a0533 0%,#5b21b6 55%,#7c3aed 100%)}
+        .mpl-grad-1{background:linear-gradient(145deg,#0f2027 0%,#203a43 50%,#2c5364 100%)}
+        .mpl-grad-2{background:linear-gradient(145deg,#1a0022 0%,#8b005e 55%,#d4006c 100%)}
+        .mpl-grad-3{background:linear-gradient(145deg,#001a18 0%,#005c4b 55%,#00796b 100%)}
+        .mpl-grad-4{background:linear-gradient(145deg,#1a1000 0%,#7c4f00 55%,#b36a00 100%)}
+        .mpl-grad-5{background:linear-gradient(145deg,#001833 0%,#0057a8 55%,#0080cc 100%)}
+        .mpl-grad-6{background:linear-gradient(145deg,#1a0808 0%,#8b1a1a 55%,#c0392b 100%)}
+        .mpl-grad-7{background:linear-gradient(145deg,#0a001a 0%,#2d0057 55%,#6a0572 100%)}
+        /* Top pill bar — year left, PLAYLIST badge right, never overlaps art */
+        .mpl-card-top-pills{display:flex;flex-direction:row;justify-content:space-between;align-items:flex-start;z-index:3;padding:.45rem .45rem .3rem;flex-shrink:0;gap:.3rem}
+        .mpl-card-year{background:rgba(0,0,0,.62);color:#fff;border-radius:999px;padding:.15rem .55rem;font-size:.68rem;font-weight:700;letter-spacing:.04em;backdrop-filter:blur(4px);white-space:nowrap}
+        /* PLAYLIST badge */
+        .mpl-badge-footer{background:color-mix(in srgb,var(--accent2,#8b5cf6) 22%,rgba(0,0,0,.62));border:1px solid color-mix(in srgb,var(--accent2,#8b5cf6) 55%,transparent);color:color-mix(in srgb,var(--accent2,#8b5cf6) 100%,#fff);border-radius:4px;padding:.08rem .3rem;font-size:.58rem;font-weight:800;letter-spacing:.07em;backdrop-filter:blur(4px);white-space:nowrap;flex-shrink:0}
+        /* Art fill area */
+        .mpl-card-art{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
+        .mpl-card-note{font-size:3.8rem;opacity:.28;line-height:1;user-select:none;filter:drop-shadow(0 2px 8px rgba(0,0,0,.6))}
+        /* When real album art is loaded the note glyph hides (via JS) and art becomes the whole card background */
+        .music-playlist-card.has-album-art{background:none}
+        .music-playlist-card.has-album-art .mpl-card-art{position:absolute;inset:0;z-index:0;border-radius:inherit}
+        .music-playlist-card.has-album-art .mpl-card-top-pills{position:relative;z-index:3}
+        .music-playlist-card.has-album-art .mpl-card-footer{z-index:2;background:transparent}
+        /* Bottom footer — gradient scrim for readability over cover art */
+        .mpl-card-footer{position:relative;z-index:2;padding:.35rem .6rem 1.4rem;background:transparent}        .mpl-card-name{display:block;font-size:.84rem;font-weight:800;color:#fff;line-height:1.3;word-break:break-word;
+          text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000,0 2px 6px rgba(0,0,0,.7);
+          overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+        /* Track count — absolute bottom-left, below footer text */
+        .mpl-card-count{position:absolute;bottom:.38rem;left:.55rem;z-index:3;font-size:.65rem;font-weight:700;
+          color:#fff;text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000;white-space:nowrap}
+        /* List view — unchanged */
+        .music-playlist-list{display:flex;flex-direction:column;padding:.2rem .75rem .3rem;max-width:860px}
+        .music-playlist-list-header{display:grid;grid-template-columns:2.4rem 1fr auto auto auto;align-items:center;gap:.5rem .75rem;padding:.18rem .5rem .18rem calc(.5rem + 3px);font-size:.7rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted,#9aa8c2);border-bottom:1px solid color-mix(in srgb,var(--accent2,#8b5cf6) 30%,transparent);margin-bottom:.15rem;user-select:none}
+        .music-playlist-list-row{display:grid;grid-template-columns:2.4rem 1fr auto auto auto;align-items:center;gap:.5rem .75rem;padding:.3rem .5rem;border-left:3px solid var(--accent2,#8b5cf6);border-radius:4px;cursor:pointer;transition:background .12s}
         .music-playlist-list-row:hover{background:color-mix(in srgb,var(--accent2,#8b5cf6) 14%,transparent)}
         .music-playlist-list-row.alt-row{background:color-mix(in srgb,var(--accent2,#8b5cf6) 6%,transparent)}
         .music-playlist-list-row.alt-row:hover{background:color-mix(in srgb,var(--accent2,#8b5cf6) 18%,transparent)}
+        .mpl-list-thumb{width:2.1rem;height:2.1rem;border-radius:4px;overflow:hidden;flex-shrink:0;background:color-mix(in srgb,var(--accent2,#8b5cf6) 18%,transparent);display:flex;align-items:center;justify-content:center;font-size:1rem;background-size:cover;background-position:center;color:var(--accent2,#8b5cf6);transition:opacity .2s}
         .mpl-list-name{font-size:.85rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
         .mpl-list-count{font-size:.75rem;color:var(--muted,#9aa8c2);white-space:nowrap;text-align:right}
         .mpl-list-year{font-size:.75rem;color:var(--accent2,#8b5cf6);font-weight:600;white-space:nowrap;text-align:right;opacity:.85}
-        .mpl-year{font-size:.7rem;color:var(--accent2,#8b5cf6);font-weight:600;opacity:.85}
-        .mpl-icon{font-size:1.15rem;flex-shrink:0}
-        .mpl-info{display:flex;flex-direction:column;min-width:0;flex:1}
-        .mpl-name{font-size:.85rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .mpl-count{font-size:.7rem;color:var(--muted,#9aa8c2)}
         .mpl-badge{flex-shrink:0;background:color-mix(in srgb,var(--accent2,#8b5cf6) 22%,transparent);border:1px solid color-mix(in srgb,var(--accent2,#8b5cf6) 50%,transparent);color:var(--accent2,#8b5cf6);border-radius:4px;padding:.03rem .28rem;font-size:.6rem;font-weight:700;letter-spacing:.05em;line-height:1.5;white-space:nowrap}
         .movie-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.7rem}
         .continue-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.7rem;margin-bottom:.65rem}
