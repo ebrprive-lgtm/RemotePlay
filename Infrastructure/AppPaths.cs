@@ -47,4 +47,7 @@ internal static class AppPaths
     public static string RadioFavoritesFile     => Path.Combine(UserDataDirectory, "radio-favorites.json");
     public static string FavoritesFile => Path.Combine(UserDataDirectory, "favorites.json");
     public static string LogFile => Path.Combine(UserDataDirectory, "remoteplay.log");
+    public static string LyricsCacheDirectory   => Path.Combine(UserDataDirectory, "lyrics-cache");
+    /// <summary>Stores per-track lyric timing offsets as a JSON map keyed by <c>artist|title</c> (lowercase).</summary>
+    public static string LyricOffsetsFile       => Path.Combine(UserDataDirectory, "lyric-offsets.json");
 }

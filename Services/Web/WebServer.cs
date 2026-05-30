@@ -262,6 +262,7 @@ internal sealed partial class WebServer
             Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         _staleLinkTimer = new Timer(_ => RunStaleLinkCheck(), null,
             TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15));
+        PurgeStaleLyricsCacheEntries();
     }
 
     public string ActiveScheme => _activeScheme;
@@ -281,6 +282,43 @@ internal sealed partial class WebServer
 
         return _perIpHistories.GetOrAdd(clientIp,
             ip => new PlaybackHistory(AppPaths.HistoryFileForIp(ip)));
+    }
+
+    /// <summary>
+    /// Deletes negative-result lyrics cache entries (found=false) that are older than 2 hours.
+    /// Runs once at startup so transient failures (timeouts, network issues) self-heal quickly.
+    /// </summary>
+    private static void PurgeStaleLyricsCacheEntries()
+    {
+        try
+        {
+            var dir = AppPaths.LyricsCacheDirectory;
+            if (!Directory.Exists(dir)) return;
+            var cutoff = DateTimeOffset.UtcNow.AddHours(-2);
+            foreach (var file in Directory.EnumerateFiles(dir, "*.json"))
+            {
+                try
+                {
+                    var json = File.ReadAllText(file);
+                    if (!json.Contains("\"found\":false", StringComparison.Ordinal)) continue;
+                    using var doc = System.Text.Json.JsonDocument.Parse(json);
+                    if (!doc.RootElement.TryGetProperty("found", out var fEl) || fEl.GetBoolean()) continue;
+                    // It's a negative result — check age
+                    if (doc.RootElement.TryGetProperty("cachedUtc", out var tsEl) &&
+                        DateTimeOffset.TryParse(tsEl.GetString(), out var cachedAt) &&
+                        cachedAt < cutoff)
+                    {
+                        File.Delete(file);
+                        Logger.Detail("Lyrics", $"Purged stale negative cache: {Path.GetFileName(file)}");
+                    }
+                }
+                catch { /* skip individual bad files */ }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Detail("Lyrics", $"PurgeStaleLyricsCacheEntries error: {ex.Message}");
+        }
     }
 
     /// <summary>

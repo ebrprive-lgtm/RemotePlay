@@ -73,6 +73,7 @@ internal sealed partial class WebServer
     private static readonly HashSet<string> _pollingPaths = new(StringComparer.OrdinalIgnoreCase)
     {
         "/api/status",
+        "/api/music/status",
         "/api/thumbnails/status",
         "/api/version",
         "/api/peers",
@@ -87,6 +88,16 @@ internal sealed partial class WebServer
         _lastRequestUtc = DateTimeOffset.UtcNow;
 
         ctx.Response.AddHeader("Access-Control-Allow-Origin", "*");
+
+        // Handle CORS pre-flight for all endpoints so cross-origin browser requests work.
+        if (req.HttpMethod.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Response.AddHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+            ctx.Response.AddHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+            ctx.Response.AddHeader("Access-Control-Max-Age", "86400");
+            TrySendResponse(ctx, 204, "text/plain", string.Empty);
+            return;
+        }
 
         switch (urlPath)
         {
@@ -448,6 +459,26 @@ internal sealed partial class WebServer
 
             case "/api/music/lyrics":
                 await HandleMusicLyricsAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/music/lyrics/clear-cache":
+                await HandleMusicLyricsClearCacheAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/music/lyrics/offsets":
+                await HandleMusicLyricsOffsetsAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/music/lyrics/offsets/export":
+                await HandleMusicLyricsOffsetsExportAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/music/lyrics/export":
+                await HandleMusicLyricsExportAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/music/lyrics/import":
+                await HandleMusicLyricsImportAsync(ctx).ConfigureAwait(false);
                 break;
 
             case "/api/music/pause":
@@ -1093,7 +1124,7 @@ internal sealed partial class WebServer
                 <div class="metric wide"><dt>File</dt><dd class="mono">{HtmlEncode(musicStatus.CurrentPath)}</dd></div>
                 <div class="metric"><dt>Format</dt><dd>{HtmlEncode(Path.GetExtension(musicStatus.CurrentPath).TrimStart('.').ToUpperInvariant())}</dd></div>
                 <div class="metric"><dt>State</dt><dd>{(musicStatus.IsPaused ? "&#9208; Paused" : "&#9654; Playing")}</dd></div>
-                <div class="metric"><dt>Position</dt><dd>{TimeSpan.FromSeconds(musicStatus.Position):hh\\:mm\\:ss}</dd></div>
+                <div class="metric"><dt>Position</dt><dd>{TimeSpan.FromSeconds(musicStatus.Position).ToString(@"hh\:mm\:ss")}</dd></div>
                 <div class="metric"><dt>Duration</dt><dd>{(musicStatus.Duration > 0 ? TimeSpan.FromSeconds(musicStatus.Duration).ToString(@"hh\:mm\:ss") : "N/A")}</dd></div>
                 {(string.IsNullOrWhiteSpace(musicStatus.LastError) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(musicStatus.LastError)}</dd></div>")}
               </dl></section>
@@ -1105,7 +1136,7 @@ internal sealed partial class WebServer
                 <div class="metric wide"><dt>Station</dt><dd><strong>{HtmlEncode(radioStatus.StationName)}</strong></dd></div>
                 {(string.IsNullOrWhiteSpace(radioStatus.StreamTitle) ? "" : $"<div class=\"metric wide\"><dt>&#127925; Now on air</dt><dd>{HtmlEncode(radioStatus.StreamTitle)}</dd></div>")}
                 <div class="metric wide"><dt>Stream URL</dt><dd class="mono">{HtmlEncode(radioStatus.StationUrl)}</dd></div>
-                <div class="metric"><dt>Elapsed</dt><dd>{TimeSpan.FromSeconds(radioStatus.ElapsedSeconds):hh\\:mm\\:ss}</dd></div>
+                <div class="metric"><dt>Elapsed</dt><dd>{TimeSpan.FromSeconds(radioStatus.ElapsedSeconds).ToString(@"hh\:mm\:ss")}</dd></div>
                 <div class="metric"><dt>Stalled</dt><dd class="{(radioStatus.IsStalled ? "warn-text" : "ok-text")}">{radioStatus.IsStalled}</dd></div>
                 <div class="metric"><dt>Volume</dt><dd>{Math.Round(radioStatus.Volume * 100)}%</dd></div>
                 <div class="metric"><dt>Boost</dt><dd>{radioStatus.Boost:F1}&#215;</dd></div>
@@ -1351,26 +1382,33 @@ internal sealed partial class WebServer
                   <p id="admin-result" class="admin-result"></p>
                 </section>
 
-                <section class="card runtime-card" id="art-export-card">
-                  <h2>&#127912; Album art cache export</h2>
+                <section class="card runtime-card" id="data-sync-card">
+                  <h2>&#8679; Data sync to peer</h2>
                   <dl class="grid">
                     <div class="metric"><dt>Cached covers</dt><dd>{{{{artFiles}}}} images</dd></div>
-                    <div class="metric"><dt>Cache size</dt><dd>{{{{artSizeLabel}}}}</dd></div>
-                    <div class="metric wide"><dt>Cache directory</dt><dd class="mono" style="font-size:.72rem">{{{{HtmlEncode(AlbumArtCacheDir)}}}}</dd></div>
+                    <div class="metric"><dt>Cover cache size</dt><dd>{{{{artSizeLabel}}}}</dd></div>
                   </dl>
                   <div class="divider"></div>
-                  <p style="color:var(--muted);font-size:.82rem;margin:0 0 .6rem">Push all cached covers to another RemotePlay instance. The target server will store them immediately — no re-download needed.</p>
-                  <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.5rem">
-                    <input id="art-export-url" type="url" placeholder="http://192.168.1.x:8080" style="flex:1;min-width:200px;padding:.4rem .6rem;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.15);border-radius:8px;color:#d8e8ff;font-size:.88rem" />
-                    <select id="art-export-peer" style="padding:.4rem .5rem;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.15);border-radius:8px;color:#d8e8ff;font-size:.82rem" onchange="artExportPeerPick(this)">
-                      <option value="">— pick peer —</option>
+                  <p style="color:var(--muted);font-size:.82rem;margin:0 0 .6rem">Push cached data to another RemotePlay instance. Only items that differ are sent &mdash; identical files are skipped automatically.</p>
+                  <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.8rem">
+                    <input id="sync-target-url" type="url" placeholder="http://192.168.1.x:8080" style="flex:1;min-width:200px;padding:.4rem .6rem;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.15);border-radius:8px;color:#d8e8ff;font-size:.88rem" />
+                    <select id="sync-peer-pick" style="padding:.4rem .5rem;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.15);border-radius:8px;color:#d8e8ff;font-size:.82rem" onchange="syncPeerPick(this)">
+                      <option value="">&#8212; pick peer &#8212;</option>
                     </select>
-                    <button class="primary" id="art-export-btn" onclick="startArtExport()">&#8679; Export covers</button>
                   </div>
-                  <div id="art-export-bar-wrap" style="display:none;margin-bottom:.4rem">
-                    <div id="art-export-bar" style="height:6px;border-radius:3px;background:rgba(255,255,255,.1)"><div id="art-export-fill" style="height:100%;border-radius:3px;background:var(--cyan,#22d3ee);width:0%;transition:width .3s"></div></div>
+                  <div style="display:grid;grid-template-columns:1fr auto;gap:.4rem .6rem;align-items:center;margin-bottom:.4rem">
+                    <span style="font-size:.82rem;color:var(--muted)">&#127912; Album covers</span>
+                    <button class="primary" id="sync-art-btn" onclick="startSyncItem('art')">&#8679; Sync covers</button>
+                    <div id="sync-art-bar-wrap" style="display:none;grid-column:1/-1"><div style="height:5px;border-radius:3px;background:rgba(255,255,255,.1)"><div id="sync-art-fill" style="height:100%;border-radius:3px;background:var(--cyan,#22d3ee);width:0%;transition:width .3s"></div></div></div>
+                    <p id="sync-art-result" class="admin-result" style="grid-column:1/-1;margin:0"></p>
+                    <span style="font-size:.82rem;color:var(--muted);margin-top:.5rem">&#127911; Lyrics cache</span>
+                    <button id="sync-lyrics-btn" onclick="startSyncItem('lyrics')" style="margin-top:.5rem">&#8679; Sync lyrics</button>
+                    <div id="sync-lyrics-bar-wrap" style="display:none;grid-column:1/-1"><div style="height:5px;border-radius:3px;background:rgba(255,255,255,.1)"><div id="sync-lyrics-fill" style="height:100%;border-radius:3px;background:var(--cyan,#22d3ee);width:0%;transition:width .3s"></div></div></div>
+                    <p id="sync-lyrics-result" class="admin-result" style="grid-column:1/-1;margin:0"></p>
+                    <span style="font-size:.82rem;color:var(--muted);margin-top:.5rem">&#9201; Lyric offsets</span>
+                    <button id="sync-offsets-btn" onclick="startSyncItem('offsets')" style="margin-top:.5rem">&#8679; Sync offsets</button>
+                    <p id="sync-offsets-result" class="admin-result" style="grid-column:1/-1;margin:0"></p>
                   </div>
-                  <p id="art-export-result" class="admin-result"></p>
                 </section>
               </div>
             </section>
@@ -1379,7 +1417,7 @@ internal sealed partial class WebServer
             <script>
             async function refreshRuntime(){
               const result=document.getElementById('admin-result');
-              result.textContent='Refreshing…';
+              result.textContent='Refreshing\u2026';
               try{
                 const [h,d]=await Promise.all([fetch('/api/health'),fetch('/api/display-diagnostics')]);
                 const health=await h.json();
@@ -1390,14 +1428,13 @@ internal sealed partial class WebServer
             }
             async function rescanLibrary(){
               const result=document.getElementById('admin-result');
-              result.textContent='Starting rescan…';
-              try{await fetch('/api/rescan');result.textContent='Video library rescan started.';}
+              result.textContent='Starting rescan\u2026';
+              try{await fetch('/api/rescan');result.textContent='Video library rescan started.';} 
               catch(e){result.textContent='Rescan failed: '+e;}
             }
-            // ---- Album art export ----
             (function(){
               const peers={{{{peersJson}}}};
-              const sel=document.getElementById('art-export-peer');
+              const sel=document.getElementById('sync-peer-pick');
               peers.forEach(p=>{
                 const o=document.createElement('option');
                 o.value=p.Url||p.url;
@@ -1405,47 +1442,53 @@ internal sealed partial class WebServer
                 sel.appendChild(o);
               });
             })();
-            function artExportPeerPick(sel){
-              if(sel.value) document.getElementById('art-export-url').value=sel.value;
+            function syncPeerPick(sel){if(sel.value)document.getElementById('sync-target-url').value=sel.value;}
+            function _syncEl(id){return document.getElementById(id);}
+            function _showSyncFail(type,errors){
+              if(!errors||!errors.length)return;
+              const res=_syncEl('sync-'+type+'-result');
+              const det=document.createElement('details');
+              det.style.cssText='margin-top:.4rem;font-size:.78rem;color:#ffb86c';
+              const sum=document.createElement('summary');
+              sum.textContent='Show failure details ('+errors.length+' samples)';
+              det.appendChild(sum);
+              const pre=document.createElement('pre');
+              pre.style.cssText='white-space:pre-wrap;margin:.3rem 0 0;font-size:.75rem;max-height:180px;overflow:auto';
+              pre.textContent=errors.join('\n');
+              det.appendChild(pre);
+              res.parentNode.insertBefore(det,res.nextSibling);
             }
-            async function startArtExport(){
-              const url=(document.getElementById('art-export-url').value||'').trim();
-              const result=document.getElementById('art-export-result');
-              const btn=document.getElementById('art-export-btn');
-              const barWrap=document.getElementById('art-export-bar-wrap');
-              const fill=document.getElementById('art-export-fill');
+            async function startSyncItem(type){
+              const url=(_syncEl('sync-target-url').value||'').trim();
+              const result=_syncEl('sync-'+type+'-result');
+              const btn=_syncEl('sync-'+type+'-btn');
+              const fill=_syncEl('sync-'+type+'-fill');
+              const barWrap=_syncEl('sync-'+type+'-bar-wrap');
               if(!url){result.textContent='Please enter a target URL.';return;}
               btn.disabled=true;
-              barWrap.style.display='';
-              fill.style.width='5%';
-              result.textContent='Exporting…';
+              if(barWrap){barWrap.style.display='';fill.style.width='5%';}
+              result.textContent='Syncing\u2026';
               try{
-                const r=await fetch('/api/music/album-art/export',{
-                  method:'POST',
-                  headers:{'Content-Type':'application/json'},
-                  body:JSON.stringify({targetUrl:url})
-                });
-                fill.style.width='100%';
+                if(type==='offsets'){
+                  let map={};
+                  try{const raw=localStorage.getItem('remotePlayLyricOffsets');if(raw)map=JSON.parse(raw);}catch(_){}
+                  const count=Object.keys(map).length;
+                  if(count===0){result.textContent='No offsets saved locally yet.';btn.disabled=false;return;}
+                  const r=await fetch('/api/music/lyrics/offsets/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targetUrl:url,offsets:map})});
+                  const d=await r.json();
+                  result.textContent=d.ok?'\u2714 Done \u2014 Pushed '+count+' offset(s) to peer.':'Sync failed: '+(d.error||'unknown error');
+                  btn.disabled=false;return;
+                }
+                const endpoint=type==='art'?'/api/music/album-art/export':'/api/music/lyrics/export';
+                const r=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({targetUrl:url})});
+                if(fill)fill.style.width='100%';
                 const d=await r.json();
                 if(d.ok){
-                  result.textContent='✔ Done — Sent: '+d.sent+' | Skipped: '+d.skipped+' | Failed: '+d.failed+' | Total: '+d.total;
-                  if(d.failed>0&&d.failSamples&&d.failSamples.length){
-                    const det=document.createElement('details');
-                    det.style.cssText='margin-top:.4rem;font-size:.78rem;color:#ffb86c';
-                    const sum=document.createElement('summary');
-                    sum.textContent='Show failure details ('+d.failSamples.length+' samples)';
-                    det.appendChild(sum);
-                    const pre=document.createElement('pre');
-                    pre.style.cssText='white-space:pre-wrap;margin:.3rem 0 0;font-size:.75rem;max-height:180px;overflow:auto';
-                    pre.textContent=d.failSamples.join('\n');
-                    det.appendChild(pre);
-                    result.parentNode.insertBefore(det,result.nextSibling);
-                  }
-                }else{
-                  result.textContent='Export failed: '+(d.error||'unknown error');
-                }
-              }catch(e){result.textContent='Export failed: '+e;}
-              finally{btn.disabled=false;setTimeout(()=>{barWrap.style.display='none';fill.style.width='0%';},4000);}
+                  result.textContent='\u2714 Done \u2014 Sent: '+d.sent+' | Skipped: '+d.skipped+' | Failed: '+d.failed+' | Total: '+d.total;
+                  if(d.failed>0&&d.failSamples&&d.failSamples.length)_showSyncFail(type,d.failSamples);
+                }else{result.textContent='Sync failed: '+(d.error||'unknown error');}
+              }catch(e){result.textContent='Sync failed: '+e;}
+              finally{btn.disabled=false;setTimeout(()=>{if(barWrap)barWrap.style.display='none';if(fill)fill.style.width='0%';},4000);}
             }
             </script>
             </body>
@@ -2019,6 +2062,351 @@ internal sealed partial class WebServer
     /// Called by a remote server's export push. No auth required beyond network access.
     /// Query params: key (the cache key, e.g. "artist|album")
     /// </summary>
+    // -----------------------------------------------------------------------
+    // Lyric offsets persistence (GET = load, POST = save)
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// GET  /api/music/lyrics/offsets  — returns the stored offset map as JSON.
+    /// POST /api/music/lyrics/offsets  — accepts a JSON object and writes it to disk.
+    /// </summary>
+    private static async Task HandleMusicLyricsOffsetsAsync(HttpListenerContext ctx)
+    {
+        if (ctx.Request.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase))
+        {
+            var path = AppPaths.LyricOffsetsFile;
+            if (!File.Exists(path))
+            {
+                TrySendResponse(ctx, 200, "application/json", "{}");
+                return;
+            }
+
+            try
+            {
+                var json = await File.ReadAllTextAsync(path).ConfigureAwait(false);
+                TrySendResponse(ctx, 200, "application/json", json);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("Lyrics", $"Failed reading offsets file: {ex.Message}");
+                TrySendResponse(ctx, 500, "application/json", "{\"error\":\"read failed\"}");
+            }
+
+            return;
+        }
+
+        if (ctx.Request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using var sr = new System.IO.StreamReader(ctx.Request.InputStream);
+                var body = await sr.ReadToEndAsync().ConfigureAwait(false);
+
+                // Validate it is parseable JSON before writing
+                using var _ = JsonDocument.Parse(body);
+
+                await File.WriteAllTextAsync(AppPaths.LyricOffsetsFile, body).ConfigureAwait(false);
+                TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+            }
+            catch (JsonException)
+            {
+                TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid JSON\"}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("Lyrics", $"Failed writing offsets file: {ex.Message}");
+                TrySendResponse(ctx, 500, "application/json", "{\"error\":\"write failed\"}");
+            }
+
+            return;
+        }
+
+        TrySendResponse(ctx, 405, "application/json", "{\"error\":\"method not allowed\"}");
+    }
+
+    /// <summary>
+    /// Server-side relay: reads offsets from the request body and POSTs them to targetUrl/api/music/lyrics/offsets.
+    /// Body (JSON): { "targetUrl": "http://host:port", "offsets": {...} }
+    /// This avoids browser-to-peer cross-origin issues by routing the request through the local server.
+    /// </summary>
+    private static async Task HandleMusicLyricsOffsetsExportAsync(HttpListenerContext ctx)
+    {
+        if (!ctx.Request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+        {
+            TrySendResponse(ctx, 405, "application/json", "{\"error\":\"method not allowed\"}");
+            return;
+        }
+
+        string targetUrl;
+        JsonElement offsets;
+        try
+        {
+            using var sr = new System.IO.StreamReader(ctx.Request.InputStream);
+            var body = await sr.ReadToEndAsync().ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(body);
+            targetUrl = (doc.RootElement.TryGetProperty("targetUrl", out var tu) ? tu.GetString() : null) ?? string.Empty;
+            offsets = doc.RootElement.TryGetProperty("offsets", out var o) ? o.Clone() : default;
+        }
+        catch
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid JSON body\"}");
+            return;
+        }
+
+        targetUrl = targetUrl.TrimEnd('/');
+        if (!Uri.TryCreate(targetUrl, UriKind.Absolute, out var targetUri)
+            || (targetUri.Scheme != "http" && targetUri.Scheme != "https"))
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid targetUrl\"}");
+            return;
+        }
+
+        if (offsets.ValueKind != JsonValueKind.Object)
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"offsets must be a JSON object\"}");
+            return;
+        }
+
+        var count = 0;
+        foreach (var _ in offsets.EnumerateObject()) count++;
+        if (count == 0)
+        {
+            TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true, pushed = 0 }));
+            return;
+        }
+
+        try
+        {
+            using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("RemotePlay/1.0 (offsets-export)");
+            var json = offsets.GetRawText();
+            using var content = new System.Net.Http.StringContent(json, System.Text.Encoding.UTF8, "application/json");
+            var resp = await http.PostAsync($"{targetUrl}/api/music/lyrics/offsets", content).ConfigureAwait(false);
+            if (resp.IsSuccessStatusCode)
+            {
+                Logger.Info("Lyrics", $"Offsets export: pushed {count} offset(s) to {targetUrl}");
+                TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true, pushed = count }));
+            }
+            else
+            {
+                var errBody = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                Logger.Warning("Lyrics", $"Offsets export: peer returned HTTP {(int)resp.StatusCode}: {errBody.Trim()}");
+                TrySendResponse(ctx, 200, "application/json",
+                    JsonSerializer.Serialize(new { ok = false, error = $"Peer returned HTTP {(int)resp.StatusCode}" }));
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Lyrics", $"Offsets export failed: {ex.Message}");
+            TrySendResponse(ctx, 500, "application/json", JsonSerializer.Serialize(new { ok = false, error = ex.Message }));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Lyric cache file export / import (peer-sync)
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Pushes every .json file in the lyrics cache to the target server's
+    /// /api/music/lyrics/import endpoint, skipping files that are byte-for-byte identical
+    /// (compared by file size; the receiver checks the ETag header).
+    /// Body (JSON): { "targetUrl": "http://host:port" }
+    /// </summary>
+    private static async Task HandleMusicLyricsExportAsync(HttpListenerContext ctx)
+    {
+        string targetUrl;
+        try
+        {
+            using var sr = new System.IO.StreamReader(ctx.Request.InputStream);
+            var body = await sr.ReadToEndAsync().ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(body);
+            targetUrl = (doc.RootElement.TryGetProperty("targetUrl", out var el)
+                ? el.GetString() : null) ?? string.Empty;
+        }
+        catch
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid JSON body\"}");
+            return;
+        }
+
+        targetUrl = targetUrl.TrimEnd('/');
+        if (!Uri.TryCreate(targetUrl, UriKind.Absolute, out var targetUri)
+            || (targetUri.Scheme != "http" && targetUri.Scheme != "https"))
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid targetUrl\"}");
+            return;
+        }
+
+        var cacheDir = AppPaths.LyricsCacheDirectory;
+        if (!Directory.Exists(cacheDir))
+        {
+            TrySendResponse(ctx, 200, "application/json",
+                JsonSerializer.Serialize(new { ok = true, sent = 0, skipped = 0, failed = 0, total = 0 }));
+            return;
+        }
+
+        var files = Directory.EnumerateFiles(cacheDir, "*.json")
+            .Where(f => new FileInfo(f).Length > 0)
+            .ToArray();
+
+        Logger.Info("Lyrics", $"Export: pushing {files.Length} cached lyric files to {targetUrl}");
+
+        using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("RemotePlay/1.0 (lyrics-export)");
+
+        int sent = 0, skipped = 0, failed = 0;
+        var importBase = $"{targetUrl}/api/music/lyrics/import";
+        var failReasons = new System.Collections.Generic.List<string>();
+        const int InterRequestDelayMs = 30;
+        const int MaxRetries = 3;
+
+        // First, ask the target which files it already has and their sizes so we can skip identical ones.
+        System.Collections.Generic.Dictionary<string, long>? remoteIndex = null;
+        try
+        {
+            var idxRes = await http.GetAsync($"{targetUrl}/api/music/lyrics/import?index=1").ConfigureAwait(false);
+            if (idxRes.IsSuccessStatusCode)
+            {
+                var idxJson = await idxRes.Content.ReadAsStringAsync().ConfigureAwait(false);
+                using var idxDoc = JsonDocument.Parse(idxJson);
+                remoteIndex = new System.Collections.Generic.Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                foreach (var prop in idxDoc.RootElement.EnumerateObject())
+                    remoteIndex[prop.Name] = prop.Value.GetInt64();
+            }
+        }
+        catch { /* remote may not support the index endpoint yet; proceed without skipping */ }
+
+        foreach (var file in files)
+        {
+            var key = Path.GetFileNameWithoutExtension(file);
+            try
+            {
+                var bytes = await File.ReadAllBytesAsync(file).ConfigureAwait(false);
+
+                // Skip if the remote already has a file with the same size (byte-identical proxy).
+                if (remoteIndex is not null
+                    && remoteIndex.TryGetValue(key, out var remoteSize)
+                    && remoteSize == bytes.LongLength)
+                {
+                    skipped++;
+                    continue;
+                }
+
+                var url = $"{importBase}?key={Uri.EscapeDataString(key)}";
+
+                System.Net.Http.HttpResponseMessage resp;
+                int retryDelayMs = 2000;
+                int attempt = 0;
+                while (true)
+                {
+                    using var content = new System.Net.Http.ByteArrayContent(bytes);
+                    content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+                    resp = await http.PostAsync(url, content).ConfigureAwait(false);
+
+                    if ((int)resp.StatusCode != 429 || attempt >= MaxRetries)
+                        break;
+
+                    if (resp.Headers.RetryAfter?.Delta is { } delta)
+                        retryDelayMs = (int)delta.TotalMilliseconds + 200;
+
+                    Logger.Warning("Lyrics", $"Export: 429 for '{key}', retrying in {retryDelayMs}ms (attempt {attempt + 1}/{MaxRetries})");
+                    await Task.Delay(retryDelayMs).ConfigureAwait(false);
+                    retryDelayMs = Math.Min(retryDelayMs * 2, 30_000);
+                    attempt++;
+                }
+
+                if (resp.IsSuccessStatusCode)
+                {
+                    sent++;
+                }
+                else
+                {
+                    var reason = $"HTTP {(int)resp.StatusCode} for '{key}': {(await resp.Content.ReadAsStringAsync().ConfigureAwait(false)).Trim()}";
+                    Logger.Warning("Lyrics", $"Export: {reason}");
+                    if (failReasons.Count < 10) failReasons.Add(reason);
+                    failed++;
+                }
+            }
+            catch (Exception ex)
+            {
+                var reason = $"Exception for '{key}': {ex.Message}";
+                Logger.Warning("Lyrics", $"Export: {reason}");
+                if (failReasons.Count < 10) failReasons.Add(reason);
+                failed++;
+            }
+
+            await Task.Delay(InterRequestDelayMs).ConfigureAwait(false);
+        }
+
+        Logger.Info("Lyrics", $"Export complete: sent={sent} skipped={skipped} failed={failed} total={files.Length}");
+        TrySendResponse(ctx, 200, "application/json",
+            JsonSerializer.Serialize(new { ok = true, sent, skipped, failed, total = files.Length, failSamples = failReasons }));
+    }
+
+    /// <summary>
+    /// Receives a lyrics cache file from another instance.
+    /// GET  ?index=1  — returns a JSON object {filename: fileSize} for diff-checking.
+    /// POST ?key=...  — writes the body as a .json file in the lyrics cache directory.
+    /// </summary>
+    private static async Task HandleMusicLyricsImportAsync(HttpListenerContext ctx)
+    {
+        // Index request: return a map of filename → file size so exporter can skip identical items.
+        if (ctx.Request.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase)
+            && ctx.Request.QueryString["index"] == "1")
+        {
+            var cacheDir = AppPaths.LyricsCacheDirectory;
+            var index = new System.Collections.Generic.Dictionary<string, long>();
+            if (Directory.Exists(cacheDir))
+            {
+                foreach (var f in Directory.EnumerateFiles(cacheDir, "*.json"))
+                    index[Path.GetFileNameWithoutExtension(f)] = new FileInfo(f).Length;
+            }
+
+            TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(index));
+            return;
+        }
+
+        var key = (ctx.Request.QueryString["key"] ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(key))
+        { TrySendResponse(ctx, 400, "application/json", "{\"error\":\"missing key\"}"); return; }
+
+        if (ctx.Request.ContentLength64 <= 0 || ctx.Request.ContentLength64 > 2 * 1024 * 1024)
+        { TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid content length\"}"); return; }
+
+        try
+        {
+            using var ms = new System.IO.MemoryStream();
+            await ctx.Request.InputStream.CopyToAsync(ms).ConfigureAwait(false);
+            var bytes = ms.ToArray();
+
+            if (bytes.Length == 0)
+            { TrySendResponse(ctx, 400, "application/json", "{\"error\":\"empty body\"}"); return; }
+
+            // Strip UTF-8 BOM if present (older cache files may have been written with BOM)
+            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+                bytes = bytes[3..];
+
+            // Basic validation: must be JSON
+            using var _ = JsonDocument.Parse(bytes);
+
+            Directory.CreateDirectory(AppPaths.LyricsCacheDirectory);
+            var destFile = Path.Combine(AppPaths.LyricsCacheDirectory, key + ".json");
+            await File.WriteAllBytesAsync(destFile, bytes).ConfigureAwait(false);
+
+            Logger.Detail("Lyrics", $"Import: stored '{key}' ({bytes.Length} bytes)");
+            TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+        }
+        catch (JsonException)
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"not valid JSON\"}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Lyrics", $"Import failed for key '{key}': {ex.Message}");
+            TrySendResponse(ctx, 500, "application/json", "{\"error\":\"write failed\"}");
+        }
+    }
+
     private static async Task HandleMusicAlbumArtImportAsync(HttpListenerContext ctx)
     {
         var key = (ctx.Request.QueryString["key"] ?? string.Empty).Trim();
@@ -2804,7 +3192,27 @@ internal sealed partial class WebServer
         }
     }
 
-    /// <summary>Fetches lyrics for a track — tries LRCLib (synced) first, falls back to Genius.</summary>
+    // -- Lyrics HTTP client (singleton to avoid socket exhaustion) ---------------
+    private static readonly System.Net.Http.HttpClient _lyricsHttpClient = CreateLyricsHttpClient();
+    private static System.Net.Http.HttpClient CreateLyricsHttpClient()
+    {
+        var handler = new System.Net.Http.HttpClientHandler { AllowAutoRedirect = true, MaxAutomaticRedirections = 5 };
+        // Timeout is Infinite here; each call site passes a CancellationToken with its own deadline.
+        var client  = new System.Net.Http.HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
+        client.DefaultRequestHeaders.Add("Lrclib-Client", "RemotePlay/1.0 (https://github.com/ebrprive-lgtm/RemotePlay)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36");
+        client.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
+        return client;
+    }
+
+    // -- In-memory negative-result cache (path hash -> UTC expiry) ---------------
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTimeOffset>
+        _lyricsNegativeCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Fetches lyrics for a track — tries LRCLib (synced) first, falls back to Genius.
+    /// Results are disk-cached; negative results are memory-cached for 24 h.</summary>
     private async Task HandleMusicLyricsAsync(HttpListenerContext ctx)
     {
         var artist = ctx.Request.QueryString["artist"] ?? string.Empty;
@@ -2816,57 +3224,328 @@ internal sealed partial class WebServer
             return;
         }
 
+        // If tag metadata didn't provide an artist, try to derive it from the file path.
+        // Strategy 1: filename contains "Artist - Title" pattern.
+        // Strategy 2: grandparent folder is typically the artist name in a standard
+        //             Music\Artist\Album\Track.mp3 library layout.
+        if (string.IsNullOrWhiteSpace(artist))
+        {
+            var rawPath = ctx.Request.QueryString["path"] ?? string.Empty;
+
+            // Resolve the actual filesystem path so we can inspect directory names
+            string? fsPath = null;
+            if (!string.IsNullOrWhiteSpace(rawPath))
+            {
+                try { fsPath = WebPathHelpers.DecodePath(rawPath); } catch { /* ignore */ }
+                if (string.IsNullOrWhiteSpace(fsPath))
+                {
+                    // Fallback: simple URL-decode
+                    try { fsPath = Uri.UnescapeDataString(rawPath.Replace('+', ' ')); } catch { /* ignore */ }
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(fsPath))
+            {
+                // Strategy 1: "Artist - Title" in filename
+                var stem = Path.GetFileNameWithoutExtension(fsPath);
+                // Strip leading track numbers (e.g. "01 ", "1. ", "01 - ")
+                var stemNoNum = System.Text.RegularExpressions.Regex.Replace(
+                    stem, @"^\d{1,3}[\s._\-]+", string.Empty).Trim();
+                var dashIdx = stemNoNum.IndexOf(" - ", StringComparison.Ordinal);
+                if (dashIdx > 0)
+                {
+                    var candidate = stemNoNum[..dashIdx].Trim();
+                    if (!string.IsNullOrWhiteSpace(candidate) &&
+                        // Sanity: reject if what's left looks like another track number
+                        !System.Text.RegularExpressions.Regex.IsMatch(candidate, @"^\d+$"))
+                    {
+                        artist = candidate;
+                        Logger.Detail("Lyrics", $"Artist inferred from filename: '{artist}'");
+                    }
+                }
+
+                // Strategy 2: grandparent folder = artist (Music\Artist\Album\track.mp3)
+                if (string.IsNullOrWhiteSpace(artist))
+                {
+                    var albumDir  = Path.GetDirectoryName(fsPath);
+                    var artistDir = albumDir is not null ? Path.GetDirectoryName(albumDir) : null;
+                    var artistName = artistDir is not null ? Path.GetFileName(artistDir) : null;
+                    // Reject obviously non-artist folder names
+                    if (!string.IsNullOrWhiteSpace(artistName) &&
+                        !string.Equals(artistName, "Music", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(artistName, "music", StringComparison.OrdinalIgnoreCase) &&
+                        artistName.Length >= 2)
+                    {
+                        artist = artistName;
+                        Logger.Detail("Lyrics", $"Artist inferred from folder structure: '{artist}'");
+                    }
+                }
+            }
+        }
+
+        // Normalise artist+title the same way for cache keys and queries
+        var cleanTitle  = NormalizeLyricsTitle(title);
+        var cleanArtist = NormalizeLyricsArtist(artist);
+
+        // Disk-cache key is a short SHA256 of "artist|title" (lowercase)
+        var cacheKey  = ComputeLyricsCacheKey(cleanArtist, cleanTitle);
+        var cacheFile = Path.Combine(AppPaths.LyricsCacheDirectory, cacheKey + ".json");
+
+        // --- Serve from disk cache if present ---
+        if (File.Exists(cacheFile))
+        {
+            try
+            {
+                var cached = await File.ReadAllTextAsync(cacheFile).ConfigureAwait(false);
+                using var cdoc = JsonDocument.Parse(cached);
+                var croot = cdoc.RootElement;
+                // Respect TTL: negative results expire after 24 h, positive results after 30 days
+                if (croot.TryGetProperty("cachedUtc", out var tsEl) &&
+                    DateTimeOffset.TryParse(tsEl.GetString(), out var cachedAt))
+                {
+                    bool isPositive = croot.TryGetProperty("found", out var fEl) && fEl.GetBoolean();
+                    var ttl = isPositive ? TimeSpan.FromDays(30) : TimeSpan.FromHours(2);
+                    if (DateTimeOffset.UtcNow - cachedAt < ttl)
+                    {
+                        Logger.Detail("Lyrics", $"Disk cache hit for '{cleanArtist} - {cleanTitle}'");
+                        // Strip internal cache fields before sending
+                        var stripped = StripCacheMetaFromJson(cached);
+                        TrySendResponse(ctx, 200, "application/json", stripped);
+                        return;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Detail("Lyrics", $"Disk cache read error (will re-fetch): {ex.Message}");
+            }
+        }
+
+        // --- Memory-cached negative result (fast path, avoids file I/O) ---
+        if (_lyricsNegativeCache.TryGetValue(cacheKey, out var expiry) && DateTimeOffset.UtcNow < expiry)
+        {
+            Logger.Detail("Lyrics", $"Negative memory cache hit for '{cleanArtist} - {cleanTitle}'");
+            TrySendResponse(ctx, 200, "application/json", "{\"found\":false}");
+            return;
+        }
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         try
         {
-            // --- Primary: LRCLib (free, no auth, provides synced LRC lyrics) ---
-            var lrcResult = await FetchLrcLibLyricsAsync(artist, title).ConfigureAwait(false);
+            // --- Primary: LRCLib /get and /search run concurrently to minimise latency ---
+            Logger.Detail("Lyrics", $"LRCLib fetch start for '{cleanArtist} - {cleanTitle}'");
+            var getTask    = FetchLrcLibLyricsAsync(cleanArtist, cleanTitle, cts.Token);
+            var searchTask = FetchLrcLibSearchAsync(cleanArtist, cleanTitle, cts.Token);
+            await Task.WhenAll(getTask, searchTask).ConfigureAwait(false);
+
+            // Prefer /get result (exact match); fall back to /search
+            var lrcResult = getTask.Result ?? searchTask.Result;
+
             if (lrcResult.HasValue)
             {
                 var (plain, synced) = lrcResult.Value;
-                Logger.Detail("Lyrics", $"LRCLib hit for '{artist} - {title}' (plain={plain?.Length ?? 0} synced={synced?.Length ?? 0})");
-                TrySendResponse(ctx, 200, "application/json",
-                    JsonSerializer.Serialize(new
-                    {
-                        found        = true,
-                        lyrics       = plain ?? string.Empty,
-                        syncedLyrics = synced,
-                        source       = "lrclib"
-                    }));
+                Logger.Detail("Lyrics", $"LRCLib hit for '{cleanArtist} - {cleanTitle}' (plain={plain?.Length ?? 0} synced={synced?.Length ?? 0})");
+                var payload = JsonSerializer.Serialize(new
+                {
+                    found        = true,
+                    lyrics       = plain ?? string.Empty,
+                    syncedLyrics = synced,
+                    source       = "lrclib"
+                });
+                WriteLyricsCache(cacheFile, payload, positive: true);
+                TrySendResponse(ctx, 200, "application/json", payload);
                 return;
             }
 
-            // --- Fallback: Genius (plain text scrape) ---
-            Logger.Detail("Lyrics", $"LRCLib miss — falling back to Genius for '{artist} - {title}'");
-            var (gLyrics, geniusUrl) = await FetchGeniusLyricsAsync(artist, title).ConfigureAwait(false);
+            // --- Fallback: Genius ---
+            Logger.Detail("Lyrics", $"LRCLib miss — falling back to Genius for '{cleanArtist} - {cleanTitle}'");
+            var (gLyrics, geniusUrl) = await FetchGeniusLyricsAsync(cleanArtist, cleanTitle, cts.Token).ConfigureAwait(false);
             if (gLyrics is null)
             {
-                Logger.Detail("Lyrics", $"No lyrics found for '{artist} - {title}'");
+                Logger.Detail("Lyrics", $"No lyrics found for '{cleanArtist} - {cleanTitle}'");
+                // Cache the negative result in memory (2 h) and on disk
+                _lyricsNegativeCache[cacheKey] = DateTimeOffset.UtcNow.AddHours(2);
+                WriteLyricsCache(cacheFile, "{\"found\":false}", positive: false);
                 TrySendResponse(ctx, 200, "application/json", "{\"found\":false}");
                 return;
             }
-            Logger.Detail("Lyrics", $"Genius hit for '{artist} - {title}' ({gLyrics.Length} chars) url={geniusUrl}");
-            TrySendResponse(ctx, 200, "application/json",
-                JsonSerializer.Serialize(new { found = true, lyrics = gLyrics, geniusUrl, source = "genius" }));
+            Logger.Detail("Lyrics", $"Genius hit for '{cleanArtist} - {cleanTitle}' ({gLyrics.Length} chars) url={geniusUrl}");
+            var gPayload = JsonSerializer.Serialize(new { found = true, lyrics = gLyrics, geniusUrl, source = "genius" });
+            WriteLyricsCache(cacheFile, gPayload, positive: true);
+            TrySendResponse(ctx, 200, "application/json", gPayload);
+        }
+        catch (OperationCanceledException)
+        {
+            Logger.Detail("Lyrics", $"Lyrics fetch timed out for '{cleanArtist} - {cleanTitle}'");
+            TrySendResponse(ctx, 200, "application/json", "{\"found\":false}");
         }
         catch (Exception ex)
         {
-            Logger.Detail("Lyrics", $"Lyrics fetch exception for '{artist} - {title}': {ex.Message}");
+            Logger.Detail("Lyrics", $"Lyrics fetch exception for '{cleanArtist} - {cleanTitle}': {ex.Message}");
             TrySendResponse(ctx, 200, "application/json", "{\"found\":false}");
         }
+    }
+
+    /// <summary>Clears all lyrics cache: both the in-memory negative cache and all disk cache files.</summary>
+    private Task HandleMusicLyricsClearCacheAsync(HttpListenerContext ctx)
+    {
+        try
+        {
+            // Clear in-memory negative cache
+            _lyricsNegativeCache.Clear();
+
+            // Delete all disk cache files
+            var dir = AppPaths.LyricsCacheDirectory;
+            if (Directory.Exists(dir))
+            {
+                int deleted = 0;
+                foreach (var f in Directory.EnumerateFiles(dir, "*.json"))
+                {
+                    try { File.Delete(f); deleted++; }
+                    catch { /* best-effort */ }
+                }
+                Logger.Detail("Lyrics", $"Cache cleared: {deleted} file(s) removed.");
+            }
+
+            TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Detail("Lyrics", $"Clear cache error: {ex.Message}");
+            TrySendResponse(ctx, 500, "application/json", "{\"ok\":false}");
+        }
+        return Task.CompletedTask;
+    }
+
+    // -- Lyrics helpers ----------------------------------------------------------
+
+    /// <summary>Strips feat./ft./with... parenthetical and leading track-number from a title.</summary>
+    private static string NormalizeLyricsTitle(string title)
+    {
+        var s = title.Trim();
+        // Normalise typographic apostrophes/quotes to plain ASCII so LRCLib exact-match works
+        s = s.Replace('\u2019', '\'').Replace('\u2018', '\'').Replace('\u02BC', '\'') // right/left single quotation mark, modifier letter apostrophe
+             .Replace('\u201C', '"').Replace('\u201D', '"');                           // left/right double quotation mark
+        // Strip leading track number: "01 ", "01. ", "01 - ", etc.
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"^\d{1,3}[\s._\-]+", string.Empty).Trim();
+        // Strip (feat. ...) / (ft. ...) / (with ...) / (featuring ...)
+        s = System.Text.RegularExpressions.Regex.Replace(s,
+            @"\s*[\(\[](feat|ft|with|featuring)[^\)\]]*[\)\]]",
+            string.Empty,
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
+        // Strip trailing " - Remastered", " (Radio Edit)", etc.
+        s = System.Text.RegularExpressions.Regex.Replace(s,
+            @"\s*[\(\[](remaster(ed)?|radio edit|single version|album version|live)[^\)\]]*[\)\]]",
+            string.Empty,
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
+        return s;
+    }
+
+    /// <summary>Strips feat./ft. from the artist string (e.g. "Artist feat. Other").</summary>
+    private static string NormalizeLyricsArtist(string artist)
+    {
+        var s = artist.Trim();
+        // Normalise typographic apostrophes/quotes to plain ASCII
+        s = s.Replace('\u2019', '\'').Replace('\u2018', '\'').Replace('\u02BC', '\'');
+        s = System.Text.RegularExpressions.Regex.Replace(s,
+            @"\s+(feat|ft|featuring|with)\s+.*$",
+            string.Empty,
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
+        return s;
+    }
+
+    /// <summary>Returns a short hex string that uniquely identifies artist+title for cache keying.</summary>
+    private static string ComputeLyricsCacheKey(string artist, string title)
+    {
+        var raw = $"{artist.ToLowerInvariant()}|{title.ToLowerInvariant()}";
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(raw));
+        return Convert.ToHexString(hash)[..16].ToLowerInvariant();
+    }
+
+    /// <summary>Writes a lyrics result to disk cache, embedding a timestamp so TTL can be enforced on re-read.</summary>
+    private static void WriteLyricsCache(string cacheFile, string jsonPayload, bool positive)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.LyricsCacheDirectory);
+            // Inject a cachedUtc field into the JSON object
+            var ts   = DateTimeOffset.UtcNow.ToString("O");
+            var meta = $",\"cachedUtc\":\"{ts}\"";
+            var json = jsonPayload.TrimEnd();
+            json = json.EndsWith('}') ? json[..^1] + meta + "}" : json;
+            File.WriteAllText(cacheFile, json, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+        catch (Exception ex)
+        {
+            Logger.Detail("Lyrics", $"Disk cache write error: {ex.Message}");
+        }
+    }
+
+    /// <summary>Removes internal cache metadata fields before forwarding to the browser.</summary>
+    private static string StripCacheMetaFromJson(string json)
+    {
+        // Remove "cachedUtc":"..." including any leading comma+whitespace
+        return System.Text.RegularExpressions.Regex.Replace(json,
+            @",?\s*""cachedUtc""\s*:\s*""[^""]*""", string.Empty);
+    }
+
+    /// <summary>
+    /// Tries to resolve the canonical recording title and artist from MusicBrainz (best-effort, 5 s timeout).
+    /// Returns (null, null) if not found or on any error so callers always have a fallback.
+    /// </summary>
+    private static async Task<(string? title, string? artist)> TryGetMusicBrainzCanonicalAsync(
+        string artist, string title, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return (null, null);
+        try
+        {
+            using var mbCts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+
+            var q   = Uri.EscapeDataString(string.IsNullOrWhiteSpace(artist) ? title : $"{artist} {title}");
+            var url = $"https://musicbrainz.org/ws/2/recording/?query={q}&limit=1&fmt=json";
+            var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, url);
+            req.Headers.Add("User-Agent", "RemotePlay/1.0 (https://github.com/ebrprive-lgtm/RemotePlay)");
+            var resp = await _lyricsHttpClient.SendAsync(req, mbCts.Token).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return (null, null);
+
+            var json = await resp.Content.ReadAsStringAsync(CancellationToken.None).ConfigureAwait(false);
+            using var doc  = JsonDocument.Parse(json);
+            var recordings = doc.RootElement.TryGetProperty("recordings", out var rEl) ? rEl : default;
+            if (recordings.ValueKind != JsonValueKind.Array || recordings.GetArrayLength() == 0)
+                return (null, null);
+
+            var rec = recordings[0];
+            var mbTitle = rec.TryGetProperty("title", out var tEl) && tEl.ValueKind == JsonValueKind.String
+                ? tEl.GetString() : null;
+            string? mbArtist = null;
+            if (rec.TryGetProperty("artist-credit", out var acEl) && acEl.ValueKind == JsonValueKind.Array
+                && acEl.GetArrayLength() > 0)
+            {
+                var first = acEl[0];
+                if (first.TryGetProperty("artist", out var aEl) && aEl.TryGetProperty("name", out var anEl))
+                    mbArtist = anEl.GetString();
+            }
+            if (!string.IsNullOrWhiteSpace(mbTitle))
+            {
+                Logger.Detail("Lyrics", $"MusicBrainz canonical: '{artist} - {title}' -> '{mbArtist} - {mbTitle}'");
+                return (mbTitle, mbArtist);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Detail("Lyrics", $"MusicBrainz lookup skipped: {ex.Message}");
+        }
+        return (null, null);
     }
 
     /// <summary>
     /// Queries LRCLib for plain and synced (LRC) lyrics. Returns null when not found.
     /// API: GET https://lrclib.net/api/get?artist_name=X&track_name=Y
     /// </summary>
-    private static async Task<(string? plain, string? synced)?> FetchLrcLibLyricsAsync(string artist, string title)
+    private static async Task<(string? plain, string? synced)?> FetchLrcLibLyricsAsync(
+        string artist, string title, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(title)) return null;
-
-        using var http = new System.Net.Http.HttpClient();
-        http.Timeout = TimeSpan.FromSeconds(10);
-        // LRCLib requests a descriptive client identifier in the header.
-        http.DefaultRequestHeaders.Add("Lrclib-Client", "RemotePlay/1.0 (https://github.com/ebrprive-lgtm/RemotePlay)");
 
         var query = new System.Collections.Specialized.NameValueCollection();
         query["track_name"] = title.Trim();
@@ -2881,18 +3560,20 @@ internal sealed partial class WebServer
 
         try
         {
-            var response = await http.GetAsync(url).ConfigureAwait(false);
-            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            using var callCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            callCts.CancelAfter(TimeSpan.FromSeconds(8));
+            var response = await _lyricsHttpClient.GetAsync(url, callCts.Token).ConfigureAwait(false);
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound ||
+                response.StatusCode == System.Net.HttpStatusCode.BadRequest)
             {
-                Logger.Detail("Lyrics", "LRCLib: 404 not found");
+                Logger.Detail("Lyrics", $"LRCLib: {(int)response.StatusCode} — treating as miss");
                 return null;
             }
             response.EnsureSuccessStatusCode();
-            var json    = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            var json    = await response.Content.ReadAsStringAsync(callCts.Token).ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
             var root    = doc.RootElement;
 
-            // Response contains null for missing lyrics fields — check explicitly.
             var plain  = root.TryGetProperty("plainLyrics",  out var pEl) && pEl.ValueKind == JsonValueKind.String ? pEl.GetString() : null;
             var synced = root.TryGetProperty("syncedLyrics", out var sEl) && sEl.ValueKind == JsonValueKind.String ? sEl.GetString() : null;
 
@@ -2902,7 +3583,29 @@ internal sealed partial class WebServer
                 return null;
             }
 
+            // Validate that the returned artist matches what we asked for to prevent
+            // LRCLib returning a completely different artist's track (e.g. wrong homonym song).
+            if (!string.IsNullOrWhiteSpace(artist))
+            {
+                var returnedArtist = root.TryGetProperty("artistName", out var raEl) && raEl.ValueKind == JsonValueKind.String
+                    ? NormalizeLyricsArtist(raEl.GetString() ?? string.Empty)
+                    : string.Empty;
+                var wantArtist = NormalizeLyricsArtist(artist);
+                if (!string.IsNullOrWhiteSpace(returnedArtist) && !LrcLibArtistMatches(wantArtist, returnedArtist))
+                {
+                    Logger.Detail("Lyrics", $"LRCLib /get: artist mismatch — got '{returnedArtist}', wanted '{wantArtist}'; discarding");
+                    return null;
+                }
+            }
+
             return (plain, synced);
+        }
+        catch (OperationCanceledException oce)
+        {
+            // Only rethrow if the outer budget was cancelled; per-call timeout = treat as a miss
+            if (oce.CancellationToken == ct && ct.IsCancellationRequested) throw;
+            Logger.Detail("Lyrics", $"LRCLib request timed out for '{title}'");
+            return null;
         }
         catch (System.Net.Http.HttpRequestException ex)
         {
@@ -2911,29 +3614,172 @@ internal sealed partial class WebServer
         }
     }
 
-    private static async Task<(string? lyrics, string? geniusUrl)> FetchGeniusLyricsAsync(string artist, string title)
+    /// <summary>
+    /// Uses LRCLib /api/search for fuzzy matching when the direct /api/get endpoint returns 404.
+    /// Only returns a result when the returned artist name loosely matches the requested artist
+    /// to prevent accepting lyrics for a completely different artist (e.g. Helloween instead of Billy Joel).
+    /// </summary>
+    private static async Task<(string? plain, string? synced)?> FetchLrcLibSearchAsync(
+        string artist, string title, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return null;
+        var q   = Uri.EscapeDataString(string.IsNullOrWhiteSpace(artist) ? title : $"{artist} {title}");
+        var url = $"https://lrclib.net/api/search?q={q}";
+        Logger.Detail("Lyrics", $"LRCLib search: {url}");
+        try
+        {
+            using var callCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            callCts.CancelAfter(TimeSpan.FromSeconds(8));
+            var response = await _lyricsHttpClient.GetAsync(url, callCts.Token).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) return null;
+            var json = await response.Content.ReadAsStringAsync(callCts.Token).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array || doc.RootElement.GetArrayLength() == 0)
+                return null;
+
+            // When we have an artist name, only accept results whose artist loosely matches.
+            // This prevents fuzzy-title matches from the wrong artist (e.g. Helloween for a Billy Joel query).
+            var artistNorm = NormalizeLyricsArtist(artist);
+            var hasArtist  = !string.IsNullOrWhiteSpace(artistNorm);
+            int itemIndex  = 0;
+
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                itemIndex++;
+                var returnedArtist = item.TryGetProperty("artistName", out var aEl) && aEl.ValueKind == JsonValueKind.String
+                    ? NormalizeLyricsArtist(aEl.GetString() ?? string.Empty)
+                    : string.Empty;
+                var returnedTitle = item.TryGetProperty("trackName", out var tEl) && tEl.ValueKind == JsonValueKind.String
+                    ? tEl.GetString() ?? string.Empty
+                    : string.Empty;
+
+                var plain  = item.TryGetProperty("plainLyrics",  out var pEl) && pEl.ValueKind == JsonValueKind.String ? pEl.GetString() : null;
+                var synced = item.TryGetProperty("syncedLyrics", out var sEl) && sEl.ValueKind == JsonValueKind.String ? sEl.GetString() : null;
+                bool hasLyrics = !string.IsNullOrWhiteSpace(plain) || !string.IsNullOrWhiteSpace(synced);
+
+                Logger.Detail("Lyrics", $"LRCLib search [{itemIndex}]: artist='{returnedArtist}' title='{returnedTitle}' hasLyrics={hasLyrics}");
+
+                if (!hasLyrics)
+                    continue;
+
+                if (hasArtist)
+                {
+                    if (string.IsNullOrWhiteSpace(returnedArtist))
+                    {
+                        Logger.Detail("Lyrics", $"LRCLib search [{itemIndex}]: skip — returned artistName is empty");
+                        continue;
+                    }
+
+                    bool artistOk = LrcLibArtistMatches(artistNorm, returnedArtist);
+                    Logger.Detail("Lyrics", $"LRCLib search [{itemIndex}]: artist match '{artistNorm}' vs '{returnedArtist}' => {artistOk}");
+                    if (!artistOk)
+                        continue;
+                }
+                else
+                {
+                    // No artist available — guard by title similarity to avoid accepting a completely
+                    // different song that happens to contain the search words (e.g. Helloween's
+                    // "Livin' Ain't No Crime" when searching for "Ain't No Crime").
+                    var titleNorm     = NormalizeLyricsTitle(title);
+                    var retTitleNorm  = NormalizeLyricsTitle(returnedTitle);
+                    bool titleOk = LrcLibTitleMatches(titleNorm, retTitleNorm);
+                    Logger.Detail("Lyrics", $"LRCLib search [{itemIndex}]: title match '{titleNorm}' vs '{retTitleNorm}' => {titleOk}");
+                    if (!titleOk)
+                        continue;
+                }
+
+                Logger.Detail("Lyrics", $"LRCLib search [{itemIndex}]: ACCEPTED artist='{returnedArtist}' title='{returnedTitle}'");
+                return (plain, synced);
+            }
+            Logger.Detail("Lyrics", "LRCLib search: no hit with matching artist and lyric content");
+            return null;
+        }
+        catch (OperationCanceledException oce)
+        {
+            if (oce.CancellationToken == ct && ct.IsCancellationRequested) throw;
+            Logger.Detail("Lyrics", $"LRCLib search timed out for '{title}'");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Logger.Detail("Lyrics", $"LRCLib search error: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Returns true when the artist name returned by LRCLib is considered a match for the
+    /// requested artist. Uses token overlap so "Billy Joel" matches "billy joel" and minor
+    /// variations, while completely different artists like "Helloween" are rejected.
+    /// </summary>
+    private static bool LrcLibArtistMatches(string want, string got)
+    {
+        // Exact normalised match
+        if (string.Equals(want, got, StringComparison.OrdinalIgnoreCase)) return true;
+
+        // One contains the other (handles "The Beatles" vs "Beatles")
+        if (want.Contains(got, StringComparison.OrdinalIgnoreCase) ||
+            got.Contains(want, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Token overlap: require at least half the want-tokens to appear in got
+        var wantTokens = want.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (wantTokens.Length == 0) return true;
+        int matches = wantTokens.Count(t => got.Contains(t, StringComparison.OrdinalIgnoreCase));
+        return matches >= (wantTokens.Length + 1) / 2; // ceiling of half
+    }
+
+    /// <summary>
+    /// Title match used when no artist metadata is available.
+    /// Requires the returned title to be essentially the same as the searched title —
+    /// rejects results where extra leading words were prepended (e.g. "It Ain't No Crime"
+    /// or "Livin' Ain't No Crime" when searching for "Ain't No Crime").
+    /// </summary>
+    private static bool LrcLibTitleMatches(string want, string got)
+    {
+        if (string.IsNullOrWhiteSpace(want)) return true;
+
+        // Exact match
+        if (string.Equals(want, got, StringComparison.OrdinalIgnoreCase)) return true;
+
+        // The returned title must end with the wanted title (handles "Live: Ain't No Crime"
+        // style suffixes only if the suffix IS the full wanted phrase and the prefix is short).
+        // We do NOT allow the want to appear anywhere in a longer title, only at the end.
+        if (got.EndsWith(want, StringComparison.OrdinalIgnoreCase))
+        {
+            // Prefix (the extra part before want) must be trivially short: e.g. "(Live) " or a
+            // year prefix. If the prefix adds more than 8 characters, reject.
+            int prefixLen = got.Length - want.Length;
+            if (prefixLen <= 8) return true;
+        }
+
+        // High bidirectional token overlap: both sets must be ≥ 90 % covered.
+        var wantTokens = want.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var gotTokens  = got.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (wantTokens.Length == 0) return true;
+        int wantInGot = wantTokens.Count(t => got.Contains(t, StringComparison.OrdinalIgnoreCase));
+        int gotInWant = gotTokens.Count(t => want.Contains(t, StringComparison.OrdinalIgnoreCase));
+        double precision = (double)wantInGot / wantTokens.Length;
+        double recall    = gotTokens.Length == 0 ? 1.0 : (double)gotInWant / gotTokens.Length;
+        return precision >= 0.9 && recall >= 0.9;
+    }
+
+    private static async Task<(string? lyrics, string? geniusUrl)> FetchGeniusLyricsAsync(
+        string artist, string title, CancellationToken ct = default)
     {
         var query = string.IsNullOrWhiteSpace(artist) ? title : $"{artist} {title}";
         Logger.Detail("Lyrics", $"Searching Genius for: '{query}'");
 
-        using var http = new System.Net.Http.HttpClient();
-        http.Timeout = TimeSpan.FromSeconds(15);
-        http.DefaultRequestHeaders.UserAgent.ParseAdd(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36");
-        http.DefaultRequestHeaders.Add("Accept-Language", "en-US,en;q=0.9");
-
-        // ── Step 1: try the direct slug URL (most reliable, avoids search-rank issues) ──
-        // Genius URL pattern: https://genius.com/{Artist}-{Title}-lyrics
-        // with spaces→hyphens and non-alphanumeric chars stripped.
+        // The shared _lyricsHttpClient already has the right User-Agent / Accept-Language headers.
+        // ── Step 1: try the direct slug URL ──────────────────────────────────────────────────────
         if (!string.IsNullOrWhiteSpace(artist) && !string.IsNullOrWhiteSpace(title))
         {
-            var slug = BuildGeniusSlug(artist, title);
+            var slug      = BuildGeniusSlug(artist, title);
             var directUrl = $"https://genius.com/{slug}-lyrics";
             Logger.Detail("Lyrics", $"Trying direct URL: {directUrl}");
             try
             {
-                var directHtml = await http.GetStringAsync(directUrl).ConfigureAwait(false);
+                var directHtml = await _lyricsHttpClient.GetStringAsync(directUrl, ct).ConfigureAwait(false);
                 if (directHtml.Contains("data-lyrics-container", StringComparison.Ordinal))
                 {
                     var directLyrics = ExtractGeniusLyricsText(directHtml);
@@ -2945,17 +3791,21 @@ internal sealed partial class WebServer
                 }
                 Logger.Detail("Lyrics", "Direct URL returned no lyrics container — falling back to search");
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
                 Logger.Detail("Lyrics", $"Direct URL fetch failed ({ex.Message}) — falling back to search");
             }
         }
 
-        // ── Step 2: fall back to Genius internal JSON search API ──
-        http.DefaultRequestHeaders.Add("X-Requested-With", "XMLHttpRequest");
-        var searchUrl = "https://genius.com/api/search/song?q=" + Uri.EscapeDataString(query);
-        Logger.Detail("Lyrics", $"Search URL: {searchUrl}");
-        var searchJson = await http.GetStringAsync(searchUrl).ConfigureAwait(false);
+        // ── Step 2: Genius internal JSON search API ───────────────────────────────────────────────
+        var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get,
+            "https://genius.com/api/search/song?q=" + Uri.EscapeDataString(query));
+        req.Headers.TryAddWithoutValidation("X-Requested-With", "XMLHttpRequest");
+        var searchResp = await _lyricsHttpClient.SendAsync(req, ct).ConfigureAwait(false);
+        if (!searchResp.IsSuccessStatusCode) return (null, null);
+        var searchJson = await searchResp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        Logger.Detail("Lyrics", $"Search URL: {req.RequestUri}");
 
         var songUrl = ExtractFirstGeniusSongUrlFromJson(searchJson, artist, title);
         if (songUrl is null)
@@ -2965,13 +3815,14 @@ internal sealed partial class WebServer
         }
         Logger.Detail("Lyrics", $"Song URL from search: {songUrl}");
 
-        // ── Step 3: fetch the lyrics page from search result ──
-        var lyricsHtml = await http.GetStringAsync(songUrl).ConfigureAwait(false);
+        // ── Step 3: fetch lyrics page ─────────────────────────────────────────────────────────────
+        var lyricsHtml = await _lyricsHttpClient.GetStringAsync(songUrl, ct).ConfigureAwait(false);
         Logger.Detail("Lyrics", $"Lyrics page fetched ({lyricsHtml.Length} chars)");
         var lyrics = ExtractGeniusLyricsText(lyricsHtml);
         Logger.Detail("Lyrics", lyrics is null ? "Lyrics extraction returned null" : $"Extracted {lyrics.Length} chars");
         return lyrics is null ? (null, null) : (lyrics, songUrl);
     }
+
 
     /// <summary>
     /// Builds the Genius URL slug from artist and title.

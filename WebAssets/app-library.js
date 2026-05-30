@@ -492,6 +492,132 @@ async function musicPlayHere() {
 const _musicLyricsCache = new Map(); // path -> { found, lyrics, syncedLyrics, source, geniusUrl } | 'loading'
 let _musicLyricsCurrentPath = null;
 let _musicLyricsPanelOpen = false; // persists across track changes
+let _lyricsFontSizeStep = 0;       // integer offset from default (-3..+5)
+let _lyricsSyncedMode = true;      // true = prefer synced LRC, false = force plain
+
+const _LYRICS_FONT_STEPS = ['.68rem','.73rem','.78rem','.82rem','.88rem','.95rem','1.02rem','1.1rem','1.18rem'];
+const _LYRICS_FONT_DEFAULT_IDX = 3; // .82rem
+
+function _getLyricsFontIdx() {
+  return Math.max(0, Math.min(_LYRICS_FONT_STEPS.length - 1, _LYRICS_FONT_DEFAULT_IDX + _lyricsFontSizeStep));
+}
+
+/** Change font size by delta (+1 or -1) and persist in localStorage. */
+function changeLyricsFontSize(delta) {
+  _lyricsFontSizeStep = Math.max(-3, Math.min(5, _lyricsFontSizeStep + delta));
+  try { localStorage.setItem('lyricsFontStep', String(_lyricsFontSizeStep)); } catch (_) {}
+  _applyLyricsFontSize();
+}
+
+function _applyLyricsFontSize() {
+  const size = _LYRICS_FONT_STEPS[_getLyricsFontIdx()];
+  document.documentElement.style.setProperty('--lyrics-font-size', size);
+}
+
+/** Toggle between synced LRC mode and plain-text mode. */
+function toggleLyricsSyncedMode() {
+  _lyricsSyncedMode = !_lyricsSyncedMode;
+  const btn = document.getElementById('lyrics-btn-synced-toggle');
+  if (btn) btn.classList.toggle('active', _lyricsSyncedMode);
+  _updateSyncOffsetDisplay();
+  if (_musicLyricsCurrentPath && _musicLyricsPanelOpen) {
+    const entry = _musicLyricsCache.get(_musicLyricsCurrentPath);
+    const body  = document.getElementById('music-lyrics-body');
+    if (entry && entry !== 'loading' && entry.found && body)
+      _renderLyricsBody(body, entry);
+  }
+}
+
+/**
+ * Adjusts the sync offset by `delta` seconds (±1 normally, ±5 with Shift).
+ * @param {MouseEvent} e
+ * @param {number} delta  base step (+1 or -1)
+ */
+function adjustLyricsSyncOffset(e, delta) {
+  const step = (e && e.shiftKey) ? delta * 5 : delta;
+  _lrcSyncOffset = Math.round((_lrcSyncOffset + step) * 10) / 10;
+  _lrcCurrentIdx = -1;  // force re-render on next tick
+  _updateSyncOffsetDisplay();
+  _lyricOffsetSave(_lrcOffsetCurrentKey, _lrcSyncOffset);
+}
+
+/** Shows / hides the sync-offset group and refreshes the offset readout. */
+function _updateSyncOffsetDisplay() {
+  const group = document.getElementById('lyrics-sync-offset-group');
+  const display = document.getElementById('lyrics-sync-offset-display');
+  const visible = _lyricsSyncedMode && !!_lrcLines;
+  if (group) group.style.display = visible ? '' : 'none';
+  if (display) {
+    const v = _lrcSyncOffset;
+    display.textContent = (v === 0) ? '0s' : ((v > 0 ? '+' : '') + v.toFixed(v % 1 === 0 ? 0 : 1) + 's');
+    display.classList.toggle('lyrics-sync-offset-nonzero', v !== 0);
+  }
+}
+
+/** Copy current lyrics to clipboard. */
+async function copyLyricsToClipboard() {
+  if (!_musicLyricsCurrentPath) return;
+  const entry = _musicLyricsCache.get(_musicLyricsCurrentPath);
+  if (!entry || entry === 'loading' || !entry.found) return;
+  const text = entry.lyrics || (entry.syncedLyrics
+    ? _parseLrc(entry.syncedLyrics).map(l => l.text).filter(Boolean).join('\n')
+    : '');
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = document.getElementById('lyrics-btn-copy');
+    if (btn) { const orig = btn.textContent; btn.textContent = '✓'; setTimeout(() => { btn.textContent = orig; }, 1200); }
+  } catch (_) {}
+}
+
+/** Clears all server-side and client-side lyrics cache so stale "no lyrics" results are discarded. */
+async function clearLyricsCache() {
+  const btn = document.getElementById('lyrics-btn-clear-cache');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    await fetch('/api/music/lyrics/clear-cache', { method: 'POST' });
+    _musicLyricsCache.clear();
+    _lrcLines = null;
+    _lrcCurrentIdx = -1;
+    if (_musicLyricsCurrentPath) {
+      const body = document.getElementById('music-lyrics-body');
+      if (body) body.textContent = 'Loading lyrics\u2026';
+      const src = document.getElementById('music-lyrics-source');
+      if (src) src.innerHTML = '';
+      const artist = (document.getElementById('music-artist-label') || {}).textContent || '';
+      const title  = (document.getElementById('music-lyrics-title') || {}).textContent || '';
+      await _fetchMusicLyrics(_musicLyricsCurrentPath, artist, title);
+    }
+  } catch (e) {
+    console.warn('clearLyricsCache error', e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '\uD83D\uDDD1'; }
+  }
+}
+
+/** Re-fetch lyrics with the user-supplied title override (search-again input). */
+async function retryLyricsSearch() {
+  const input = document.getElementById('music-lyrics-search-input');
+  if (!input || !_musicLyricsCurrentPath) return;
+  const newTitle = input.value.trim();
+  if (!newTitle) return;
+  // Bust the cache for this path so it re-fetches
+  _musicLyricsCache.delete(_musicLyricsCurrentPath);
+  _lrcLines = null;
+  _lrcCurrentIdx = -1;
+  const path   = _musicLyricsCurrentPath;
+  const artist = (document.getElementById('music-artist-label') || {}).textContent || '';
+  // Update search title display immediately
+  const titleEl = document.getElementById('music-lyrics-title');
+  if (titleEl) titleEl.textContent = newTitle;
+  if (_musicLyricsPanelOpen) {
+    const body = document.getElementById('music-lyrics-body');
+    if (body) body.textContent = 'Loading lyrics\u2026';
+    const src = document.getElementById('music-lyrics-source');
+    if (src) src.innerHTML = '';
+  }
+  await _fetchMusicLyrics(path, artist, newTitle);
+}
 
 async function _fetchMusicLyrics(path, artist, title) {
   if (_musicLyricsCache.has(path)) return;
@@ -504,8 +630,9 @@ async function _fetchMusicLyrics(path, artist, title) {
   if (!cleanTitle) { _musicLyricsCache.set(path, { found: false }); if (path === _musicLyricsCurrentPath) _applyMusicLyricsState(path); return; }
   try {
     const params = new URLSearchParams({ title: cleanTitle });
-    if (artist) params.set('artist', artist);
-    const res  = await fetch('/api/music/lyrics?' + params.toString());
+      if (artist) params.set('artist', artist);
+      if (path)   params.set('path', path);
+      const res  = await fetch('/api/music/lyrics?' + params.toString());
     const data = await res.json();
     _musicLyricsCache.set(path, { ...data, _searchTitle: cleanTitle });
   } catch (_e) {
@@ -538,10 +665,13 @@ function _applyMusicLyricsState(path) {
     : ((path.split(/[\/\\]/).pop() || '').replace(/\.[^.]+$/, '').replace(/^\d{1,3}[\s._-]+/, '').trim());
   if (titleEl) titleEl.textContent = searchTitle || '';
 
+  // Populate search input with current search title (pre-filled for easy retry)
+  const searchInput = document.getElementById('music-lyrics-search-input');
+  if (searchInput && !searchInput.value) searchInput.value = searchTitle || '';
+
   if (!entry || entry === 'loading') {
     btn.textContent = '\u23F3 Lyrics';
     btn.disabled = true;
-    // Panel stays open but shows loading state
     if (_musicLyricsPanelOpen && panel) {
       _openLyricsPanel();
       if (body) body.textContent = 'Loading lyrics\u2026';
@@ -556,14 +686,22 @@ function _applyMusicLyricsState(path) {
     btn.textContent = '\uD83C\uDFA4 No lyrics';
     btn.classList.add('lyrics-not-found');
     btn.classList.remove('active');
-    // No lyrics — hide panel visually but keep intent so next track with lyrics reopens it
     _closeLyricsPanelVisual();
     return;
   }
 
   btn.textContent = '\uD83C\uDFA4 Lyrics';
   btn.classList.remove('lyrics-not-found');
-  // Restore open state
+
+  // Show/hide synced toggle based on whether both modes are available
+  const syncToggle = document.getElementById('lyrics-btn-synced-toggle');
+  if (syncToggle) {
+    const hasBoth = !!(entry.syncedLyrics && entry.lyrics);
+    syncToggle.style.display = hasBoth ? '' : 'none';
+    syncToggle.classList.toggle('active', _lyricsSyncedMode);
+    syncToggle.textContent = _lyricsSyncedMode ? '\u25B6 Sync' : '\u25A4 Plain';
+  }
+
   if (_musicLyricsPanelOpen) {
     _openLyricsPanel();
     _renderLyricsBody(body, entry);
@@ -577,6 +715,7 @@ function _openLyricsPanel() {
   if (panel) { panel.classList.add('open'); panel.style.display = 'flex'; }
   if (btn)   btn.classList.add('active');
   _musicLyricsPanelOpen = true;
+  _applyLyricsFontSize();
 }
 
 function _closeLyricsPanel() {
@@ -602,7 +741,6 @@ function toggleMusicLyricsPanel() {
     _closeLyricsPanel();
   } else {
     _musicLyricsPanelOpen = true;
-    // Populate panel immediately if we already have data
     if (_musicLyricsCurrentPath) {
       const entry = _musicLyricsCache.get(_musicLyricsCurrentPath);
       const body  = document.getElementById('music-lyrics-body');
@@ -626,7 +764,7 @@ function toggleMusicLyricsPanel() {
 
 // -- LRC synced-lyrics helpers ------------------------------------------------
 
-/** Parses an LRC string into [{time, text}] sorted by time. */
+/** Parses a standard LRC string into [{time, text}] sorted by time. */
 function _parseLrc(lrc) {
   const lines = [];
   for (const raw of lrc.split('\n')) {
@@ -638,21 +776,88 @@ function _parseLrc(lrc) {
   return lines.sort((a, b) => a.time - b.time);
 }
 
-/** Renders lyrics into the body element. Synced lyrics become <div> lines; plain text is textContent. */
+/**
+ * Parses LRC extended format with per-word timestamps.
+ * e.g. "[00:01.00]<00:01.00>word <00:01.40>word2"
+ * Returns [{time, words:[{time,text}]}] or null if no word tags found.
+ */
+function _parseLrcExtended(lrc) {
+  const lines = [];
+  let hasWordTags = false;
+  for (const raw of lrc.split('\n')) {
+    const lineM = raw.match(/^\[(\d{2}):(\d{2}(?:\.\d+)?)\](.*)/);
+    if (!lineM) continue;
+    const lineTime = parseInt(lineM[1], 10) * 60 + parseFloat(lineM[2]);
+    const rest = lineM[3];
+    const words = [];
+    const wordRe = /<(\d{2}):(\d{2}(?:\.\d+)?)>([^<]*)/g;
+    let wm;
+    while ((wm = wordRe.exec(rest)) !== null) {
+      hasWordTags = true;
+      words.push({ time: parseInt(wm[1], 10) * 60 + parseFloat(wm[2]), text: wm[3] });
+    }
+    if (words.length > 0)
+      lines.push({ time: lineTime, words });
+    else
+      lines.push({ time: lineTime, words: null, text: rest.replace(/<[^>]+>/g, '').trim() });
+  }
+  return hasWordTags ? lines.sort((a, b) => a.time - b.time) : null;
+}
+
+/** Renders lyrics into the body element.
+ *  If synced mode and syncedLyrics present: LRC lines with click-to-seek.
+ *  If synced mode and extended word tags found: per-word karaoke spans.
+ *  Otherwise: plain text. */
 function _renderLyricsBody(body, entry) {
   if (!body) return;
-  if (entry && entry.syncedLyrics) {
-    const lines = _parseLrc(entry.syncedLyrics);
-    body.innerHTML = lines.map((l, i) =>
-      `<div class="lrc-line" data-idx="${i}" data-time="${l.time}">${l.text || '&nbsp;'}</div>`
-    ).join('');
-    _lrcLines = lines;
+  if (_lyricsSyncedMode && entry && entry.syncedLyrics) {
+    // Try extended karaoke parsing first
+    const extLines = _parseLrcExtended(entry.syncedLyrics);
+    if (extLines) {
+      body.innerHTML = extLines.map((l, i) => {
+        const wordsHtml = l.words
+          ? l.words.map(w => `<span class="lrc-word" data-time="${w.time}">${w.text}</span>`).join('')
+          : (l.text || '&nbsp;');
+        return `<div class="lrc-line" data-idx="${i}" data-time="${l.time}">${wordsHtml}</div>`;
+      }).join('');
+      _lrcLines = extLines.map(l => ({
+        time: l.time,
+        text: l.words ? l.words.map(w => w.text).join('') : (l.text || ''),
+        words: l.words || null
+      }));
+    } else {
+      const lines = _parseLrc(entry.syncedLyrics);
+      body.innerHTML = lines.map((l, i) =>
+        `<div class="lrc-line" data-idx="${i}" data-time="${l.time}">${l.text || '&nbsp;'}</div>`
+      ).join('');
+      _lrcLines = lines;
+    }
     _lrcCurrentIdx = -1;
+
+    // Click-to-seek: clicking a lyric line seeks the track
+    body.querySelectorAll('.lrc-line').forEach(el => {
+      el.addEventListener('click', () => {
+        const t = parseFloat(el.dataset.time);
+        if (!isNaN(t)) _seekToLrcTime(t);
+      });
+    });
+    // Show sync offset controls now that synced lyrics are rendered
+    _updateSyncOffsetDisplay();
   } else {
     body.textContent = (entry && entry.lyrics) || '';
     _lrcLines = null;
     _lrcCurrentIdx = -1;
   }
+}
+
+/** Seeks the current music track to the given time (seconds). */
+function _seekToLrcTime(t) {
+  if (typeof isPlayLocal !== 'undefined' && isPlayLocal() &&
+      typeof _localMediaType !== 'undefined' && _localMediaType === 'Music') {
+    const a = typeof _getLocalAudio !== 'undefined' ? _getLocalAudio() : null;
+    if (a) { a.currentTime = t; return; }
+  }
+  fetch('/api/music/seek?pos=' + t.toFixed(2), { method: 'POST' }).catch(() => {});
 }
 
 /** Builds source attribution HTML. */
@@ -665,8 +870,130 @@ function _buildLyricsSourceHtml(entry) {
 }
 
 // Synced LRC tick state
-let _lrcLines = null;        // parsed [{time,text}] for current track, or null
+let _lrcLines = null;        // parsed [{time,text,words?}] for current track, or null
 let _lrcCurrentIdx = -1;     // last highlighted index
+let _lrcSyncOffset = 0;      // user-applied sync correction in seconds (+ve = lyrics earlier, -ve = later)
+
+// Per-track lyric offset persistence -----------------------------------------
+// Offsets are stored in localStorage as a JSON map {[key]: seconds} AND
+// mirrored to the server so other clients can load them.
+const _LYRIC_OFFSETS_LS_KEY = 'remotePlayLyricOffsets';
+let _lrcOffsetCurrentKey = null;  // key for the currently playing track
+
+function _lyricOffsetKey(artist, title) {
+  if (!artist && !title) return null;
+  return ((artist || '') + '|' + (title || '')).toLowerCase();
+}
+
+function _lyricOffsetsLoad() {
+  try {
+    const raw = localStorage.getItem(_LYRIC_OFFSETS_LS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (_) { return {}; }
+}
+
+function _lyricOffsetGet(key) {
+  if (!key) return 0;
+  const map = _lyricOffsetsLoad();
+  return typeof map[key] === 'number' ? map[key] : 0;
+}
+
+function _lyricOffsetSave(key, offsetSeconds) {
+  if (!key) return;
+  const map = _lyricOffsetsLoad();
+  if (offsetSeconds === 0) {
+    delete map[key];
+  } else {
+    map[key] = offsetSeconds;
+  }
+  try { localStorage.setItem(_LYRIC_OFFSETS_LS_KEY, JSON.stringify(map)); } catch (_) {}
+  // Mirror to server (fire-and-forget) so other clients/peers can sync
+  _lyricOffsetsPushToServer(map);
+}
+
+function _lyricOffsetsPushToServer(map) {
+  try {
+    fetch('/api/music/lyrics/offsets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(map),
+    }).catch(() => {});
+  } catch (_) {}
+}
+
+// On first load, merge server-stored offsets into localStorage so a fresh
+// browser or a newly connected client picks up offsets saved by another tab.
+async function _lyricOffsetsPullFromServer() {
+  try {
+    const res = await fetch('/api/music/lyrics/offsets');
+    if (!res.ok) return;
+    const serverMap = await res.json();
+    if (typeof serverMap !== 'object' || serverMap === null) return;
+    const localMap = _lyricOffsetsLoad();
+    let changed = false;
+    for (const [k, v] of Object.entries(serverMap)) {
+      if (typeof v === 'number' && localMap[k] !== v) {
+        localMap[k] = v;
+        changed = true;
+      }
+    }
+    if (changed) {
+      try { localStorage.setItem(_LYRIC_OFFSETS_LS_KEY, JSON.stringify(localMap)); } catch (_) {}
+      // If the currently-playing track is affected, update the live offset
+      if (_lrcOffsetCurrentKey && localMap[_lrcOffsetCurrentKey] !== undefined) {
+        _lrcSyncOffset = localMap[_lrcOffsetCurrentKey];
+        _updateSyncOffsetDisplay();
+      }
+    }
+  } catch (_) {}
+}
+// Initial pull on page load
+_lyricOffsetsPullFromServer();
+// Periodic pull every 30 s — keeps all open tabs/clients in sync automatically
+setInterval(_lyricOffsetsPullFromServer, 30_000);
+
+/** Derive a clean song title the same way _fetchMusicLyrics does. */
+function _cleanTrackTitle(track) {
+  let t = track.name || '';
+  if (!t || t.includes('/') || t.includes('\\')) {
+    t = (track.path.split(/[\/\\]/).pop() || '').replace(/\.[^.]+$/, '');
+  }
+  return t.replace(/^\d{1,3}[\s._-]+/, '').trim();
+}
+
+/** Silently pre-fetches lyrics for ALL remaining queue items so they are
+ *  already cached before each track starts playing (no hourglass delay).
+ *  Items are staggered 1.2 s apart so the current track's own fetch has priority.
+ *  Already-cached tracks are skipped immediately. */
+function _prefetchNextTrackLyrics() {
+  // Collect remaining queue items after the current position
+  const candidates = [];
+
+  if (window._musicQueue && window._musicQueue.length > 0 && window._musicQueuePos >= 0) {
+    // Queue mode: prefetch every item after the current position
+    for (let i = window._musicQueuePos + 1; i < window._musicQueue.length; i++) {
+      candidates.push(window._musicQueue[i]);
+    }
+  } else {
+    // Folder/tracklist mode: only prefetch the immediate next track
+    const next = _musicPeekNext();
+    if (next) candidates.push(next);
+  }
+
+  if (candidates.length === 0) return;
+
+  candidates.forEach((track, idx) => {
+    const delayMs = 800 + idx * 1200; // stagger: 0.8s, 2.0s, 3.2s, …
+    setTimeout(() => {
+      if (!track || !track.path) return;
+      if (_musicLyricsCache.has(track.path)) return; // already cached
+      const artist = track.artist || '';
+      const cleanTitle = _cleanTrackTitle(track);
+      if (!cleanTitle) return;
+      _fetchMusicLyrics(track.path, artist, cleanTitle);
+    }, delayMs);
+  });
+}
 
 /** Called from updateMusicBar with current position (seconds). Highlights the active LRC line. */
 function _lrcTick(posSeconds) {
@@ -674,22 +1001,52 @@ function _lrcTick(posSeconds) {
   const body = document.getElementById('music-lyrics-body');
   if (!body) return;
 
-  // Find the last line whose time <= posSeconds
+  // Apply user sync correction: positive offset means lyrics timestamps are shifted earlier
+  const adjPos = posSeconds + _lrcSyncOffset;
+
+  // Find the last line whose time <= adjPos
   let idx = -1;
   for (let i = 0; i < _lrcLines.length; i++) {
-    if (_lrcLines[i].time <= posSeconds) idx = i;
+    if (_lrcLines[i].time <= adjPos) idx = i;
     else break;
   }
-  if (idx === _lrcCurrentIdx) return;
+  if (idx === _lrcCurrentIdx) {
+    // Still same line — update per-word karaoke highlighting if applicable
+    _tickKaraokeWords(body, adjPos, idx);
+    return;
+  }
   _lrcCurrentIdx = idx;
 
   const els = body.querySelectorAll('.lrc-line');
-  els.forEach((el, i) => el.classList.toggle('lrc-line-active', i === idx));
+  els.forEach((el, i) => {
+    el.classList.toggle('lrc-line-active', i === idx);
+    el.classList.toggle('lrc-line-past', i < idx);
+    // future lines: neither past nor active — reset
+    if (i > idx) { el.classList.remove('lrc-line-past'); }
+  });
 
-  // Scroll active line into view (centre it)
+  // Scroll so the active line sits in the lower third (2 lines of look-ahead visible above)
   if (idx >= 0 && els[idx]) {
-    els[idx].scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const lookAheadIdx = Math.max(0, idx - 2);
+    if (els[lookAheadIdx]) {
+      els[lookAheadIdx].scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } else {
+      els[idx].scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
   }
+
+  _tickKaraokeWords(body, adjPos, idx);
+}
+
+/** Highlights per-word karaoke spans within the active line. */
+function _tickKaraokeWords(body, posSeconds, lineIdx) {
+  if (lineIdx < 0 || !_lrcLines[lineIdx] || !_lrcLines[lineIdx].words) return;
+  const lineEl = body.querySelector(`.lrc-line[data-idx="${lineIdx}"]`);
+  if (!lineEl) return;
+  lineEl.querySelectorAll('.lrc-word').forEach(span => {
+    const wt = parseFloat(span.dataset.time);
+    span.classList.toggle('lrc-word-active', !isNaN(wt) && posSeconds >= wt);
+  });
 }
 
 // -------------------------------------------------------------------------------
@@ -697,8 +1054,24 @@ function _lrcTick(posSeconds) {
 function _onMusicTrackChangedLyrics(path, artist, title) {
   _lrcLines = null;
   _lrcCurrentIdx = -1;
+  // Restore any previously saved offset for this track (default 0 for new tracks)
+  _lrcOffsetCurrentKey = _lyricOffsetKey(artist, title);
+  _lrcSyncOffset = _lyricOffsetGet(_lrcOffsetCurrentKey);
   _musicLyricsCurrentPath = path;
   const btn = document.getElementById('music-btn-lyrics');
+
+  // Reset search input for new track
+  const searchInput = document.getElementById('music-lyrics-search-input');
+  if (searchInput) searchInput.value = '';
+
+  // Scroll lyrics body back to top for the new track
+  const lyricsBody = document.getElementById('music-lyrics-body');
+  if (lyricsBody) lyricsBody.scrollTop = 0;
+
+  // Hide synced toggle and sync-offset controls until we know synced lyrics are available
+  const syncToggle = document.getElementById('lyrics-btn-synced-toggle');
+  if (syncToggle) syncToggle.style.display = 'none';
+  _updateSyncOffsetDisplay();
 
   if (!path) {
     if (btn) { btn.style.display = 'none'; btn.disabled = false; btn.classList.remove('active', 'lyrics-not-found'); }
@@ -706,7 +1079,6 @@ function _onMusicTrackChangedLyrics(path, artist, title) {
     return;
   }
 
-  // Show button immediately; keep active state if panel was open
   if (btn) {
     btn.style.display = '';
     btn.disabled = false;
@@ -728,7 +1100,17 @@ function _onMusicTrackChangedLyrics(path, artist, title) {
     }
     _fetchMusicLyrics(path, artist, title);
   }
+
+  // Pre-fetch lyrics for the next track in the background so they are ready when needed
+  _prefetchNextTrackLyrics();
 }
+
+// Restore persisted font size preference on load
+try {
+  const saved = localStorage.getItem('lyricsFontStep');
+  if (saved !== null) { _lyricsFontSizeStep = parseInt(saved, 10) || 0; }
+} catch (_) {}
+
 
 let _musicSeekDragging = false;
 function onMusicSeekDrag() {
@@ -2146,8 +2528,8 @@ function renderMusicCards(data, searching) {
   } else if (data.folder && data.indexing && !(data.folders && data.folders.length > 0)) {
     html +=
       '<div style="padding:1rem;color:var(--muted,#9aa8c2)">&#128197; Still indexing \u2014 tracks will appear here when the scan reaches this folder.</div>';
-  } else if (data.folder && !data.indexing && !(data.playlists && data.playlists.length)) {
-    html += '<div style="padding:1rem;color:var(--muted,#9aa8c2)">No tracks found.</div>';
+  } else if (data.folder && !data.indexing && !(data.playlists && data.playlists.length) && !(data.folders && data.folders.length)) {
+    html += '<div style="padding:1rem;color:var(--muted,#9aa8c2)">No content.</div>';
   }
   mb.innerHTML =
     html ||

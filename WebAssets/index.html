@@ -467,11 +467,29 @@
         <div id="browse-loading" aria-hidden="true"><div class="browse-spinner"></div><span>Loading…</span></div>
         <div id="music-lyrics-panel" aria-label="Lyrics" style="display:none">
           <div id="music-lyrics-panel-header">
-            <div id="music-lyrics-header-left">
-              <span>&#127908; Lyrics</span>
+            <div id="music-lyrics-title-row">
+              <span class="lyrics-hdr-icon">&#127908;</span>
               <span id="music-lyrics-title"></span>
+              <button class="lyrics-close-btn" onclick="toggleMusicLyricsPanel()" title="Close lyrics" aria-label="Close lyrics">&#x2715;</button>
             </div>
-            <button class="vr-clear-btn" onclick="toggleMusicLyricsPanel()" title="Close lyrics" aria-label="Close lyrics">&#x2715;</button>
+            <div id="music-lyrics-header-actions">
+              <button class="lyrics-tool-btn" id="lyrics-btn-synced-toggle" onclick="toggleLyricsSyncedMode()" title="Toggle synced / plain lyrics" aria-label="Toggle synced/plain lyrics" style="display:none">&#9654; Sync</button>
+              <span id="lyrics-sync-offset-group" title="Shift lyrics timing (hold Shift for +-5s)" style="display:none">
+                <button class="lyrics-tool-btn lyrics-sync-btn" id="lyrics-btn-sync-minus" onclick="adjustLyricsSyncOffset(event, -1)" aria-label="Lyrics earlier">&#8722;1s</button>
+                <span   id="lyrics-sync-offset-display" class="lyrics-sync-offset-display">0s</span>
+                <button class="lyrics-tool-btn lyrics-sync-btn" id="lyrics-btn-sync-plus"  onclick="adjustLyricsSyncOffset(event, +1)" aria-label="Lyrics later">+1s</button>
+              </span>
+              <span class="lyrics-hdr-sep"></span>
+              <button class="lyrics-tool-btn lyrics-icon-btn" id="lyrics-btn-font-down"  onclick="changeLyricsFontSize(-1)" title="Smaller text"  aria-label="Decrease font size">A&#8315;</button>
+              <button class="lyrics-tool-btn lyrics-icon-btn" id="lyrics-btn-font-up"    onclick="changeLyricsFontSize(+1)" title="Larger text"   aria-label="Increase font size">A&#8314;</button>
+              <span class="lyrics-hdr-sep"></span>
+              <button class="lyrics-tool-btn lyrics-icon-btn" id="lyrics-btn-copy"        onclick="copyLyricsToClipboard()"  title="Copy lyrics"   aria-label="Copy lyrics">&#128203;</button>
+              <button class="lyrics-tool-btn lyrics-icon-btn" id="lyrics-btn-clear-cache" onclick="clearLyricsCache()"       title="Reset lyrics cache" aria-label="Reset lyrics cache">&#128465;</button>
+            </div>
+          </div>
+          <div id="music-lyrics-search-row">
+            <input id="music-lyrics-search-input" type="text" placeholder="Search different title…" aria-label="Search lyrics by title" autocomplete="off" />
+            <button class="lyrics-tool-btn" onclick="retryLyricsSearch()" aria-label="Search">&#128269;</button>
           </div>
           <div id="music-lyrics-body" class="music-lyrics-body"></div>
           <div id="music-lyrics-source" class="music-lyrics-source"></div>

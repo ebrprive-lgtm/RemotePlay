@@ -27,7 +27,13 @@ function localPlay(url, name, type) {
   setTimeout(() => fetch('/api/local-playing', { method: 'POST', body: 'true' }).catch(() => {}), 0);
   const nm = document.getElementById('local-player-name');
   if (nm) nm.textContent = name;
-  document.body.classList.add('local-player-docked');
+  // Only show the local-player-bar for non-Music types;
+  // music already has its own music-player-bar with full controls.
+  if (_localMediaType !== 'Music') {
+    document.body.classList.add('local-player-docked');
+  } else {
+    document.body.classList.remove('local-player-docked');
+  }
   _localAudioUpdate();
   _postLog(`Playing ${_localMediaType}: '${name}' on Local`);
 }
