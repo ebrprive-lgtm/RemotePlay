@@ -499,6 +499,7 @@ public partial class MainWindow
 
     private void HideIdleOverlay()
     {
+        StopKaraokeSession();
         IdleOverlay.Visibility = Visibility.Collapsed;
         IdleOverlay.IsHitTestVisible = false;
 
@@ -612,6 +613,20 @@ public partial class MainWindow
         {
             IdleOverlay.Visibility = Visibility.Visible;
             IdleOverlay.IsHitTestVisible = true;
+        }
+
+        // Start karaoke lyric overlay when music is playing in fullscreen
+        if (_isVideoMode && audioOnly)
+        {
+            var ms = _musicPlayer.GetStatus();
+            if (ms.IsPlaying || ms.IsPaused)
+                StartKaraokeSession();
+            else
+                StopKaraokeSession();
+        }
+        else
+        {
+            StopKaraokeSession();
         }
 
         // Collapse VideoPanel only when not in video mode. When in video mode keep
@@ -1053,7 +1068,12 @@ public partial class MainWindow
             RadioNotifyAlive    = _radioPlayer.NotifyAudioAlive,
             RadioResolveUrl     = (uuid, fallback) => _radioBrowser.ResolveStationUrlAsync(uuid, fallback),
             RadioSetReverbPreset = _radioPlayer.SetReverbPreset,
-            RadioSetEqPreset     = _radioPlayer.SetEqPreset
+            RadioSetEqPreset     = _radioPlayer.SetEqPreset,
+            SaveExpertMode       = on =>
+            {
+                _config = _config with { ExpertMode = on };
+                _appConfigService.Save(_config);
+            }
         }, _broadcaster, _playbackHistory, _appUpdater);
     }
 

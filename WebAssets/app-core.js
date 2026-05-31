@@ -178,7 +178,7 @@ let thumbnailObserver = null;
 // View mode: 'grid' or 'list' per section, persisted in localStorage
 const _viewMode = {
   video: localStorage.getItem('remotePlayViewVideo') || 'grid',
-  music: localStorage.getItem('remotePlayViewMusic') || 'list',
+  music: localStorage.getItem('remotePlayViewMusic') || 'grid',
   radio: localStorage.getItem('remotePlayViewRadio') || 'grid',
 };
 function _setViewMode(section, mode) {
@@ -592,6 +592,22 @@ function stopPolling() {
   pollInterval = null;
 }
 
+/** Expert Mode — set by server config, gates expert-only UI via body.expert-mode */
+function _setExpertMode(on) {
+  document.body.classList.toggle('expert-mode', !!on);
+  const chk = document.getElementById('expert-mode-chk');
+  if (chk) chk.checked = !!on;
+}
+
+async function _refreshExpertMode() {
+  try {
+    const res = await fetch('/api/expert-mode');
+    if (!res.ok) return;
+    const s = await res.json();
+    if (s && typeof s.expertMode === 'boolean') _setExpertMode(s.expertMode);
+  } catch {}
+}
+
 async function pollStatus() {
   try {
     const res = await fetch('/api/status');
@@ -604,6 +620,7 @@ async function pollStatus() {
     statusFailures = 0;
     setConnectionStatus('Connected', false, true);
     updateDiagnosticsIndicator(s.lastError ? 'error' : 'ok');
+    if (typeof s.expertMode === 'boolean') _setExpertMode(s.expertMode);
     const bar = document.getElementById('now-playing-bar');
     updateQueueControls(s);
     const hasQueue = Array.isArray(s.queue) && s.queue.length > 0;

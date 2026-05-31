@@ -21,26 +21,32 @@ internal sealed class AppConfigService : IAppConfigService
         NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals
     };
 
+    private static readonly string ConfigBackupFile = AppPaths.ConfigFile + ".bak";
+
     public AppConfig Load()
     {
-        try
+        foreach (var path in new[] { ConfigFile, ConfigBackupFile })
         {
-            if (File.Exists(ConfigFile))
+            try
             {
-                var json = File.ReadAllText(ConfigFile);
+                if (!File.Exists(path))
+                    continue;
+
+                var json = File.ReadAllText(path);
                 var config = JsonSerializer.Deserialize<AppConfig>(json, ReadOptions);
                 if (config is not null)
                 {
-                    Logger.Info($"Config loaded — Scheme: {config.Scheme}, Port: {config.Port}, MoviesPath: {config.ResolvedMoviesPath}, MusicPath: {config.ResolvedMusicPath}");
+                    Logger.Info($"Config loaded from {Path.GetFileName(path)} — Scheme: {config.Scheme}, Port: {config.Port}, MoviesPath: {config.ResolvedMoviesPath}, MusicPath: {config.ResolvedMusicPath}");
                     return config;
                 }
             }
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Failed to load config, using defaults", ex);
+            catch (Exception ex)
+            {
+                Logger.Error($"Failed to load config from {Path.GetFileName(path)}, trying next", ex);
+            }
         }
 
+        Logger.Info("No valid config found, using defaults");
         return new AppConfig();
     }
 
@@ -56,7 +62,7 @@ internal sealed class AppConfigService : IAppConfigService
         File.WriteAllText(tmp, json);
 
         if (File.Exists(ConfigFile))
-            File.Replace(tmp, ConfigFile, destinationBackupFileName: null);
+            File.Replace(tmp, ConfigFile, destinationBackupFileName: ConfigFile + ".bak");
         else
             File.Move(tmp, ConfigFile);
     }

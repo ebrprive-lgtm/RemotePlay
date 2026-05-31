@@ -67,4 +67,7 @@ internal sealed class WebServerCallbacks
     public required Func<string, string, Task<string>>                          RadioResolveUrl    { get; init; }
     public required Action<int>                                                 RadioSetReverbPreset { get; init; }
     public required Action<int>                                                 RadioSetEqPreset     { get; init; }
+
+    // ── Settings ────────────────────────────────────────────────────────────────
+    public required Action<bool>                                                SaveExpertMode     { get; init; }
 }

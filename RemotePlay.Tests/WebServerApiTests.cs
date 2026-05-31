@@ -219,7 +219,7 @@ public sealed class WebServerApiTests : IDisposable
         PlayMusic             = (_, _) => { },
         PauseMusic            = () => { },
         StopMusic             = () => { },
-        GetMusicStatus        = () => new MusicStatus(false, false, string.Empty, string.Empty, string.Empty, 0, 0, string.Empty, -1, 0),
+        GetMusicStatus        = () => new MusicStatus(false, false, string.Empty, string.Empty, string.Empty, string.Empty, 0, 0, string.Empty, -1, 0),
         SeekMusic             = _ => { },
         SetMusicVolume        = _ => { },
         SetMusicBoost         = _ => { },
@@ -243,5 +243,6 @@ public sealed class WebServerApiTests : IDisposable
         RadioSetReverbPreset  = _ => { },
         SetMusicEqPreset      = _ => { },
         RadioSetEqPreset      = _ => { },
+        SaveExpertMode        = _ => { },
     };
 }

@@ -79,6 +79,13 @@ public partial class MainWindow : Window
     private bool _isApplyingMoviePreferences;
     private CancellationTokenSource? _videoTransitionCts;
     private MediaCodecInfo? _codecInfo;
+
+    // Karaoke / fullscreen synced lyrics
+    private readonly DispatcherTimer _lyricsTimer;
+    private record LrcLine(double Time, string Text);
+    private LrcLine[]? _lrcLines;
+    private int _lrcLineIndex = -1;
+    private double _lyricsOffset;  // per-track timing offset in seconds (from lyric-offsets.json)
     private bool _serverReady;
     private readonly List<string> _playbackQueue = [];
     private string? _serverUrl;
@@ -188,6 +195,9 @@ public partial class MainWindow : Window
 
             _miniPreviewTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(0.1) };
             _miniPreviewTimer.Tick += (_, _) => UpdateMiniPreview();
+
+            _lyricsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+            _lyricsTimer.Tick += (_, _) => TickLyricsOverlay();
 
             _mediaPlayer.Playing += OnMediaPlaying;
             _mediaPlayer.EndReached += OnMediaEnded;
@@ -370,6 +380,8 @@ public partial class MainWindow : Window
             startWithWindowsBox.IsChecked = _config.StartWithWindows;
         if (FindName("UseTrayIconBox") is System.Windows.Controls.CheckBox useTrayIconBox)
             useTrayIconBox.IsChecked = _config.UseTrayIcon;
+        if (FindName("ExpertModeBox") is System.Windows.Controls.CheckBox expertModeBox)
+            expertModeBox.IsChecked = _config.ExpertMode;
         if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo)
             PopulateDisplayCombo(displayCombo, _config.PreferredDisplayIndex);
         PopulateMusicAudioDeviceCombo(_config.MusicAudioDeviceId);
@@ -751,6 +763,7 @@ public partial class MainWindow : Window
             peersText.Text = $"{peerCount} instance{(peerCount != 1 ? "s" : "")} online";
 
         UpdateLibraryReadinessFromStatus();
+        UpdateMusicIndexReadinessFromStatus();
     }
 
     private void OnRescanLibrary(object sender, RoutedEventArgs e)
@@ -763,7 +776,7 @@ public partial class MainWindow : Window
 
         _webServer.RequestLibraryRescan();
         AppendLog("Library rescan requested.");
-        UpdateLibraryReadiness("Library: rescan requested…", isReady: false, isBusy: true);
+        UpdateLibraryReadiness("Video library: rescan requested…", isReady: false, isBusy: true);
         RefreshStatusStats();
     }
 
@@ -784,23 +797,66 @@ public partial class MainWindow : Window
         if (status.IsScanning)
         {
             var scanned = status.ScannedFiles > 0 ? $" ({status.ScannedFiles} files checked)" : string.Empty;
-            UpdateLibraryReadiness($"Library: scanning in background{scanned}", isReady: false, isBusy: true);
+            UpdateLibraryReadiness($"Video library: scanning in background{scanned}", isReady: false, isBusy: true);
             return;
         }
 
         if (!string.IsNullOrWhiteSpace(status.LastError))
         {
-            UpdateLibraryReadiness($"Library: scan warning — {status.LastError}", isReady: false, isBusy: false);
+            UpdateLibraryReadiness($"Video library: scan warning — {status.LastError}", isReady: false, isBusy: false);
             return;
         }
 
-        UpdateLibraryReadiness($"Library: ready ({status.IndexedFiles} videos indexed)", isReady: true, isBusy: false);
+        UpdateLibraryReadiness($"Video library: ready ({status.IndexedFiles} videos indexed)", isReady: true, isBusy: false);
     }
 
     private void UpdateLibraryReadiness(string text, bool isReady, bool isBusy)
     {
         LibraryReadyText.Text = text;
         LibraryReadyDot.Background = new System.Windows.Media.SolidColorBrush(isReady
+            ? System.Windows.Media.Color.FromRgb(0x00, 0xD4, 0xAA)
+            : isBusy
+                ? System.Windows.Media.Color.FromRgb(0xFF, 0xAA, 0x00)
+                : System.Windows.Media.Color.FromRgb(0xFF, 0x59, 0x59));
+    }
+
+    private void UpdateMusicIndexReadinessFromStatus()
+    {
+        if (!_serverReady || _webServer is null)
+            return;
+
+        var status = _webServer.MusicStatus;
+        if (status.IsIndexing)
+        {
+            UpdateMusicIndexReadiness($"Music library: indexing… ({status.IndexedTracks} tracks so far)", isReady: false, isBusy: true);
+            return;
+        }
+
+        if (status.IsEnriching)
+        {
+            UpdateMusicIndexReadiness($"Music library: ready ({status.IndexedTracks} tracks) — enriching tags…", isReady: true, isBusy: false);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.LastError))
+        {
+            UpdateMusicIndexReadiness($"Music library: index warning — {status.LastError}", isReady: false, isBusy: false);
+            return;
+        }
+
+        if (status.IndexedTracks == 0)
+        {
+            UpdateMusicIndexReadiness("Music library: not indexed yet", isReady: false, isBusy: false);
+            return;
+        }
+
+        UpdateMusicIndexReadiness($"Music library: ready ({status.IndexedTracks} tracks indexed)", isReady: true, isBusy: false);
+    }
+
+    private void UpdateMusicIndexReadiness(string text, bool isReady, bool isBusy)
+    {
+        MusicIndexReadyText.Text = text;
+        MusicIndexReadyDot.Background = new System.Windows.Media.SolidColorBrush(isReady
             ? System.Windows.Media.Color.FromRgb(0x00, 0xD4, 0xAA)
             : isBusy
                 ? System.Windows.Media.Color.FromRgb(0xFF, 0xAA, 0x00)
@@ -1451,7 +1507,7 @@ public partial class MainWindow : Window
         var tag = btn.Tag?.ToString() ?? "";
 
         // Hide all panels
-        foreach (var name in new[] { "PanelLibrary", "PanelServer", "PanelPlayback", "PanelTracks", "PanelDisplay", "PanelStartup" })
+        foreach (var name in new[] { "PanelLibrary", "PanelServer", "PanelPlayback", "PanelTracks", "PanelDisplay", "PanelStartup", "PanelAdvanced" })
             if (FindName(name) is System.Windows.UIElement el)
                 el.Visibility = Visibility.Collapsed;
 
@@ -1460,7 +1516,7 @@ public partial class MainWindow : Window
             panel.Visibility = Visibility.Visible;
 
         // Update sidebar highlight
-        foreach (var name in new[] { "SettingsCatLibrary", "SettingsCatServer", "SettingsCatPlayback", "SettingsCatTracks", "SettingsCatDisplay", "SettingsCatStartup" })
+        foreach (var name in new[] { "SettingsCatLibrary", "SettingsCatServer", "SettingsCatPlayback", "SettingsCatTracks", "SettingsCatDisplay", "SettingsCatStartup", "SettingsCatAdvanced" })
         {
             if (FindName(name) is System.Windows.Controls.Button catBtn)
             {
@@ -1655,6 +1711,9 @@ public partial class MainWindow : Window
         var useTrayIcon = FindName("UseTrayIconBox") is System.Windows.Controls.CheckBox useTrayIconBox2
             ? useTrayIconBox2.IsChecked == true
             : _config.UseTrayIcon;
+        var expertMode = FindName("ExpertModeBox") is System.Windows.Controls.CheckBox expertModeBox2
+            ? expertModeBox2.IsChecked == true
+            : _config.ExpertMode;
 
         var musicAudioDeviceId = _config.MusicAudioDeviceId;
         if (MusicAudioDeviceCombo.SelectedItem is MusicAudioDevice selectedDev)
@@ -1750,6 +1809,7 @@ public partial class MainWindow : Window
                 preferredDisplayIndex,
                 startWithWindows,
                 useTrayIcon,
+                expertMode,
                 updateSourcePath,
                 autoUpdateIntervalMinutes,
                 musicAudioDeviceId,
@@ -1806,6 +1866,7 @@ public partial class MainWindow : Window
         if (!_config.UseTrayIcon)
             ShowInTaskbar = true;
         _playbackHistory.Trim(_config.PlaybackHistoryLimit);
+        _webServer?.UpdateExpertMode(_config.ExpertMode);
         _musicPlayer.SetDevice(_config.MusicAudioDeviceId);
         _radioPlayer.SetDevice(_config.MusicAudioDeviceId);
 

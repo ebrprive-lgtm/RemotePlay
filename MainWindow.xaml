@@ -505,7 +505,17 @@
                                             <TextBlock x:Name="LibraryReadyText"
                                                        Foreground="#CCC"
                                                        FontSize="11"
-                                                       Text="Library: waiting for scan…"/>
+                                                       Text="Video library: waiting for scan…"/>
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                            <Border x:Name="MusicIndexReadyDot" Width="7" Height="7" CornerRadius="3.5"
+                                                    Background="#FFAA00"
+                                                    Margin="0,0,6,0"
+                                                    VerticalAlignment="Center"/>
+                                            <TextBlock x:Name="MusicIndexReadyText"
+                                                       Foreground="#CCC"
+                                                       FontSize="11"
+                                                       Text="Music library: waiting for index…"/>
                                         </StackPanel>
                                         <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
                                             <Border x:Name="UpdateReadyDot" Width="7" Height="7" CornerRadius="3.5"
@@ -610,6 +620,7 @@
                             <Button x:Name="SettingsCatTracks"    Content="🎵  Audio &amp; Subs"   Click="OnSettingsCat" Tag="Tracks"    Style="{StaticResource SettingsCatBtn}"/>
                             <Button x:Name="SettingsCatDisplay"   Content="🖥  Display"          Click="OnSettingsCat" Tag="Display"   Style="{StaticResource SettingsCatBtn}"/>
                             <Button x:Name="SettingsCatStartup"   Content="🚀  Startup"          Click="OnSettingsCat" Tag="Startup"   Style="{StaticResource SettingsCatBtn}"/>
+                            <Button x:Name="SettingsCatAdvanced"  Content="🔧  Advanced"         Click="OnSettingsCat" Tag="Advanced"  Style="{StaticResource SettingsCatBtn}"/>
                         </StackPanel>
                     </Border>
 
@@ -1051,6 +1062,24 @@
                                            Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
                                 <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
                                            Text="When enabled, closing the window hides RemotePlay to the tray instead of exiting. Web playback can restore the app and enter fullscreen."/>
+
+                                <Button Content="Apply" Click="OnApplySettings"
+                                        Background="#E94560" Foreground="White" BorderThickness="0"
+                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
+                            </StackPanel>
+
+                            <!-- ── ADVANCED panel ── -->
+                            <StackPanel x:Name="PanelAdvanced" Visibility="Collapsed">
+                                <TextBlock Text="Advanced" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
+                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
+                                           Text="Expert Mode unlocks additional controls in the web UI, such as creating dynamic folders."/>
+
+                                <CheckBox x:Name="ExpertModeBox"
+                                          Content="Expert Mode"
+                                          Foreground="#EEE" FontSize="13" Margin="0,0,0,8"
+                                          Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
+                                           Text="When enabled, expert-only controls become visible in the web interface (e.g. creating dynamic folders)."/>
 
                                 <Button Content="Apply" Click="OnApplySettings"
                                         Background="#E94560" Foreground="White" BorderThickness="0"
@@ -1586,6 +1615,39 @@
                 <TextBlock Text="Scan to open RemotePlay" FontSize="13" Foreground="#AAAAAA"
                            HorizontalAlignment="Center" Margin="0,8,0,0"/>
             </StackPanel>
+
+            <!-- Karaoke lyrics overlay — shown during music fullscreen when synced lyrics are available -->
+            <Grid x:Name="KaraokeLyricsPanel"
+                  VerticalAlignment="Center" HorizontalAlignment="Stretch"
+                  Margin="48,0"
+                  Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock x:Name="KaraokePrevLine"
+                           Grid.Row="0"
+                           TextWrapping="Wrap" TextAlignment="Center"
+                           FontSize="32" FontWeight="Bold"
+                           Foreground="#66FFFFFF"
+                           Margin="0,0,0,28"/>
+                <TextBlock x:Name="KaraokeActiveLine"
+                           Grid.Row="1"
+                           TextWrapping="Wrap" TextAlignment="Center"
+                           FontSize="72" FontWeight="Bold"
+                           Foreground="White"
+                           Margin="0,0,0,28">
+                    <TextBlock.Effect>
+                        <BlurEffect Radius="0"/>
+                    </TextBlock.Effect>
+                </TextBlock>
+                <TextBlock x:Name="KaraokeNextLine"
+                           Grid.Row="2"
+                           TextWrapping="Wrap" TextAlignment="Center"
+                           FontSize="32" FontWeight="Bold"
+                           Foreground="#66FFFFFF"/>
+            </Grid>
         </Grid>
 
         <!-- ── Video Panel (hidden until actual playback begins) ── -->

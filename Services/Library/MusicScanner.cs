@@ -3,7 +3,18 @@ using System.Threading;
 
 namespace RemotePlay;
 
-internal sealed record MusicFile(string Name, string FullPath);
+/// <summary>Represents a single indexed music file with lightweight metadata for fast in-memory filtering.</summary>
+internal sealed record MusicFile(
+    string Name,
+    string FullPath,
+    string? Genre = null,
+    uint Year = 0);
+
+/// <summary>Represents an indexed M3U/M3U8 playlist: resolved absolute track paths and an album hint derived from the filename.</summary>
+internal sealed record M3uEntry(
+    string M3uPath,
+    string AlbumHint,
+    string[] TrackPaths);
 
 /// <summary>
 /// A live scan job whose directory queue can be reprioritised at any time.
@@ -193,5 +204,140 @@ internal static class MusicScanner
                 Logger.Warning("MusicScanner", $"Cannot list subdirectories of '{dir}': {ex.Message}");
             }
         }
+    }
+
+    /// <summary>
+    /// Second-pass enrichment: reads genre and year from audio tags for every entry in
+    /// <paramref name="index"/> that has not yet been enriched, calling
+    /// <paramref name="onBatchEnriched"/> periodically so the caller can swap in the
+    /// updated snapshot. Designed to run on a background thread after the fast path scan.
+    /// </summary>
+    public static void EnrichWithTags(
+        MusicFile[] index,
+        Action<MusicFile[]> onBatchEnriched,
+        int batchSize = 200,
+        CancellationToken cancellationToken = default)
+    {
+        // Work on a mutable copy so we can update fields without touching the live index.
+        var enriched = (MusicFile[])index.Clone();
+        int changed = 0;
+
+        for (int i = 0; i < enriched.Length; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var mf = enriched[i];
+            // Skip files that were already enriched (e.g. loaded from cache).
+            if (mf.Genre != null || mf.Year > 0) continue;
+
+            try
+            {
+                using var tagFile = TagLib.File.Create(mf.FullPath);
+                var genre = tagFile.Tag.FirstGenre;
+                var year  = tagFile.Tag.Year;
+                if (genre != null || year > 0)
+                {
+                    enriched[i] = mf with { Genre = genre, Year = year };
+                    changed++;
+                }
+            }
+            catch { /* unreadable tags — leave Genre/Year as null/0 */ }
+
+            if (changed > 0 && (i + 1) % batchSize == 0)
+            {
+                onBatchEnriched((MusicFile[])enriched.Clone());
+                changed = 0;
+            }
+        }
+
+        // Final flush
+        if (changed > 0)
+            onBatchEnriched((MusicFile[])enriched.Clone());
+    }
+
+    /// <summary>
+    /// Scans <paramref name="rootDirectory"/> recursively for M3U/M3U8 files and resolves
+    /// each playlist's track paths to absolute paths that exist on disk.
+    /// Returns a dictionary keyed by the absolute M3U file path.
+    /// This runs once during indexing so dynamic-folder expand never needs to touch the filesystem.
+    /// </summary>
+    public static Dictionary<string, M3uEntry> ScanM3uFiles(
+        string rootDirectory,
+        IReadOnlySet<string>? audioExtensions = null,
+        IReadOnlySet<string>? ignoredFolderNames = null,
+        CancellationToken cancellationToken = default)
+    {
+        var result = new Dictionary<string, M3uEntry>(StringComparer.OrdinalIgnoreCase);
+        if (!Directory.Exists(rootDirectory)) return result;
+
+        var queue = new Queue<string>();
+        queue.Enqueue(rootDirectory);
+
+        while (queue.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var dir = queue.Dequeue();
+
+            // Enumerate M3U/M3U8 files in this directory
+            try
+            {
+                foreach (var m3uPath in Directory.EnumerateFiles(dir, "*.m3u*", SearchOption.TopDirectoryOnly))
+                {
+                    var ext = Path.GetExtension(m3uPath);
+                    if (!string.Equals(ext, ".m3u",  StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(ext, ".m3u8", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var m3uDir    = Path.GetDirectoryName(m3uPath) ?? string.Empty;
+                    var albumHint = AlbumFromM3uStem(Path.GetFileNameWithoutExtension(m3uPath));
+                    var tracks    = new List<string>();
+
+                    try
+                    {
+                        foreach (var raw in File.ReadLines(m3uPath))
+                        {
+                            var line = raw.Trim();
+                            if (string.IsNullOrEmpty(line) || line.StartsWith('#')) continue;
+                            var normalised = line.Replace('/', Path.DirectorySeparatorChar);
+                            var resolved   = Path.IsPathRooted(normalised)
+                                ? normalised
+                                : Path.GetFullPath(Path.Combine(m3uDir, normalised));
+                            // Filter by audio extension only — no File.Exists() to avoid slow network I/O
+                            // on UNC shares (164k existence checks over \\server\share takes minutes).
+                            if (audioExtensions != null &&
+                                !audioExtensions.Contains(Path.GetExtension(resolved), StringComparer.OrdinalIgnoreCase))
+                                continue;
+                            tracks.Add(resolved);
+                        }
+                    }
+                    catch { /* unreadable playlist — skip */ }
+
+                    if (tracks.Count > 0)
+                        result[m3uPath] = new M3uEntry(m3uPath, albumHint, tracks.ToArray());
+                }
+            }
+            catch { /* inaccessible directory — skip */ }
+
+            // BFS into subdirectories
+            try
+            {
+                foreach (var sub in Directory.EnumerateDirectories(dir, "*", SearchOption.TopDirectoryOnly))
+                {
+                    if (ignoredFolderNames?.Contains(Path.GetFileName(sub)) == true) continue;
+                    queue.Enqueue(sub);
+                }
+            }
+            catch { /* ignore */ }
+        }
+
+        return result;
+    }
+
+    // Parses "YYYY_AlbumName" or "AlbumName" and returns the album part.
+    private static string AlbumFromM3uStem(string stem)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(stem, @"^\d{4}[_\-]+(.+)$");
+        var album = m.Success ? m.Groups[1].Value : stem;
+        return album.Replace('_', ' ').Trim();
     }
 }

@@ -24,6 +24,7 @@ internal interface IAppConfigFactory
         int preferredDisplayIndex,
         bool startWithWindows,
         bool useTrayIcon,
+        bool expertMode,
         string updateSourcePath,
         int autoUpdateIntervalMinutes,
         string musicAudioDeviceId,

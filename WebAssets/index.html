@@ -23,7 +23,6 @@
               <div id="icon-matrix">
                 <!-- Row 1: navigation / utility -->
                 <a id="health-link" class="im-btn" href="/health" target="_blank" rel="noopener" title="Health / diagnostics" aria-label="Health"><span class="im-icon"><span id="diag-dot"></span>&#10084;&#65039;</span><span class="im-label">Health</span></a>
-                <a id="setup-link"  class="im-btn" href="/setup"  target="_blank" rel="noopener" title="Setup"               aria-label="Setup"><span class="im-icon">&#9881;&#65039;</span><span class="im-label">Setup</span></a>
                 <div id="peers-wrap" class="im-btn-wrap">
                   <button id="peers-btn" class="im-btn" onclick="togglePeers()" aria-expanded="false" aria-haspopup="true" title="Instances"><span class="im-icon"><span id="peers-dot"></span>&#128279;</span><span class="im-label">Instances</span></button>
                   <div id="peers-dropdown" role="menu"></div>
@@ -75,6 +74,19 @@
                     <div class="tp-grid">
                       <button class="tp-item" data-theme="high-contrast" onclick="setTheme('high-contrast')">◼ High Contrast</button>
                     </div>
+                  </div>
+                </div>
+                <!-- Settings -->
+                <div id="settings-wrap" class="im-btn-wrap">
+                  <button id="settings-btn" class="im-btn" onclick="toggleSettingsPanel()" aria-expanded="false" aria-haspopup="true" title="Settings" aria-label="Settings"><span class="im-icon">&#9881;&#65039;</span><span class="im-label">Settings</span></button>
+                  <div id="settings-panel" class="settings-panel" role="dialog" aria-label="Settings" style="display:none">
+                    <div class="settings-section-label">&#9881; Advanced</div>
+                    <label class="settings-toggle-row" title="Show expert tools like creating dynamic folders">
+                      <input type="checkbox" id="expert-mode-chk" onchange="_toggleExpertMode()" />
+                      <span>Expert Mode</span>
+                    </label>
+                    <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:.6rem 0"/>
+                    <a href="/settings" target="_blank" rel="noopener" class="settings-full-link">&#128295; Full Settings &amp; Admin&hellip;</a>
                   </div>
                 </div>
                 <!-- Local playback toggle -->
@@ -140,6 +152,11 @@
             <div id="mcb-left">
               <button id="mcb-view-btn" class="vcb-view-btn" onclick="_setViewMode('music',_viewMode.music==='grid'?'list':'grid')" title="Toggle list / grid view"></button>
               <button id="mcb-pin-btn" class="vcb-pin-btn" onclick="toggleMusicPinFolder(currentMusicFolder)" title="Pin this folder"></button>
+              <button id="mcb-dynamic-btn" class="vcb-dynamic-btn" onclick="_createDynamicFolder()" title="Create dynamic folder"> Dynamic folder</button>
+              <button id="mcb-reroll-btn" class="vcb-reroll-btn" onclick="_rerollDynamicFolder()" title="Shuffle again (R)" style="display:none">&#9851; Shuffle again</button>
+              <button id="mcb-dyn-minus" class="vcb-dyn-count-btn" onclick="_adjustDynCount(-5)" title="5 fewer tracks" style="display:none">−5</button>
+              <button id="mcb-dyn-plus"  class="vcb-dyn-count-btn" onclick="_adjustDynCount(+5)" title="5 more tracks"  style="display:none">+5</button>
+              <span id="mcb-dyn-from" class="mcb-dyn-from" style="display:none"></span>
             </div>
             <div id="mcb-filters">
               <button id="mcb-play-all" class="vcb-pill mcb-play-all" onclick="playMusicAll()" style="display:none">&#9654; Play All</button>
@@ -496,6 +513,7 @@
         </div>
         <div id="diagnostics-overlay">
           <div id="diagnostics-panel">
+
             <h2>RemotePlay diagnostics</h2>
             <div id="diag-tabs" class="diag-tabs">
               <button class="diag-tab active" data-tab="overview">Overview</button>
@@ -560,6 +578,7 @@
         <!-- Universal context menu -->
         <div id="ctx-menu" role="menu" style="display:none">
           <button class="fctx-item" data-action="open">📂 Open</button>
+          <button class="fctx-item" data-action="open-play">&#9654; Open &amp; Play all</button>
           <button class="fctx-item" data-action="play">▶ Play</button>
           <button class="fctx-item" data-action="queue">➕ Add to queue</button>
           <button class="fctx-item" data-action="pin">📌 Pin folder</button>
@@ -568,6 +587,73 @@
           <button class="fctx-item" data-action="watched">✔ Toggle watched</button>
           <button class="fctx-item" data-action="search">🔍 Search inside</button>
           <button class="fctx-item" data-action="copy">📋 Copy path</button>
+          <button class="fctx-item" data-action="edit-dynamic">&#127922; Edit dynamic settings</button>
+          <button class="fctx-item fctx-item-danger" data-action="delete-dynamic">&#128465; Delete dynamic folder</button>
+        </div>
+
+        <!-- ── rpDynamic settings dialog ──────────────────────────────── -->
+        <div id="rpdynamic-dialog" role="dialog" aria-modal="true" aria-labelledby="rpdynamic-title" style="display:none">
+          <div class="rpdyn-backdrop" onclick="_closeDynamicDialog()"></div>
+          <div class="rpdyn-panel">
+            <h3 id="rpdynamic-title" class="rpdyn-title">&#127922; Dynamic Folder</h3>
+
+            <label class="rpdyn-label" for="rpdyn-name">Folder name</label>
+            <input id="rpdyn-name" class="rpdyn-input" type="text" maxlength="80" placeholder="My Dynamic Folder" />
+
+            <label class="rpdyn-label" for="rpdyn-sort">Order</label>
+            <select id="rpdyn-sort" class="rpdyn-input">
+              <option value="random">&#127922; Random shuffle</option>
+              <option value="newest">&#128197; Newest first</option>
+              <option value="oldest">&#128336; Oldest first</option>
+              <option value="alphabetical">&#128292; Alphabetical</option>
+            </select>
+
+            <label class="rpdyn-label" for="rpdyn-mode">Track limit</label>
+            <select id="rpdyn-mode" class="rpdyn-input" onchange="_rpdynModeChange()">
+              <option value="sample">Pick N tracks</option>
+              <option value="all">Play everything</option>
+            </select>
+
+            <div id="rpdyn-count-row">
+              <label class="rpdyn-label" for="rpdyn-count">Number of tracks</label>
+              <input id="rpdyn-count" class="rpdyn-input" type="number" min="1" max="9999" value="20" />
+            </div>
+
+            <label class="rpdyn-label rpdyn-toggle-row" for="rpdyn-recursive">
+              <input id="rpdyn-recursive" type="checkbox" checked />
+              Include subfolders
+            </label>
+
+            <label class="rpdyn-label" for="rpdyn-include">Include folders <span class="rpdyn-hint">(comma-separated, leave blank for all)</span></label>
+            <input id="rpdyn-include" class="rpdyn-input" type="text" placeholder="e.g. Rock, Jazz" />
+
+            <label class="rpdyn-label" for="rpdyn-exclude">Exclude folders <span class="rpdyn-hint">(comma-separated)</span></label>
+            <input id="rpdyn-exclude" class="rpdyn-input" type="text" placeholder="e.g. Live, Remixes" />
+
+            <label class="rpdyn-label" for="rpdyn-genre">Genre filter <span class="rpdyn-hint">(partial match, leave blank for all)</span></label>
+            <input id="rpdyn-genre" class="rpdyn-input" type="text" placeholder="e.g. Rock" />
+
+            <div class="rpdyn-row">
+              <div class="rpdyn-col">
+                <label class="rpdyn-label" for="rpdyn-year-from">Year from</label>
+                <input id="rpdyn-year-from" class="rpdyn-input rpdyn-year" type="number" min="1900" max="2100" placeholder="e.g. 1990" />
+              </div>
+              <div class="rpdyn-col">
+                <label class="rpdyn-label" for="rpdyn-year-to">Year to</label>
+                <input id="rpdyn-year-to" class="rpdyn-input rpdyn-year" type="number" min="1900" max="2100" placeholder="e.g. 2009" />
+              </div>
+            </div>
+
+            <label class="rpdyn-label rpdyn-toggle-row" for="rpdyn-autoplay">
+              <input id="rpdyn-autoplay" type="checkbox" />
+              Auto-play when opened
+            </label>
+
+            <div class="rpdyn-actions">
+              <button class="rpdyn-btn rpdyn-cancel" onclick="_closeDynamicDialog()">Cancel</button>
+              <button class="rpdyn-btn rpdyn-save" onclick="_saveDynamicFolder()">Save</button>
+            </div>
+          </div>
         </div>
 
         </body></html>

@@ -14,8 +14,8 @@ public class AppConfigServiceTests : IDisposable
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_configPath)!);
 
-        // Backup existing config so tests don't corrupt user data.
-        _backupPath = _configPath + ".bak";
+        // Use a test-only backup slot that doesn't collide with the service's own ".bak" fallback.
+        _backupPath = _configPath + ".test-backup";
         try
         {
             if (File.Exists(_configPath))
@@ -85,6 +85,15 @@ public class AppConfigServiceTests : IDisposable
     public void Load_WhenFileContainsInvalidJson_ReturnsDefaultConfig()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_configPath)!);
+
+        // The service falls back to configFile + ".bak" on parse failure.
+        // Remove it so the fallback path also has no valid config, ensuring defaults are returned.
+        var serviceBakPath = _configPath + ".bak";
+        if (File.Exists(serviceBakPath))
+        {
+            try { File.Delete(serviceBakPath); } catch (IOException) { return; }
+        }
+
         try
         {
             File.WriteAllText(_configPath, "{ this is not valid json }}}");

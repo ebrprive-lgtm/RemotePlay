@@ -26,31 +26,31 @@ public sealed class WebAssetRegressionTests
     [Fact]
     public void MovieCardsRemainClickableForPlayback()
     {
-        var appJs = ReadWebAsset("app.js");
+        var appJs = ReadConcatenatedAppJs();
 
-        Assert.Contains("const action=isPlaying?'':' onclick=\"onCardClick", appJs, StringComparison.Ordinal);
+        Assert.Contains("const action = isPlaying ? '' : ' onclick=\"onCardClick(event,", appJs, StringComparison.Ordinal);
     }
 
     [Fact]
     public void MovieCardClickLaunchesPlaybackEndpoint()
     {
-        var appJs = ReadWebAsset("app.js");
+        var appJs = ReadConcatenatedAppJs();
 
         Assert.Contains("/api/play?path=", appJs, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void IndexLinksSetupPage()
+    public void IndexLinksSettingsPage()
     {
         var html = ReadWebAsset("index.html");
 
-        Assert.Contains("href=\"/setup\"", html, StringComparison.Ordinal);
+        Assert.Contains("href=\"/settings\"", html, StringComparison.Ordinal);
     }
 
     [Fact]
     public void PlaybackProfilesAreAvailable()
     {
-        var appJs = ReadWebAsset("app.js");
+        var appJs = ReadConcatenatedAppJs();
 
         Assert.Contains("applyPlaybackProfile", appJs, StringComparison.Ordinal);
     }
@@ -58,7 +58,7 @@ public sealed class WebAssetRegressionTests
     [Fact]
     public void ThumbnailQueueControlsUseServerEndpoints()
     {
-        var appJs = ReadWebAsset("app.js");
+        var appJs = ReadConcatenatedAppJs();
 
         Assert.Contains("/api/thumbnails/status", appJs, StringComparison.Ordinal);
         Assert.Contains("/api/thumbnails/start", appJs, StringComparison.Ordinal);
@@ -68,7 +68,7 @@ public sealed class WebAssetRegressionTests
     [Fact]
     public void MovieGridUsesLazyThumbnailHydration()
     {
-        var appJs = ReadWebAsset("app.js");
+        var appJs = ReadConcatenatedAppJs();
         var css = ReadWebAsset("styles.css");
 
         Assert.Contains("IntersectionObserver", appJs, StringComparison.Ordinal);
@@ -78,4 +78,23 @@ public sealed class WebAssetRegressionTests
 
     private static string ReadWebAsset(string fileName) =>
         File.ReadAllText(Path.Combine(WebAssetsPath, fileName));
+
+    private static string ReadConcatenatedAppJs()
+    {
+        // Mirror the concatenation logic from WebServer.cs
+        string[] appJsModules =
+        [
+            "app-core.js",
+            "app-diagnostics.js",
+            "app-playback.js",
+            "app-context-menu.js",
+            "app-library.js",
+            "app-radio.js",
+            "app-globe.js",
+            "app-radio-status.js",
+            "app-local.js",
+        ];
+
+        return string.Join("\n", appJsModules.Select(ReadWebAsset));
+    }
 }

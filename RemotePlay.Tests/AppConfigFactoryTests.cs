@@ -33,6 +33,7 @@ public sealed class AppConfigFactoryTests
             preferredDisplayIndex: 2,
             startWithWindows: true,
             useTrayIcon: false,
+            expertMode: false,
             updateSourcePath: @"C:\Updates",
             autoUpdateIntervalMinutes: 30,
             musicAudioDeviceId: string.Empty,
@@ -132,7 +133,7 @@ public sealed class AppConfigFactoryTests
             factory.CreateForSettingsApply(
                 null!, 5000, false, @"C:\Movies", string.Empty, "Test", 1, 1, 1, 1,
                 true, "eng", "eng", string.Empty, true,
-                PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 60, string.Empty,
+                PlaybackEndMode.Stop, 7, 10, -1, false, true, false, string.Empty, 60, string.Empty,
                 [], [], false, 100, [], [], [], 0, 60, []));
     }
 
@@ -146,7 +147,7 @@ public sealed class AppConfigFactoryTests
             factory.CreateForSettingsApply(
                 current, 5000, false, "   ", string.Empty, "Test", 1, 1, 1, 1,
                 true, "eng", "eng", string.Empty, true,
-                PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 60, string.Empty,
+                PlaybackEndMode.Stop, 7, 10, -1, false, true, false, string.Empty, 60, string.Empty,
                 [], [], false, 100, [], [], [], 0, 60, []));
     }
 
@@ -161,7 +162,7 @@ public sealed class AppConfigFactoryTests
         var config = factory.CreateForSettingsApply(
             current, 5000, false, @"C:\Movies", string.Empty, "   ", 1, 1, 1, 1,
             true, "eng", "eng", string.Empty, true,
-            PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 60, string.Empty,
+            PlaybackEndMode.Stop, 7, 10, -1, false, true, false, string.Empty, 60, string.Empty,
             [], [], false, 100, [], [], [], 0, 60, []);
 
         Assert.Equal("My Server", config.InstanceName);
@@ -178,7 +179,7 @@ public sealed class AppConfigFactoryTests
         var config = factory.CreateForSettingsApply(
             current, 5000, false, @"C:\Movies", string.Empty, "Test", 1, 1, 1, 1,
             true, "eng", "eng", string.Empty, true,
-            PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, -99, string.Empty,
+            PlaybackEndMode.Stop, 7, 10, -1, false, true, false, string.Empty, -99, string.Empty,
             [], [], false, 100, [], [], [], 0, 60, []);
 
         Assert.Equal(0, config.AutoUpdateIntervalMinutes);
@@ -193,7 +194,7 @@ public sealed class AppConfigFactoryTests
         var config = factory.CreateForSettingsApply(
             current, 5000, false, @"C:\Movies", string.Empty, "Test", 1, 1, 1, 1,
             true, "eng", "eng", string.Empty, true,
-            PlaybackEndMode.Stop, 7, 10, -1, false, true, string.Empty, 0, string.Empty,
+            PlaybackEndMode.Stop, 7, 10, -1, false, true, false, string.Empty, 0, string.Empty,
             [], [], false, 100, [], [], [], 0, 60, []);
 
         Assert.Equal(0, config.AutoUpdateIntervalMinutes);

@@ -10,6 +10,7 @@
     'music-folder': ['open', 'pin', 'unpin', 'copy'],
     'music-file': ['play', 'queue', 'copy'],
     'music-pinned': ['open', 'unpin', 'copy'],
+    'music-dynamic': ['open', 'open-play', 'edit-dynamic', 'delete-dynamic', 'copy'],
     'video-recent': ['play', 'queue', 'fav', 'watched', 'copy'],
     'music-recent': ['play', 'queue', 'copy'],
     'radio-station': ['play', 'fav', 'copy'],
@@ -109,6 +110,8 @@
           browseMusic(typeof _decodeDirName === 'function' ? _decodeDirName(ctx.dir) : ctx.dir);
         } else if (ctx.type === 'music-pinned') {
           browseMusic(typeof _decodeDirName === 'function' ? _decodeDirName(ctx.dir) : ctx.dir);
+        } else if (ctx.type === 'music-dynamic') {
+          if (typeof _openDynamicFolder === 'function') _openDynamicFolder(ctx.dynamicPath || ctx.dir, ctx.name);
         } else if (ctx.type === 'video-pinned') {
           browse(ctx.dir);
         } else if (ctx.type === 'radio-country') {
@@ -198,6 +201,25 @@
           raw = ctx.value || ctx.name || '';
         }
         navigator.clipboard?.writeText(raw).catch(() => {});
+      } else if (action === 'open-play') {
+        if (ctx.type === 'music-dynamic' && typeof _openDynamicFolder === 'function') {
+          await _openDynamicFolder(ctx.dynamicPath || ctx.dir, ctx.name);
+          if (typeof playMusicAll === 'function') setTimeout(playMusicAll, 200);
+        }
+      } else if (action === 'edit-dynamic') {
+        if (ctx.type === 'music-dynamic' && typeof _editDynamicFolder === 'function') {
+          _editDynamicFolder(ctx.dynamicPath || ctx.dir);
+        }
+      } else if (action === 'delete-dynamic') {
+        if (ctx.type === 'music-dynamic') {
+          const dynPath = ctx.dynamicPath || ctx.dir;
+          try {
+            const res = await fetch('/api/music/dynamic?path=' + encodeURIComponent(dynPath), { method: 'DELETE' });
+            if (!res.ok) { alert('Delete failed: ' + res.status); return; }
+            // Refresh the current folder view
+            if (typeof browseMusic === 'function') browseMusic(typeof currentMusicFolder !== 'undefined' ? currentMusicFolder : null);
+          } catch (ex) { alert('Delete failed: ' + ex); }
+        }
       }
     });
   });

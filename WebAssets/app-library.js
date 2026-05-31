@@ -1,4 +1,4 @@
-let currentMode = localStorage.getItem('remotePlayMode') || 'video';
+﻿let currentMode = localStorage.getItem('remotePlayMode') || 'video';
 let musicBrowseHistory = [];
 let currentMusicFolder = null;
 let currentMusicData = null;
@@ -7,6 +7,9 @@ let musicPlaybackPollTimer = null;
 let musicCurrentPath = null;
 let musicIsPlaying = false;
 let musicCurrentVolume = 0.8;
+// Clear the dynamic-session-browsed flag on every fresh page load so that after
+// a server restart the music tab always starts at root, not at the last dynamic folder.
+try { sessionStorage.removeItem('rpdyn_browsed'); } catch {}
 // Track list for prev/next
 let musicTrackList = [];
 let musicTrackIndex = -1;
@@ -396,8 +399,10 @@ function updateMusicBar(s) {
   if (artEl) {
     const cp = s.coverPath || s.currentPath || musicCurrentPath;
     const plArt = window._playlistArtUrl || null;
-    if (s.hasCover && cp) {
-      // Only refresh img if cover path changed to avoid flicker
+    const artist = s.artist || '';
+    const album  = s.album  || '';
+    if (cp) {
+      // Always try local cover; fall back to online album art; fall back to empty
       const existing = artEl.querySelector('.music-bar-art-img');
       const newSrc = '/api/music/cover?path=' + encodeURIComponent(cp);
       if (!existing || existing.getAttribute('data-cp') !== cp) {
@@ -405,8 +410,18 @@ function updateMusicBar(s) {
         img.src = newSrc;
         img.setAttribute('data-cp', cp);
         img.className = 'music-bar-art-img';
-        img.onerror = () => { artEl.classList.add('music-bar-art-empty'); img.remove(); };
-        // Remove previous img / text
+        img.onerror = () => {
+          // Stage 2: try online album art
+          if (album) {
+            const onlineUrl = '/api/music/album-art?album=' + encodeURIComponent(album)
+              + (artist ? '&artist=' + encodeURIComponent(artist) : '');
+            img.onerror = () => { artEl.classList.add('music-bar-art-empty'); img.remove(); };
+            img.src = onlineUrl;
+          } else {
+            artEl.classList.add('music-bar-art-empty');
+            img.remove();
+          }
+        };
         artEl.querySelectorAll('.music-bar-art-img').forEach(el => el.remove());
         artEl.classList.remove('music-bar-art-empty');
         artEl.appendChild(img);
@@ -848,9 +863,9 @@ function _renderLyricsBody(body, entry) {
     _lrcLines = null;
     _lrcCurrentIdx = -1;
   }
-}
+  }
 
-/** Seeks the current music track to the given time (seconds). */
+  /** Seeks the current music track to the given time (seconds). */
 function _seekToLrcTime(t) {
   if (typeof isPlayLocal !== 'undefined' && isPlayLocal() &&
       typeof _localMediaType !== 'undefined' && _localMediaType === 'Music') {
@@ -997,9 +1012,8 @@ function _prefetchNextTrackLyrics() {
 
 /** Called from updateMusicBar with current position (seconds). Highlights the active LRC line. */
 function _lrcTick(posSeconds) {
-  if (!_lrcLines || !_musicLyricsPanelOpen) return;
+  if (!_lrcLines) return;
   const body = document.getElementById('music-lyrics-body');
-  if (!body) return;
 
   // Apply user sync correction: positive offset means lyrics timestamps are shifted earlier
   const adjPos = posSeconds + _lrcSyncOffset;
@@ -1012,30 +1026,33 @@ function _lrcTick(posSeconds) {
   }
   if (idx === _lrcCurrentIdx) {
     // Still same line — update per-word karaoke highlighting if applicable
-    _tickKaraokeWords(body, adjPos, idx);
+    if (_musicLyricsPanelOpen && body) _tickKaraokeWords(body, adjPos, idx);
     return;
   }
   _lrcCurrentIdx = idx;
 
-  const els = body.querySelectorAll('.lrc-line');
-  els.forEach((el, i) => {
-    el.classList.toggle('lrc-line-active', i === idx);
-    el.classList.toggle('lrc-line-past', i < idx);
-    // future lines: neither past nor active — reset
-    if (i > idx) { el.classList.remove('lrc-line-past'); }
-  });
 
-  // Scroll so the active line sits in the lower third (2 lines of look-ahead visible above)
-  if (idx >= 0 && els[idx]) {
-    const lookAheadIdx = Math.max(0, idx - 2);
-    if (els[lookAheadIdx]) {
-      els[lookAheadIdx].scrollIntoView({ block: 'start', behavior: 'smooth' });
-    } else {
-      els[idx].scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (_musicLyricsPanelOpen && body) {
+    const els = body.querySelectorAll('.lrc-line');
+    els.forEach((el, i) => {
+      el.classList.toggle('lrc-line-active', i === idx);
+      el.classList.toggle('lrc-line-past', i < idx);
+      // future lines: neither past nor active — reset
+      if (i > idx) { el.classList.remove('lrc-line-past'); }
+    });
+
+    // Scroll so the active line sits in the lower third (2 lines of look-ahead visible above)
+    if (idx >= 0 && els[idx]) {
+      const lookAheadIdx = Math.max(0, idx - 2);
+      if (els[lookAheadIdx]) {
+        els[lookAheadIdx].scrollIntoView({ block: 'start', behavior: 'smooth' });
+      } else {
+        els[idx].scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
     }
-  }
 
-  _tickKaraokeWords(body, adjPos, idx);
+    _tickKaraokeWords(body, adjPos, idx);
+  }
 }
 
 /** Highlights per-word karaoke spans within the active line. */
@@ -1528,8 +1545,13 @@ function startMusicPlaybackPoll() {
       _queueNextTrackOnServer();
     }
 
-    // Enrich server status with track-list metadata for the player bar
-    const trackMeta = musicCurrentPath ? musicTrackList.find(t => t.path === musicCurrentPath) : null;
+    // Enrich server status with track-list metadata for the player bar.
+    // Look in musicTrackList first, then fall back to the active queue entry.
+    const trackMeta = musicCurrentPath
+      ? (musicTrackList.find(t => t.path === musicCurrentPath)
+          || (window._musicQueue && window._musicQueue.find(q => q.path === musicCurrentPath))
+          || null)
+      : null;
     if (trackMeta) {
       s.artist    = s.artist    || trackMeta.artist    || '';
       s.album     = s.album     || trackMeta.album     || '';
@@ -1539,6 +1561,9 @@ function startMusicPlaybackPoll() {
       s.durationSec = s.durationSec || trackMeta.durationSec || 0;
       s.hasCover  = s.hasCover  ?? trackMeta.hasCover;
       s.coverPath = musicCurrentPath;
+    } else if (musicCurrentPath) {
+      // Even without local track metadata, ensure coverPath is set for art lookup
+      s.coverPath = s.coverPath || musicCurrentPath;
     }
     updateMusicBar(s);
 
@@ -1658,12 +1683,21 @@ function switchMode(mode, skipInitialBrowse = false) {
       el.textContent = '';
       el.className = '';
     }
+    const badge = document.getElementById('indexing-badge');
+    if (badge) badge.style.display = 'none';
     // restore music bar if already playing
     if (musicIsPlaying) startMusicPlaybackPoll();
     _ensureMusicKeyboardNav();
     if (typeof renderMusicPinnedStrip === 'function') renderMusicPinnedStrip();
     if (typeof _updateMusicPinButton === 'function') _updateMusicPinButton();
-    if (!currentMusicData && !skipInitialBrowse) browseMusic(null);
+    if (!currentMusicData && !skipInitialBrowse) {
+      // Only restore a dynamic session if the user already browsed music this page lifetime.
+      // On a fresh load (server restart / new tab) always go to root instead.
+      const _sess = (() => { try { return JSON.parse(sessionStorage.getItem('rpdyn_session') || 'null'); } catch { return null; } })();
+      const _browsedThisLoad = sessionStorage.getItem('rpdyn_browsed') === '1';
+      if (_sess && _sess.encodedPath && _browsedThisLoad) _openDynamicFolder(_sess.encodedPath, _sess.name || '');
+      else browseMusic(null);
+    }
     else renderMusicHeader(currentMusicData, false);
   } else if (mode === 'radio') {
     if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
@@ -1672,6 +1706,8 @@ function switchMode(mode, skipInitialBrowse = false) {
     const rcb = document.getElementById('radio-command-bar');
     if (rcb) rcb.style.display = 'flex';
     if (searchRow) searchRow.style.display = 'none';
+    const badge = document.getElementById('indexing-badge');
+    if (badge) badge.style.display = 'none';
     stopMusicStatusPoll();
     setMusicHeaderForMode('radio');
     radioInit();
@@ -1801,6 +1837,7 @@ function renderMusicHeader(data, searching) {
     scanStatus.classList.remove('scanning', 'error', 'global-scan-status');
     const total = Number(data.indexedFiles) || 0;
     const isScanning = Boolean(data.indexing);
+    const isEnriching = Boolean(data.enriching);
     const err = (data.lastError || '').trim();
     const root = (data.musicRoot || '').trim();
     if (err) {
@@ -1811,6 +1848,10 @@ function renderMusicHeader(data, searching) {
       scanStatus.textContent =
         'Scanning music library\u2026 ' + total + ' track(s) indexed so far.';
       startMusicStatusPoll();
+    } else if (isEnriching) {
+      scanStatus.classList.add('scanning');
+      scanStatus.textContent =
+        'Music Library Ready: ' + total + ' song(s)' + (root ? ' \u2014 enriching tags\u2026' : '');
     } else if (total > 0) {
       scanStatus.textContent =
         'Music Library Ready: ' + total + ' song(s)' + (root ? ' \u2014 ' + root : '');
@@ -2132,6 +2173,19 @@ async function browseMusic(folder, offset = 0, append = false) {
       if (folder === null || folder === undefined) musicBrowseHistory = [];
     }
     currentMusicFolder = folder;
+    // Always show the dynamic-folder button when browsing real folders; hide reroll
+    const _dynBtn = document.getElementById('mcb-dynamic-btn');
+    if (_dynBtn) _dynBtn.style.display = '';
+    const _rerollBtn = document.getElementById('mcb-reroll-btn');
+    if (_rerollBtn) _rerollBtn.style.display = 'none';
+    const _pinBtn = document.getElementById('mcb-pin-btn');
+    if (_pinBtn) _pinBtn.style.display = '';
+    const _minusBtn = document.getElementById('mcb-dyn-minus');
+    if (_minusBtn) _minusBtn.style.display = 'none';
+    const _plusBtn = document.getElementById('mcb-dyn-plus');
+    if (_plusBtn) _plusBtn.style.display = 'none';
+    const _fromLabel = document.getElementById('mcb-dyn-from');
+    if (_fromLabel) _fromLabel.style.display = 'none';
   }
   const mb = document.getElementById('music-browser');
   if (!mb) return;
@@ -2160,6 +2214,9 @@ async function browseMusic(folder, offset = 0, append = false) {
     }
     if (currentMode === 'music') renderMusicHeader(currentMusicData, false);
     renderMusicCards(currentMusicData);
+    // Mark that the user has browsed music at least once this page lifetime,
+    // so dynamic-session restore is allowed on subsequent tab switches.
+    try { sessionStorage.setItem('rpdyn_browsed', '1'); } catch {}
     // If we just navigated into a folder and it's still indexing (no tracks yet),
     // start a fast re-poll so results appear as soon as the priority scan finishes.
     if (folder && !append && data.indexing && !(data.files && data.files.length > 0) && !(data.folders && data.folders.length > 0)) {
@@ -2217,6 +2274,19 @@ async function searchMusicLibrary(q, offset = 0, append = false) {
  *   "01. Song Title"  → "Song Title"
  *   "Song Title"      → "Song Title"
  */
+/** Degrade a grid or list track-card thumbnail to the no-cover appearance. */
+function _mtcNoCover(img) {
+  const wrap = img.parentElement;
+  if (wrap) {
+    wrap.classList.remove('mtc-thumb-wrap');
+    wrap.classList.add('mtc-no-cover');
+    // Reveal track-number span if present (list mode)
+    const tn = wrap.querySelector('.mtc-tracknum-default');
+    if (tn) tn.style.display = '';
+  }
+  img.remove();
+}
+
 function _titleFromName(name) {
   // Strip leading track number (e.g. "03 - " or "03.")
   let s = (name || '').replace(/\.[^.]+$/, ''); // remove extension
@@ -2366,68 +2436,156 @@ async function _loadPlaylistListThumb(rowEl, signal) {
 function renderMusicCards(data, searching) {
   const mb = document.getElementById('music-browser');
   if (!mb) return;
+  const isGrid = _viewMode.music !== 'list';
   let html = '';
-  if (!searching && data.folders && data.folders.length) {
-    html += '<div class="folder-list">';
-    data.folders.forEach((f) => {
-      const isAll = f.isAll || f.name === 'All';
-      html +=
-        '<div class="folder-row' + (isAll ? ' folder-row-all' : '') + '" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"' +
-        ' oncontextmenu="_ctxShow(event,\'music-folder\',{dir:btoa(unescape(encodeURIComponent(\'' + jsStr(f.folder) + '\'))),name:\'' + jsStr(f.name) + '\'})"' +
-        ' onclick="browseMusic(\'' +
-        jsStr(f.folder) +
-        '\')">' +
-        '<span class="folder-icon">' + (isAll ? '\uD83D\uDCC2' : '&#128193;') + '</span><span class="folder-name">' +
-        esc(f.name) +
-        '</span></div>';
-    });
-    html += '</div>';
+
+  function _dynFilterTags(f) {
+    let t = '';
+    if (Array.isArray(f.include) && f.include.length)
+      t += f.include.map(x => '<span class="folder-dyn-tag folder-dyn-tag-include">' + esc(x) + '</span>').join('');
+    if (Array.isArray(f.exclude) && f.exclude.length)
+      t += f.exclude.map(x => '<span class="folder-dyn-tag folder-dyn-tag-exclude">\u2212' + esc(x) + '</span>').join('');
+    if (f.genre) t += '<span class="folder-dyn-tag folder-dyn-tag-genre">\uD83C\uDFB5 ' + esc(f.genre) + '</span>';
+    if (f.yearFrom || f.yearTo)
+      t += '<span class="folder-dyn-tag folder-dyn-tag-year">\uD83D\uDCC5 ' + (f.yearFrom || '?') + '\u2013' + (f.yearTo || '?') + '</span>';
+    return t;
   }
-  if (!searching && data.playlists && data.playlists.length) {
-    const _isList = _viewMode.music === 'list';
-    if (_isList) {
-      html += '<div class="music-playlist-list">';
-      html += '<div class="music-playlist-list-header">' +
-        '<span></span>' +
-        '<span>Name</span>' +
-        '<span>Year</span>' +
-        '<span>Type</span>' +
-        '<span class="mpl-list-count">Tracks</span>' +
-        '</div>';
-      data.playlists.forEach((pl, idx) => {
-        const count = pl.trackCount > 0 ? pl.trackCount + ' track' + (pl.trackCount !== 1 ? 's' : '') : '';
-        const { displayName, year } = _parsePlName(pl.name);
-        const artist = (pl.artist && pl.artist.trim()) || '';
-        html += `<div class="music-playlist-list-row${idx % 2 === 1 ? ' alt-row' : ''}${year ? ' has-year' : ''}" role="button" tabindex="0" title="${esc(displayName)}"` +
-          ` onkeydown="activateKeyboardClick(event,this)" data-plpath="${esc(pl.path)}" data-plalbum="${esc(displayName)}"${artist ? ` data-plartist="${esc(artist)}"` : ''}>` +
-          `<span class="mpl-list-thumb">&#9835;</span>` +
-          `<span class="mpl-list-name">${esc(displayName)}</span>` +
-          (year ? `<span class="mpl-list-year">${esc(year)}</span>` : `<span></span>`) +
-          `<span class="mpl-badge">PLAYLIST</span>` +
-          (count ? `<span class="mpl-list-count">${esc(count)}</span>` : '<span></span>') +
-          `</div>`;
+  function _dynLastSeen(f) {
+    if (!f.lastExpanded) return '';
+    try {
+      const d = new Date(f.lastExpanded);
+      const dd = Math.floor((Date.now() - d) / 86400000);
+      if (dd === 0) return 'Today';
+      if (dd === 1) return 'Yesterday';
+      if (dd < 7) return dd + 'd ago';
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    } catch(e) { return ''; }
+  }
+
+  if (isGrid && !searching) {
+    let gridHtml = '';
+
+    if (data.folders && data.folders.length) {
+      data.folders.filter(f => f.isDynamic).forEach(function(f) {
+        const _dp = jsStr(f.dynamicPath || f.folder);
+        const filterTags = _dynFilterTags(f);
+        const lastSeen = _dynLastSeen(f);
+        const sortIcon = f.sort === 'alphabetical' ? '\u21d3 A\u2013Z' : f.sort === 'oldest' ? '\u21d3 Oldest' : f.sort === 'newest' ? '\u21d3 Recent' : '\uD83C\uDFB2';
+        const modeLabel = f.mode === 'all' ? 'All' : f.mode === 'top' ? 'Top' : 'Random';
+        gridHtml += '<div class="mfc-card mfc-dyn-card folder-row-dynamic" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
+          + ' oncontextmenu="_ctxShow(event,\'music-dynamic\',{dir:\'' + _dp + '\',name:\'' + jsStr(f.name) + '\',dynamicPath:\'' + _dp + '\'})"'
+          + ' onclick="_openDynamicFolder(\'' + _dp + '\',\'' + jsStr(f.name) + '\')">'
+          + '<button class="mfc-dyn-edit-btn" title="Edit" onclick="event.stopPropagation();_editDynamicFolder(\'' + _dp + '\')">✏️</button>'
+          + '<div class="mfc-card-hero">'
+          + '<div class="mfc-dyn-top-row">'
+          + '<span class="mfc-dyn-badge">DYNAMIC</span>'
+          + '<span class="mfc-dyn-badge" style="opacity:.8">' + sortIcon + ' · ' + modeLabel + '</span>'
+          + '</div>'
+          + '<span class="mfc-card-icon">🎲</span>'
+          + (f.trackCount ? '<span class="mfc-dyn-count">' + f.trackCount + ' songs</span>' : '')
+          + '</div>'
+          + '<div class="mfc-card-footer">'
+          + '<span class="mfc-card-name">' + esc(f.name) + '</span>'
+          + (filterTags ? '<div class="mfc-dyn-tags">' + filterTags + '</div>' : '')
+          + (lastSeen ? '<span class="mfc-dyn-last">🕒 ' + lastSeen + '</span>' : '')
+          + '</div>'
+          + '</div>';
       });
-      html += '</div>';
-    } else {
-      html += '<div class="music-playlist-row">';
-      data.playlists.forEach((pl, idx) => {
+      data.folders.filter(f => !f.isDynamic).forEach(function(f) {
+        const isAll = f.isAll || f.name === 'All';
+        gridHtml += '<div class="mfc-card mfc-folder-card' + (isAll ? ' folder-row-all' : '') + '" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
+          + ' oncontextmenu="_ctxShow(event,\'music-folder\',{dir:btoa(unescape(encodeURIComponent(\'' + jsStr(f.folder) + '\'))),name:\'' + jsStr(f.name) + '\'})"'
+          + ' onclick="browseMusic(\'' + jsStr(f.folder) + '\')">'
+          + '<div class="mfc-card-hero">'
+          + '<span class="mfc-card-icon">' + (isAll ? '📂' : '&#128193;') + '</span>'
+          + '</div>'
+          + '<div class="mfc-card-footer">'
+          + '<span class="mfc-card-name">' + esc(f.name) + '</span>'
+          + '</div>'
+          + '</div>';
+      });
+    }
+
+    if (data.playlists && data.playlists.length) {
+      data.playlists.forEach(function(pl, idx) {
         const count = pl.trackCount > 0 ? pl.trackCount : null;
-        const { displayName, year, artist: parsedArtist } = _parsePlName(pl.name);
-        // Prefer artist from tag (returned by backend), fall back to filename-parsed artist
+        const parsed = _parsePlName(pl.name);
+        const displayName = parsed.displayName; const year = parsed.year; const parsedArtist = parsed.artist;
         const artist = (pl.artist && pl.artist.trim()) || parsedArtist || '';
         const gradIdx = idx % 8;
-        html += `<div class="music-playlist-card mpl-grad-${gradIdx}" role="button" tabindex="0" title="${esc(displayName)}"` +
-          ` onkeydown="activateKeyboardClick(event,this)" data-plpath="${esc(pl.path)}" data-plalbum="${esc(displayName)}"${artist ? ` data-plartist="${esc(artist)}"` : ''}>` +
-          `<div class="mpl-card-top-pills">` +
-          (year ? `<span class="mpl-card-year">${esc(year)}</span>` : '<span></span>') +
-          `<span class="mpl-badge-footer">PLAYLIST</span>` +
-          `</div>` +
-          `<div class="mpl-card-art"><span class="mpl-card-note">&#9835;</span></div>` +
-          `<div class="mpl-card-footer">` +
-          `<span class="mpl-card-name">${esc(displayName)}</span>` +
-          `</div>` +
-          (count ? `<span class="mpl-card-count">Tracks: ${count}</span>` : '') +
-          `</div>`;
+        gridHtml += '<div class="music-playlist-card mpl-grad-' + gradIdx + '" role="button" tabindex="0" title="' + esc(displayName) + '"'
+          + ' onkeydown="activateKeyboardClick(event,this)" data-plpath="' + esc(pl.path) + '" data-plalbum="' + esc(displayName) + '"' + (artist ? ' data-plartist="' + esc(artist) + '"' : '') + '>'
+          + '<div class="mpl-card-top-pills">'
+          + (year ? '<span class="mpl-card-year">' + esc(year) + '</span>' : '<span></span>')
+          + '<span class="mpl-badge-footer">PLAYLIST</span>'
+          + '</div>'
+          + '<div class="mpl-card-art"><span class="mpl-card-note">&#9835;</span></div>'
+          + '<div class="mpl-card-footer"><span class="mpl-card-name">' + esc(displayName) + '</span></div>'
+          + (count ? '<span class="mpl-card-count">Tracks: ' + count + '</span>' : '')
+          + '</div>';
+      });
+    }
+
+    if (gridHtml.length > 0 || (data.files && data.files.length)) {
+      html += '<div class="music-grid">' + gridHtml;
+    }
+  } else {
+    if (!searching && data.folders && data.folders.length) {
+      html += '<div class="folder-list">';
+      const _sortedFolders = data.folders.slice().sort(function(a, b) {
+        if (a.isDynamic && !b.isDynamic) return -1;
+        if (!a.isDynamic && b.isDynamic) return 1;
+        return 0;
+      });
+      _sortedFolders.forEach(function(f) {
+        const isAll = f.isAll || f.name === 'All';
+        if (f.isDynamic) {
+          const _dp = jsStr(f.dynamicPath || f.folder);
+          const filterTags = _dynFilterTags(f);
+          const lastSeen = _dynLastSeen(f);
+          const sortIcon = f.sort === 'alphabetical' ? '\u21d3 A\u2013Z' : f.sort === 'oldest' ? '\u21d3 Oldest' : f.sort === 'newest' ? '\u21d3 Recent' : '\uD83C\uDFB2';
+          const modeLabel = f.mode === 'all' ? 'All' : f.mode === 'top' ? 'Top' : 'Random';
+          html += '<div class="folder-row folder-row-dynamic" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
+            + ' oncontextmenu="_ctxShow(event,\'music-dynamic\',{dir:\'' + _dp + '\',name:\'' + jsStr(f.name) + '\',dynamicPath:\'' + _dp + '\'})"'
+            + ' onclick="_openDynamicFolder(\'' + _dp + '\',\'' + jsStr(f.name) + '\')">'
+            + '<span class="folder-icon">&#127922;</span>'
+            + '<div class="folder-dyn-body">'
+            + '<div class="folder-dyn-top">'
+            + '<span class="folder-name">' + esc(f.name) + '</span>'
+            + (f.trackCount ? '<span class="folder-dyn-count">' + f.trackCount + ' songs</span>' : '')
+            + '<span class="folder-dyn-meta">' + sortIcon + ' \u00b7 ' + modeLabel + '</span>'
+            + (lastSeen ? '<span class="folder-dyn-last">\uD83D\uDD52 ' + lastSeen + '</span>' : '')
+            + '</div>'
+            + (filterTags ? '<div class="folder-dyn-tags">' + filterTags + '</div>' : '')
+            + '</div>'
+            + '<button class="folder-dyn-edit-btn" title="Edit" onclick="event.stopPropagation();_editDynamicFolder(\'' + _dp + '\')">\u270F\uFE0F</button>'
+            + '</div>';
+        } else {
+          html += '<div class="folder-row' + (isAll ? ' folder-row-all' : '') + '" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
+            + ' oncontextmenu="_ctxShow(event,\'music-folder\',{dir:btoa(unescape(encodeURIComponent(\'' + jsStr(f.folder) + '\'))),name:\'' + jsStr(f.name) + '\'})"'
+            + ' onclick="browseMusic(\'' + jsStr(f.folder) + '\')">'
+            + '<span class="folder-icon">' + (isAll ? '\uD83D\uDCC2' : '&#128193;') + '</span><span class="folder-name">'
+            + esc(f.name) + '</span></div>';
+        }
+      });
+      html += '</div>';
+    }
+    if (!searching && data.playlists && data.playlists.length) {
+      html += '<div class="music-playlist-list">';
+      html += '<div class="music-playlist-list-header"><span></span><span>Name</span><span>Year</span><span>Type</span><span class="mpl-list-count">Tracks</span></div>';
+      data.playlists.forEach(function(pl, idx) {
+        const count = pl.trackCount > 0 ? pl.trackCount + ' track' + (pl.trackCount !== 1 ? 's' : '') : '';
+        const parsed = _parsePlName(pl.name);
+        const displayName = parsed.displayName; const year = parsed.year;
+        const artist = (pl.artist && pl.artist.trim()) || '';
+        html += '<div class="music-playlist-list-row' + (idx % 2 === 1 ? ' alt-row' : '') + (year ? ' has-year' : '') + '" role="button" tabindex="0" title="' + esc(displayName) + '"'
+          + ' onkeydown="activateKeyboardClick(event,this)" data-plpath="' + esc(pl.path) + '" data-plalbum="' + esc(displayName) + '"' + (artist ? ' data-plartist="' + esc(artist) + '"' : '') + '>'
+          + '<span class="mpl-list-thumb">&#9835;</span>'
+          + '<span class="mpl-list-name">' + esc(displayName) + '</span>'
+          + (year ? '<span class="mpl-list-year">' + esc(year) + '</span>' : '<span></span>')
+          + '<span class="mpl-badge">PLAYLIST</span>'
+          + (count ? '<span class="mpl-list-count">' + esc(count) + '</span>' : '<span></span>')
+          + '</div>';
       });
       html += '</div>';
     }
@@ -2452,7 +2610,7 @@ function renderMusicCards(data, searching) {
         + '<span></span>'
         + '</div>';
     }
-    html += '<div class="music-grid' + (isList ? ' list-view' : '') + '">';
+    if (isList) { html += '<div class="music-grid list-view">'; } else if (!isGrid || searching) { html += '<div class="music-grid">'; }
     sortedFiles.forEach((f, idx) => {
       const isPlaying  = musicCurrentPath && f.path === musicCurrentPath;
       const isSelected = _musicSelected.has(f.path);
@@ -2471,7 +2629,10 @@ function renderMusicCards(data, searching) {
       // Merged genre · year single line
       const genreYear = [genre, year].filter(Boolean).join(' · ');
 
-      let card = `<div class="music-track-card${isPlaying ? ' playing' : ''}${isSelected ? ' selected' : ''}${isQueued ? ' queued' : ''}${isList && idx % 2 === 1 ? ' alt-row' : ''}" data-path="${esc(f.path)}" data-idx="${idx}" data-sr-title="${esc(title)}" data-sr-artist="${esc(artist)}" data-sr-album="${esc(album)}" title="${esc(title)}">`;
+      // In grid mode always attempt cover art; onerror handles the fallback visually
+      const gridCoverUrl = !isList ? `/api/music/cover?path=${encodeURIComponent(f.path)}` : null;
+
+      let card = `<div class="music-track-card${isPlaying ? ' playing' : ''}${isSelected ? ' selected' : ''}${isQueued ? ' queued' : ''}${isList && idx % 2 === 1 ? ' alt-row' : ''}" data-path="${esc(f.path)}" data-idx="${idx}" data-sr-title="${esc(title)}" data-sr-artist="${esc(artist)}" data-sr-album="${esc(album)}" title="${esc(title)}"${gridCoverUrl ? ` data-cover-url="${gridCoverUrl}"` : ''}>`;
 
       // ── Checkbox (for multi-select) ────────────────────────────────────
       card += `<input type="checkbox" class="mtc-checkbox" data-path="${esc(f.path)}" data-idx="${idx}"${isSelected ? ' checked' : ''} tabindex="-1" aria-label="Select ${esc(title)}" />`;
@@ -2479,15 +2640,18 @@ function renderMusicCards(data, searching) {
       // ── Col 1: thumbnail / playing bars / music-note placeholder / track number
       // Always render both cover/placeholder AND bars so toggling .playing on the card
       // is enough — no stale HTML left on the wrong row when the track changes.
-      if (hasCover) {
+      if (!isList) {
+        // Grid mode: always try local cover art; post-render pass adds online-art fallback
         card += `<span class="mtc-play-indicator mtc-thumb-wrap">`
-          + `<img class="mtc-thumb" src="/api/music/cover?path=${encodeURIComponent(f.path)}" loading="lazy" onerror="this.parentElement.classList.add('mtc-no-cover');this.remove()" />`
+          + `<img class="mtc-thumb" src="${gridCoverUrl}" loading="lazy" data-artist="${esc(artist)}" data-album="${esc(album)}" />`
           + `<span class="mtc-bars mtc-bars-overlay"><span></span><span></span><span></span></span>`
           + `</span>`;
       } else {
-        card += `<span class="mtc-play-indicator mtc-no-cover">`
+        // List mode: always try local cover art; post-render pass adds online-art fallback
+        card += `<span class="mtc-play-indicator mtc-thumb-wrap">`
+          + `<img class="mtc-thumb" src="/api/music/cover?path=${encodeURIComponent(f.path)}" loading="lazy" data-artist="${esc(artist)}" data-album="${esc(album)}" />`
           + (trackNum != null ? `<span class="mtc-tracknum mtc-tracknum-default">${trackNum}</span>` : '')
-          + `<span class="mtc-bars"><span></span><span></span><span></span></span>`
+          + `<span class="mtc-bars mtc-bars-overlay"><span></span><span></span><span></span></span>`
           + `</span>`;
       }
 
@@ -2531,9 +2695,33 @@ function renderMusicCards(data, searching) {
   } else if (data.folder && !data.indexing && !(data.playlists && data.playlists.length) && !(data.folders && data.folders.length)) {
     html += '<div style="padding:1rem;color:var(--muted,#9aa8c2)">No content.</div>';
   }
+  // Close the unified grid opened for folders/playlists in grid mode when there are no tracks
+  if (isGrid && !searching && !(data.files && data.files.length)) { html += '</div>'; }
   mb.innerHTML =
     html ||
     '<div style="padding:1rem;color:var(--muted,#9aa8c2)">Select a folder to browse tracks.</div>';
+
+  // Grid cover art: wire up two-stage fallback (local → online album art → no-cover placeholder)
+  mb.querySelectorAll('.music-track-card .mtc-thumb[data-album]').forEach(img => {
+    img.addEventListener('error', function onLocalError() {
+      img.removeEventListener('error', onLocalError);
+      const artist = img.dataset.artist || '';
+      const album  = img.dataset.album  || '';
+      if (!album) { _mtcNoCover(img); return; }
+      const onlineUrl = '/api/music/album-art?album=' + encodeURIComponent(album)
+        + (artist ? '&artist=' + encodeURIComponent(artist) : '');
+      img.addEventListener('error', () => _mtcNoCover(img), { once: true });
+      img.src = onlineUrl;
+    }, { once: true });
+  });
+
+  // Attach click/contextmenu handlers for dynamic folders (rendered with data-* attributes)
+  document.querySelectorAll('.folder-row-dynamic[data-dynpath]').forEach((el) => {
+    const dp = el.dataset.dynpath;
+    const dn = el.dataset.dynname;
+    el.addEventListener('click', () => _openDynamicFolder(dp, dn));
+    el.addEventListener('contextmenu', (e) => _ctxShow(e, 'music-dynamic', { dir: dp, name: dn, dynamicPath: dp }));
+  });
 
   // Attach click handlers for playlist cards and list rows
   document.querySelectorAll('.music-playlist-card, .music-playlist-list-row').forEach((el) => {
@@ -3976,7 +4164,15 @@ function togglePeers() {
   const btn = document.getElementById('peers-btn');
   const isOpen = dd.classList.toggle('open');
   btn.setAttribute('aria-expanded', String(isOpen));
-  if (isOpen) refreshPeers();
+  if (isOpen) {
+    // Close settings panel if open
+    const panel = document.getElementById('settings-panel');
+    if (panel && panel.style.display !== 'none') {
+      panel.style.display = 'none';
+      document.getElementById('settings-btn')?.setAttribute('aria-expanded', 'false');
+    }
+    refreshPeers();
+  }
 }
 
 function closePeers() {
@@ -4030,3 +4226,390 @@ async function refreshVersion() {
     }
   } catch {}
 }
+
+// ── rpDynamic folder helpers ──────────────────────────────────────────────────
+
+// State for the settings dialog
+let _rpdynMode = 'create'; // 'create' | 'edit'
+let _rpdynEditPath = null;  // encoded path of the .rpDynamic file being edited
+let _rpdynTargetDir = null; // directory where the new file will be created
+
+/** Called by the Expert Mode checkbox onchange — POSTs the new value to the server so it persists. */
+function _toggleExpertMode() {
+  const chk = document.getElementById('expert-mode-chk');
+  const on = chk ? chk.checked : false;
+  _setExpertMode(on);
+  fetch('/api/expert-mode', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expertMode: on })
+  }).catch(() => {});
+}
+function _initExpertMode() {
+  _refreshExpertMode();
+}
+_initExpertMode();
+
+/** Toggle the Settings panel open/closed */
+function toggleSettingsPanel() {
+  const panel = document.getElementById('settings-panel');
+  const btn = document.getElementById('settings-btn');
+  if (!panel) return;
+  const open = panel.style.display === 'none';
+  panel.style.display = open ? '' : 'none';
+  if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) {
+    // Close peers dropdown if open
+    closePeers();
+    // Close when clicking outside
+    const close = (e) => {
+      if (!document.getElementById('settings-wrap')?.contains(e.target)) {
+        panel.style.display = 'none';
+        if (btn) btn.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('click', close, true);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', close, true), 0);
+  }
+}
+
+/** Called when clicking the Shift+button — opens the creation dialog */
+function _createDynamicFolder() {
+  _rpdynMode = 'create';
+  _rpdynEditPath = null;
+  _rpdynTargetDir = (currentMusicData && currentMusicData.folder) || currentMusicFolder || null;
+  if (!_rpdynTargetDir) { alert('Navigate into a music folder first.'); return; }
+  const dlg = document.getElementById('rpdynamic-dialog');
+  if (!dlg) return;
+  document.getElementById('rpdynamic-title').textContent = '\uD83C\uDFB2 New Dynamic Folder';
+  document.getElementById('rpdyn-name').value = '';
+  document.getElementById('rpdyn-sort').value = 'random';
+  document.getElementById('rpdyn-mode').value = 'sample';
+  document.getElementById('rpdyn-count').value = '20';
+  document.getElementById('rpdyn-recursive').checked = true;
+  document.getElementById('rpdyn-include').value = '';
+  document.getElementById('rpdyn-exclude').value = '';
+  document.getElementById('rpdyn-genre').value = '';
+  document.getElementById('rpdyn-year-from').value = '';
+  document.getElementById('rpdyn-year-to').value = '';
+  document.getElementById('rpdyn-autoplay').checked = false;
+  _rpdynModeChange();
+  dlg.style.display = 'flex';
+  document.getElementById('rpdyn-name').focus();
+}
+
+/** Show/hide the count row depending on mode */
+function _rpdynModeChange() {
+  const modeEl = document.getElementById('rpdyn-mode');
+  const row = document.getElementById('rpdyn-count-row');
+  if (row) row.style.display = (modeEl && modeEl.value === 'all') ? 'none' : '';
+}
+
+/** Open the edit dialog for an existing dynamic folder */
+async function _editDynamicFolder(encodedPath) {
+  _rpdynMode = 'edit';
+  _rpdynEditPath = encodedPath;
+  _rpdynTargetDir = null;
+  const dlg = document.getElementById('rpdynamic-dialog');
+  if (!dlg) return;
+  document.getElementById('rpdynamic-title').textContent = '\uD83C\uDFB2 Edit Dynamic Folder';
+  // Set defaults first
+  document.getElementById('rpdyn-name').value = '';
+  document.getElementById('rpdyn-sort').value = 'random';
+  document.getElementById('rpdyn-mode').value = 'sample';
+  document.getElementById('rpdyn-count').value = '20';
+  document.getElementById('rpdyn-recursive').checked = true;
+  document.getElementById('rpdyn-include').value = '';
+  document.getElementById('rpdyn-exclude').value = '';
+  document.getElementById('rpdyn-genre').value = '';
+  document.getElementById('rpdyn-year-from').value = '';
+  document.getElementById('rpdyn-year-to').value = '';
+  document.getElementById('rpdyn-autoplay').checked = false;
+  try {
+    const res = await fetch('/api/music/dynamic?path=' + encodeURIComponent(encodedPath));
+    if (res.ok) {
+      const s = await res.json();
+      if (s.name)      document.getElementById('rpdyn-name').value      = s.name;
+      if (s.sort)      document.getElementById('rpdyn-sort').value      = s.sort;
+      if (s.mode)      document.getElementById('rpdyn-mode').value      = s.mode;
+      if (s.count != null) document.getElementById('rpdyn-count').value = s.count;
+      if (s.recursive != null) document.getElementById('rpdyn-recursive').checked = !!s.recursive;
+      if (Array.isArray(s.include) && s.include.length)
+        document.getElementById('rpdyn-include').value = s.include.join(', ');
+      if (Array.isArray(s.exclude) && s.exclude.length)
+        document.getElementById('rpdyn-exclude').value = s.exclude.join(', ');
+      if (s.genre) document.getElementById('rpdyn-genre').value = s.genre;
+      if (s.yearFrom != null) document.getElementById('rpdyn-year-from').value = s.yearFrom;
+      if (s.yearTo   != null) document.getElementById('rpdyn-year-to').value   = s.yearTo;
+      if (s.autoPlay != null) document.getElementById('rpdyn-autoplay').checked = !!s.autoPlay;
+    }
+  } catch (e) { /* keep defaults */ }
+  _rpdynModeChange();
+  dlg.style.display = 'flex';
+  document.getElementById('rpdyn-name').focus();
+}
+
+/** Close the settings dialog without saving */
+function _closeDynamicDialog() {
+  const dlg = document.getElementById('rpdynamic-dialog');
+  if (dlg) dlg.style.display = 'none';
+  _rpdynEditPath = null;
+  _rpdynTargetDir = null;
+}
+
+/** Save button — creates or updates the .rpDynamic file */
+async function _saveDynamicFolder() {
+  const name      = (document.getElementById('rpdyn-name').value.trim())   || 'My Dynamic Folder';
+  const sort      = document.getElementById('rpdyn-sort').value             || 'random';
+  const mode      = document.getElementById('rpdyn-mode').value             || 'sample';
+  const count     = parseInt(document.getElementById('rpdyn-count').value, 10) || 20;
+  const recursive = document.getElementById('rpdyn-recursive').checked;
+  const includeRaw = document.getElementById('rpdyn-include').value.trim();
+  const include   = includeRaw ? includeRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const excludeRaw = document.getElementById('rpdyn-exclude').value.trim();
+  const exclude   = excludeRaw ? excludeRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const genre     = document.getElementById('rpdyn-genre').value.trim();
+  const yearFromVal = document.getElementById('rpdyn-year-from').value.trim();
+  const yearToVal   = document.getElementById('rpdyn-year-to').value.trim();
+  const yearFrom  = yearFromVal ? parseInt(yearFromVal, 10) : null;
+  const yearTo    = yearToVal   ? parseInt(yearToVal,   10) : null;
+  const autoPlay  = document.getElementById('rpdyn-autoplay').checked;
+
+  const payload = { name, sort, mode, count, recursive, include, exclude, genre, yearFrom, yearTo, autoPlay };
+
+  try {
+    let res;
+    if (_rpdynMode === 'create') {
+      res = await fetch('/api/music/dynamic', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dir: _rpdynTargetDir, ...payload })
+      });
+    } else {
+      res = await fetch('/api/music/dynamic?path=' + encodeURIComponent(_rpdynEditPath), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+    }
+    if (!res.ok) { alert('Could not save: ' + await res.text()); return; }
+    _closeDynamicDialog();
+    if (typeof browseMusic === 'function') await browseMusic(currentMusicFolder);
+  } catch (e) {
+    alert('Error saving dynamic folder: ' + e);
+  }
+}
+
+/** Re-roll the current dynamic folder — fetch a fresh random set and re-render */
+async function _rerollDynamicFolder() {
+  const sess = _dynSession;
+  if (!sess) return;
+  sessionStorage.removeItem('rpdyn_session');
+  await _openDynamicFolder(sess.encodedPath, sess.name);
+}
+
+/** Adjust the track count of the current dynamic folder by delta and re-roll */
+async function _adjustDynCount(delta) {
+  const sess = _dynSession;
+  if (!sess) return;
+  try {
+    const res = await fetch('/api/music/dynamic?path=' + encodeURIComponent(sess.encodedPath));
+    if (!res.ok) return;
+    const s = await res.json();
+    const newCount = Math.max(1, (s.count || 20) + delta);
+    await fetch('/api/music/dynamic?path=' + encodeURIComponent(sess.encodedPath), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...s, count: newCount })
+    });
+    await _openDynamicFolder(sess.encodedPath, sess.name);
+  } catch { /* ignore */ }
+}
+
+/** Persist / clear the active dynamic session state */
+let _dynSession = null;
+function _saveDynSession(data) {
+  _dynSession = data;
+  if (data) sessionStorage.setItem('rpdyn_session', JSON.stringify(data));
+  else sessionStorage.removeItem('rpdyn_session');
+}
+
+/**
+ * Spread same-artist tracks so no two consecutive tracks share the same artist.
+ * Uses a greedy interleave approach.
+ */
+function _dynSpreadArtists(tracks) {
+  if (!tracks || tracks.length <= 1) return tracks || [];
+  // Group by artist (case-insensitive)
+  const groups = new Map();
+  for (const t of tracks) {
+    const key = (t.artist || '').trim().toLowerCase() || '\x00';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  }
+  // Priority queue: always pick the group with most remaining tracks whose artist != last picked
+  const buckets = [...groups.values()].sort((a, b) => b.length - a.length);
+  const result = [];
+  let lastArtist = null;
+  while (result.length < tracks.length) {
+    // Find first bucket where artist differs from last (or all same — just pick largest)
+    let chosen = null;
+    for (const b of buckets) {
+      if (!b.length) continue;
+      if ((b[0].artist || '').trim().toLowerCase() !== lastArtist) { chosen = b; break; }
+    }
+    if (!chosen) {
+      // fallback: pick largest non-empty bucket
+      chosen = buckets.find(b => b.length > 0);
+    }
+    if (!chosen) break;
+    const t = chosen.shift();
+    result.push(t);
+    lastArtist = (t.artist || '').trim().toLowerCase();
+    // Re-sort buckets by remaining size
+    buckets.sort((a, b) => b.length - a.length);
+  }
+  return result;
+}
+
+/** Open a dynamic folder — expand it into a playlist-style track list and start playing */
+async function _openDynamicFolder(encodedPath, name) {
+  const mb = document.getElementById('music-browser');
+  if (mb) mb.innerHTML = '<div style="padding:.75rem;color:var(--muted,#9aa8c2)">\uD83C\uDFB2 Loading dynamic folder\u2026</div>';
+  try {
+    const res = await fetch('/api/music/dynamic/expand?path=' + encodeURIComponent(encodedPath));
+    if (!res.ok) { if (mb) mb.innerHTML = '<div style="padding:.75rem">Error ' + res.status + '</div>'; return; }
+    const data = await res.json();
+    const tracks = _dynSpreadArtists(data.tracks || []);
+
+    // Build a synthetic browse-data object that looks like a real folder result.
+    const prevFolder = currentMusicFolder && !currentMusicFolder.startsWith('\0dynamic:')
+      ? currentMusicFolder : (currentMusicData && currentMusicData._prevFolder) || null;
+    const musicRoot = (currentMusicData && currentMusicData.musicRoot) || null;
+    const dynamicName = data.name || name;
+
+    const virtualData = {
+      folder: prevFolder,        // real parent path → breadcrumb gets full segment chain
+      musicRoot,
+      folders: [],
+      files: tracks,
+      totalFiles: tracks.length,
+      _isDynamic: true,
+      _dynamicName: dynamicName,
+      _prevFolder: prevFolder,
+    };
+    currentMusicData = virtualData;
+    currentMusicFolder = '\0dynamic:' + encodedPath; // sentinel (not a real path)
+
+    // Hide the "Create dynamic folder" button — can't nest dynamic folders
+    const _dynBtn = document.getElementById('mcb-dynamic-btn');
+    if (_dynBtn) _dynBtn.style.display = 'none';
+
+    // Hide the "Pin folder" button — pinning a virtual folder makes no sense
+    const _pinBtn = document.getElementById('mcb-pin-btn');
+    if (_pinBtn) _pinBtn.style.display = 'none';
+
+    // Show the re-roll button (shuffle again)
+    const rerollBtn = document.getElementById('mcb-reroll-btn');
+    if (rerollBtn) rerollBtn.style.display = '';
+
+    // Show ±5 count adjustment buttons
+    const minusBtn = document.getElementById('mcb-dyn-minus');
+    const plusBtn  = document.getElementById('mcb-dyn-plus');
+    if (minusBtn) minusBtn.style.display = '';
+    if (plusBtn)  plusBtn.style.display  = '';
+
+    // Show "Now playing from" label
+    const fromLabel = document.getElementById('mcb-dyn-from');
+    if (fromLabel) {
+      fromLabel.textContent = '\uD83C\uDFB2 ' + (data.name || name);
+      fromLabel.style.display = '';
+    }
+
+    // Let renderMusicHeader build the parent breadcrumb segments normally …
+    if (typeof renderMusicHeader === 'function') renderMusicHeader(virtualData, false);
+
+    // … then append the dynamic folder name as a non-clickable final crumb.
+    const bc = document.getElementById('breadcrumb');
+    if (bc) {
+      bc.innerHTML += '<span> &rsaquo; </span><span class="crumb-current">\uD83C\uDFB2 ' + esc(dynamicName) + '</span>';
+
+      // The last segment that renderMusicHeader made crumb-current is now a middle
+      // segment — make it clickable instead.
+      const currentSpans = bc.querySelectorAll('.crumb-current');
+      if (currentSpans.length > 1) {
+        for (let i = 0; i < currentSpans.length - 1; i++) {
+          const span = currentSpans[i];
+          const a = document.createElement('a');
+          a.textContent = span.textContent;
+          a.setAttribute('onclick', 'browseMusic(' + (prevFolder ? "'" + jsStr(prevFolder) + "'" : 'null') + ')');
+          span.replaceWith(a);
+        }
+      }
+    }
+
+    // Wire back button to return to the real previous folder
+    const back = document.getElementById('back-button');
+    if (back) {
+      back.onclick = () => {
+        _saveDynSession(null);
+        const reroll = document.getElementById('mcb-reroll-btn');
+        if (reroll) reroll.style.display = 'none';
+        const dynBtn = document.getElementById('mcb-dynamic-btn');
+        if (dynBtn) dynBtn.style.display = '';
+        const pinBtn = document.getElementById('mcb-pin-btn');
+        if (pinBtn) pinBtn.style.display = '';
+        const minusBtn = document.getElementById('mcb-dyn-minus');
+        if (minusBtn) minusBtn.style.display = 'none';
+        const plusBtn = document.getElementById('mcb-dyn-plus');
+        if (plusBtn)  plusBtn.style.display  = 'none';
+        const fromLabel = document.getElementById('mcb-dyn-from');
+        if (fromLabel) fromLabel.style.display = 'none';
+        browseMusic(prevFolder);
+      };
+      back.style.display = '';
+    }
+
+    // Empty result — show message in the browser area but keep header/breadcrumb/back intact
+    if (!tracks.length) {
+      if (mb) mb.innerHTML = '<div style="padding:1.5rem 1rem;text-align:center;color:var(--muted,#9aa8c2)">'
+        + '<div style="font-size:2rem;margin-bottom:.5rem">🎲</div>'
+        + '<div style="font-size:1rem;font-weight:600;color:var(--text,#dce3f0)">No Tracks Found</div>'
+        + '<div style="margin-top:.35rem;font-size:.85rem">The filters for this dynamic folder matched no tracks.<br>Try relaxing the include / exclude rules, genre, or year range.</div>'
+        + '</div>';
+      return;
+    }
+
+    // Persist session so the re-roll button can repeat the expand
+    _saveDynSession({ encodedPath, name });
+
+    if (typeof renderMusicCards === 'function') renderMusicCards(virtualData);
+
+    // Auto-play if enabled in settings
+    try {
+      const settRes = await fetch('/api/music/dynamic?path=' + encodeURIComponent(encodedPath));
+      if (settRes.ok) {
+        const sett = await settRes.json();
+        if (sett.autoPlay && typeof playMusicAll === 'function') playMusicAll();
+      }
+    } catch { /* best-effort */ }
+  } catch (e) {
+    if (mb) mb.innerHTML = '<div style="padding:.75rem">Error: ' + e + '</div>';
+  }
+}
+
+// Keyboard shortcut: Enter / Space in the dialog submits
+document.addEventListener('keydown', (e) => {
+  const dlg = document.getElementById('rpdynamic-dialog');
+  if (!dlg || dlg.style.display === 'none') {
+    // R key rerolls when in a dynamic folder and no input is focused
+    if (e.key === 'r' || e.key === 'R') {
+      const active = document.activeElement;
+      const isInput = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT');
+      if (!isInput && _dynSession) { e.preventDefault(); _rerollDynamicFolder(); }
+    }
+    return;
+  }
+  if (e.key === 'Enter') { e.preventDefault(); _saveDynamicFolder(); }
+  if (e.key === 'Escape') { e.preventDefault(); _closeDynamicDialog(); }
+});

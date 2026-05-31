@@ -1,19 +1,19 @@
-﻿*{box-sizing:border-box;margin:0;padding:0}
+*{box-sizing:border-box;margin:0;padding:0}
         body{--folder-bg:#1a1a2e;--folder-hover:#252540;--folder-text:#eee;--section-text:#777;--pill-bg:#162033;--pill-border:#2e426a;--pill-text:#cfe0ff;--pill-hover:#203252;--input-bg:#222;--input-border:#444;--input-text:#eee;--title-color:#e94560;--path-text:#888;--path-link:#00d4aa;--select-ring:#00d4aa;--player-text:#fff;--player-sub:#9ea2b8;--player-card-bg:#17172a;--player-card-border:#2b2b45;--player-chip-bg:#22263b;--player-chip-border:#3a3a57;--player-accent:#e94560;--player-track-bg:#34344f;--btn-nav-bg:#2b3f6b;--btn-nav-hover:#36528a;--btn-seek-bg:#38404f;--btn-seek-hover:#4a5568;--btn-dim-bg:#333;--btn-dim-hover:#555;--resume-bg:#241927;--resume-border:#e94560;--card-bg:#1a1a2e;--card-border:#2a2a4a;--card-hover:#22223a;--muted:#9aa8c2;--accent:#e94560;background:#111;color:#eee;font-family:'Segoe UI',sans-serif;min-height:100vh;display:flex;flex-direction:column}
-        /* ── Steel: cool mid-tone grey-blue ────────────────────────────────── */
+        /* -- Steel: cool mid-tone grey-blue ---------------------------------- */
         body.theme-steel{--folder-bg:#7a8ea4;--folder-hover:#8699ae;--folder-text:#e8f0f8;--section-text:#c0d8f0;--pill-bg:#5e7284;--pill-border:#7898b8;--pill-text:#e0f0ff;--pill-hover:#6a7e94;--input-bg:#526070;--input-border:#7898b8;--input-text:#e8f0f8;--title-color:#c8e8ff;--path-text:#c0d8f0;--path-link:#d8eeff;--select-ring:#c8e8ff;--player-text:#e8f0f8;--player-sub:#c0d8f0;--player-card-bg:#526070;--player-card-bg-solid:#526070;--player-card-border:#7898b866;--player-chip-bg:#5e7284;--player-chip-border:#7898b8;--player-accent:#c8e8ff;--player-track-bg:#6a7e94;--btn-nav-bg:#5e7284;--btn-nav-hover:#6a7e94;--btn-seek-bg:#5e7284;--btn-seek-hover:#6a7e94;--btn-dim-bg:#5e7284;--btn-dim-hover:#6a7e94;--resume-bg:#485c6c;--resume-border:#c8e8ff;--card-bg:#7a8ea4;--card-border:#7898b844;--card-hover:#8699ae;--muted:#c0d8f0;--accent:#c8e8ff;background:#6a7e94;color:#e8f0f8}
         body.theme-steel header,body.theme-steel #now-playing-bar{background:#7a8ea4!important;border-color:#7898b8!important}
-        /* ── Olive: earthy warm grey-green ─────────────────────────────────── */
+        /* -- Olive: earthy warm grey-green ----------------------------------- */
         body.theme-olive{--folder-bg:#7a8c60;--folder-hover:#86986a;--folder-text:#f0f8e0;--section-text:#d0e8a0;--pill-bg:#60703e;--pill-border:#88a850;--pill-text:#e8f8c8;--pill-hover:#6c7e4a;--input-bg:#54683a;--input-border:#88a850;--input-text:#f0f8e0;--title-color:#d8f090;--path-text:#d0e8a0;--path-link:#e4f8a8;--select-ring:#d8f090;--player-text:#f0f8e0;--player-sub:#d0e8a0;--player-card-bg:#54683a;--player-card-bg-solid:#54683a;--player-card-border:#88a85055;--player-chip-bg:#60703e;--player-chip-border:#88a850;--player-accent:#d8f090;--player-track-bg:#6c7e4a;--btn-nav-bg:#60703e;--btn-nav-hover:#6c7e4a;--btn-seek-bg:#60703e;--btn-seek-hover:#6c7e4a;--btn-dim-bg:#60703e;--btn-dim-hover:#6c7e4a;--resume-bg:#4a5c30;--resume-border:#d8f090;--card-bg:#7a8c60;--card-border:#88a85044;--card-hover:#86986a;--muted:#d0e8a0;--accent:#d8f090;background:#6a7a52;color:#f0f8e0}
         body.theme-olive header,body.theme-olive #now-playing-bar{background:#7a8c60!important;border-color:#88a850!important}
-        /* ── Violet: medium muted purple-grey ───────────────────────────────── */
+        /* -- Violet: medium muted purple-grey --------------------------------- */
         body.theme-violet{--folder-bg:#7e6ea8;--folder-hover:#8a7ab4;--folder-text:#f8f0ff;--section-text:#e0c8ff;--pill-bg:#6a5892;--pill-border:#9878d0;--pill-text:#f0e0ff;--pill-hover:#766498;--input-bg:#5c4c80;--input-border:#9878d0;--input-text:#f8f0ff;--title-color:#f0d8ff;--path-text:#e0c8ff;--path-link:#f8e8ff;--select-ring:#f0d8ff;--player-text:#f8f0ff;--player-sub:#e0c8ff;--player-card-bg:#5c4c80;--player-card-bg-solid:#5c4c80;--player-card-border:#9878d055;--player-chip-bg:#6a5892;--player-chip-border:#9878d0;--player-accent:#f0d8ff;--player-track-bg:#766498;--btn-nav-bg:#6a5892;--btn-nav-hover:#766498;--btn-seek-bg:#6a5892;--btn-seek-hover:#766498;--btn-dim-bg:#6a5892;--btn-dim-hover:#766498;--resume-bg:#504270;--resume-border:#f0d8ff;--card-bg:#7e6ea8;--card-border:#9878d044;--card-hover:#8a7ab4;--muted:#e0c8ff;--accent:#f0d8ff;background:#6e5e90;color:#f8f0ff}
         body.theme-violet header,body.theme-violet #now-playing-bar{background:#7e6ea8!important;border-color:#9878d0!important}
-        /* ── Silver: mid-tone cool grey — dark text (bg ~72%) ──────────────── */
+        /* -- Silver: mid-tone cool grey — dark text (bg ~72%) ---------------- */
         body.theme-silver{--folder-bg:#c0ccda;--folder-hover:#cad6e4;--folder-text:#18283e;--section-text:#304e78;--pill-bg:rgba(26,90,168,.15);--pill-border:#5a8ac0;--pill-text:#18283e;--pill-hover:rgba(26,90,168,.28);--input-bg:rgba(255,255,255,.65);--input-border:#5a8ac0;--input-text:#18283e;--title-color:#1a5aa8;--path-text:#304e78;--path-link:#1a5aa8;--select-ring:#5a8ac0;--player-text:#18283e;--player-sub:#304e78;--player-card-bg:rgba(26,90,168,.15);--player-card-bg-solid:#b0c0d0;--player-card-border:#5a8ac066;--player-chip-bg:rgba(26,90,168,.12);--player-chip-border:#5a8ac0;--player-accent:#1a5aa8;--player-track-bg:rgba(26,90,168,.3);--btn-nav-bg:rgba(26,90,168,.18);--btn-nav-hover:rgba(26,90,168,.32);--btn-seek-bg:rgba(26,40,60,.15);--btn-seek-hover:rgba(26,40,60,.28);--btn-dim-bg:rgba(26,40,60,.12);--btn-dim-hover:rgba(26,40,60,.22);--resume-bg:rgba(255,255,255,.7);--resume-border:#1a5aa8;--card-bg:rgba(26,90,168,.1);--card-border:#5a8ac044;--card-hover:rgba(26,90,168,.2);--muted:#304e78;--accent:#1a5aa8;background:#b8c4d0;color:#18283e}
         body.theme-silver header,body.theme-silver #now-playing-bar{background:#c0ccda!important;border-color:#5a8ac0!important;color:#18283e!important}
         body.theme-silver .movie-card{--fav-color:#a85000}
-        /* ── Caramel: mid-tone warm brown — dark text (bg ~72%) ──────────────── */
+        /* -- Caramel: mid-tone warm brown — dark text (bg ~72%) ---------------- */
         body.theme-caramel{--folder-bg:#d4b088;--folder-hover:#dcba90;--folder-text:#2a1200;--section-text:#5a2c10;--pill-bg:rgba(90,44,16,.15);--pill-border:#8a5828;--pill-text:#2a1200;--pill-hover:rgba(90,44,16,.28);--input-bg:rgba(255,255,255,.65);--input-border:#8a5828;--input-text:#2a1200;--title-color:#8a3800;--path-text:#5a2c10;--path-link:#8a3800;--select-ring:#8a5828;--player-text:#2a1200;--player-sub:#5a2c10;--player-card-bg:rgba(90,44,16,.15);--player-card-bg-solid:#c8a870;--player-card-border:#8a582866;--player-chip-bg:rgba(90,44,16,.12);--player-chip-border:#8a5828;--player-accent:#a84800;--player-track-bg:rgba(90,44,16,.3);--btn-nav-bg:rgba(168,72,0,.18);--btn-nav-hover:rgba(168,72,0,.32);--btn-seek-bg:rgba(90,44,16,.15);--btn-seek-hover:rgba(90,44,16,.28);--btn-dim-bg:rgba(90,44,16,.12);--btn-dim-hover:rgba(90,44,16,.22);--resume-bg:rgba(255,255,255,.7);--resume-border:#a84800;--card-bg:rgba(90,44,16,.1);--card-border:#8a582844;--card-hover:rgba(90,44,16,.2);--muted:#5a2c10;--accent:#a84800;background:#c8a880;color:#2a1200}
         body.theme-caramel header,body.theme-caramel #now-playing-bar{background:#d4b088!important;border-color:#8a5828!important;color:#2a1200!important}
         body.theme-caramel .movie-card{--fav-color:#0060a8}
@@ -43,35 +43,35 @@
         body.theme-crimson header,body.theme-crimson #now-playing-bar{background:linear-gradient(135deg,#1a0a0d,#2e0d15)!important;border-color:#a0192e!important}
         body.theme-ocean{--folder-bg:#071a2e;--folder-hover:#0e2d4a;--folder-text:#e0f4ff;--section-text:#6ec6f5;--pill-bg:#051525;--pill-border:#1a6fa8;--pill-text:#aadff5;--pill-hover:#0e2d4a;--input-bg:#040f1c;--input-border:#1a6fa8;--input-text:#e0f4ff;--title-color:#29aaee;--path-text:#6ec6f5;--path-link:#7fe0ff;--select-ring:#29aaee;--player-text:#e0f4ff;--player-sub:#6ec6f5;--player-card-bg:#04111f;--player-card-border:#1a6fa855;--player-chip-bg:#071a2e;--player-chip-border:#1a6fa866;--player-accent:#29aaee;--player-track-bg:#0a2a45;--btn-nav-bg:#071a2e;--btn-nav-hover:#0e2d4a;--btn-seek-bg:#071a2e;--btn-seek-hover:#0e2d4a;--btn-dim-bg:#040f1c;--btn-dim-hover:#071a2e;--resume-bg:#030c17;--resume-border:#29aaee;--card-bg:#071a2e;--card-border:#1a6fa844;--card-hover:#0e2d4a;--muted:#6ec6f5;--accent:#29aaee;background:#030c17;color:#e0f4ff}
         body.theme-ocean header,body.theme-ocean #now-playing-bar{background:linear-gradient(135deg,#071a2e,#0a2540)!important;border-color:#1a6fa8!important}
-        /* ── Gold: warm amber/gold on rich dark brown ──────────────────────── */
+        /* -- Gold: warm amber/gold on rich dark brown ------------------------ */
         body.theme-gold{--folder-bg:#1c1500;--folder-hover:#2e2200;--folder-text:#fff8e0;--section-text:#ffc845;--pill-bg:#171100;--pill-border:#8a6200;--pill-text:#ffe29a;--pill-hover:#2e2200;--input-bg:#100d00;--input-border:#8a6200;--input-text:#fff8e0;--title-color:#ffc845;--path-text:#ffc845;--path-link:#ffe090;--select-ring:#ffc845;--player-text:#fff8e0;--player-sub:#ffc845;--player-card-bg:#110e00;--player-card-border:#8a620055;--player-chip-bg:#1c1500;--player-chip-border:#8a620066;--player-accent:#ffc845;--player-track-bg:#2a1f00;--btn-nav-bg:#1c1500;--btn-nav-hover:#2e2200;--btn-seek-bg:#1c1500;--btn-seek-hover:#2e2200;--btn-dim-bg:#110d00;--btn-dim-hover:#1c1500;--resume-bg:#0d0900;--resume-border:#ffc845;--card-bg:#1c1500;--card-border:#8a620044;--card-hover:#2e2200;--muted:#ffc845;--accent:#ffc845;background:#0d0900;color:#fff8e0}
         body.theme-gold header,body.theme-gold #now-playing-bar{background:linear-gradient(135deg,#1c1500,#2e2000)!important;border-color:#8a6200!important}
         body.theme-gold .vcb-pill.active,body.theme-gold .mode-tab.active{color:#000}
         body.theme-gold #vcb-right select,body.theme-gold #mcb-right select,body.theme-gold #rcb-right select{color:#000}
-        /* ── Slate: cool medium-grey professional ───────────────────────────── */
+        /* -- Slate: cool medium-grey professional ----------------------------- */
         body.theme-slate{--folder-bg:#1e2029;--folder-hover:#2a2d3a;--folder-text:#e4e8f0;--section-text:#8b96b0;--pill-bg:#191c26;--pill-border:#3a4055;--pill-text:#c8d0e0;--pill-hover:#2a2d3a;--input-bg:#14161f;--input-border:#3a4055;--input-text:#e4e8f0;--title-color:#7eb8f5;--path-text:#8b96b0;--path-link:#aaccff;--select-ring:#7eb8f5;--player-text:#e4e8f0;--player-sub:#8b96b0;--player-card-bg:#14161f;--player-card-border:#3a405566;--player-chip-bg:#1e2029;--player-chip-border:#3a405580;--player-accent:#7eb8f5;--player-track-bg:#252836;--btn-nav-bg:#1e2029;--btn-nav-hover:#2a2d3a;--btn-seek-bg:#1e2029;--btn-seek-hover:#2a2d3a;--btn-dim-bg:#14161f;--btn-dim-hover:#1e2029;--resume-bg:#10121a;--resume-border:#7eb8f5;--card-bg:#1e2029;--card-border:#3a405544;--card-hover:#2a2d3a;--muted:#8b96b0;--accent:#7eb8f5;background:#10121a;color:#e4e8f0}
         body.theme-slate header,body.theme-slate #now-playing-bar{background:#1e2029!important;border-color:#3a4055!important}
-        /* ── Rose: warm blush light theme ───────────────────────────────────── */
+        /* -- Rose: warm blush light theme ------------------------------------- */
         body.theme-rose{--folder-bg:#fff5f7;--folder-hover:#ffe0e6;--folder-text:#3a1520;--section-text:#a0445a;--pill-bg:rgba(255,160,180,.2);--pill-border:#ffb3c1;--pill-text:#6b1a2a;--pill-hover:rgba(255,160,180,.4);--input-bg:rgba(255,255,255,.8);--input-border:#ffb3c1;--input-text:#3a1520;--title-color:#c0284a;--path-text:#a0445a;--path-link:#c0284a;--select-ring:#ffb3c1;--player-text:#3a1520;--player-sub:#a0445a;--player-card-bg:rgba(255,160,180,.14);--player-card-bg-solid:#ffd8e0;--player-card-border:#ffc8d2;--player-chip-bg:rgba(255,160,180,.18);--player-chip-border:#ffb3c1;--player-accent:#c0284a;--player-track-bg:rgba(255,160,180,.3);--btn-nav-bg:rgba(192,40,74,.16);--btn-nav-hover:rgba(192,40,74,.3);--btn-seek-bg:rgba(255,160,180,.18);--btn-seek-hover:rgba(255,160,180,.36);--btn-dim-bg:rgba(255,160,180,.12);--btn-dim-hover:rgba(255,160,180,.28);--resume-bg:rgba(255,255,255,.75);--resume-border:#c0284a;--card-bg:rgba(255,160,180,.08);--card-border:#ffc8d2;--card-hover:rgba(255,160,180,.22);--muted:#a0445a;--accent:#c0284a;background:#fff0f3;color:#3a1520}
         body.theme-rose header,body.theme-rose #now-playing-bar{background:linear-gradient(135deg,#ffe0e6,#fff0f3)!important;border-color:#ffb3c1!important;color:#3a1520!important}
         body.theme-rose .movie-card{--fav-color:#c07000}
-        /* ── Dracula: the iconic purple dev palette ─────────────────────────── */
+        /* -- Dracula: the iconic purple dev palette --------------------------- */
         body.theme-dracula{--folder-bg:#282a36;--folder-hover:#383a4a;--folder-text:#f8f8f2;--section-text:#bd93f9;--pill-bg:#21222c;--pill-border:#6272a4;--pill-text:#caa9fa;--pill-hover:#383a4a;--input-bg:#1e1f29;--input-border:#6272a4;--input-text:#f8f8f2;--title-color:#ff79c6;--path-text:#bd93f9;--path-link:#8be9fd;--select-ring:#ff79c6;--player-text:#f8f8f2;--player-sub:#bd93f9;--player-card-bg:#1e1f29;--player-card-border:#6272a455;--player-chip-bg:#282a36;--player-chip-border:#6272a466;--player-accent:#ff79c6;--player-track-bg:#383a4a;--btn-nav-bg:#282a36;--btn-nav-hover:#383a4a;--btn-seek-bg:#21222c;--btn-seek-hover:#383a4a;--btn-dim-bg:#1e1f29;--btn-dim-hover:#282a36;--resume-bg:#191a23;--resume-border:#ff79c6;--card-bg:#282a36;--card-border:#6272a444;--card-hover:#383a4a;--muted:#6272a4;--accent:#ff79c6;background:#191a23;color:#f8f8f2}
         body.theme-dracula header,body.theme-dracula #now-playing-bar{background:#282a36!important;border-color:#6272a4!important}
-        /* ── Aurora: dark with green-to-purple northern lights gradient ──────── */
+        /* -- Aurora: dark with green-to-purple northern lights gradient -------- */
         body.theme-aurora{--folder-bg:#0d1a20;--folder-hover:#162a32;--folder-text:#e8fff8;--section-text:#44d9a8;--pill-bg:#091519;--pill-border:#1a8a70;--pill-text:#9afce0;--pill-hover:#162a32;--input-bg:#060f12;--input-border:#1a8a70;--input-text:#e8fff8;--title-color:#44d9a8;--path-text:#44d9a8;--path-link:#a0ffe8;--select-ring:#44d9a8;--player-text:#e8fff8;--player-sub:#44d9a8;--player-card-bg:#070e12;--player-card-border:#1a8a7055;--player-chip-bg:#0d1a20;--player-chip-border:#1a8a7066;--player-accent:#44d9a8;--player-track-bg:#0f2a28;--btn-nav-bg:#0d1a20;--btn-nav-hover:#162a32;--btn-seek-bg:#0d1a20;--btn-seek-hover:#162a32;--btn-dim-bg:#060f12;--btn-dim-hover:#0d1a20;--resume-bg:#040b0e;--resume-border:#44d9a8;--card-bg:#0d1a20;--card-border:#1a8a7044;--card-hover:#162a32;--muted:#44d9a8;--accent:#44d9a8;background:#040b0e;color:#e8fff8}
         body.theme-aurora header,body.theme-aurora #now-playing-bar{background:linear-gradient(135deg,#0d1a20,#1a0d28)!important;border-color:#1a8a70!important}
-        /* ── Dusk: twilight – mid-dark purple/indigo with warm pink accent ─── */
+        /* -- Dusk: twilight – mid-dark purple/indigo with warm pink accent --- */
         body.theme-dusk{--folder-bg:#1e1b30;--folder-hover:#2d2848;--folder-text:#f0eaff;--section-text:#b09ad8;--pill-bg:#191628;--pill-border:#4a3d7a;--pill-text:#d8c8f8;--pill-hover:#2d2848;--input-bg:#130f20;--input-border:#4a3d7a;--input-text:#f0eaff;--title-color:#e07cf0;--path-text:#b09ad8;--path-link:#f0aaff;--select-ring:#e07cf0;--player-text:#f0eaff;--player-sub:#b09ad8;--player-card-bg:#14112a;--player-card-border:#4a3d7a55;--player-chip-bg:#1e1b30;--player-chip-border:#4a3d7a66;--player-accent:#e07cf0;--player-track-bg:#2c2545;--btn-nav-bg:#1e1b30;--btn-nav-hover:#2d2848;--btn-seek-bg:#191628;--btn-seek-hover:#2d2848;--btn-dim-bg:#130f20;--btn-dim-hover:#1e1b30;--resume-bg:#0f0c1c;--resume-border:#e07cf0;--card-bg:#1e1b30;--card-border:#4a3d7a44;--card-hover:#2d2848;--muted:#b09ad8;--accent:#e07cf0;background:#0f0c1c;color:#f0eaff}
         body.theme-dusk header,body.theme-dusk #now-playing-bar{background:linear-gradient(135deg,#1e1b30,#2a1830)!important;border-color:#4a3d7a!important}
-        /* ── Mocha: warm coffee-brown mid-dark with amber accent ─────────────── */
+        /* -- Mocha: warm coffee-brown mid-dark with amber accent --------------- */
         body.theme-mocha{--folder-bg:#261a10;--folder-hover:#3a2718;--folder-text:#f5ebe0;--section-text:#c9956a;--pill-bg:#1e1409;--pill-border:#7a4e28;--pill-text:#f0d4b0;--pill-hover:#3a2718;--input-bg:#160e05;--input-border:#7a4e28;--input-text:#f5ebe0;--title-color:#e8a060;--path-text:#c9956a;--path-link:#f5c080;--select-ring:#e8a060;--player-text:#f5ebe0;--player-sub:#c9956a;--player-card-bg:#170f05;--player-card-border:#7a4e2855;--player-chip-bg:#261a10;--player-chip-border:#7a4e2866;--player-accent:#e8a060;--player-track-bg:#342015;--btn-nav-bg:#261a10;--btn-nav-hover:#3a2718;--btn-seek-bg:#1e1409;--btn-seek-hover:#3a2718;--btn-dim-bg:#160e05;--btn-dim-hover:#261a10;--resume-bg:#110a03;--resume-border:#e8a060;--card-bg:#261a10;--card-border:#7a4e2844;--card-hover:#3a2718;--muted:#c9956a;--accent:#e8a060;background:#110a03;color:#f5ebe0}
         body.theme-mocha header,body.theme-mocha #now-playing-bar{background:linear-gradient(135deg,#261a10,#3a2010)!important;border-color:#7a4e28!important}
-        /* ── Sky: airy pastel light blue ────────────────────────────────────── */
+        /* -- Sky: airy pastel light blue -------------------------------------- */
         body.theme-sky{--folder-bg:#f0f8ff;--folder-hover:#ddeeff;--folder-text:#0d2a40;--section-text:#3a7aa8;--pill-bg:rgba(100,180,240,.18);--pill-border:#88c8f0;--pill-text:#1a4a70;--pill-hover:rgba(100,180,240,.36);--input-bg:rgba(255,255,255,.8);--input-border:#88c8f0;--input-text:#0d2a40;--title-color:#1a7ac0;--path-text:#3a7aa8;--path-link:#1a7ac0;--select-ring:#88c8f0;--player-text:#0d2a40;--player-sub:#3a7aa8;--player-card-bg:rgba(100,180,240,.12);--player-card-bg-solid:#cce8f8;--player-card-border:#b8dff5;--player-chip-bg:rgba(100,180,240,.16);--player-chip-border:#88c8f0;--player-accent:#1a7ac0;--player-track-bg:rgba(100,180,240,.28);--btn-nav-bg:rgba(26,122,192,.16);--btn-nav-hover:rgba(26,122,192,.3);--btn-seek-bg:rgba(100,180,240,.18);--btn-seek-hover:rgba(100,180,240,.36);--btn-dim-bg:rgba(100,180,240,.12);--btn-dim-hover:rgba(100,180,240,.28);--resume-bg:rgba(255,255,255,.75);--resume-border:#1a7ac0;--card-bg:rgba(100,180,240,.08);--card-border:#b8dff5;--card-hover:rgba(100,180,240,.2);--muted:#3a7aa8;--accent:#1a7ac0;background:#e8f5ff;color:#0d2a40}
         body.theme-sky header,body.theme-sky #now-playing-bar{background:linear-gradient(135deg,#ddeeff,#eef8ff)!important;border-color:#88c8f0!important;color:#0d2a40!important}
         body.theme-sky .movie-card{--fav-color:#b07800}
-        /* ── Lemon: soft warm yellow pastel ────────────────────────────────── */
+        /* -- Lemon: soft warm yellow pastel ---------------------------------- */
         body.theme-lemon{--folder-bg:#fffde8;--folder-hover:#fff4b0;--folder-text:#2e2400;--section-text:#8a6e00;--pill-bg:rgba(255,220,60,.2);--pill-border:#e8c800;--pill-text:#4a3800;--pill-hover:rgba(255,220,60,.4);--input-bg:rgba(255,255,255,.8);--input-border:#e8c800;--input-text:#2e2400;--title-color:#b88a00;--path-text:#8a6e00;--path-link:#b88a00;--select-ring:#e8c800;--player-text:#2e2400;--player-sub:#8a6e00;--player-card-bg:rgba(255,220,60,.12);--player-card-bg-solid:#fff5c0;--player-card-border:#f5e060;--player-chip-bg:rgba(255,220,60,.18);--player-chip-border:#e8c800;--player-accent:#b88a00;--player-track-bg:rgba(255,220,60,.3);--btn-nav-bg:rgba(184,138,0,.16);--btn-nav-hover:rgba(184,138,0,.3);--btn-seek-bg:rgba(255,220,60,.18);--btn-seek-hover:rgba(255,220,60,.36);--btn-dim-bg:rgba(255,220,60,.12);--btn-dim-hover:rgba(255,220,60,.28);--resume-bg:rgba(255,255,255,.75);--resume-border:#b88a00;--card-bg:rgba(255,220,60,.08);--card-border:#f5e060;--card-hover:rgba(255,220,60,.22);--muted:#8a6e00;--accent:#b88a00;background:#fffbe0;color:#2e2400}
         body.theme-lemon header,body.theme-lemon #now-playing-bar{background:linear-gradient(135deg,#fff4b0,#fffde8)!important;border-color:#e8c800!important;color:#2e2400!important}
         body.theme-lemon .movie-card{--fav-color:#9a6000}
@@ -89,7 +89,7 @@
         #title-row{display:flex;align-items:baseline;gap:.45rem}
         h1{font-size:1.05rem;color:var(--title-color,#e94560);white-space:nowrap;line-height:1;margin:0}
         #brand-actions{display:flex;flex-direction:column;align-items:stretch;gap:.3rem;min-width:0}
-        /* ── Icon matrix (replaces old pill rows) ──────────────────────────── */
+        /* -- Icon matrix (replaces old pill rows) ---------------------------- */
         #icon-matrix{display:flex;flex-wrap:wrap;gap:.15rem;align-items:flex-start}
         .im-btn-wrap{position:relative}
         .im-btn{display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:.18rem;min-width:44px;padding:.35rem .45rem;background:none;border:none;border-radius:8px;color:var(--muted,#9aa8c2);font-size:.6rem;font-weight:700;cursor:pointer;text-decoration:none;transition:color .13s,background .13s;white-space:nowrap;line-height:1;letter-spacing:.02em}
@@ -102,7 +102,7 @@
         #theme-picker.im-btn-wrap .theme-picker-btn{background:none;border:none;padding:.35rem .45rem;border-radius:8px;width:auto;min-width:44px;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:.18rem;color:var(--muted,#9aa8c2);font-size:.6rem;font-weight:700;transition:color .13s,background .13s}
         #theme-picker.im-btn-wrap .theme-picker-btn:hover{background:rgba(255,255,255,.07);color:var(--text,#e0e6f0)}
         .theme-picker-btn-label,.theme-picker-btn-arrow{display:none}
-        /* ── Sleep timer popup ─────────────────────────────────────────────── */
+        /* -- Sleep timer popup ----------------------------------------------- */
         .sleep-popup-panel{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:999;background:color-mix(in srgb,var(--folder-bg,#1a1a2e) 97%,black);border:1px solid color-mix(in srgb,var(--player-accent,#e94560) 30%,transparent);border-radius:12px;padding:.6rem .65rem .55rem;box-shadow:0 8px 32px rgba(0,0,0,.7);min-width:210px}
         .sleep-popup-panel.open{display:block}
         .sleep-popup-title{font-size:.72rem;font-weight:700;color:var(--player-accent,#e94560);margin-bottom:.4rem;letter-spacing:.04em}
@@ -110,7 +110,7 @@
         /* legacy brand-row / brand-controls-row kept for compat */
         #brand-row{display:flex;gap:.4rem;align-items:center;flex-wrap:nowrap}
         /* theme-select: replaced by custom .theme-picker below */
-        /* ── Custom theme picker ─────────────────────────────────────────────── */
+        /* -- Custom theme picker ----------------------------------------------- */
         .theme-picker{position:relative;flex:1;min-width:0}
         .theme-picker-btn{width:100%;display:flex;align-items:center;justify-content:space-between;gap:.35rem;background:color-mix(in srgb,var(--player-accent,#e94560) 12%,var(--pill-bg,#162033));border:1px solid color-mix(in srgb,var(--player-accent,#e94560) 40%,transparent);color:var(--player-accent,#e94560);border-radius:999px;padding:.28rem .75rem;font-size:.72rem;font-weight:700;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .15s,border-color .15s}
         .theme-picker-btn-label{flex:1;overflow:hidden;text-overflow:ellipsis;text-align:left}
@@ -133,12 +133,12 @@
         .mode-tab{background:none;border:none;border-bottom:3px solid transparent;margin-bottom:-2px;color:var(--muted,#9aa8c2);padding:.3rem .8rem;font-size:.95rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:.35rem;transition:color .15s,border-color .15s;border-radius:0;white-space:nowrap}
         .mode-tab:hover{color:var(--text,#e0e6f0)}
         .mode-tab.active{color:var(--player-accent,#e94560);border-bottom-color:var(--player-accent,#e94560);font-weight:800}
-        /* ── Music grid (card mode) ────────────────────────────────────────── */
+        /* -- Music grid (card mode) ------------------------------------------ */
         /* 6 cols: #(32px) | title(flex) | badge+dur(auto) | artist(24%) | album(26%) | time(52px) */
         :root{--mtc-cols:32px minmax(0,1fr) 52px minmax(0,.8fr) minmax(0,1fr) 52px}
         /* 7 cols list-view: # | title | fmt | artist | album | time | cb */
         :root{--mtc-list-cols:32px minmax(0,1fr) 52px minmax(0,.8fr) minmax(0,1fr) 52px 44px}
-        .music-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.5rem;padding:.5rem .75rem}
+        .music-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:.65rem;padding:.6rem .75rem}
         /* Card: tighter padding, left accent bar on playing */
         .music-track-card{background:var(--card-bg,#1a1f3a);border:1px solid var(--card-border,rgba(148,163,184,.15));border-left:3px solid transparent;border-radius:8px;padding:.45rem .6rem .45rem .5rem;cursor:pointer;transition:background .15s,border-color .15s;display:grid;grid-template-columns:32px 1fr auto;grid-template-rows:auto auto auto auto;column-gap:.4rem;row-gap:.1rem;align-items:center;overflow:hidden;position:relative}
         .music-track-card:hover{background:var(--card-hover,rgba(255,255,255,.06));border-color:var(--accent,#3b82f6)}
@@ -148,8 +148,9 @@
         /* Col 1: thumbnail / bars / music-note placeholder */
         .mtc-play-indicator{grid-column:1;grid-row:1;display:flex;align-items:center;justify-content:center;width:30px;height:30px;flex-shrink:0;overflow:hidden;border-radius:5px}
         .mtc-no-cover{background:linear-gradient(135deg,rgba(59,130,246,.15),rgba(139,92,246,.15));border-radius:5px;font-size:.95rem;color:var(--muted,#9aa8c2)}
-        .mtc-no-cover::after{content:'♪'}
+        .mtc-no-cover::after{content:''}
         .mtc-thumb-wrap{border-radius:5px;overflow:hidden}
+        .mtc-thumb-wrap .mtc-tracknum-default{display:none}
         .mtc-thumb{width:30px;height:30px;object-fit:cover;border-radius:4px;display:block}
         .mtc-tracknum{font-size:.68rem;color:var(--muted,#9aa8c2);font-variant-numeric:tabular-nums;text-align:center;line-height:1}
         /* title row 1 col 2 */
@@ -171,7 +172,7 @@
         /* Show bars only on the currently playing card */
         .music-track-card.playing .mtc-bars{display:inline-flex}
         /* When playing: hide the thumbnail and track number, show bars as overlay */
-        .music-track-card.playing .mtc-thumb{opacity:0}
+        .music-grid.list-view .music-track-card.playing .mtc-thumb{opacity:0}
         .music-track-card.playing .mtc-tracknum-default{display:none}
         /* Bars overlay on top of cover art */
         .mtc-bars-overlay{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);border-radius:3px}
@@ -182,14 +183,14 @@
         .mtc-bars span:nth-child(2){height:12px;animation-delay:.22s}
         .mtc-bars span:nth-child(3){height:8px;animation-delay:.44s}
         @keyframes mtc-bar-bounce{0%{transform:scaleY(.4)}100%{transform:scaleY(1)}}
-        /* ── Music section header (view toggle + Play All) ─────────────────── */
+        /* -- Music section header (view toggle + Play All) ------------------- */
         .music-section-header{display:flex;align-items:center;gap:.5rem;padding:.4rem .75rem .15rem}
         .music-view-toggle-inline{background:var(--pill-bg,rgba(255,255,255,.06));border:1px solid var(--pill-border,rgba(255,255,255,.12));color:var(--pill-text,#b0c4de);border-radius:6px;padding:.22rem .55rem;font-size:.82rem;cursor:pointer;transition:background .15s,color .15s;flex-shrink:0}
         .music-view-toggle-inline:hover{background:var(--pill-hover,rgba(255,255,255,.12));color:#fff}
         .music-play-all-btn{background:var(--accent,#3b82f6);border:none;border-radius:6px;color:#fff;font-size:.78rem;font-weight:700;padding:.28rem .75rem;cursor:pointer;transition:background .15s;flex-shrink:0;display:flex;align-items:center;gap:.35rem}
         .music-play-all-btn:hover{background:var(--accent-hover,#2563eb)}
         .music-queue-badge{background:rgba(255,255,255,.18);border-radius:10px;font-size:.65rem;font-weight:700;padding:.05rem .45rem;letter-spacing:.03em}
-        /* ── Multi-select ────────────────────────────────────────────────── */
+        /* -- Multi-select -------------------------------------------------- */
         .mtc-checkbox{position:absolute;top:.35rem;left:.35rem;width:1.1rem;height:1.1rem;opacity:0;cursor:pointer;z-index:3;accent-color:var(--player-accent,#e94560);transition:opacity .12s}
         .music-track-card:hover .mtc-checkbox,.music-track-card.selected .mtc-checkbox{opacity:1}
         /* Card mode selected: outline ring */
@@ -216,7 +217,7 @@
         #music-selection-bar{display:none!important}
         /* Pre-playback pending queue notice */
         #music-queue-pending-bar{padding:.5rem 1rem;background:rgba(233,69,96,.12);border:1px solid rgba(233,69,96,.3);border-radius:7px;margin:.3rem .75rem;font-size:.8rem;color:var(--player-text,#ddd);font-style:italic}
-        /* ── Music list mode ────────────────────────────────────────────────── */
+        /* -- Music list mode -------------------------------------------------- */
         .music-grid.list-view{display:flex;flex-direction:column;gap:0;padding:.15rem .75rem;max-width:1100px}
         .music-list-header{display:grid;grid-template-columns:var(--mtc-list-cols);column-gap:.55rem;align-items:center;padding:.22rem 0;font-size:.66rem;font-weight:700;color:var(--muted,#9aa8c2);letter-spacing:.07em;text-transform:uppercase;border-bottom:2px solid rgba(255,255,255,.12);position:sticky;top:0;background:var(--folder-bg,#1a1a2e);z-index:2;max-width:1100px}
         .music-list-header .sortable{cursor:pointer;user-select:none}
@@ -244,7 +245,7 @@
         .music-grid.list-view .mtc-duration{grid-column:6;grid-row:1;text-align:right;font-size:.72rem;align-self:center}
         /* Hide card-only in list mode */
         .music-grid.list-view .card-only{display:none!important}
-        /* ── Queued-state indicator in list views ───────────────────────── */
+        /* -- Queued-state indicator in list views ------------------------- */
         /* Music list: amber left border + subtle queue badge */
         .music-grid.list-view .music-track-card.queued{border-left-color:#ffaa00}
         .mtc-queued-badge{display:none;font-size:.6rem;font-weight:700;color:#ffaa00;border:1px solid rgba(255,170,0,.4);border-radius:3px;padding:.02rem .28rem;letter-spacing:.03em;white-space:nowrap;line-height:1.4;flex-shrink:0}
@@ -335,7 +336,7 @@
         /* Globe tooltip */
         #radio-globe-tooltip{position:absolute;background:#151526;border:1px solid #3a3a57;color:#d8dbea;font-size:.72rem;padding:.28rem .55rem;border-radius:6px;pointer-events:none;white-space:nowrap;z-index:20;display:none;box-shadow:0 4px 12px rgba(0,0,0,.45)}
 
-        /* ── Sleep timer preset buttons ─────────────────────────────────────── */
+        /* -- Sleep timer preset buttons --------------------------------------- */
         /* Radio-bar favorite heart button */
         .radio-bar-fav-btn{background:none;border:none;cursor:pointer;font-size:1rem;color:var(--muted,#9aa8c2);padding:.1rem .25rem;border-radius:4px;line-height:1;transition:color .15s,transform .1s;flex-shrink:0;opacity:.7}
         .radio-bar-fav-btn:hover{color:#e94560;opacity:1;transform:scale(1.2)}
@@ -396,15 +397,15 @@
           transition:background .15s;
         }
 
-        /* ── View toggle button (shared: radio filter row + video/music count area) */
+        /* -- View toggle button (shared: radio filter row + video/music count area) */
         .view-toggle-btn{font-size:.95rem;min-width:2.2rem;text-align:center;padding:.35rem .55rem}
 
-        /* ── List-view layout overrides ─────────────────────────────────────── */
+        /* -- List-view layout overrides --------------------------------------- */
         /* Radio — column grid: icon | name | badge | country | genre | votes | fav */
         :root{--sc-cols:26px minmax(140px,2fr) 72px minmax(70px,1fr) minmax(80px,1.3fr) 52px 30px}
         .radio-inner-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:.5rem;padding:.4rem .75rem}
 
-        /* ── CARD (grid) mode ── */
+        /* -- CARD (grid) mode -- */
         /* 3-column grid: [icon 28px] [name 1fr] [fav 28px]
            Every row after the first spans all 3 columns for a clean vertical stack */
         .radio-station-card{background:var(--card-bg,#1a1a2e);border:1px solid var(--card-border,#2a2a4a);border-radius:8px;padding:.5rem .65rem;cursor:pointer;transition:background .15s,border-color .15s;display:grid;grid-template-columns:28px 1fr 28px;grid-template-rows:auto;column-gap:.4rem;row-gap:.18rem;align-items:center;overflow:hidden}
@@ -428,7 +429,7 @@
         .radio-station-card .station-meta{font-size:.74rem;color:var(--muted,#9aa8c2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
         .radio-station-card .station-name{font-weight:700;font-size:.88rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-        /* ── LIST mode ── */
+        /* -- LIST mode -- */
         .radio-inner-cards.list-view{display:flex;flex-direction:column;gap:0;padding:0 .75rem}
         /* Sticky column-header row */
         .radio-list-header{display:grid;grid-template-columns:var(--sc-cols);column-gap:.55rem;align-items:center;padding:.22rem 0;font-size:.66rem;font-weight:700;color:var(--muted,#9aa8c2);letter-spacing:.07em;text-transform:uppercase;border-bottom:2px solid rgba(255,255,255,.12);position:sticky;top:0;background:var(--folder-bg,#1a1a2e);z-index:2}
@@ -450,23 +451,23 @@
         /* Hide card-only rows in list mode */
         .radio-inner-cards.list-view .card-only{display:none!important}
         /* Music list-view rules are defined above with the .music-grid block */
-        /* ── Shared command bar (video / music / radio) ────────────────────── */
+        /* -- Shared command bar (video / music / radio) ---------------------- */
         #count-line.vcb-active{display:block!important;padding:.18rem .55rem .12rem;font-size:.72rem;color:var(--muted,#9aa8c2)}
         #video-command-bar,#music-command-bar,#radio-command-bar{display:none;align-items:center;gap:.5rem;flex-wrap:wrap;padding:.3rem 0 .25rem;background:var(--player-card-bg,#13132a);grid-column:1/-1;z-index:9;margin-left:-.75rem;margin-right:-.75rem;margin-bottom:-.45rem}
         .cb-inner{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;width:100%;max-width:1200px;margin:0;padding:0 .75rem;box-sizing:border-box}
         #music-command-bar .cb-inner{max-width:calc(1100px + 1.5rem)}
         #video-command-bar .cb-inner{max-width:calc(1200px + 1.5rem)}
         #vcb-left,#mcb-left,#rcb-left{flex-shrink:0}
-        .vcb-view-btn{background:transparent;color:var(--player-accent,#e94560);border:1px solid var(--player-accent,#e94560);border-radius:6px;height:1.75rem;padding:0 .75rem;font-size:.78rem;font-weight:700;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s,border-color .15s,opacity .15s;box-sizing:border-box;opacity:.75;outline:none}
+        .vcb-view-btn{display:inline-flex;align-items:center;gap:.3rem;background:var(--player-chip-bg,#22263b);border:1px solid var(--player-chip-border,#3a3a57);color:var(--player-sub,#9ea2b8);font-size:.78rem;font-weight:600;cursor:pointer;padding:.22rem .6rem;border-radius:20px;line-height:1;height:auto;box-sizing:border-box;transition:background .15s,color .15s,border-color .15s;white-space:nowrap;outline:none}
         .vcb-view-btn:focus-visible{outline:none}
-        .vcb-view-btn:hover{background:color-mix(in srgb,var(--player-accent,#e94560) 18%,transparent);opacity:1}
+        .vcb-view-btn:hover{background:var(--player-accent-dim,#2a2040);border-color:var(--player-accent,#e94560);color:var(--player-accent,#e94560)}
         #vcb-filters,#mcb-filters,#rcb-filters{display:flex;gap:.3rem;flex-wrap:wrap;flex:1;align-items:center}
         .vcb-pill{background:transparent;color:var(--muted,#9aa8c2);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:.2rem .6rem;font-size:.74rem;font-weight:600;cursor:pointer;transition:background .13s,color .13s,border-color .13s;white-space:nowrap;outline:none}
         .vcb-pill:focus-visible{outline:none}
         .vcb-pill:hover{background:rgba(255,255,255,.07);color:var(--text,#e0e6f0)}
         .vcb-pill.active{background:var(--accent,#3b82f6);color:#fff;border-color:var(--accent,#3b82f6)}
-        .mcb-play-all{background:var(--accent,#3b82f6)!important;color:#fff!important;border-color:var(--accent,#3b82f6)!important}
-        .mcb-play-all:hover{background:var(--accent-hover,#2563eb)!important}
+        .mcb-play-all{background:var(--accent,#3b82f6)!important;color:#fff!important;border-color:var(--accent,#3b82f6)!important;border-radius:20px!important;text-shadow:0 1px 2px rgba(0,0,0,.4)}
+        .mcb-play-all:hover{background:var(--accent-hover,#2563eb)!important;color:#fff!important}
         #vcb-right,#mcb-right,#rcb-right{display:flex;align-items:center;gap:.45rem;flex-shrink:0;transition:opacity .15s}
         #vcb-right select,#mcb-right select,#rcb-right select{background:color-mix(in srgb,var(--player-accent,#e94560) 12%,var(--input-bg,#1e1e2e));color:var(--player-accent,#e94560);border:1px solid color-mix(in srgb,var(--player-accent,#e94560) 45%,transparent);border-radius:6px;font-weight:600}
         #vcb-right select:focus-visible,#mcb-right select:focus-visible,#rcb-right select:focus-visible{outline:none}
@@ -486,7 +487,7 @@
         #rcb-filters .rcb-heart{background:none;border:none;cursor:pointer;font-size:1rem;padding:0 .1rem;color:#888;line-height:1;transition:color .15s}
         #rcb-filters .rcb-heart.active{color:#e94560}
         #rcb-filters .rcb-heart:hover{color:#f6c90e}
-        /* ── Video list-view (column layout) ───────────────────────────────── */
+        /* -- Video list-view (column layout) --------------------------------- */
         /* Column template: title | progress | year | format | duration | cb */
         :root{--vlc-cols: 1fr 4.5rem 3.5rem 3.2rem 5.5rem 38px;--vlc-gap:.75rem}
         .movie-grid.list-view{display:flex;flex-direction:column;gap:0;padding:0 0 .5rem;max-width:1200px}
@@ -551,7 +552,7 @@
         .movie-grid.list-view .progress-fill{height:100%;width:100%}
         /* stop-button in list mode */
         .movie-grid.list-view .stop-btn{font-size:.68rem;padding:.18rem .35rem;border-radius:4px;white-space:nowrap;flex-shrink:0}
-        /* ── keep old card-list-actions for any legacy references ──────────── */
+        /* -- keep old card-list-actions for any legacy references ------------ */
         .card-list-actions{flex-direction:row;gap:.22rem;align-items:center;flex-shrink:0}
         /* state dots: no longer used in new layout; kept for card-mode progress cards */
         .list-state-dots{display:flex;gap:.28rem;align-items:center;flex-shrink:0}
@@ -564,11 +565,11 @@
         @media (max-width:640px){:root{--vlc-cols: 1fr 4.5rem;--vlc-gap:.2rem}.vlc-year,.vlc-cb,.vlc-ext,.vlc-duration{display:none!important}}
         .radio-country-fav-btn:hover{background:var(--btn-dim-hover,#555)}
         .radio-country-fav-btn.active{background:#f6c90e22;border-color:#f6c90e;color:#f6c90e}
-        /* ── Shared command-bar control height token ───────────────────────── */
+        /* -- Shared command-bar control height token ------------------------- */
         #video-command-bar select,#music-command-bar select,#radio-command-bar select,
         #video-command-bar input,#music-command-bar input,#radio-command-bar input{height:1.75rem;min-height:0;box-sizing:border-box;padding:.18rem .5rem;font-size:.76rem;line-height:1}
         #rcb-sort{-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%239aa8c2'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right .45rem center;padding-right:1.8rem!important;cursor:pointer}
-        /* ── Radio fav-select compound control (select + ♥ as one unit) ─────── */
+        /* -- Radio fav-select compound control (select + ? as one unit) ------- */
         .radio-fav-select-wrap{position:relative;display:inline-flex;align-items:stretch;gap:0;height:1.75rem}
         .radio-fav-select-wrap select{border-radius:6px 0 0 6px!important;background:var(--input-bg,#1e1e2e);color:var(--input-text,#e0e6f0);border:1px solid var(--input-border,#444);border-right:none;padding:.18rem 1.8rem .18rem .5rem;font-size:.76rem;height:100%;box-sizing:border-box;cursor:pointer;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%239aa8c2'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right .45rem center;outline:none}
         .radio-fav-select-wrap select:focus-visible{outline:none}
@@ -585,7 +586,7 @@
         #music-player-summary{display:flex;flex-direction:row;gap:.65rem;align-items:flex-start;min-width:0;overflow:hidden}
         /* Album art slot */
         #music-bar-art{width:80px;height:80px;flex-shrink:0;border-radius:9px;overflow:hidden;background:linear-gradient(135deg,rgba(59,130,246,.15),rgba(139,92,246,.15));display:flex;align-items:center;justify-content:center;font-size:1.8rem;color:var(--muted,#9aa8c2);position:relative;box-shadow:0 4px 14px rgba(0,0,0,.45)}
-        #music-bar-art.music-bar-art-empty::after{content:'♪'}
+        #music-bar-art.music-bar-art-empty::after{content:'?'}
         .music-bar-art-img{width:80px;height:80px;object-fit:cover;display:block}
         /* Animated bars overlay on art when playing */
         .music-bar-art-bars{position:absolute;bottom:5px;left:0;right:0;display:flex;align-items:flex-end;justify-content:center;gap:3px;height:18px;pointer-events:none;background:linear-gradient(to top,rgba(0,0,0,.55) 0%,transparent 100%);padding-bottom:3px}
@@ -1038,12 +1039,14 @@
         .diag-footer-right{display:flex;gap:.4rem;flex-shrink:0}
         .section-label{color:var(--section-text);font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.5rem;margin-top:1rem}
         .section-label:first-child{margin-top:0}
-        .folder-list{display:flex;flex-direction:column;gap:.3rem;margin-bottom:.5rem}
+        .folder-list{display:flex;flex-direction:column;gap:.3rem;margin-bottom:.5rem;max-width:1100px}
         #ctx-menu{position:fixed;z-index:2147483647;min-width:190px;background:#1e2235;background-color:#1e2235;border:1px solid rgba(255,255,255,.22);border-radius:10px;padding:.32rem 0;box-shadow:0 14px 44px rgba(0,0,0,.85),0 0 0 1px rgba(0,0,0,.35) inset;display:none;animation:ctxFadeIn .1s ease;isolation:isolate;backdrop-filter:none;-webkit-backdrop-filter:none;overflow:hidden}
         .fctx-item{display:flex;align-items:center;gap:.55rem;width:100%;padding:.52rem .9rem;font-size:.84rem;font-weight:600;color:#eef2ff;background:#1e2235;border:0;cursor:pointer;text-align:left;white-space:nowrap;transition:background .12s,color .12s}
         .fctx-item:hover,.fctx-item:focus-visible{background:#2b3150;color:#fff;outline:none}
+        .fctx-item-danger{color:#f87171}
+        .fctx-item-danger:hover,.fctx-item-danger:focus-visible{background:#3b1a1a;color:#fca5a5}
                 .folder-list.search-folders{max-height:calc(5 * (2.4rem + .3rem));overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#333355 transparent}
-        .folder-row{display:flex;align-items:center;gap:.6rem;background:var(--folder-bg);color:var(--folder-text);border-radius:6px;padding:.55rem .9rem;cursor:pointer;transition:background .15s,color .15s}
+        .folder-row{display:flex;align-items:center;gap:.6rem;background:var(--folder-bg);color:var(--folder-text);border-radius:6px;padding:.55rem .9rem;cursor:pointer;transition:background .15s,color .15s;max-width:1100px}
         .folder-row:hover{background:var(--folder-hover)}
         .folder-row.folder-row-active{opacity:.6;pointer-events:none}
         .folder-row-all{border-color:rgba(255,140,0,.45)!important;margin-bottom:.35rem;padding-bottom:.6rem}
@@ -1088,7 +1091,7 @@
         .mpl-card-count{position:absolute;bottom:.38rem;left:.55rem;z-index:3;font-size:.65rem;font-weight:700;
           color:#fff;text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000;white-space:nowrap}
         /* List view — unchanged */
-        .music-playlist-list{display:flex;flex-direction:column;padding:.2rem .75rem .3rem;max-width:860px}
+        .music-playlist-list{display:flex;flex-direction:column;padding:.2rem .75rem .3rem;max-width:1100px}
         .music-playlist-list-header{display:grid;grid-template-columns:2.4rem 1fr auto auto auto;align-items:center;gap:.5rem .75rem;padding:.18rem .5rem .18rem calc(.5rem + 3px);font-size:.7rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted,#9aa8c2);border-bottom:1px solid color-mix(in srgb,var(--accent2,#8b5cf6) 30%,transparent);margin-bottom:.15rem;user-select:none}
         .music-playlist-list-row{display:grid;grid-template-columns:2.4rem 1fr auto auto auto;align-items:center;gap:.5rem .75rem;padding:.3rem .5rem;border-left:3px solid var(--accent2,#8b5cf6);border-radius:4px;cursor:pointer;transition:background .12s}
         .music-playlist-list-row:hover{background:color-mix(in srgb,var(--accent2,#8b5cf6) 14%,transparent)}
@@ -1166,9 +1169,9 @@
         .peer-addr{font-size:.7rem;color:#5a7a9b;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.08rem}
         .peer-badge{font-size:.62rem;background:#0d2340;color:#5a90cc;border-radius:999px;padding:.12rem .42rem;font-weight:700;flex-shrink:0;margin-left:auto}
         .peer-no-others{padding:.65rem .75rem;font-size:.78rem;color:#555;font-style:italic}
-        /* ── Radio sticky filter row ──────────────────────────────────────── */
+        /* -- Radio sticky filter row ---------------------------------------- */
         #radio-filter-sticky{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;background:inherit}
-        /* ── Local player bar ────────────────────────────────────────────── */
+        /* -- Local player bar ---------------------------------------------- */
         #local-player-bar{display:none;flex-direction:column;gap:.6rem;background:linear-gradient(135deg,#1a0d0d,#261515);padding:.7rem;border:1px solid #4a3030;border-radius:12px;min-width:0}
         #local-player-bar *{-webkit-user-select:none;user-select:none}
         #local-bar-info{min-width:0;overflow:hidden}
@@ -1181,7 +1184,7 @@
         .btn-local-here:hover{background:rgba(0,180,130,.32)}
         body.local-player-docked #local-player-bar{display:flex!important}
 
-        /* ── Recent strips (legacy shared class, kept for backward compat) ──────── */
+        /* -- Recent strips (legacy shared class, kept for backward compat) -------- */
         .recent-strip{display:flex;flex-direction:row;gap:.5rem;overflow-x:auto;padding:.25rem .1rem .5rem;margin-bottom:.5rem;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb,rgba(255,255,255,.18)) transparent}
         .recent-strip::-webkit-scrollbar{height:4px}
         .recent-strip::-webkit-scrollbar-thumb{background:var(--scrollbar-thumb,rgba(255,255,255,.18));border-radius:4px}
@@ -1206,7 +1209,7 @@
           body.local-player-docked #local-volume-label{min-width:56px;font-size:1rem}
         }
 
-/* ── Playback error popup ─────────────────────────────────────────────── */
+/* -- Playback error popup ----------------------------------------------- */
 .pbe-overlay{position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);animation:pbe-fade-in .18s ease;transform:translateZ(0)}
 .pbe-overlay[hidden]{display:none}
 @keyframes pbe-fade-in{from{opacity:0}to{opacity:1}}
@@ -1221,3 +1224,182 @@
 .pbe-close-btn{border:1px solid var(--accent,#e94560);background:transparent;color:var(--accent,#e94560);border-radius:999px;padding:.45rem 1.2rem;font-weight:800;cursor:pointer;font-size:.88rem;transition:background .15s,color .15s}
 .pbe-close-btn:hover{background:var(--accent,#e94560);color:#fff}
 
+/* -- rpDynamic folder styles ----------------------------------------------- */
+/* Dynamic-folder row: subtle teal/purple tint to distinguish from plain folders */
+.folder-row-dynamic{background:linear-gradient(90deg,rgba(0,210,160,.08),rgba(139,92,246,.10)) !important;border-color:rgba(0,210,160,.35) !important}
+.folder-row-dynamic:hover{background:linear-gradient(90deg,rgba(0,210,160,.2),rgba(139,92,246,.22)) !important}
+.folder-row-dynamic .folder-icon{font-size:1rem}
+.folder-dyn-count{margin-left:auto;font-size:.72rem;color:rgba(0,210,160,.9);font-weight:700;white-space:nowrap}
+.folder-dyn-meta{margin-left:.6rem;font-size:.68rem;color:var(--muted,#9aa8c2);white-space:nowrap;opacity:.85}
+.vcb-reroll-btn{display:inline-flex;align-items:center;gap:.3rem;background:rgba(0,210,160,.1);border:1px solid rgba(0,210,160,.5);color:rgba(0,210,160,.95);font-size:.78rem;font-weight:600;cursor:pointer;padding:.22rem .6rem;border-radius:20px;line-height:1;transition:background .15s,color .15s,border-color .15s;white-space:nowrap}
+.vcb-reroll-btn:hover{background:rgba(0,210,160,.25);border-color:rgba(0,210,160,.9)}
+
+/* Shift-reveal create-dynamic button — adjacent to pin button */
+
+/* Expert Mode — dynamic button only visible when body.expert-mode is set */
+body:not(.expert-mode) .vcb-dynamic-btn{display:none!important}
+.settings-panel{position:absolute;top:calc(100% + 6px);right:0;min-width:200px;background:var(--card-bg,#16213e);border:1px solid var(--border,rgba(255,255,255,.08));border-radius:10px;padding:.6rem .75rem;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+.settings-section-label{font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted,#9aa8c2);padding:.25rem 0 .4rem}
+.settings-toggle-row{display:flex;align-items:center;gap:.5rem;font-size:.82rem;color:var(--text,#e0e6f0);cursor:pointer;padding:.25rem 0;user-select:none}
+.settings-toggle-row input[type=checkbox]{accent-color:var(--player-accent,#e94560);width:14px;height:14px;cursor:pointer}
+.settings-full-link{display:block;font-size:.82rem;color:var(--accent,#58a6ff);text-decoration:none;padding:.25rem 0;white-space:nowrap}
+.settings-full-link:hover{text-decoration:underline}
+
+/* Create-dynamic button — adjacent to pin button in music command bar */
+.vcb-dynamic-btn{display:inline-flex;align-items:center;gap:.3rem;background:rgba(0,210,160,.1);border:1px solid rgba(0,210,160,.5);color:rgba(0,210,160,.95);font-size:.78rem;font-weight:600;cursor:pointer;padding:.22rem .6rem;border-radius:20px;line-height:1;transition:background .15s,color .15s,border-color .15s;white-space:nowrap}
+.vcb-dynamic-btn::before{content:'\1F3B2';font-size:.85rem}
+.vcb-dynamic-btn:hover{background:rgba(0,210,160,.25);border-color:rgba(0,210,160,.9)}
+
+/* rpDynamic settings dialog */
+#rpdynamic-dialog{position:fixed;inset:0;z-index:9000;display:flex;align-items:center;justify-content:center}
+.rpdyn-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(3px)}
+.rpdyn-panel{position:relative;z-index:1;background:var(--card-bg,#1e2235);border:1px solid rgba(0,210,160,.45);border-radius:12px;padding:1.6rem 1.8rem;width:min(380px,92vw);display:flex;flex-direction:column;gap:.9rem;box-shadow:0 12px 40px rgba(0,0,0,.6)}
+.rpdyn-title{margin:0;font-size:1.1rem;font-weight:800;color:#eef2ff}
+.rpdyn-label{font-size:.82rem;font-weight:700;color:var(--muted,#9aa8c2);margin-bottom:-.4rem}
+.rpdyn-input{background:#12162a;border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#eef;padding:.55rem .75rem;font-size:.95rem;width:100%;box-sizing:border-box;transition:border-color .15s}
+.rpdyn-input:focus{outline:none;border-color:rgba(0,210,160,.7)}
+.rpdyn-actions{display:flex;justify-content:flex-end;gap:.6rem;margin-top:.3rem}
+.rpdyn-btn{border-radius:6px;padding:.52rem 1.2rem;font-size:.88rem;font-weight:700;cursor:pointer;border:1px solid transparent;transition:background .15s,color .15s}
+.rpdyn-cancel{background:transparent;border-color:rgba(255,255,255,.2);color:var(--muted,#9aa8c2)}
+.rpdyn-cancel:hover{background:rgba(255,255,255,.08);color:#fff}
+.rpdyn-save{background:rgba(0,210,160,.18);border-color:rgba(0,210,160,.6);color:rgba(0,210,160,1)}
+.rpdyn-save:hover{background:rgba(0,210,160,.35);color:#fff}
+
+/* -- Dynamic folder card -- richer layout ---------------------------------- */
+/* Left accent bar */
+.folder-row-dynamic{border-left:3px solid rgba(0,210,160,.7) !important;padding-left:.55rem !important}
+/* Inner flex body (name row + tag row) */
+.folder-dyn-body{flex:1;display:flex;flex-direction:column;gap:.22rem;min-width:0}
+.folder-dyn-top{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;min-width:0}
+.folder-dyn-last{font-size:.65rem;color:var(--muted,#9aa8c2);white-space:nowrap;opacity:.75;margin-left:.3rem}
+/* Filter tag chips */
+.folder-dyn-tags{display:flex;flex-wrap:wrap;gap:.22rem;margin-top:0}
+.folder-dyn-tag{font-size:.63rem;font-weight:700;padding:.08rem .38rem;border-radius:10px;white-space:nowrap}
+.folder-dyn-tag-include{background:rgba(0,210,160,.12);color:rgba(0,210,160,.9);border:1px solid rgba(0,210,160,.3)}
+.folder-dyn-tag-exclude{background:rgba(233,69,96,.1);color:rgba(233,69,96,.85);border:1px solid rgba(233,69,96,.28)}
+.folder-dyn-tag-genre{background:rgba(139,92,246,.12);color:rgba(180,140,255,.9);border:1px solid rgba(139,92,246,.3)}
+.folder-dyn-tag-year{background:rgba(60,120,220,.12);color:rgba(130,170,255,.9);border:1px solid rgba(60,120,220,.28)}
+/* Edit pencil button on the card */
+.folder-dyn-edit-btn{flex-shrink:0;margin-left:.4rem;background:transparent;border:1px solid transparent;border-radius:6px;color:var(--muted,#9aa8c2);font-size:.85rem;cursor:pointer;padding:.1rem .35rem;line-height:1;transition:background .12s,color .12s,border-color .12s}
+.folder-dyn-edit-btn:hover{background:rgba(0,210,160,.12);color:rgba(0,210,160,1);border-color:rgba(0,210,160,.4)}
+/* ±5 track-count buttons in command bar */
+.vcb-dyn-count-btn{display:inline-flex;align-items:center;background:rgba(0,210,160,.1);border:1px solid rgba(0,210,160,.5);color:rgba(0,210,160,1);font-size:.78rem;font-weight:700;cursor:pointer;padding:.18rem .52rem;border-radius:20px;line-height:1;transition:background .15s,color .15s;white-space:nowrap}
+.vcb-dyn-count-btn:hover{background:rgba(0,210,160,.25);border-color:rgba(0,210,160,.9);color:#fff}
+/* "Now playing from" label */
+.mcb-dyn-from{font-size:.75rem;font-weight:700;color:rgba(0,210,160,.85);white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis;border-left:2px solid rgba(0,210,160,.4);padding-left:.5rem;margin-left:.2rem}
+/* Dialog: row layout for year from/to */
+.rpdyn-row{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
+.rpdyn-col{display:flex;flex-direction:column;gap:.3rem}
+.rpdyn-year{width:100%}
+/* Hint text in dialog labels */
+.rpdyn-hint{font-weight:400;font-size:.72rem;opacity:.7}
+/* Toggle rows in dialog */
+.rpdyn-toggle-row{display:flex;align-items:center;gap:.55rem;cursor:pointer;user-select:none;font-size:.85rem;color:var(--text,#e0e6f0);font-weight:600}
+.rpdyn-toggle-row input[type=checkbox]{accent-color:rgba(0,210,160,.9);width:15px;height:15px;cursor:pointer}
+/* ── Unified grid-view cards ──────────────────────────────────────────────── */
+/* Common base: fixed height so all non-track cards look uniform in the grid  */
+.mfc-card{position:relative;isolation:isolate;border-radius:12px;overflow:hidden;display:flex;flex-direction:column;cursor:pointer;border:2px solid transparent;transition:transform .15s,box-shadow .18s,border-color .15s;-webkit-user-select:none;user-select:none;height:190px}
+.mfc-card:hover{transform:translateY(-4px)}
+/* ── Hero zone (icon + colour wash, top 55% of card) ── */
+.mfc-card-hero{flex:0 0 55%;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}
+.mfc-card-hero::after{content:'';position:absolute;inset:0;background:linear-gradient(to bottom,transparent 40%,rgba(0,0,0,.55) 100%)}
+.mfc-card-icon{font-size:3.4rem;line-height:1;z-index:1;filter:drop-shadow(0 3px 10px rgba(0,0,0,.55))}
+/* ── Footer zone (name + meta, bottom 45%) ── */
+.mfc-card-footer{flex:1;display:flex;flex-direction:column;justify-content:flex-start;padding:.42rem .55rem .4rem;gap:.15rem;min-height:0}
+.mfc-card-name{font-size:.82rem;font-weight:700;color:var(--text,#dce3f0);line-height:1.25;word-break:break-word;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.mfc-card-sub{font-size:.67rem;color:var(--muted,#9aa8c2)}
+/* ── Normal folder card ── */
+.mfc-folder-card{border-color:rgba(59,130,246,.18)}
+.mfc-folder-card .mfc-card-hero{background:linear-gradient(145deg,#111e38 0%,#1a2e52 55%,#1e3a68 100%)}
+.mfc-folder-card .mfc-card-footer{background:linear-gradient(to bottom,#111e38,#0d1a30)}
+.mfc-folder-card:hover{box-shadow:0 10px 30px rgba(59,130,246,.35);border-color:rgba(59,130,246,.65)}
+/* ── Dynamic folder card ── */
+.mfc-dyn-card{border-color:rgba(0,210,160,.22)}
+.mfc-dyn-card .mfc-card-hero{background:linear-gradient(145deg,#071a15 0%,#0d2b21 50%,#103628 100%)}
+.mfc-dyn-card .mfc-card-footer{background:linear-gradient(to bottom,#071a15,#051210)}
+.mfc-dyn-card:hover{box-shadow:0 10px 32px rgba(0,210,160,.32);border-color:rgba(0,210,160,.7)}
+.mfc-dyn-card .mfc-card-name{color:rgba(0,240,190,.95)}
+/* Dynamic meta badges inside hero */
+.mfc-dyn-top-row{position:absolute;top:.38rem;left:.38rem;right:2rem;display:flex;align-items:center;gap:.28rem;flex-wrap:wrap;z-index:2}
+.mfc-dyn-badge{font-size:.55rem;font-weight:800;letter-spacing:.06em;padding:.07rem .28rem;border-radius:8px;background:rgba(0,210,160,.18);color:rgba(0,210,160,.95);border:1px solid rgba(0,210,160,.38);white-space:nowrap;backdrop-filter:blur(4px)}
+.mfc-dyn-count{font-size:.65rem;font-weight:700;color:rgba(0,240,190,.9);position:absolute;bottom:.35rem;right:.5rem;z-index:2;text-shadow:0 1px 4px rgba(0,0,0,.8)}
+/* Filter tags and last-expanded inside footer */
+.mfc-dyn-tags{display:flex;flex-wrap:wrap;gap:.14rem;margin-top:.12rem}
+.mfc-dyn-tags .folder-dyn-tag{font-size:.56rem}
+.mfc-dyn-last{font-size:.6rem;color:var(--muted,#9aa8c2);margin-top:auto;opacity:.72}
+/* Edit pencil — top-right absolute */
+.mfc-dyn-edit-btn{position:absolute;top:.35rem;right:.38rem;background:rgba(0,0,0,.35);border:1px solid transparent;border-radius:6px;color:rgba(0,210,160,.75);font-size:.78rem;cursor:pointer;padding:.12rem .26rem;line-height:1;transition:background .12s,color .12s,border-color .12s;z-index:10;backdrop-filter:blur(4px)}
+.mfc-dyn-edit-btn:hover{background:rgba(0,210,160,.2);color:rgba(0,210,160,1);border-color:rgba(0,210,160,.5)}
+/* ── Playlist card in unified grid: same fixed height, no portrait aspect ── */
+.music-grid .music-playlist-card{aspect-ratio:unset!important;height:190px}
+/* ══ Track cards in grid mode: hero+footer card layout ══════════════════ */
+.music-grid:not(.list-view) .music-track-card{
+  display:flex;flex-direction:column;height:190px;padding:0;
+  border-radius:12px;overflow:hidden;grid-template-columns:unset;grid-template-rows:unset;
+  border:2px solid rgba(59,130,246,.18);background:linear-gradient(145deg,#111e38,#0d1a30)
+}
+.music-grid:not(.list-view) .music-track-card:hover{
+  transform:translateY(-4px);box-shadow:0 10px 30px rgba(59,130,246,.3);
+  border-color:rgba(59,130,246,.6)
+}
+/* Hero zone: album art fills top 55% */
+.music-grid:not(.list-view) .mtc-play-indicator{
+  flex:0 0 55%;width:100%;height:unset;border-radius:0;
+  display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(145deg,#111e38 0%,#162040 60%,#1a2a50 100%);
+  position:relative;overflow:hidden
+}
+/* When card has cover art: background-image is applied directly via JS (data-cover-url) */
+/* .music-grid:not(.list-view) .music-track-card[data-cover-url] .mtc-play-indicator — handled in renderMusicCards post-render */
+
+.music-grid:not(.list-view) .mtc-thumb-wrap{
+  width:100%;height:100%;border-radius:0
+}
+.music-grid:not(.list-view) .mtc-thumb{
+  width:100%;height:100%;object-fit:cover;border-radius:0
+}
+/* No-cover in grid: show big music note, hide '?' */
+.music-grid:not(.list-view) .mtc-no-cover{
+  width:100%;height:100%;border-radius:0;font-size:2.8rem;
+  background:linear-gradient(145deg,rgba(59,130,246,.12),rgba(139,92,246,.15));
+  color:rgba(148,163,184,.45)
+}
+.music-grid:not(.list-view) .mtc-no-cover::after{content:'\266B'}
+/* Footer zone: title + meta fills bottom 45% */
+.music-grid:not(.list-view) .mtc-title{
+  flex:0 0 auto;font-size:.8rem;font-weight:700;
+  padding:.3rem .5rem .05rem;white-space:normal;
+  overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+  grid-column:unset;grid-row:unset;line-height:1.2;color:var(--text,#dce3f0)
+}
+.music-grid:not(.list-view) .mtc-artist{
+  padding:.0 .5rem;font-size:.68rem;grid-column:unset;grid-row:unset;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis
+}
+.music-grid:not(.list-view) .mtc-album{
+  padding:0 .5rem .2rem;font-size:.62rem;grid-column:unset;grid-row:unset;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.7
+}
+/* Checkbox: keep it in hero top-left */
+.music-grid:not(.list-view) .mtc-checkbox{
+  position:absolute;top:.35rem;left:.35rem;z-index:3
+}
+/* Format badge + duration: overlay bottom-right of hero */
+.music-grid:not(.list-view) .mtc-badge-group{
+  position:absolute;bottom:.35rem;right:.35rem;z-index:2;
+  display:flex;align-items:center;gap:.22rem;
+  grid-column:unset;grid-row:unset
+}
+/* Hide columns that don't make sense in card mode */
+.music-grid:not(.list-view) .mtc-tracknum-default,
+.music-grid:not(.list-view) .mtc-genre-year,
+.music-grid:not(.list-view) .mtc-queued-badge{display:none}
+/* Playing state */
+.music-grid:not(.list-view) .music-track-card.playing{
+  border-color:rgba(59,130,246,.6);background:linear-gradient(145deg,#0d1929,#111e38);
+  animation:mtc-playing-pulse 2.8s ease-in-out infinite
+}
+/* Bars overlay on the hero */
+.music-grid:not(.list-view) .mtc-bars-overlay{
+  position:absolute;bottom:.35rem;left:50%;transform:translateX(-50%);z-index:3
+}

@@ -1,11 +1,8 @@
-using System.Collections.Concurrent;
-using System.Diagnostics;
+﻿using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Net.Sockets;
 using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using QRCoder;
@@ -17,116 +14,13 @@ using Timer = System.Threading.Timer;
 namespace RemotePlay;
 
 [ExcludeFromCodeCoverage]
-internal sealed record PlaybackStatus
-{
-    public bool IsPlaying { get; init; }
-    public bool IsPaused  { get; init; }
-    public double PositionSeconds { get; init; }
-    public double DurationSeconds { get; init; }
-    public string Title { get; init; } = string.Empty;
-    public double Volume { get; init; } = 1;
-    public bool IsMuted { get; init; }
-    public string LastError { get; init; } = string.Empty;
-    public bool CanResume { get; init; }
-    public double ResumePositionSeconds { get; init; }
-    public bool SmartResumeApplied { get; init; }
-    public double Brightness { get; init; }
-    public double Saturation { get; init; } = 1;
-    public double Zoom { get; init; } = 1;
-    public double AudioBoost { get; init; } = 1;
-    public double PlaybackSpeed { get; init; } = 1;
-    public bool SubtitlesEnabled { get; init; }
-    public bool HasSubtitles { get; init; }
-    public TrackOption[] AudioTracks { get; init; } = [];
-    public TrackOption[] SubtitleTracks { get; init; } = [];
-    public int CurrentAudioTrackId { get; init; }
-    public int CurrentSubtitleTrackId { get; init; } = -1;
-    public string? PreviousTitle { get; init; }
-    public string? NextTitle { get; init; }
-    public string? FilePath { get; init; }
-    public PlaybackQueueItem[] Queue { get; init; } = [];
-    public int QueueCount { get; init; }
-    public ChapterInfo[] Chapters { get; init; } = [];
-    public int CurrentChapter { get; init; } = -1;
-    public int EqPreset { get; init; } = -1;
-    public int ReverbPreset { get; init; } = 0;
-}
-
-[ExcludeFromCodeCoverage]
-internal sealed record TrackOption(int Id, string Name, string Language = "", bool IsForced = false, bool IsDefault = false);
-
-[ExcludeFromCodeCoverage]
-internal sealed record ChapterInfo(int Id, string Name, double StartSeconds, double DurationSeconds);
-
-[ExcludeFromCodeCoverage]
-internal sealed record PlaybackQueueItem(string Path, string Title);
-
-[ExcludeFromCodeCoverage]
-internal sealed record LibraryScanStatus
-{
-    public bool IsScanning { get; init; }
-    public int IndexedFiles { get; init; }
-    public int IndexedMovies { get; init; }
-    public int IndexedLinks { get; init; }
-    public int ScannedFiles { get; init; }
-    public int ScannedFolders { get; init; }
-    public DateTimeOffset? StartedUtc { get; init; }
-    public DateTimeOffset? CompletedUtc { get; init; }
-    public string LastError { get; init; } = string.Empty;
-    /// <summary>Number of .rplink files found to have missing targets during the last stale-link background check.</summary>
-    public int StaleLinkCount { get; init; }
-}
-
-[ExcludeFromCodeCoverage]
-internal sealed record ThumbnailQueueStatus
-{
-    public bool IsRunning { get; init; }
-    public int Total { get; init; }
-    public int Processed { get; init; }
-    public int Generated { get; init; }
-    public int Cached { get; init; }
-    public string CurrentTitle { get; init; } = string.Empty;
-    public string LastError { get; init; } = string.Empty;
-    public DateTimeOffset? StartedUtc { get; init; }
-    public DateTimeOffset? CompletedUtc { get; init; }
-}
-
-[ExcludeFromCodeCoverage]
-internal sealed record LibraryIndexCache
-{
-    public string RootPath { get; init; } = string.Empty;
-    public DateTimeOffset CreatedUtc { get; init; }
-    public LibraryFile[] Files { get; init; } = [];
-}
-
-[ExcludeFromCodeCoverage]
-internal sealed record MusicIndexCache
-{
-    public string RootPath { get; init; } = string.Empty;
-    public DateTimeOffset CreatedUtc { get; init; }
-    public MusicFile[] Files { get; init; } = [];
-}
-
-[ExcludeFromCodeCoverage]
-internal sealed record LibraryFile(
-    string Name,
-    string FilePath,
-    string EncodedPath,
-    string FolderName,
-    string SearchText,
-    long SizeBytes = 0,
-    DateTime LastWriteUtc = default,
-    bool IsLink = false,
-    string? LinkSourcePath = null,
-    bool IsFolderLink = false);
-
-[ExcludeFromCodeCoverage]
 internal sealed partial class WebServer
 {
     private const string WebAssetsDirectoryName = "WebAssets";
     private static readonly string ThumbnailCacheDirectory = AppPaths.ThumbnailCacheDirectory;
     private static readonly string LibraryIndexCacheFile = AppPaths.LibraryIndexCacheFile;
     private static readonly string MusicIndexCacheFile   = AppPaths.MusicIndexCacheFile;
+    private static readonly string M3uIndexCacheFile      = AppPaths.M3uIndexCacheFile;
     private static readonly string FavoritesFile = AppPaths.FavoritesFile;
 
     private static readonly HashSet<string> VideoExtensions =
@@ -188,8 +82,13 @@ internal sealed partial class WebServer
     // True while the browser-side local player is active (set via /api/local-playing)
     public bool BrowserLocalPlaying => _browserLocalPlaying;
 
+    public void UpdateExpertMode(bool expertMode) => _expertMode = expertMode;
+
     private readonly object _libraryIndexGate = new();
     private readonly object _musicIndexGate = new();
+    private readonly object _libraryIndexCacheSaveLock = new();
+    private readonly object _musicIndexCacheSaveLock = new();
+    private readonly object _m3uIndexCacheSaveLock   = new();
     // Lazily populated by background probes so the browse path stays fast.
     private readonly ConcurrentDictionary<string, double> _videoDurationCache = new(StringComparer.OrdinalIgnoreCase);
     private FileSystemWatcher? _libraryWatcher;
@@ -208,6 +107,11 @@ internal sealed partial class WebServer
     private static readonly string _serverSessionId = Guid.NewGuid().ToString("N");
     private bool _isIndexing;
     private bool _isMusicIndexing;
+    private bool _isMusicEnriching;
+    private bool _isM3uIndexing;    // true while the lightweight M3U-only background scan is running
+    // In-memory M3U index: keyed by absolute M3U file path. Rebuilt alongside _musicIndex.
+    private Dictionary<string, M3uEntry> _m3uIndex = new(StringComparer.OrdinalIgnoreCase);
+    private bool _expertMode;             // updated live when settings change without server restart
     private bool _browserLocalPlaying;   // true while browser is playing audio locally
     private string? _musicPlayInitiatorIp; // IP of the client that last triggered /api/music/play
     private string _lastMusicScanError = string.Empty;
@@ -232,7 +136,7 @@ internal sealed partial class WebServer
     private string? _startupWarning;
     private readonly RemotePlay.Services.AppUpdater? _appUpdater;
 
-    // ── Rate limiting ────────────────────────────────────────────────────────
+    // â”€â”€ Rate limiting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private sealed class RateLimitBucket
     {
         public int Count;
@@ -241,12 +145,13 @@ internal sealed partial class WebServer
 
     private readonly ConcurrentDictionary<string, RateLimitBucket> _rateLimitBuckets = new(StringComparer.OrdinalIgnoreCase);
 
-    // ── Graceful-shutdown token ──────────────────────────────────────────────
+    // â”€â”€ Graceful-shutdown token â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private CancellationTokenSource _listenerCts = new();
 
     public WebServer(AppConfig config, WebServerCallbacks callbacks, PresenceBroadcaster? broadcaster = null, PlaybackHistory? playbackHistory = null, RemotePlay.Services.AppUpdater? appUpdater = null)
     {
         _config = config;
+        _expertMode = config.ExpertMode;
         _callbacks = callbacks;
         _broadcaster = broadcaster;
         _playbackHistory = playbackHistory ?? new PlaybackHistory();
@@ -269,21 +174,6 @@ internal sealed partial class WebServer
     public string? StartupWarning => _startupWarning;
     public int LibraryVideoCount => _libraryIndex.Length;
 
-    /// <summary>Returns (or lazily creates) the <see cref="PlaybackHistory"/> for the given client IP.
-    /// Uses the shared local history for <c>127.0.0.1</c> / <c>::1</c> so the WPF player and
-    /// localhost browser clients share a single history file.</summary>
-    internal PlaybackHistory GetHistoryForIp(string clientIp)
-    {
-        if (string.IsNullOrWhiteSpace(clientIp)
-            || clientIp == "127.0.0.1"
-            || clientIp == "::1"
-            || clientIp == "localhost")
-            return _playbackHistory;
-
-        return _perIpHistories.GetOrAdd(clientIp,
-            ip => new PlaybackHistory(AppPaths.HistoryFileForIp(ip)));
-    }
-
     /// <summary>
     /// Deletes negative-result lyrics cache entries (found=false) that are older than 2 hours.
     /// Runs once at startup so transient failures (timeouts, network issues) self-heal quickly.
@@ -303,7 +193,7 @@ internal sealed partial class WebServer
                     if (!json.Contains("\"found\":false", StringComparison.Ordinal)) continue;
                     using var doc = System.Text.Json.JsonDocument.Parse(json);
                     if (!doc.RootElement.TryGetProperty("found", out var fEl) || fEl.GetBoolean()) continue;
-                    // It's a negative result — check age
+                    // It's a negative result â€” check age
                     if (doc.RootElement.TryGetProperty("cachedUtc", out var tsEl) &&
                         DateTimeOffset.TryParse(tsEl.GetString(), out var cachedAt) &&
                         cachedAt < cutoff)
@@ -321,219 +211,10 @@ internal sealed partial class WebServer
         }
     }
 
-    /// <summary>
-    /// Returns a progress map that merges the shared WPF history with the per-IP history.
-    /// The per-IP entry wins when both have a record for the same path.
-    /// This ensures remote browser clients see progress recorded by the local WPF player.
-    /// </summary>
-    private Dictionary<string, RecentPlaybackItem> GetMergedProgressMap(PlaybackHistory ipHistory)
-    {
-        var shared = _playbackHistory.GetProgressMap();
-        if (ReferenceEquals(ipHistory, _playbackHistory))
-            return shared;
-
-        var perIp  = ipHistory.GetProgressMap();
-        // Start from shared, then overwrite/add with per-IP entries (per-IP wins).
-        foreach (var (key, value) in perIp)
-            shared[key] = value;
-        return shared;
-    }
-
-    /// <summary>
-    /// Returns a watched set that merges the shared WPF history with the per-IP history.
-    /// </summary>
-    private HashSet<string> GetMergedWatchedSet(PlaybackHistory ipHistory)
-    {
-        var shared = _playbackHistory.GetWatchedSet();
-        if (ReferenceEquals(ipHistory, _playbackHistory))
-            return shared;
-
-        foreach (var path in ipHistory.GetWatchedSet())
-            shared.Add(path);
-        return shared;
-    }
     public LibraryScanStatus LibraryStatus => GetLibraryScanStatus();
+    public MusicIndexStatus MusicStatus => GetMusicIndexStatus();
 
     /// <summary>
-    /// Returns the number of indexed link entries whose resolved target is inside
-    /// (or equal to) <paramref name="folderPath"/>. Uses the in-memory index — O(n) with no disk I/O.
-    /// </summary>
-    public int CountIndexedLinksPointingIntoFolder(string folderPath)
-    {
-        var index = _libraryIndex; // snapshot — array reference is replaced atomically on rescan
-        var prefix = folderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                     + Path.DirectorySeparatorChar;
-        return index.Count(f =>
-            f.IsLink &&
-            (string.Equals(f.FilePath, folderPath, StringComparison.OrdinalIgnoreCase) ||
-             f.FilePath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)));
-    }
-
-    /// <summary>
-    /// Returns the .rplink file paths from the index whose resolved target equals
-    /// <paramref name="targetFilePath"/>. Uses the in-memory index — no disk I/O.
-    /// Returns <c>null</c> when the index is empty or not yet built.
-    /// </summary>
-    public string[]? GetIndexedLinkSourcesForFile(string targetFilePath)
-    {
-        var index = _libraryIndex;
-        if (index.Length == 0) return null;
-
-        return index
-            .Where(f => f.IsLink &&
-                        f.LinkSourcePath is not null &&
-                        string.Equals(f.FilePath, targetFilePath, StringComparison.OrdinalIgnoreCase))
-            .Select(f => f.LinkSourcePath!)
-            .ToArray();
-    }
-
-    /// <summary>
-    /// Returns a set of all paths tracked by the current index: for regular files this is
-    /// the file path; for links this is the .rplink file path. Used by the Check Index command.
-    /// Returns an empty set when the index has not been built yet.
-    /// </summary>
-    public HashSet<string> GetIndexedPathSet()
-    {
-        var index = _libraryIndex;
-        var set = new HashSet<string>(index.Length * 2, StringComparer.OrdinalIgnoreCase);
-        foreach (var f in index)
-        {
-            // Always add FilePath (the video file path) so browser movie-rows can be matched
-            // regardless of whether the index entry is a direct file or a deduplicated link entry.
-            set.Add(Path.GetFullPath(f.FilePath));
-
-            // Also add the .rplink file path so browser link-rows can be matched.
-            if (f.IsLink && f.LinkSourcePath is not null)
-                set.Add(Path.GetFullPath(f.LinkSourcePath));
-        }
-        return set;
-    }
-
-    /// <summary>
-    /// Returns the set of folder names that the library scanner ignores (e.g. "Subs", "Alt").
-    /// Files inside these folders are intentionally excluded from the index.
-    /// </summary>
-    public IReadOnlySet<string> GetIgnoredFolderNames() => _hiddenFolderNames;
-
-    /// <summary>
-    /// Prevents the <see cref="FileSystemWatcher"/> from scheduling a rescan for
-    /// <paramref name="duration"/> by advancing the watcher-started timestamp.
-    /// Call this before making file-system changes that you want to handle via targeted index updates.
-    /// </summary>
-    public void SuppressWatcher(TimeSpan duration)
-    {
-        // By moving _libraryWatcherStartedUtc into the future, any watcher event that fires
-        // while we are making changes will be dropped by the warm-up guard in ScheduleLibraryRescan.
-        _libraryWatcherStartedUtc = DateTimeOffset.UtcNow.Add(duration);
-    }
-
-    /// <summary>Removes all index entries whose <see cref="LibraryFile.FilePath"/> or
-    /// <see cref="LibraryFile.LinkSourcePath"/> starts with <paramref name="prefix"/> (folder delete/move).</summary>
-    public void IndexRemoveUnderPath(string prefix)
-    {
-        var normalPrefix = Path.GetFullPath(prefix).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                           + Path.DirectorySeparatorChar;
-        // Also match an exact path (single file / link)
-        var exact = Path.GetFullPath(prefix);
-
-        lock (_libraryIndexGate)
-        {
-            _libraryIndex = _libraryIndex.Where(f =>
-            {
-                var fp  = Path.GetFullPath(f.FilePath);
-                var lsp = f.LinkSourcePath is not null ? Path.GetFullPath(f.LinkSourcePath) : null;
-                bool matchFile = string.Equals(fp, exact, StringComparison.OrdinalIgnoreCase)
-                                 || fp.StartsWith(normalPrefix, StringComparison.OrdinalIgnoreCase);
-                bool matchLink = lsp is not null && (
-                                 string.Equals(lsp, exact, StringComparison.OrdinalIgnoreCase)
-                                 || lsp.StartsWith(normalPrefix, StringComparison.OrdinalIgnoreCase));
-                return !matchFile && !matchLink;
-            }).ToArray();
-        }
-        Logger.Info($"IndexRemoveUnderPath: removed entries under '{prefix}'; index now has {_libraryIndex.Length} entries");
-        SaveLibraryIndexCache();
-    }
-
-    /// <summary>Adds or replaces the index entry for a single video file or .rplink file.</summary>
-    public void IndexAddOrUpdateFile(string filePath)
-    {
-        var root = _config.ResolvedMoviesPath;
-        LibraryFile? entry = RplinkHelper.IsRplinkFile(filePath)
-            ? LibraryIndexHelpers.BuildLibraryFileForLink(root, filePath)
-            : WebPathHelpers.IsVideoFile(filePath, _videoExtensions)
-                ? LibraryIndexHelpers.BuildLibraryFile(root, filePath)
-                : null;
-
-        if (entry is null) return;
-
-        lock (_libraryIndexGate)
-        {
-            // Remove any existing entry for the same FilePath/LinkSourcePath, then add the new one.
-            var without = _libraryIndex.Where(f =>
-                !string.Equals(f.FilePath, entry.FilePath, StringComparison.OrdinalIgnoreCase) &&
-                !(f.LinkSourcePath is not null && entry.LinkSourcePath is not null &&
-                  string.Equals(f.LinkSourcePath, entry.LinkSourcePath, StringComparison.OrdinalIgnoreCase)))
-                .ToArray();
-            _libraryIndex = [.. without, entry];
-        }
-        Logger.Info($"IndexAddOrUpdateFile: upserted '{filePath}'; index now has {_libraryIndex.Length} entries");
-        SaveLibraryIndexCache();
-    }
-
-    /// <summary>Updates every entry whose <see cref="LibraryFile.FilePath"/> or
-    /// <see cref="LibraryFile.LinkSourcePath"/> begins with <paramref name="oldPrefix"/>
-    /// by replacing that prefix with <paramref name="newPrefix"/> (folder rename).</summary>
-    public void IndexRenamePrefix(string oldPrefix, string newPrefix)
-    {
-        var normOld = Path.GetFullPath(oldPrefix).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                      + Path.DirectorySeparatorChar;
-        var normNew = Path.GetFullPath(newPrefix).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                      + Path.DirectorySeparatorChar;
-
-        static string Reprefix(string path, string oldP, string newP) =>
-            newP + path.Substring(oldP.Length);
-
-        lock (_libraryIndexGate)
-        {
-            _libraryIndex = _libraryIndex.Select(f =>
-            {
-                var fp  = Path.GetFullPath(f.FilePath);
-                var lsp = f.LinkSourcePath is not null ? Path.GetFullPath(f.LinkSourcePath) : null;
-
-                bool fpMatch  = fp.StartsWith(normOld, StringComparison.OrdinalIgnoreCase);
-                bool lspMatch = lsp is not null && lsp.StartsWith(normOld, StringComparison.OrdinalIgnoreCase);
-
-                if (!fpMatch && !lspMatch) return f;
-
-                var newFp  = fpMatch  ? Reprefix(fp,  normOld, normNew) : fp;
-                var newLsp = lspMatch ? Reprefix(lsp!, normOld, normNew) : f.LinkSourcePath;
-
-                return f with { FilePath = newFp, LinkSourcePath = newLsp };
-            }).ToArray();
-        }
-        Logger.Info($"IndexRenamePrefix: '{oldPrefix}' -> '{newPrefix}'; index now has {_libraryIndex.Length} entries");
-        SaveLibraryIndexCache();
-    }
-
-    /// <summary>Renames a single file entry in the index (file rename, not folder).</summary>
-    public void IndexRenameFile(string oldPath, string newPath)
-    {
-        lock (_libraryIndexGate)
-        {
-            _libraryIndex = _libraryIndex.Select(f =>
-            {
-                bool fpMatch  = string.Equals(Path.GetFullPath(f.FilePath),      Path.GetFullPath(oldPath), StringComparison.OrdinalIgnoreCase);
-                bool lspMatch = f.LinkSourcePath is not null &&
-                                string.Equals(Path.GetFullPath(f.LinkSourcePath), Path.GetFullPath(oldPath), StringComparison.OrdinalIgnoreCase);
-
-                if (fpMatch)  return f with { FilePath = newPath };
-                if (lspMatch) return f with { LinkSourcePath = newPath };
-                return f;
-            }).ToArray();
-        }
-        Logger.Info($"IndexRenameFile: '{oldPath}' -> '{newPath}'");
-        SaveLibraryIndexCache();
-    }
 
     private bool IsFavorite(string filePath)
     {
@@ -577,6 +258,20 @@ internal sealed partial class WebServer
             CompletedUtc  = _lastIndexRefreshUtc,
             LastError     = _lastScanError,
             StaleLinkCount = _staleLinkCount
+        };
+    }
+
+    private MusicIndexStatus GetMusicIndexStatus()
+    {
+        int count;
+        lock (_musicIndexGate) count = _musicIndex.Length;
+        return new()
+        {
+            IsIndexing    = _isMusicIndexing,
+            IsEnriching   = _isMusicEnriching,
+            IndexedTracks = count,
+            LastError     = _lastMusicScanError,
+            CompletedUtc  = _lastMusicIndexRefreshUtc
         };
     }
 
@@ -691,7 +386,7 @@ internal sealed partial class WebServer
     /// <summary>
     /// Scans all .rplink files in the library and counts those whose resolved target no longer exists.
     /// Updates <c>_staleLinkCount</c> which is exposed through <see cref="LibraryStatus"/>.
-    /// Runs on the thread-pool timer thread — should never throw or block.
+    /// Runs on the thread-pool timer thread â€” should never throw or block.
     /// </summary>
     private void RunStaleLinkCheck()
     {
@@ -763,6 +458,8 @@ internal sealed partial class WebServer
 
     private void SaveLibraryIndexCache()
     {
+        if (!Monitor.TryEnter(_libraryIndexCacheSaveLock))
+            return;  // another save is already in progress; skip this one
         try
         {
             var cache = new LibraryIndexCache
@@ -773,11 +470,20 @@ internal sealed partial class WebServer
             };
 
             var json = JsonSerializer.Serialize(cache, IndentedOptions);
-            File.WriteAllText(LibraryIndexCacheFile, json);
+            var tmp = LibraryIndexCacheFile + ".tmp";
+            File.WriteAllText(tmp, json);
+            if (File.Exists(LibraryIndexCacheFile))
+                File.Replace(tmp, LibraryIndexCacheFile, destinationBackupFileName: null);
+            else
+                File.Move(tmp, LibraryIndexCacheFile);
         }
         catch (Exception ex)
         {
             Logger.Error("Failed to save library index cache", ex);
+        }
+        finally
+        {
+            Monitor.Exit(_libraryIndexCacheSaveLock);
         }
     }
 
@@ -808,6 +514,8 @@ internal sealed partial class WebServer
 
     private void SaveMusicIndexCache()
     {
+        if (!Monitor.TryEnter(_musicIndexCacheSaveLock))
+            return;  // another save is already in progress; skip this one
         try
         {
             MusicFile[] snapshot;
@@ -824,14 +532,94 @@ internal sealed partial class WebServer
                 Files = snapshot
             };
             var json = JsonSerializer.Serialize(cache, IndentedOptions);
-            File.WriteAllText(MusicIndexCacheFile, json);
-            Logger.Info($"Saved music index cache: {snapshot.Length} tracks");
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Failed to save music index cache", ex);
-        }
-    }
+            var tmp = MusicIndexCacheFile + ".tmp";
+            File.WriteAllText(tmp, json);
+            if (File.Exists(MusicIndexCacheFile))
+                File.Replace(tmp, MusicIndexCacheFile, destinationBackupFileName: null);
+            else
+                File.Move(tmp, MusicIndexCacheFile);
+                Logger.Info($"Saved music index cache: {snapshot.Length} tracks");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("Failed to save music index cache", ex);
+                }
+                finally
+                {
+                    Monitor.Exit(_musicIndexCacheSaveLock);
+                }
+            }
+
+            private void LoadM3uIndexCache()
+            {
+                try
+                {
+                    if (!File.Exists(M3uIndexCacheFile))
+                        return;
+
+                    var json = File.ReadAllText(M3uIndexCacheFile);
+                    var cache = JsonSerializer.Deserialize<M3uIndexCache>(json, CaseInsensitiveOptions);
+                    if (cache is null) return;
+
+                    // Use a simple trimmed comparison — Path.GetFullPath() misbehaves on UNC paths
+                    // (e.g. \\server\share) and would cause a valid cache to be silently discarded.
+                    var cachedRoot  = cache.RootPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    var configRoot  = _config.ResolvedMusicPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    if (!string.Equals(cachedRoot, configRoot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Info($"M3U index cache root '{cachedRoot}' does not match current root '{configRoot}' — discarding cache.");
+                        return;
+                    }
+
+                    var dict = new Dictionary<string, M3uEntry>(cache.Entries.Length, StringComparer.OrdinalIgnoreCase);
+                    foreach (var e in cache.Entries)
+                        dict[e.M3uPath] = e;
+
+                    lock (_musicIndexGate)
+                        _m3uIndex = dict;
+
+                    Logger.Info($"Loaded persistent M3U index: {dict.Count} playlist(s)");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("Failed to load M3U index cache", ex);
+                }
+            }
+
+            private void SaveM3uIndexCache()
+            {
+                if (!Monitor.TryEnter(_m3uIndexCacheSaveLock))
+                    return;
+                try
+                {
+                    Dictionary<string, M3uEntry> snapshot;
+                    lock (_musicIndexGate)
+                        snapshot = _m3uIndex;
+
+                    var cache = new M3uIndexCache
+                    {
+                        RootPath   = _config.ResolvedMusicPath,
+                        CreatedUtc = DateTimeOffset.UtcNow,
+                        Entries    = [.. snapshot.Values]
+                    };
+                    var json = JsonSerializer.Serialize(cache, IndentedOptions);
+                    var tmp = M3uIndexCacheFile + ".tmp";
+                    File.WriteAllText(tmp, json);
+                    if (File.Exists(M3uIndexCacheFile))
+                        File.Replace(tmp, M3uIndexCacheFile, destinationBackupFileName: null);
+                    else
+                        File.Move(tmp, M3uIndexCacheFile);
+                    Logger.Info($"Saved M3U index cache: {snapshot.Count} playlist(s)");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("Failed to save M3U index cache", ex);
+                }
+                finally
+                {
+                    Monitor.Exit(_m3uIndexCacheSaveLock);
+                }
+            }
 
     private void LoadFavorites()
     {
@@ -927,14 +715,21 @@ internal sealed partial class WebServer
             LoadLibraryIndexCache();
             StartLibraryIndexRefresh(force: true);
             LoadMusicIndexCache();
+            LoadM3uIndexCache();
             // If no cache exists yet (first run), do a full scan to populate the index.
             // Otherwise, treat the loaded cache as authoritative until the user triggers /api/music/rescan.
+            // Either way, always run a lightweight M3U-only scan so _m3uIndex is populated
+            // immediately - without it, dynamic-folder include/exclude filtering returns no tracks.
             int cached;
             lock (_musicIndexGate) cached = _musicIndex.Length;
             if (cached == 0)
             {
-                Logger.Info("No music index cache found — starting initial scan.");
-                StartMusicIndexRefresh();
+                Logger.Info("No music index cache found - starting initial scan.");
+                StartMusicIndexRefresh(); // full scan includes M3U pass
+            }
+            else
+            {
+                StartM3uIndexRefresh(); // fast M3U-only pass; track index already loaded
             }
         });
 
@@ -1087,124 +882,6 @@ internal sealed partial class WebServer
         StartLibraryIndexRefresh(force: true);
     }
 
-    private static void EnsureHttpsBinding(int port)
-    {
-        if (!OperatingSystem.IsWindows())
-            throw new PlatformNotSupportedException("HTTPS mode requires Windows HTTP.sys certificate binding.");
-
-        using var certificate = GetOrCreateHttpsCertificate();
-        var ipPort = $"0.0.0.0:{port}";
-        var deleteResult = RunNetsh($"http delete sslcert ipport={ipPort}");
-        if (deleteResult.ExitCode != 0 && !deleteResult.Output.Contains("The system cannot find the file specified", StringComparison.OrdinalIgnoreCase))
-            Logger.Info($"Existing HTTPS binding delete returned {deleteResult.ExitCode}: {deleteResult.Output.Trim()}");
-
-        var addResult = RunNetsh($"http add sslcert ipport={ipPort} certhash={certificate.Thumbprint} appid={{{HttpsCertificateAppId}}}");
-        if (addResult.ExitCode != 0)
-            throw new InvalidOperationException("Could not configure HTTPS certificate binding. Run RemotePlay as administrator once, then enable HTTPS again. " + addResult.Output.Trim());
-    }
-
-    private static X509Certificate2 GetOrCreateHttpsCertificate()
-    {
-        using var store = new X509Store(StoreName.My, StoreLocation.LocalMachine);
-        store.Open(OpenFlags.ReadWrite);
-
-        var existing = store.Certificates
-            .Find(X509FindType.FindBySubjectDistinguishedName, HttpsCertificateSubject, validOnly: false)
-            .OfType<X509Certificate2>()
-            .Where(c => c.NotAfter > DateTimeOffset.Now.AddDays(30) && c.HasPrivateKey)
-            .OrderByDescending(c => c.NotAfter)
-            .FirstOrDefault();
-
-        if (existing is not null)
-            return existing;
-
-        using var rsa = RSA.Create(2048);
-        var request = new CertificateRequest(HttpsCertificateSubject, rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
-        request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
-        request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
-            [new Oid("1.3.6.1.5.5.7.3.1")], false));
-        var sanBuilder = new SubjectAlternativeNameBuilder();
-        sanBuilder.AddDnsName("localhost");
-        sanBuilder.AddIpAddress(IPAddress.Loopback);
-        sanBuilder.AddIpAddress(IPAddress.IPv6Loopback);
-        foreach (var address in GetLocalIpAddresses())
-            sanBuilder.AddIpAddress(address);
-        request.CertificateExtensions.Add(sanBuilder.Build());
-        using var certificate = request.CreateSelfSigned(DateTimeOffset.Now.AddDays(-1), DateTimeOffset.Now.AddYears(5));
-        var exportableCertificate = new X509Certificate2(
-            certificate.Export(X509ContentType.Pfx),
-            string.Empty,
-            X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet);
-        store.Add(exportableCertificate);
-
-        var created = store.Certificates
-            .Find(X509FindType.FindBySubjectDistinguishedName, HttpsCertificateSubject, validOnly: false)
-            .OfType<X509Certificate2>()
-            .Where(c => c.HasPrivateKey)
-            .OrderByDescending(c => c.NotAfter)
-            .First();
-
-        Logger.Info($"Created RemotePlay HTTPS certificate: {created.Thumbprint}");
-        return created;
-    }
-
-    internal static X509Certificate2? TryGetHttpsCertificate()
-    {
-        if (!OperatingSystem.IsWindows())
-            return null;
-
-        try
-        {
-            using var store = new X509Store(StoreName.My, StoreLocation.LocalMachine);
-            store.Open(OpenFlags.ReadOnly);
-            return store.Certificates
-                .Find(X509FindType.FindBySubjectDistinguishedName, HttpsCertificateSubject, validOnly: false)
-                .OfType<X509Certificate2>()
-                .OrderByDescending(c => c.NotAfter)
-                .FirstOrDefault();
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Could not read RemotePlay HTTPS certificate", ex);
-            return null;
-        }
-    }
-
-    private static IEnumerable<IPAddress> GetLocalIpAddresses()
-    {
-        try
-        {
-            return Dns.GetHostAddresses(Dns.GetHostName())
-                .Where(a => (a.AddressFamily is AddressFamily.InterNetwork or AddressFamily.InterNetworkV6) && !IPAddress.IsLoopback(a))
-                .ToArray();
-        }
-        catch (Exception ex)
-        {
-            Logger.Error("Could not add local IP addresses to HTTPS certificate", ex);
-            return [];
-        }
-    }
-
-    private static (int ExitCode, string Output) RunNetsh(string arguments)
-    {
-        var info = new ProcessStartInfo
-        {
-            FileName = "netsh",
-            Arguments = arguments,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true
-        };
-
-        using var process = Process.Start(info) ?? throw new InvalidOperationException("Could not start netsh.");
-        var output = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
-        process.WaitForExit(5000);
-        return (process.ExitCode, output);
-    }
-
-
     private static readonly string ManifestJson = JsonSerializer.Serialize(new
     {
         name = "RemotePlay",
@@ -1281,7 +958,7 @@ internal sealed partial class WebServer
         }
         catch (HttpListenerException)
         {
-            // Client disconnected before the response was fully sent — not an error.
+            // Client disconnected before the response was fully sent â€” not an error.
         }
         catch (Exception ex)
         {
@@ -1305,7 +982,7 @@ internal sealed partial class WebServer
         }
         catch (HttpListenerException)
         {
-            // Client disconnected before the response was fully sent — not an error.
+            // Client disconnected before the response was fully sent â€” not an error.
         }
         catch (Exception ex)
         {

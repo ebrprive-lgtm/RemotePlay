@@ -21,6 +21,7 @@ internal sealed class MusicPlayer : IDisposable
     private string? _nextTrackPath;
     private string _tagArtist = string.Empty;
     private string _tagTitle  = string.Empty;
+    private string _tagAlbum  = string.Empty;
     private ReverbSampleProvider? _reverb;
     private EqualizerSampleProvider? _eq;
     private int _reverbPreset = 0;
@@ -56,11 +57,13 @@ internal sealed class MusicPlayer : IDisposable
             // Read ID3 tags once so polling GetStatus() is cheap
             _tagArtist = string.Empty;
             _tagTitle  = string.Empty;
+            _tagAlbum  = string.Empty;
             try
             {
                 using var tf = TagLib.File.Create(filePath);
                 _tagArtist = tf.Tag.FirstPerformer ?? tf.Tag.FirstAlbumArtist ?? string.Empty;
                 _tagTitle  = tf.Tag.Title ?? string.Empty;
+                _tagAlbum  = tf.Tag.Album ?? string.Empty;
             }
             catch { /* ignore tag read failures */ }
             try
@@ -133,8 +136,17 @@ internal sealed class MusicPlayer : IDisposable
             var displayTitle = !string.IsNullOrEmpty(_tagTitle)
                 ? _tagTitle
                 : (string.IsNullOrEmpty(_currentPath) ? string.Empty : Path.GetFileNameWithoutExtension(_currentPath));
+            // Fall back to folder-path-derived values when tags are absent
+            var displayArtist = _tagArtist;
+            var displayAlbum  = _tagAlbum;
+            if (string.IsNullOrEmpty(displayArtist) && !string.IsNullOrEmpty(_currentPath))
+            {
+                var dir = Path.GetDirectoryName(_currentPath) ?? string.Empty;
+                displayAlbum  = string.IsNullOrEmpty(displayAlbum)  ? Path.GetFileName(dir) : displayAlbum;
+                displayArtist = Path.GetFileName(Path.GetDirectoryName(dir)) ?? string.Empty;
+            }
             return new MusicStatus(_isPlaying && !_isPaused, _isPaused, _currentPath,
-                displayTitle, _tagArtist, pos, dur, _lastError, _eqPreset, _reverbPreset);
+                displayTitle, displayArtist, displayAlbum, pos, dur, _lastError, _eqPreset, _reverbPreset);
         }
     }
 
@@ -227,7 +239,7 @@ internal sealed class MusicPlayer : IDisposable
     private void DisposePlayback()
     {
         _isPlaying = false; _isPaused = false; _currentPath = string.Empty;
-        _tagArtist = string.Empty; _tagTitle = string.Empty;
+        _tagArtist = string.Empty; _tagTitle = string.Empty; _tagAlbum = string.Empty;
         if (_output is not null) { _output.PlaybackStopped -= OnPlaybackStopped; _output.Stop(); _output.Dispose(); _output = null; }
         _reverb = null;
         _eq = null;
@@ -238,4 +250,4 @@ internal sealed class MusicPlayer : IDisposable
     public void Dispose() { lock (_lock) { DisposePlayback(); } }
 }
 
-internal sealed record MusicStatus(bool IsPlaying, bool IsPaused, string CurrentPath, string Title, string Artist, double Position, double Duration, string LastError, int EqPreset, int ReverbPreset);
+internal sealed record MusicStatus(bool IsPlaying, bool IsPaused, string CurrentPath, string Title, string Artist, string Album, double Position, double Duration, string LastError, int EqPreset, int ReverbPreset);

@@ -40,6 +40,8 @@ internal sealed record AppConfig
     public int PreferredDisplayIndex { get; init; } = -1; // -1 = primary screen
     public bool StartWithWindows { get; init; }
     public bool UseTrayIcon { get; init; } = true;
+    /// <summary>When true, expert-only controls (e.g. dynamic folder creation) are visible in the web UI.</summary>
+    public bool ExpertMode { get; init; }
     public int LibraryRescanDelayMinutes { get; init; } = 60;
     public bool EnableThumbnailGeneration { get; init; } = true;
     public string[] IgnoredLibraryFolders { get; init; } = ["Subs", "Alt"];
