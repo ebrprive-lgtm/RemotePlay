@@ -1,4 +1,4 @@
-function fmt(sec) {
+﻿function fmt(sec) {
   const m = Math.floor(sec / 60),
     s = Math.floor(sec % 60);
   return m + ':' + (s < 10 ? '0' : '') + s;
@@ -1055,17 +1055,20 @@ function renderPinnedStrip() {
   strip.innerHTML =
     pins.map((p) => {
       const parts = _folderParts(p.name);
+      const dynAttr = p.isDynamic ? ' data-music-pin-dynamic="1"' : '';
+      const nameAttr = p.isDynamic ? ' data-music-pin-name="' + esc(p.name) + '"' : '';
+      const icon = p.isDynamic ? '\uD83C\uDFB2' : '\uD83D\uDCC1';
       return (
         '<div class="vr-card pinned-card" role="button" tabindex="0" title="' + esc(p.name) + '"' +
-        ' data-pin-path="' + esc(p.path) + '"' +
-        ' oncontextmenu="_ctxShow(event,\'video-pinned\',{dir:\'' + esc(p.path) + '\',name:\'' + esc(p.name) + '\'})"' +
+        ' data-music-pin-path="' + esc(p.path) + '"' + dynAttr + nameAttr +
+        ' oncontextmenu="_ctxShow(event,\'music-pinned\',{dir:\'' + esc(p.path) + '\',name:\'' + esc(p.name) + '\'})"' +
         ' onkeydown="activateKeyboardClick(event,this)">' +
-        '<div class="vr-thumb vr-thumb-placeholder">📁</div>' +
+        '<div class="vr-thumb vr-thumb-placeholder">' + icon + '</div>' +
         '<div class="vr-label pinned-label-wrap">' +
         (parts.parent ? '<span class="pinned-parent">' + esc(parts.parent) + '</span>' : '') +
         '<span class="pinned-name">' + esc(parts.name) + '</span>' +
         '</div>' +
-        '<button class="pinned-card-remove" title="Unpin" data-unpin-path="' + esc(p.path) + '">×</button>' +
+        '<button class="pinned-card-remove" title="Unpin" data-music-unpin-path="' + esc(p.path) + '">\u00D7</button>' +
         '</div>'
       );
     }).join('');
@@ -1117,7 +1120,7 @@ function isMusicFolderPinned(encodedDir) {
   return _getMusicPinnedFolders().some((p) => (typeof p === 'string' ? p : p.path) === encodedDir);
 }
 
-function toggleMusicPinFolder(encodedDir) {
+function toggleMusicPinFolder(encodedDir, overrideName, isDynamic) {
   if (!encodedDir) return;
   let pins = _getMusicPinnedFolders();
   pins = pins.map((p) => (typeof p === 'string' ? { path: p, name: _decodeDirName(p) } : p));
@@ -1125,8 +1128,8 @@ function toggleMusicPinFolder(encodedDir) {
   if (idx >= 0) {
     pins.splice(idx, 1);
   } else {
-    const decodedName = _decodeDirName(encodedDir);
-    pins.unshift({ path: encodedDir, name: decodedName });
+    const decodedName = overrideName || _decodeDirName(encodedDir);
+    pins.unshift({ path: encodedDir, name: decodedName, isDynamic: !!isDynamic });
   }
   _setMusicPinnedFolders(pins);
   renderMusicPinnedStrip();
@@ -1171,7 +1174,15 @@ function renderMusicPinnedStrip() {
     const removeBtn = e.target.closest('[data-music-unpin-path]');
     if (removeBtn) { e.stopPropagation(); _unpinMusicFolder(removeBtn.dataset.musicUnpinPath); return; }
     const card = e.target.closest('[data-music-pin-path]');
-    if (card && typeof browseMusic === 'function') browseMusic(_decodeDirName(card.dataset.musicPinPath));
+    if (card && typeof browseMusic === 'function') {
+      const pinPath = card.dataset.musicPinPath;
+      const pinDynamic = card.dataset.musicPinDynamic === '1';
+      if (pinDynamic && typeof _openDynamicFolder === 'function') {
+        _openDynamicFolder(pinPath, card.dataset.musicPinName || _decodeDirName(pinPath));
+      } else {
+        browseMusic(_decodeDirName(pinPath));
+      }
+    }
   };
   strip.addEventListener('click', strip._pinHandler);
 }
@@ -1180,7 +1191,8 @@ function _updateMusicPinButton() {
   const btn = document.getElementById('mcb-pin-btn');
   if (!btn) return;
   const dir = typeof currentMusicFolder !== 'undefined' ? currentMusicFolder : null;
-  const pinned = dir ? isMusicFolderPinned(dir) : false;
+  const effectiveDir = btn.dataset.dynamicPath || dir;
+  const pinned = effectiveDir ? isMusicFolderPinned(effectiveDir) : false;
   btn.classList.toggle('active', pinned);
   btn.title = pinned ? 'Unpin this folder' : 'Pin this folder';
   btn.innerHTML = pinned ? '📌 Pinned' : '📁 Pin folder';

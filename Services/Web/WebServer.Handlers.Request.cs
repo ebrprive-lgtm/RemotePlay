@@ -301,6 +301,10 @@ internal sealed partial class WebServer
                 HandleExpertMode(ctx);
                 break;
 
+            case "/api/debug-mode":
+                HandleDebugMode(ctx);
+                break;
+
             case "/api/seek":
                 HandleSeek(ctx);
                 break;
@@ -500,6 +504,10 @@ internal sealed partial class WebServer
                 await HandleMusicLyricsImportAsync(ctx).ConfigureAwait(false);
                 break;
 
+            case "/api/sync/all":
+                await HandleSyncAllAsync(ctx).ConfigureAwait(false);
+                break;
+
             case "/api/music/pause":
                 _callbacks.PauseMusic();
                 TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
@@ -529,6 +537,10 @@ internal sealed partial class WebServer
 
             case "/api/music/eq-preset":
                 HandleMusicEqPreset(ctx);
+                break;
+
+            case "/api/music/reset-m3u-cache":
+                HandleResetM3uCache(ctx);
                 break;
 
             // ── Radio ─────────────────────────────────────────────────────────────

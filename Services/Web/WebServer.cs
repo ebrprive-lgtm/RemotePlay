@@ -83,6 +83,7 @@ internal sealed partial class WebServer
     public bool BrowserLocalPlaying => _browserLocalPlaying;
 
     public void UpdateExpertMode(bool expertMode) => _expertMode = expertMode;
+    public void UpdateDebugMode(bool debugMode) => _debugMode = debugMode;
 
     private readonly object _libraryIndexGate = new();
     private readonly object _musicIndexGate = new();
@@ -112,6 +113,7 @@ internal sealed partial class WebServer
     // In-memory M3U index: keyed by absolute M3U file path. Rebuilt alongside _musicIndex.
     private Dictionary<string, M3uEntry> _m3uIndex = new(StringComparer.OrdinalIgnoreCase);
     private bool _expertMode;             // updated live when settings change without server restart
+    private bool _debugMode;              // updated live when settings change without server restart
     private bool _browserLocalPlaying;   // true while browser is playing audio locally
     private string? _musicPlayInitiatorIp; // IP of the client that last triggered /api/music/play
     private string _lastMusicScanError = string.Empty;
@@ -152,6 +154,7 @@ internal sealed partial class WebServer
     {
         _config = config;
         _expertMode = config.ExpertMode;
+        _debugMode  = config.DebugMode;
         _callbacks = callbacks;
         _broadcaster = broadcaster;
         _playbackHistory = playbackHistory ?? new PlaybackHistory();

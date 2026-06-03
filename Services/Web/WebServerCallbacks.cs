@@ -70,4 +70,5 @@ internal sealed class WebServerCallbacks
 
     // ── Settings ────────────────────────────────────────────────────────────────
     public required Action<bool>                                                SaveExpertMode     { get; init; }
+    public required Action<bool>                                                SaveDebugMode      { get; init; }
 }

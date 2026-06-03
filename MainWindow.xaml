@@ -1081,6 +1081,13 @@
                                 <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
                                            Text="When enabled, expert-only controls become visible in the web interface (e.g. creating dynamic folders)."/>
 
+                                <CheckBox x:Name="DebugModeBox"
+                                          Content="Debug Mode"
+                                          Foreground="#EEE" FontSize="13" Margin="0,0,0,8"
+                                          Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
+                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
+                                           Text="When enabled, debug-only controls become visible in the web interface (e.g. Reset M3U cache)."/>
+
                                 <Button Content="Apply" Click="OnApplySettings"
                                         Background="#E94560" Foreground="White" BorderThickness="0"
                                         Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>

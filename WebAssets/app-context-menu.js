@@ -10,7 +10,7 @@
     'music-folder': ['open', 'pin', 'unpin', 'copy'],
     'music-file': ['play', 'queue', 'copy'],
     'music-pinned': ['open', 'unpin', 'copy'],
-    'music-dynamic': ['open', 'open-play', 'edit-dynamic', 'delete-dynamic', 'copy'],
+    'music-dynamic': ['open', 'open-play', 'edit-dynamic', 'rename-dynamic', 'delete-dynamic', 'copy'],
     'video-recent': ['play', 'queue', 'fav', 'watched', 'copy'],
     'music-recent': ['play', 'queue', 'copy'],
     'radio-station': ['play', 'fav', 'copy'],
@@ -209,6 +209,22 @@
       } else if (action === 'edit-dynamic') {
         if (ctx.type === 'music-dynamic' && typeof _editDynamicFolder === 'function') {
           _editDynamicFolder(ctx.dynamicPath || ctx.dir);
+        }
+      } else if (action === 'rename-dynamic') {
+        if (ctx.type === 'music-dynamic') {
+          const dynPath = ctx.dynamicPath || ctx.dir;
+          const currentName = ctx.name || '';
+          const newName = prompt('Rename dynamic folder:', currentName);
+          if (newName !== null && newName.trim() && newName.trim() !== currentName) {
+            try {
+              const res = await fetch('/api/music/dynamic?path=' + encodeURIComponent(dynPath), { method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: newName.trim() })
+              });
+              if (!res.ok) { alert('Rename failed: ' + res.status); return; }
+              if (typeof browseMusic === 'function') browseMusic(typeof currentMusicFolder !== 'undefined' ? currentMusicFolder : null);
+            } catch (ex) { alert('Rename failed: ' + ex); }
+          }
         }
       } else if (action === 'delete-dynamic') {
         if (ctx.type === 'music-dynamic') {

@@ -85,8 +85,12 @@
                       <input type="checkbox" id="expert-mode-chk" onchange="_toggleExpertMode()" />
                       <span>Expert Mode</span>
                     </label>
+                    <label class="settings-toggle-row" title="Show debug tools like Reset M3U cache">
+                      <input type="checkbox" id="debug-mode-chk" onchange="_toggleDebugMode()" />
+                      <span>Debug Mode</span>
+                    </label>
                     <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:.6rem 0"/>
-                    <a href="/settings" target="_blank" rel="noopener" class="settings-full-link">&#128295; Full Settings &amp; Admin&hellip;</a>
+                    <a href="/settings" target="_blank" rel="noopener" class="settings-full-link" onclick="toggleSettingsPanel()">&#128295; Full Settings &amp; Admin&hellip;</a>
                   </div>
                 </div>
                 <!-- Local playback toggle -->
@@ -123,6 +127,7 @@
                 <button id="tab-radio" class="mode-tab" onclick="switchMode('radio')">&#128251; Radio</button>
               </div>
               <span id="indexing-badge" style="display:none">Indexing</span>
+              <span id="syncing-badge" style="display:none">&#8679; Syncing</span>
             </div>
           </div>
           <div id="search-wrap">
@@ -172,6 +177,7 @@
               </select>
               <span id="mcb-count" class="vcb-count"></span>
             </div>
+            <button id="mcb-reset-m3u-btn" class="vcb-reset-m3u-btn" onclick="resetM3uCache()" title="Clear the M3U playlist cache and re-index">&#8635; Reset M3u Cache</button>
             </div>
             <div class="cb-inner" id="mcb-selection" style="display:none">
               <span id="music-selection-label" style="font-weight:600;font-size:.85rem"></span>
@@ -588,6 +594,7 @@
           <button class="fctx-item" data-action="search">🔍 Search inside</button>
           <button class="fctx-item" data-action="copy">📋 Copy path</button>
           <button class="fctx-item" data-action="edit-dynamic">&#127922; Edit dynamic settings</button>
+          <button class="fctx-item" data-action="rename-dynamic">&#9998; Rename</button>
           <button class="fctx-item fctx-item-danger" data-action="delete-dynamic">&#128465; Delete dynamic folder</button>
         </div>
 
@@ -641,6 +648,17 @@
               <div class="rpdyn-col">
                 <label class="rpdyn-label" for="rpdyn-year-to">Year to</label>
                 <input id="rpdyn-year-to" class="rpdyn-input rpdyn-year" type="number" min="1900" max="2100" placeholder="e.g. 2009" />
+              </div>
+            </div>
+
+            <div class="rpdyn-row">
+              <div class="rpdyn-col">
+                <label class="rpdyn-label" for="rpdyn-min-dur">Min duration <span class="rpdyn-hint">(seconds)</span></label>
+                <input id="rpdyn-min-dur" class="rpdyn-input rpdyn-year" type="number" min="0" max="99999" placeholder="e.g. 60" />
+              </div>
+              <div class="rpdyn-col">
+                <label class="rpdyn-label" for="rpdyn-max-dur">Max duration <span class="rpdyn-hint">(seconds)</span></label>
+                <input id="rpdyn-max-dur" class="rpdyn-input rpdyn-year" type="number" min="0" max="99999" placeholder="e.g. 600" />
               </div>
             </div>
 

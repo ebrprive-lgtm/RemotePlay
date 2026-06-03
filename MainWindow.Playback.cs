@@ -1073,6 +1073,11 @@ public partial class MainWindow
             {
                 _config = _config with { ExpertMode = on };
                 _appConfigService.Save(_config);
+            },
+            SaveDebugMode        = on =>
+            {
+                _config = _config with { DebugMode = on };
+                _appConfigService.Save(_config);
             }
         }, _broadcaster, _playbackHistory, _appUpdater);
     }

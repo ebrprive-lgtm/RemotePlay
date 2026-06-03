@@ -154,6 +154,8 @@ internal sealed partial class WebServer
                         string genre = string.Empty;
                         int? yearFrom = null;
                         int? yearTo = null;
+                        int? minDuration = null;
+                        int? maxDuration = null;
                         string? lastExpanded = null;
                         try
                         {
@@ -175,12 +177,14 @@ internal sealed partial class WebServer
                             if (doc.RootElement.TryGetProperty("exclude", out var exP) && exP.ValueKind == JsonValueKind.Array)
                                 exclude = [.. exP.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0)];
                             if (doc.RootElement.TryGetProperty("genre", out var gp)) genre = gp.GetString() ?? string.Empty;
-                            if (doc.RootElement.TryGetProperty("yearFrom", out var yfp) && yfp.ValueKind == JsonValueKind.Number) yearFrom = yfp.GetInt32();
-                            if (doc.RootElement.TryGetProperty("yearTo",   out var ytp) && ytp.ValueKind == JsonValueKind.Number) yearTo   = ytp.GetInt32();
+                            if (doc.RootElement.TryGetProperty("yearFrom",    out var yfp)  && yfp.ValueKind  == JsonValueKind.Number) yearFrom    = yfp.GetInt32();
+                            if (doc.RootElement.TryGetProperty("yearTo",      out var ytp)  && ytp.ValueKind  == JsonValueKind.Number) yearTo      = ytp.GetInt32();
+                            if (doc.RootElement.TryGetProperty("minDuration", out var mnp)  && mnp.ValueKind  == JsonValueKind.Number) minDuration = mnp.GetInt32();
+                            if (doc.RootElement.TryGetProperty("maxDuration", out var mxp)  && mxp.ValueKind  == JsonValueKind.Number) maxDuration = mxp.GetInt32();
                             if (doc.RootElement.TryGetProperty("lastExpanded", out var lep)) lastExpanded = lep.GetString();
                         }
                         catch { }
-                        return (object)new { name, folder = WebPathHelpers.EncodePath(f), isDynamic = true, dynamicPath = WebPathHelpers.EncodePath(f), trackCount, mode, sort, include, exclude, genre, yearFrom, yearTo, lastExpanded };
+                        return (object)new { name, folder = WebPathHelpers.EncodePath(f), isDynamic = true, dynamicPath = WebPathHelpers.EncodePath(f), trackCount, mode, sort, include, exclude, genre, yearFrom, yearTo, minDuration, maxDuration, lastExpanded };
                     })
                     .ToArray();
 
@@ -392,31 +396,46 @@ internal sealed partial class WebServer
         catch { TrySendResponse(ctx, 400, "text/plain", "Invalid JSON"); return; }
 
         var newName = root.TryGetProperty("name", out var np) ? (np.GetString() ?? string.Empty).Trim() : string.Empty;
-        var count = root.TryGetProperty("count", out var cp) ? cp.GetInt32() : 20;
-        var sort = root.TryGetProperty("sort", out var sp) ? sp.GetString() ?? "random" : "random";
-        var mode = root.TryGetProperty("mode", out var mp) ? mp.GetString() ?? "sample" : "sample";
-        var recursive = !root.TryGetProperty("recursive", out var rp) || rp.GetBoolean();
-        var include = root.TryGetProperty("include", out var ip) && ip.ValueKind == JsonValueKind.Array
-            ? [.. ip.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0)]
-            : (string[])[];
-        var exclude = root.TryGetProperty("exclude", out var ep) && ep.ValueKind == JsonValueKind.Array
-            ? [.. ep.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0)]
-            : (string[])[];
-        var genre     = root.TryGetProperty("genre",    out var gp) ? gp.GetString() ?? string.Empty : string.Empty;
-        var yearFrom  = root.TryGetProperty("yearFrom", out var yfp) && yfp.ValueKind == JsonValueKind.Number ? (int?)yfp.GetInt32() : null;
-        var yearTo    = root.TryGetProperty("yearTo",   out var ytp) && ytp.ValueKind == JsonValueKind.Number ? (int?)ytp.GetInt32() : null;
-        var autoPlay  = root.TryGetProperty("autoPlay", out var app) && app.GetBoolean();
 
-        // Preserve existing lastExpanded when saving (don't overwrite with null)
+        // Load existing settings first so a rename-only POST doesn't lose other fields
+        JsonElement existing = default;
         string? lastExpanded = null;
         try
         {
-            var existing = File.ReadAllText(filePath);
-            using var existDoc = JsonDocument.Parse(existing);
-            if (existDoc.RootElement.TryGetProperty("lastExpanded", out var lep))
-                lastExpanded = lep.GetString();
+            var existingJson = File.ReadAllText(filePath);
+            using var existDoc = JsonDocument.Parse(existingJson);
+            existing = existDoc.RootElement.Clone();
+            if (existing.TryGetProperty("lastExpanded", out var lep)) lastExpanded = lep.GetString();
         }
         catch { }
+
+        T ExistOr<T>(string key, Func<JsonElement, T> get, T fallback)
+        {
+            if (existing.ValueKind == JsonValueKind.Object && existing.TryGetProperty(key, out var ep))
+                try { return get(ep); } catch { }
+            return fallback;
+        }
+
+        var count = root.TryGetProperty("count", out var cp) ? cp.GetInt32() : ExistOr("count", e => e.GetInt32(), 20);
+        var sort = root.TryGetProperty("sort", out var sp) ? sp.GetString() ?? "random" : ExistOr("sort", e => e.GetString() ?? "random", "random");
+        var mode = root.TryGetProperty("mode", out var mp) ? mp.GetString() ?? "sample" : ExistOr("mode", e => e.GetString() ?? "sample", "sample");
+        var recursive = root.TryGetProperty("recursive", out var rp) ? rp.GetBoolean() : ExistOr("recursive", e => e.GetBoolean(), true);
+        var include = root.TryGetProperty("include", out var ip) && ip.ValueKind == JsonValueKind.Array
+            ? [.. ip.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0)]
+            : ExistOr("include", e => e.ValueKind == JsonValueKind.Array
+                ? e.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0).ToArray()
+                : (string[])[], (string[])[]);
+        var exclude = root.TryGetProperty("exclude", out var ep2) && ep2.ValueKind == JsonValueKind.Array
+            ? [.. ep2.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0)]
+            : ExistOr("exclude", e => e.ValueKind == JsonValueKind.Array
+                ? e.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0).ToArray()
+                : (string[])[],  (string[])[]);
+        var genre        = root.TryGetProperty("genre",       out var gp)  ? gp.GetString()  ?? string.Empty : ExistOr("genre",       e => e.GetString() ?? string.Empty, string.Empty);
+        var yearFrom     = root.TryGetProperty("yearFrom",    out var yfp) && yfp.ValueKind == JsonValueKind.Number ? (int?)yfp.GetInt32() : ExistOr("yearFrom",    e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
+        var yearTo       = root.TryGetProperty("yearTo",      out var ytp) && ytp.ValueKind == JsonValueKind.Number ? (int?)ytp.GetInt32() : ExistOr("yearTo",      e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
+        var minDuration  = root.TryGetProperty("minDuration", out var mnp) && mnp.ValueKind == JsonValueKind.Number ? (int?)mnp.GetInt32() : ExistOr("minDuration", e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
+        var maxDuration  = root.TryGetProperty("maxDuration", out var mxp) && mxp.ValueKind == JsonValueKind.Number ? (int?)mxp.GetInt32() : ExistOr("maxDuration", e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
+        var autoPlay     = root.TryGetProperty("autoPlay",    out var app) ? app.GetBoolean() : ExistOr("autoPlay",    e => e.GetBoolean(), false);
 
         // If name changed, rename the file
         var dir = Path.GetDirectoryName(filePath) ?? string.Empty;
@@ -434,7 +453,7 @@ internal sealed partial class WebServer
         var settings = new
         {
             name = effectiveName, count, sort, mode, recursive, include, exclude,
-            genre, yearFrom, yearTo, autoPlay,
+            genre, yearFrom, yearTo, minDuration, maxDuration, autoPlay,
             lastExpanded
         };
         try
@@ -484,31 +503,38 @@ internal sealed partial class WebServer
         string genre = string.Empty;
         int? yearFrom = null;
         int? yearTo = null;
+        string artist = string.Empty;
+        int? minDuration = null;
+        int? maxDuration = null;
 
         try
         {
             using var doc = JsonDocument.Parse(settingsJson);
             var root = doc.RootElement;
-            if (root.TryGetProperty("count",     out var cp)) count       = cp.GetInt32();
-            if (root.TryGetProperty("name",      out var np)) displayName = np.GetString() ?? displayName;
-            if (root.TryGetProperty("sort",      out var sp)) sort        = sp.GetString() ?? sort;
-            if (root.TryGetProperty("mode",      out var mp)) mode        = mp.GetString() ?? mode;
-            if (root.TryGetProperty("recursive", out var rp)) recursive   = rp.GetBoolean();
-            if (root.TryGetProperty("include",   out var ip) && ip.ValueKind == JsonValueKind.Array)
+            if (root.TryGetProperty("count",       out var cp))  count       = cp.GetInt32();
+            if (root.TryGetProperty("name",        out var np))  displayName = np.GetString() ?? displayName;
+            if (root.TryGetProperty("sort",        out var sp))  sort        = sp.GetString() ?? sort;
+            if (root.TryGetProperty("mode",        out var mp))  mode        = mp.GetString() ?? mode;
+            if (root.TryGetProperty("recursive",   out var rp))  recursive   = rp.GetBoolean();
+            if (root.TryGetProperty("include",     out var ip)   && ip.ValueKind  == JsonValueKind.Array)
                 include = [.. ip.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0)];
-            if (root.TryGetProperty("exclude",   out var exP) && exP.ValueKind == JsonValueKind.Array)
+            if (root.TryGetProperty("exclude",     out var exP)  && exP.ValueKind == JsonValueKind.Array)
                 exclude = [.. exP.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0)];
-            if (root.TryGetProperty("genre",    out var gp)) genre    = gp.GetString() ?? string.Empty;
-            if (root.TryGetProperty("yearFrom", out var yfp) && yfp.ValueKind == JsonValueKind.Number) yearFrom = yfp.GetInt32();
-            if (root.TryGetProperty("yearTo",   out var ytp) && ytp.ValueKind == JsonValueKind.Number) yearTo   = ytp.GetInt32();
+            if (root.TryGetProperty("genre",       out var gp))  genre    = gp.GetString()  ?? string.Empty;
+            if (root.TryGetProperty("artist",      out var ap))  artist   = ap.GetString()  ?? string.Empty;
+            if (root.TryGetProperty("yearFrom",    out var yfp)  && yfp.ValueKind == JsonValueKind.Number) yearFrom    = yfp.GetInt32();
+            if (root.TryGetProperty("yearTo",      out var ytp)  && ytp.ValueKind == JsonValueKind.Number) yearTo      = ytp.GetInt32();
+            if (root.TryGetProperty("minDuration", out var mnp)  && mnp.ValueKind == JsonValueKind.Number) minDuration = mnp.GetInt32();
+            if (root.TryGetProperty("maxDuration", out var mxp)  && mxp.ValueKind == JsonValueKind.Number) maxDuration = mxp.GetInt32();
         }
         catch { }
 
         var baseDir = Path.GetDirectoryName(filePath) ?? string.Empty;
         var baseDirSlash = baseDir.EndsWith(Path.DirectorySeparatorChar) ? baseDir : baseDir + Path.DirectorySeparatorChar;
-        bool needsTagFilter = !string.IsNullOrWhiteSpace(genre) || yearFrom.HasValue || yearTo.HasValue;
+        bool needsTagFilter = !string.IsNullOrWhiteSpace(genre) || !string.IsNullOrWhiteSpace(artist)
+            || yearFrom.HasValue || yearTo.HasValue || minDuration.HasValue || maxDuration.HasValue;
 
-        Logger.Info("DynamicExpand", $"Expanding '{displayName}' | baseDir='{baseDir}' sort={sort} mode={mode} count={count} recursive={recursive} include=[{string.Join(", ", include)}] exclude=[{string.Join(", ", exclude)}] genre='{genre}' yearFrom={yearFrom} yearTo={yearTo}");
+        Logger.Info("DynamicExpand", $"Expanding '{displayName}' | baseDir='{baseDir}' sort={sort} mode={mode} count={count} recursive={recursive} include=[{string.Join(", ", include)}] exclude=[{string.Join(", ", exclude)}] genre='{genre}' artist='{artist}' yearFrom={yearFrom} yearTo={yearTo} minDuration={minDuration} maxDuration={maxDuration}");
 
         // â”€â”€ Phase 1: candidate selection from in-memory index (zero filesystem I/O) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Take a snapshot of the index so we work on a consistent array without holding a lock.
@@ -667,35 +693,65 @@ internal sealed partial class WebServer
         {
             if (picked.Count >= need) break;
 
-            // Genre/year filter: use cached metadata from the index when available, otherwise read tags once.
+            // Filter: use cached metadata from the index when available; otherwise one TagLib read covers all fields.
             if (needsTagFilter)
             {
                 string? trackGenre = null;
                 uint trackYear = 0;
+                int trackDuration = -1;
 
-                if (indexLookup!.TryGetValue(f, out var cachedMf) && (cachedMf.Genre != null || cachedMf.Year > 0))
+                bool fromIndex = indexLookup!.TryGetValue(f, out var cachedMf);
+                bool indexHasAllNeeded =
+                    fromIndex &&
+                    (string.IsNullOrWhiteSpace(genre) || cachedMf!.Genre != null) &&
+                    (!yearFrom.HasValue && !yearTo.HasValue || cachedMf!.Year > 0) &&
+                    (!minDuration.HasValue && !maxDuration.HasValue || cachedMf!.Duration >= 0);
+
+                if (indexHasAllNeeded)
                 {
-                    // Data already in memory â€” zero I/O
-                    trackGenre = cachedMf.Genre;
-                    trackYear = cachedMf.Year;
+                    trackGenre    = cachedMf!.Genre;
+                    trackYear     = cachedMf.Year;
+                    trackDuration = cachedMf.Duration;
                 }
                 else
                 {
-                    // Fall back to TagLib only for M3U-sourced files not yet in the index
                     try
                     {
                         using var tagFile = TagLib.File.Create(f);
-                        trackGenre = tagFile.Tag.FirstGenre;
-                        trackYear = tagFile.Tag.Year;
+                        trackGenre    = tagFile.Tag.FirstGenre;
+                        trackYear     = tagFile.Tag.Year;
+                        trackDuration = (int)Math.Round(tagFile.Properties.Duration.TotalSeconds);
+                        if (!string.IsNullOrWhiteSpace(artist))
+                        {
+                            var performers = tagFile.Tag.AlbumArtists.Length > 0 ? tagFile.Tag.AlbumArtists : tagFile.Tag.Performers;
+                            var ta = performers.Length > 0 ? performers[0] : null;
+                            if (ta == null || !ta.Contains(artist, StringComparison.OrdinalIgnoreCase)) continue;
+                        }
                     }
-                    catch { /* unreadable tags â€” include the track */ }
+                    catch { }
                 }
 
                 if (!string.IsNullOrWhiteSpace(genre) && (trackGenre == null || !trackGenre.Contains(genre, StringComparison.OrdinalIgnoreCase))) continue;
-                if (yearFrom.HasValue && trackYear > 0 && trackYear < (uint)yearFrom.Value) continue;
-                if (yearTo.HasValue   && trackYear > 0 && trackYear > (uint)yearTo.Value)   continue;
+                if ((yearFrom.HasValue || yearTo.HasValue) && trackYear == 0) continue;
+                if (yearFrom.HasValue && trackYear < (uint)yearFrom.Value) continue;
+                if (yearTo.HasValue   && trackYear > (uint)yearTo.Value)   continue;
+                if (trackDuration >= 0)
+                {
+                    if (minDuration.HasValue && trackDuration < minDuration.Value) continue;
+                    if (maxDuration.HasValue && trackDuration > maxDuration.Value) continue;
+                }
+                if (indexHasAllNeeded && !string.IsNullOrWhiteSpace(artist))
+                {
+                    try
+                    {
+                        using var tagForArtist = TagLib.File.Create(f);
+                        var performers = tagForArtist.Tag.AlbumArtists.Length > 0 ? tagForArtist.Tag.AlbumArtists : tagForArtist.Tag.Performers;
+                        var ta = performers.Length > 0 ? performers[0] : null;
+                        if (ta == null || !ta.Contains(artist, StringComparison.OrdinalIgnoreCase)) continue;
+                    }
+                    catch { }
+                }
             }
-
             picked.Add(f);
         }
 
@@ -837,6 +893,11 @@ internal sealed partial class WebServer
         return false;
     }
 
+    // ── Cover art in-memory cache ──────────────────────────────────────────────
+    // Key: absolute file path. Value: (bytes, mime) or null = confirmed miss.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (byte[] Data, string Mime)?> _coverCache
+        = new(StringComparer.OrdinalIgnoreCase);
+
     private void HandleMusicCover(HttpListenerContext ctx)
     {
         var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
@@ -847,27 +908,40 @@ internal sealed partial class WebServer
         try   { fullPath = WebPathHelpers.DecodePath(encodedPath); }
         catch { TrySendResponse(ctx, 400, "text/plain", "bad path"); return; }
 
-        var musicRoot = _config.ResolvedMusicPath;
-        if (!WebPathHelpers.IsUnderRoot(fullPath, musicRoot))
+        var allMusicRoots = _config.AllResolvedMusicPaths;
+        if (!allMusicRoots.Any(root => WebPathHelpers.IsUnderRoot(fullPath, root)))
         { TrySendResponse(ctx, 403, "text/plain", "forbidden"); return; }
 
-        // 1. Try embedded picture
+        // Cache hit
+        if (_coverCache.TryGetValue(fullPath, out var cached))
+        {
+            if (cached is null) { TrySendResponse(ctx, 404, "text/plain", "no cover"); return; }
+            ctx.Response.ContentType = cached.Value.Mime;
+            ctx.Response.ContentLength64 = cached.Value.Data.Length;
+            ctx.Response.OutputStream.Write(cached.Value.Data, 0, cached.Value.Data.Length);
+            ctx.Response.OutputStream.Close();
+            return;
+        }
+
+        // 1. Try embedded picture (TagLib read — only happens once per path)
         try
         {
             using var tfile = TagLib.File.Create(fullPath);
             var pic = tfile.Tag.Pictures.FirstOrDefault();
-            if (pic is not null)
+            if (pic?.Data?.Data is { Length: > 0 } data)
             {
-                ctx.Response.ContentType = string.IsNullOrEmpty(pic.MimeType) ? "image/jpeg" : pic.MimeType;
-                ctx.Response.ContentLength64 = pic.Data.Data.Length;
-                ctx.Response.OutputStream.Write(pic.Data.Data, 0, pic.Data.Data.Length);
+                var mime = string.IsNullOrEmpty(pic.MimeType) ? "image/jpeg" : pic.MimeType;
+                _coverCache[fullPath] = (data, mime);
+                ctx.Response.ContentType = mime;
+                ctx.Response.ContentLength64 = data.Length;
+                ctx.Response.OutputStream.Write(data, 0, data.Length);
                 ctx.Response.OutputStream.Close();
                 return;
             }
         }
         catch { /* fall through to folder art */ }
 
-        // 2. Try folder cover image
+        // 2. Try folder cover image (shared across all tracks in the same dir)
         var dir = Path.GetDirectoryName(fullPath) ?? string.Empty;
         foreach (var name in _coverNames)
         {
@@ -877,6 +951,11 @@ internal sealed partial class WebServer
             try
             {
                 var bytes = System.IO.File.ReadAllBytes(candidate);
+                // Store folder art under both the track path and the folder path so
+                // sibling tracks in the same album benefit immediately.
+                var entry = (bytes, mime);
+                _coverCache[fullPath] = entry;
+                _coverCache.TryAdd(dir, entry);
                 ctx.Response.ContentType = mime;
                 ctx.Response.ContentLength64 = bytes.Length;
                 ctx.Response.OutputStream.Write(bytes, 0, bytes.Length);
@@ -886,6 +965,8 @@ internal sealed partial class WebServer
             catch { }
         }
 
+        // Confirmed miss — cache so we stop hitting disk for this path
+        _coverCache[fullPath] = null;
         TrySendResponse(ctx, 404, "text/plain", "no cover");
     }
 
@@ -1298,6 +1379,21 @@ internal sealed partial class WebServer
 
     private static async Task HandleMusicAlbumArtImportAsync(HttpListenerContext ctx)
     {
+        // Index request: return a map of key → file size so exporter can skip identical items.
+        if (ctx.Request.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase)
+            && ctx.Request.QueryString["index"] == "1")
+        {
+            var index = new System.Collections.Generic.Dictionary<string, long>();
+            if (Directory.Exists(AlbumArtCacheDir))
+            {
+                foreach (var f in Directory.EnumerateFiles(AlbumArtCacheDir, "*.jpg"))
+                    index[Path.GetFileNameWithoutExtension(f)] = new FileInfo(f).Length;
+            }
+
+            TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(index));
+            return;
+        }
+
         var key = (ctx.Request.QueryString["key"] ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(key))
         { TrySendResponse(ctx, 400, "application/json", "{\"error\":\"missing key\"}"); return; }
@@ -1388,6 +1484,22 @@ internal sealed partial class WebServer
         const int InterRequestDelayMs = 50;
         const int MaxRetries          = 3;
 
+        // Fetch the remote index so we can skip files the peer already has (same key + same size).
+        System.Collections.Generic.Dictionary<string, long>? remoteIndex = null;
+        try
+        {
+            var idxRes = await http.GetAsync($"{targetUrl}/api/music/album-art/import?index=1").ConfigureAwait(false);
+            if (idxRes.IsSuccessStatusCode)
+            {
+                var idxJson = await idxRes.Content.ReadAsStringAsync().ConfigureAwait(false);
+                using var idxDoc = JsonDocument.Parse(idxJson);
+                remoteIndex = new System.Collections.Generic.Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                foreach (var prop in idxDoc.RootElement.EnumerateObject())
+                    remoteIndex[prop.Name] = prop.Value.GetInt64();
+            }
+        }
+        catch { /* remote may not support the index endpoint yet; proceed without skipping */ }
+
         foreach (var file in files)
         {
             // Derive the original cache key from the filename (strip .jpg extension)
@@ -1396,6 +1508,12 @@ internal sealed partial class WebServer
             {
                 var bytes = await File.ReadAllBytesAsync(file).ConfigureAwait(false);
                 if (bytes.Length < 3 || bytes[0] != 0xFF || bytes[1] != 0xD8 || bytes[2] != 0xFF)
+                { skipped++; continue; }
+
+                // Skip if the remote already has the same file (matching key + byte-length).
+                if (remoteIndex is not null
+                    && remoteIndex.TryGetValue(fileName, out var remoteSize)
+                    && remoteSize == bytes.LongLength)
                 { skipped++; continue; }
 
                 var url = $"{importBase}?key={Uri.EscapeDataString(fileName)}";
@@ -1952,6 +2070,277 @@ internal sealed partial class WebServer
             eqPreset      = pb.EqPreset,
             reverbPreset  = pb.ReverbPreset
         };
+    }
+
+    // -----------------------------------------------------------------------
+    // All-peers sync  (/api/sync/all)
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Pushes covers, lyrics and offsets to every discovered non-self peer.
+    /// Responds with Server-Sent Events so the client can show live progress.
+    /// Body (JSON): { "offsets": { ... } }   (offsets map from localStorage)
+    /// </summary>
+    private async Task HandleSyncAllAsync(HttpListenerContext ctx)
+    {
+        // Read optional offsets payload first, before we touch the response.
+        Dictionary<string, JsonElement>? offsetsMap = null;
+        try
+        {
+            using var sr = new System.IO.StreamReader(ctx.Request.InputStream);
+            var body = await sr.ReadToEndAsync().ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("offsets", out var o) && o.ValueKind == JsonValueKind.Object)
+                {
+                    offsetsMap = [];
+                    foreach (var prop in o.EnumerateObject())
+                        offsetsMap[prop.Name] = prop.Value.Clone();
+                }
+            }
+        }
+        catch { /* offsets are best-effort */ }
+
+        var peers = _broadcaster?.GetPeers()
+            .Where(p => !p.IsSelf && !string.IsNullOrWhiteSpace(p.Host) && p.Port > 0)
+            .ToArray() ?? [];
+
+        // SSE headers — SendChunked is required so HttpListener flushes each event immediately
+        // instead of buffering the entire response until the connection closes.
+        ctx.Response.StatusCode = 200;
+        ctx.Response.ContentType = "text/event-stream; charset=utf-8";
+        ctx.Response.SendChunked = true;
+        ctx.Response.AddHeader("Cache-Control", "no-store");
+        ctx.Response.AddHeader("X-Accel-Buffering", "no");
+
+        // bufferSize: 1 defeats the StreamWriter's own 4 KB write buffer so each event goes out immediately.
+        await using var writer = new System.IO.StreamWriter(ctx.Response.OutputStream, System.Text.Encoding.UTF8, bufferSize: 1, leaveOpen: true);
+        writer.AutoFlush = true;
+
+        async Task SendEvent(string data)
+        {
+            try
+            {
+                await writer.WriteAsync($"data: {data}\n\n").ConfigureAwait(false);
+                await writer.FlushAsync().ConfigureAwait(false);
+                await ctx.Response.OutputStream.FlushAsync().ConfigureAwait(false);
+            }
+            catch { /* client may have disconnected */ }
+        }
+
+        if (peers.Length == 0)
+        {
+            await SendEvent(JsonSerializer.Serialize(new { type = "done", message = "No peers discovered on the network yet." })).ConfigureAwait(false);
+            return;
+        }
+
+        using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("RemotePlay/1.0 (sync-all)");
+
+        int totalSent = 0, totalSkipped = 0, totalFailed = 0;
+
+        foreach (var peer in peers)
+        {
+            var peerUrl = peer.Url.TrimEnd('/');
+            await SendEvent(JsonSerializer.Serialize(new { type = "peer", peer = peer.Name, message = $"Syncing to {peer.Name} …" })).ConfigureAwait(false);
+
+            // --- Covers ---
+            await SendEvent(JsonSerializer.Serialize(new { type = "step", peer = peer.Name, step = "covers", message = "Pushing covers …" })).ConfigureAwait(false);
+            try
+            {
+                var (artSent, artSkipped, artFailed) = await SyncAlbumArtToPeerAsync(http, peerUrl).ConfigureAwait(false);
+                totalSent    += artSent;
+                totalSkipped += artSkipped;
+                totalFailed  += artFailed;
+                await SendEvent(JsonSerializer.Serialize(new { type = "step_done", peer = peer.Name, step = "covers", sent = artSent, skipped = artSkipped, failed = artFailed })).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await SendEvent(JsonSerializer.Serialize(new { type = "step_error", peer = peer.Name, step = "covers", message = ex.Message })).ConfigureAwait(false);
+            }
+
+            // --- Lyrics ---
+            await SendEvent(JsonSerializer.Serialize(new { type = "step", peer = peer.Name, step = "lyrics", message = "Pushing lyrics …" })).ConfigureAwait(false);
+            try
+            {
+                var (lSent, lSkipped, lFailed) = await SyncLyricsToPeerAsync(http, peerUrl).ConfigureAwait(false);
+                totalSent    += lSent;
+                totalSkipped += lSkipped;
+                totalFailed  += lFailed;
+                await SendEvent(JsonSerializer.Serialize(new { type = "step_done", peer = peer.Name, step = "lyrics", sent = lSent, skipped = lSkipped, failed = lFailed })).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await SendEvent(JsonSerializer.Serialize(new { type = "step_error", peer = peer.Name, step = "lyrics", message = ex.Message })).ConfigureAwait(false);
+            }
+
+            // --- Offsets ---
+            if (offsetsMap is { Count: > 0 })
+            {
+                await SendEvent(JsonSerializer.Serialize(new { type = "step", peer = peer.Name, step = "offsets", message = "Pushing offsets …" })).ConfigureAwait(false);
+                try
+                {
+                    var pushed = await SyncOffsetsToPeerAsync(http, peerUrl, offsetsMap).ConfigureAwait(false);
+                    await SendEvent(JsonSerializer.Serialize(new { type = "step_done", peer = peer.Name, step = "offsets", sent = pushed, skipped = 0, failed = 0 })).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    await SendEvent(JsonSerializer.Serialize(new { type = "step_error", peer = peer.Name, step = "offsets", message = ex.Message })).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                await SendEvent(JsonSerializer.Serialize(new { type = "step_done", peer = peer.Name, step = "offsets", sent = 0, skipped = 0, failed = 0, note = "no local offsets" })).ConfigureAwait(false);
+            }
+        }
+
+        await SendEvent(JsonSerializer.Serialize(new { type = "done", peers = peers.Length, sent = totalSent, skipped = totalSkipped, failed = totalFailed })).ConfigureAwait(false);
+        Logger.Info("Sync", $"All-peers sync complete: peers={peers.Length} sent={totalSent} skipped={totalSkipped} failed={totalFailed}");
+    }
+
+    private static async Task<(int sent, int skipped, int failed)> SyncAlbumArtToPeerAsync(System.Net.Http.HttpClient http, string peerUrl)
+    {
+        if (!Directory.Exists(AlbumArtCacheDir)) return (0, 0, 0);
+
+        var files = Directory.EnumerateFiles(AlbumArtCacheDir, "*.jpg")
+            .Where(f => new FileInfo(f).Length > 0)
+            .ToArray();
+
+        // Fetch remote index for diff-based skipping.
+        Dictionary<string, long>? remoteIndex = null;
+        try
+        {
+            var idxRes = await http.GetAsync($"{peerUrl}/api/music/album-art/import?index=1").ConfigureAwait(false);
+            if (idxRes.IsSuccessStatusCode)
+            {
+                var idxJson = await idxRes.Content.ReadAsStringAsync().ConfigureAwait(false);
+                using var idxDoc = JsonDocument.Parse(idxJson);
+                remoteIndex = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                foreach (var prop in idxDoc.RootElement.EnumerateObject())
+                    remoteIndex[prop.Name] = prop.Value.GetInt64();
+            }
+        }
+        catch { /* proceed without index */ }
+
+        int sent = 0, skipped = 0, failed = 0;
+        var importBase = $"{peerUrl}/api/music/album-art/import";
+        const int DelayMs = 50, MaxRetries = 3;
+
+        foreach (var file in files)
+        {
+            var key = Path.GetFileNameWithoutExtension(file);
+            try
+            {
+                var bytes = await File.ReadAllBytesAsync(file).ConfigureAwait(false);
+                if (bytes.Length < 3 || bytes[0] != 0xFF || bytes[1] != 0xD8 || bytes[2] != 0xFF)
+                { skipped++; continue; }
+
+                if (remoteIndex is not null
+                    && remoteIndex.TryGetValue(key, out var remoteSize)
+                    && remoteSize == bytes.LongLength)
+                { skipped++; continue; }
+
+                var url = $"{importBase}?key={Uri.EscapeDataString(key)}";
+                System.Net.Http.HttpResponseMessage resp = null!;
+                int retryMs = 2000, attempt = 0;
+                while (true)
+                {
+                    using var content = new System.Net.Http.ByteArrayContent(bytes);
+                    content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("image/jpeg");
+                    resp = await http.PostAsync(url, content).ConfigureAwait(false);
+                    if ((int)resp.StatusCode != 429 || attempt >= MaxRetries) break;
+                    if (resp.Headers.RetryAfter?.Delta is { } d) retryMs = (int)d.TotalMilliseconds + 200;
+                    await Task.Delay(retryMs).ConfigureAwait(false);
+                    retryMs = Math.Min(retryMs * 2, 30_000);
+                    attempt++;
+                }
+                if (resp.IsSuccessStatusCode) sent++; else failed++;
+            }
+            catch { failed++; }
+            await Task.Delay(DelayMs).ConfigureAwait(false);
+        }
+        return (sent, skipped, failed);
+    }
+
+    private static async Task<(int sent, int skipped, int failed)> SyncLyricsToPeerAsync(System.Net.Http.HttpClient http, string peerUrl)
+    {
+        var cacheDir = AppPaths.LyricsCacheDirectory;
+        if (!Directory.Exists(cacheDir)) return (0, 0, 0);
+
+        var files = Directory.EnumerateFiles(cacheDir, "*.json")
+            .Where(f => new FileInfo(f).Length > 0)
+            .ToArray();
+
+        // Fetch remote index.
+        Dictionary<string, long>? remoteIndex = null;
+        try
+        {
+            var idxRes = await http.GetAsync($"{peerUrl}/api/music/lyrics/import?index=1").ConfigureAwait(false);
+            if (idxRes.IsSuccessStatusCode)
+            {
+                var idxJson = await idxRes.Content.ReadAsStringAsync().ConfigureAwait(false);
+                using var idxDoc = JsonDocument.Parse(idxJson);
+                remoteIndex = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                foreach (var prop in idxDoc.RootElement.EnumerateObject())
+                    remoteIndex[prop.Name] = prop.Value.GetInt64();
+            }
+        }
+        catch { /* proceed without index */ }
+
+        int sent = 0, skipped = 0, failed = 0;
+        var importBase = $"{peerUrl}/api/music/lyrics/import";
+        const int DelayMs = 30, MaxRetries = 3;
+
+        foreach (var file in files)
+        {
+            var key = Path.GetFileNameWithoutExtension(file);
+            try
+            {
+                var bytes = await File.ReadAllBytesAsync(file).ConfigureAwait(false);
+                if (remoteIndex is not null
+                    && remoteIndex.TryGetValue(key, out var remoteSize)
+                    && remoteSize == bytes.LongLength)
+                { skipped++; continue; }
+
+                var url = $"{importBase}?key={Uri.EscapeDataString(key)}";
+                System.Net.Http.HttpResponseMessage resp = null!;
+                int retryMs = 2000, attempt = 0;
+                while (true)
+                {
+                    using var content = new System.Net.Http.ByteArrayContent(bytes);
+                    content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+                    resp = await http.PostAsync(url, content).ConfigureAwait(false);
+                    if ((int)resp.StatusCode != 429 || attempt >= MaxRetries) break;
+                    if (resp.Headers.RetryAfter?.Delta is { } d) retryMs = (int)d.TotalMilliseconds + 200;
+                    await Task.Delay(retryMs).ConfigureAwait(false);
+                    retryMs = Math.Min(retryMs * 2, 30_000);
+                    attempt++;
+                }
+                if (resp.IsSuccessStatusCode) sent++; else failed++;
+            }
+            catch { failed++; }
+            await Task.Delay(DelayMs).ConfigureAwait(false);
+        }
+        return (sent, skipped, failed);
+    }
+
+    private static async Task<int> SyncOffsetsToPeerAsync(System.Net.Http.HttpClient http, string peerUrl, Dictionary<string, JsonElement> offsetsMap)
+    {
+        var json = JsonSerializer.Serialize(offsetsMap);
+        using var content = new System.Net.Http.StringContent(json, System.Text.Encoding.UTF8, "application/json");
+        var resp = await http.PostAsync($"{peerUrl}/api/music/lyrics/offsets", content).ConfigureAwait(false);
+        resp.EnsureSuccessStatusCode();
+        return offsetsMap.Count;
+    }
+
+    private void HandleResetM3uCache(HttpListenerContext ctx)
+    {
+        lock (_musicIndexGate)
+            _m3uIndex = new Dictionary<string, M3uEntry>(StringComparer.OrdinalIgnoreCase);
+        Logger.Info("M3U cache cleared by user — triggering re-index.");
+        StartM3uIndexRefresh();
+        TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
     }
 
 }

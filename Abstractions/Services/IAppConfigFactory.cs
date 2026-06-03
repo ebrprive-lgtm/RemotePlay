@@ -25,6 +25,7 @@ internal interface IAppConfigFactory
         bool startWithWindows,
         bool useTrayIcon,
         bool expertMode,
+        bool debugMode,
         string updateSourcePath,
         int autoUpdateIntervalMinutes,
         string musicAudioDeviceId,

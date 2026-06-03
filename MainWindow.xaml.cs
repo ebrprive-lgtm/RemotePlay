@@ -382,6 +382,8 @@ public partial class MainWindow : Window
             useTrayIconBox.IsChecked = _config.UseTrayIcon;
         if (FindName("ExpertModeBox") is System.Windows.Controls.CheckBox expertModeBox)
             expertModeBox.IsChecked = _config.ExpertMode;
+        if (FindName("DebugModeBox") is System.Windows.Controls.CheckBox debugModeBox)
+            debugModeBox.IsChecked = _config.DebugMode;
         if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo)
             PopulateDisplayCombo(displayCombo, _config.PreferredDisplayIndex);
         PopulateMusicAudioDeviceCombo(_config.MusicAudioDeviceId);
@@ -1493,6 +1495,7 @@ public partial class MainWindow : Window
         UpdateServerReadiness(isReady: false, "Server: stopped");
         UpdateLibraryReadiness("Library: unavailable until server starts", isReady: false, isBusy: false);
         AppendLog("Server stopped.");
+        System.Windows.Application.Current.Shutdown();
     }
 
     private void OnRestartServer(object sender, RoutedEventArgs e)
@@ -1714,6 +1717,9 @@ public partial class MainWindow : Window
         var expertMode = FindName("ExpertModeBox") is System.Windows.Controls.CheckBox expertModeBox2
             ? expertModeBox2.IsChecked == true
             : _config.ExpertMode;
+        var debugMode = FindName("DebugModeBox") is System.Windows.Controls.CheckBox debugModeBox2
+            ? debugModeBox2.IsChecked == true
+            : _config.DebugMode;
 
         var musicAudioDeviceId = _config.MusicAudioDeviceId;
         if (MusicAudioDeviceCombo.SelectedItem is MusicAudioDevice selectedDev)
@@ -1810,6 +1816,7 @@ public partial class MainWindow : Window
                 startWithWindows,
                 useTrayIcon,
                 expertMode,
+                debugMode,
                 updateSourcePath,
                 autoUpdateIntervalMinutes,
                 musicAudioDeviceId,
@@ -1867,6 +1874,7 @@ public partial class MainWindow : Window
             ShowInTaskbar = true;
         _playbackHistory.Trim(_config.PlaybackHistoryLimit);
         _webServer?.UpdateExpertMode(_config.ExpertMode);
+        _webServer?.UpdateDebugMode(_config.DebugMode);
         _musicPlayer.SetDevice(_config.MusicAudioDeviceId);
         _radioPlayer.SetDevice(_config.MusicAudioDeviceId);
 

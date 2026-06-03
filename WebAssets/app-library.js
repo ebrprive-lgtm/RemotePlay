@@ -1190,6 +1190,21 @@ function toggleMusicShuffle() {
     _refreshMusicNavLabels();
   }
 }
+async function resetM3uCache() {
+  const btn = document.getElementById('mcb-reset-m3u-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Resetting…'; }
+  try {
+    const res = await fetch('/api/music/reset-m3u-cache', { method: 'POST' });
+    if (!res.ok) { setStatus('Reset M3U cache failed: ' + res.status); return; }
+    setStatus('M3U cache reset — reloading…');
+    await browseMusic(currentMusicFolder);
+  } catch (e) {
+    setStatus('Reset M3U cache error: ' + e);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Reset M3u Cache'; }
+  }
+}
+
 // Silently fetches remaining pages until hasMore is false; merges into musicTrackList.
 async function _loadAllMusicTracksForShuffle() {
   if (!currentMusicData) return;
@@ -2629,7 +2644,8 @@ function renderMusicCards(data, searching) {
       // Merged genre · year single line
       const genreYear = [genre, year].filter(Boolean).join(' · ');
 
-      // In grid mode always attempt cover art; onerror handles the fallback visually
+      // Always attempt cover art — the server caches results so repeat requests are instant.
+      // hasCover is kept as a hint to skip the slow online-art fallback for confirmed no-cover tracks.
       const gridCoverUrl = !isList ? `/api/music/cover?path=${encodeURIComponent(f.path)}` : null;
 
       let card = `<div class="music-track-card${isPlaying ? ' playing' : ''}${isSelected ? ' selected' : ''}${isQueued ? ' queued' : ''}${isList && idx % 2 === 1 ? ' alt-row' : ''}" data-path="${esc(f.path)}" data-idx="${idx}" data-sr-title="${esc(title)}" data-sr-artist="${esc(artist)}" data-sr-album="${esc(album)}" title="${esc(title)}"${gridCoverUrl ? ` data-cover-url="${gridCoverUrl}"` : ''}>`;
@@ -2643,13 +2659,13 @@ function renderMusicCards(data, searching) {
       if (!isList) {
         // Grid mode: always try local cover art; post-render pass adds online-art fallback
         card += `<span class="mtc-play-indicator mtc-thumb-wrap">`
-          + `<img class="mtc-thumb" src="${gridCoverUrl}" loading="lazy" data-artist="${esc(artist)}" data-album="${esc(album)}" />`
+          + `<img class="mtc-thumb" src="${gridCoverUrl}" loading="lazy" data-artist="${esc(artist)}" data-album="${esc(album)}"${hasCover ? '' : ' data-no-cover="1"'} />`
           + `<span class="mtc-bars mtc-bars-overlay"><span></span><span></span><span></span></span>`
           + `</span>`;
       } else {
         // List mode: always try local cover art; post-render pass adds online-art fallback
         card += `<span class="mtc-play-indicator mtc-thumb-wrap">`
-          + `<img class="mtc-thumb" src="/api/music/cover?path=${encodeURIComponent(f.path)}" loading="lazy" data-artist="${esc(artist)}" data-album="${esc(album)}" />`
+          + `<img class="mtc-thumb" src="/api/music/cover?path=${encodeURIComponent(f.path)}" loading="lazy" data-artist="${esc(artist)}" data-album="${esc(album)}"${hasCover ? '' : ' data-no-cover="1"'} />`
           + (trackNum != null ? `<span class="mtc-tracknum mtc-tracknum-default">${trackNum}</span>` : '')
           + `<span class="mtc-bars mtc-bars-overlay"><span></span><span></span><span></span></span>`
           + `</span>`;
@@ -2702,11 +2718,16 @@ function renderMusicCards(data, searching) {
     '<div style="padding:1rem;color:var(--muted,#9aa8c2)">Select a folder to browse tracks.</div>';
 
   // Grid cover art: wire up two-stage fallback (local → online album art → no-cover placeholder)
+  // data-no-cover="1" means the index confirmed no embedded/folder art exists — skip straight to
+  // the online fallback only if there is an album name; otherwise show placeholder immediately.
   mb.querySelectorAll('.music-track-card .mtc-thumb[data-album]').forEach(img => {
+    if (img.dataset.noCover && !img.dataset.album) { _mtcNoCover(img); return; }
     img.addEventListener('error', function onLocalError() {
       img.removeEventListener('error', onLocalError);
       const artist = img.dataset.artist || '';
       const album  = img.dataset.album  || '';
+      // If we already know there's no local cover AND there's no album to look up online, show placeholder
+      if (img.dataset.noCover && !album) { _mtcNoCover(img); return; }
       if (!album) { _mtcNoCover(img); return; }
       const onlineUrl = '/api/music/album-art?album=' + encodeURIComponent(album)
         + (artist ? '&artist=' + encodeURIComponent(artist) : '');
@@ -4245,8 +4266,20 @@ function _toggleExpertMode() {
     body: JSON.stringify({ expertMode: on })
   }).catch(() => {});
 }
+/** Called by the Debug Mode checkbox onchange — POSTs the new value to the server so it persists. */
+function _toggleDebugMode() {
+  const chk = document.getElementById('debug-mode-chk');
+  const on = chk ? chk.checked : false;
+  _setDebugMode(on);
+  fetch('/api/debug-mode', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ debugMode: on })
+  }).catch(() => {});
+}
 function _initExpertMode() {
   _refreshExpertMode();
+  _refreshDebugMode();
 }
 _initExpertMode();
 
@@ -4292,6 +4325,8 @@ function _createDynamicFolder() {
   document.getElementById('rpdyn-genre').value = '';
   document.getElementById('rpdyn-year-from').value = '';
   document.getElementById('rpdyn-year-to').value = '';
+  document.getElementById('rpdyn-min-dur').value = '';
+  document.getElementById('rpdyn-max-dur').value = '';
   document.getElementById('rpdyn-autoplay').checked = false;
   _rpdynModeChange();
   dlg.style.display = 'flex';
@@ -4324,6 +4359,8 @@ async function _editDynamicFolder(encodedPath) {
   document.getElementById('rpdyn-genre').value = '';
   document.getElementById('rpdyn-year-from').value = '';
   document.getElementById('rpdyn-year-to').value = '';
+  document.getElementById('rpdyn-min-dur').value = '';
+  document.getElementById('rpdyn-max-dur').value = '';
   document.getElementById('rpdyn-autoplay').checked = false;
   try {
     const res = await fetch('/api/music/dynamic?path=' + encodeURIComponent(encodedPath));
@@ -4341,6 +4378,8 @@ async function _editDynamicFolder(encodedPath) {
       if (s.genre) document.getElementById('rpdyn-genre').value = s.genre;
       if (s.yearFrom != null) document.getElementById('rpdyn-year-from').value = s.yearFrom;
       if (s.yearTo   != null) document.getElementById('rpdyn-year-to').value   = s.yearTo;
+      if (s.minDuration != null) document.getElementById('rpdyn-min-dur').value = s.minDuration;
+      if (s.maxDuration != null) document.getElementById('rpdyn-max-dur').value = s.maxDuration;
       if (s.autoPlay != null) document.getElementById('rpdyn-autoplay').checked = !!s.autoPlay;
     }
   } catch (e) { /* keep defaults */ }
@@ -4373,9 +4412,13 @@ async function _saveDynamicFolder() {
   const yearToVal   = document.getElementById('rpdyn-year-to').value.trim();
   const yearFrom  = yearFromVal ? parseInt(yearFromVal, 10) : null;
   const yearTo    = yearToVal   ? parseInt(yearToVal,   10) : null;
+  const minDurVal = document.getElementById('rpdyn-min-dur').value.trim();
+  const maxDurVal = document.getElementById('rpdyn-max-dur').value.trim();
+  const minDuration = minDurVal ? parseInt(minDurVal, 10) : null;
+  const maxDuration = maxDurVal ? parseInt(maxDurVal, 10) : null;
   const autoPlay  = document.getElementById('rpdyn-autoplay').checked;
 
-  const payload = { name, sort, mode, count, recursive, include, exclude, genre, yearFrom, yearTo, autoPlay };
+  const payload = { name, sort, mode, count, recursive, include, exclude, genre, yearFrom, yearTo, minDuration, maxDuration, autoPlay };
 
   try {
     let res;
@@ -4505,9 +4548,13 @@ async function _openDynamicFolder(encodedPath, name) {
     const _dynBtn = document.getElementById('mcb-dynamic-btn');
     if (_dynBtn) _dynBtn.style.display = 'none';
 
-    // Hide the "Pin folder" button — pinning a virtual folder makes no sense
+    // Show pin button wired to the .rpDynamic file path (not the virtual sentinel)
     const _pinBtn = document.getElementById('mcb-pin-btn');
-    if (_pinBtn) _pinBtn.style.display = 'none';
+    if (_pinBtn) {
+      _pinBtn.style.display = '';
+      _pinBtn.dataset.dynamicPath = encodedPath;
+      _pinBtn.onclick = () => toggleMusicPinFolder(encodedPath, data.name || dynamicName, true);
+    }
 
     // Show the re-roll button (shuffle again)
     const rerollBtn = document.getElementById('mcb-reroll-btn');
@@ -4558,7 +4605,11 @@ async function _openDynamicFolder(encodedPath, name) {
         const dynBtn = document.getElementById('mcb-dynamic-btn');
         if (dynBtn) dynBtn.style.display = '';
         const pinBtn = document.getElementById('mcb-pin-btn');
-        if (pinBtn) pinBtn.style.display = '';
+        if (pinBtn) {
+          pinBtn.style.display = '';
+          delete pinBtn.dataset.dynamicPath;
+          pinBtn.onclick = () => toggleMusicPinFolder(typeof currentMusicFolder !== 'undefined' ? currentMusicFolder : null);
+        }
         const minusBtn = document.getElementById('mcb-dyn-minus');
         if (minusBtn) minusBtn.style.display = 'none';
         const plusBtn = document.getElementById('mcb-dyn-plus');
@@ -4613,3 +4664,20 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); _saveDynamicFolder(); }
   if (e.key === 'Escape') { e.preventDefault(); _closeDynamicDialog(); }
 });
+
+// ── Sync-status pill ────────────────────────────────────────────────────────
+// The settings page broadcasts 'sync-start' / 'sync-done' on a shared channel
+// so the syncing pill on the main UI lights up even when sync runs in another tab.
+(function () {
+  function _setSyncBadge(visible) {
+    const b = document.getElementById('syncing-badge');
+    if (b) b.style.display = visible ? '' : 'none';
+  }
+  try {
+    const ch = new BroadcastChannel('remoteplay-sync');
+    ch.onmessage = function (e) {
+      if (e.data === 'sync-start') _setSyncBadge(true);
+      else if (e.data === 'sync-done') _setSyncBadge(false);
+    };
+  } catch (_) { /* BroadcastChannel not supported – pill just won't appear */ }
+})();

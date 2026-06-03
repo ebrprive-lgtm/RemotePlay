@@ -133,7 +133,8 @@ internal sealed partial class WebServer
             preferredAudioLanguage = _config.PreferredAudioLanguage,
             preferredSubtitleLanguage = _config.PreferredSubtitleLanguage,
             preferForcedSubtitles = _config.PreferForcedSubtitles,
-            expertMode = _expertMode
+            expertMode = _expertMode,
+            debugMode  = _debugMode
         });
         TrySendResponse(ctx, 200, "application/json", json);
     }
@@ -159,6 +160,29 @@ internal sealed partial class WebServer
         }
         var json = JsonSerializer.Serialize(new { expertMode = _expertMode });
         TrySendResponse(ctx, 200, "application/json", json);
+    }
+
+    private void HandleDebugMode(HttpListenerContext ctx)
+    {
+        if (string.Equals(ctx.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using var reader = new System.IO.StreamReader(ctx.Request.InputStream);
+                var body = reader.ReadToEnd();
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("debugMode", out var dp) &&
+                    (dp.ValueKind == JsonValueKind.True || dp.ValueKind == JsonValueKind.False))
+                {
+                    var on = dp.GetBoolean();
+                    _debugMode = on;
+                    _callbacks.SaveDebugMode(on);
+                }
+            }
+            catch { }
+        }
+        var debugJson = JsonSerializer.Serialize(new { debugMode = _debugMode });
+        TrySendResponse(ctx, 200, "application/json", debugJson);
     }
 
     private static readonly JsonSerializerOptions _camelCaseJson =
@@ -836,14 +860,6 @@ internal sealed partial class WebServer
             ? $"{artBytes / (1024.0 * 1024):F1} MB"
             : $"{artBytes / 1024.0:F0} KB";
 
-        var knownPeers = _broadcaster?.GetPeers()
-            .Where(p => !p.IsSelf && !string.IsNullOrWhiteSpace(p.Host) && p.Port > 0)
-            .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
-            .ToArray() ?? [];
-
-        var peerOptions = string.Concat(knownPeers.Select(p =>
-            $"<option value=\"{HtmlEncode(p.Url)}\">{HtmlEncode(p.Name)} ({HtmlEncode(p.Host)}:{p.Port})</option>"));
-
         ctx.Response.AddHeader("Cache-Control", "no-store");
         var html = $$$$"""
             <!doctype html>
@@ -851,7 +867,7 @@ internal sealed partial class WebServer
             <head>
             <meta charset="utf-8"/>
             <meta name="viewport" content="width=device-width,initial-scale=1"/>
-            <title>RemotePlay â€” Settings</title>
+            <title>RemotePlay &#x2014; Settings</title>
             <style>
             *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
             body{font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh;padding:1.5rem 1rem 3rem}
@@ -865,16 +881,15 @@ internal sealed partial class WebServer
             button.primary{background:#1f6feb;border-color:#1f6feb;color:#fff;font-weight:600}
             button.primary:hover{background:#388bfd}
             button:disabled{opacity:.45;cursor:not-allowed}
-            .peer-row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:.8rem}
-            .peer-row input[type=url]{flex:1 1 200px;min-width:0;padding:.4rem .6rem;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.15);border-radius:8px;color:#d8e8ff;font-size:.88rem}
-            .peer-row select{flex:0 1 auto;max-width:260px;padding:.4rem .5rem;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.15);border-radius:8px;color:#d8e8ff;font-size:.82rem}
             .admin-result{min-height:1.1rem;color:#ffd48a;font-weight:700;font-size:.88rem;margin-top:.5rem}
             .muted{color:#8b949e;font-size:.82rem}
             .divider{border:none;border-top:1px solid #30363d;margin:.8rem 0}
-            .sync-grid{display:grid;grid-template-columns:1fr auto;gap:.4rem .6rem;align-items:center;margin-bottom:.4rem}
-            .sync-bar-wrap{display:none;grid-column:1/-1;height:5px;border-radius:3px;background:rgba(255,255,255,.1)}
-            .sync-bar-fill{height:100%;border-radius:3px;background:#22d3ee;width:0%;transition:width .3s}
-            .sync-result{grid-column:1/-1;margin:0}
+            .sync-log{display:none;margin-top:.75rem;background:rgba(0,0,0,.35);border:1px solid #30363d;border-radius:8px;padding:.6rem .8rem;max-height:220px;overflow-y:auto;font-size:.8rem;line-height:1.6}
+            .sync-log .ok{color:#4ade80}.sync-log .warn{color:#fbbf24}.sync-log .info{color:#7dd3fc}.sync-log .dim{color:#6e7681}
+            .sync-bar-wrap{display:none;height:5px;border-radius:3px;background:rgba(255,255,255,.1);margin-top:.6rem}
+            .sync-bar-fill{height:100%;border-radius:3px;background:#22d3ee;width:0%;transition:width .4s}
+            .sync-status-pill{display:none;font-size:.75rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#22d3ee;background:rgba(34,211,238,.12);border:1px solid rgba(34,211,238,.28);border-radius:4px;padding:.15rem .5rem;animation:syncpulse 1.4s ease-in-out infinite;align-self:center}
+            @keyframes syncpulse{0%,100%{opacity:.6}50%{opacity:1}}
             .footer-note{font-size:.78rem;color:#484f58;text-align:center;margin-top:2rem}
             .footer-note a{color:#58a6ff;text-decoration:none}
             </style>
@@ -893,134 +908,124 @@ internal sealed partial class WebServer
             </section>
 
             <section class="card">
-              <h2>&#8679; Data sync to peer</h2>
+              <h2>&#8679; Sync data to peers</h2>
               <dl style="display:grid;grid-template-columns:1fr 1fr;gap:.3rem .8rem;margin-bottom:.8rem">
                 <div><dt class="muted">Cached covers</dt><dd>{{{{artFiles}}}} images</dd></div>
                 <div><dt class="muted">Cover cache size</dt><dd>{{{{artSizeLabel}}}}</dd></div>
               </dl>
               <hr class="divider"/>
-              <p class="muted" style="margin-bottom:.6rem">Push cached data to another RemotePlay instance. Only items that differ are sent &mdash; identical files are skipped automatically.</p>
-              <div class="peer-row">
-                <input id="sync-target-url" type="url" placeholder="http://192.168.1.x:8080" />
-                <select id="sync-peer-pick" onchange="syncPeerPick(this)">
-                  <option value="">&#8212; pick peer &#8212;</option>
-                  {{{{peerOptions}}}}
-                </select>
-                <button onclick="loadPeers()" title="Refresh peer list" style="padding:.3rem .6rem;font-size:.8rem">&#8635; Refresh</button>
-                <span id="peer-pick-status" class="muted" style="font-size:.75rem"></span>
+              <p class="muted" style="margin-bottom:.75rem">Pushes covers, lyrics and offsets to every RemotePlay instance found on the network. Only changed data is transferred.</p>
+              <div class="actions" style="display:flex;align-items:center;gap:.75rem">
+                <button class="primary" id="sync-btn" onclick="startSyncAll()">&#8679; Sync Data</button>
+                <span class="sync-status-pill" id="sync-status-pill">&#8679; Syncing…</span>
               </div>
-              <div class="sync-grid">
-                <span class="muted">&#127912; Album covers</span>
-                <button class="primary" id="sync-art-btn" onclick="startSyncItem('art')">&#8679; Sync covers</button>
-                <div id="sync-art-bar-wrap" class="sync-bar-wrap"><div class="sync-bar-fill" id="sync-art-fill"></div></div>
-                <p id="sync-art-result" class="admin-result sync-result"></p>
-                <span class="muted" style="margin-top:.5rem">&#127911; Lyrics cache</span>
-                <button id="sync-lyrics-btn" onclick="startSyncItem('lyrics')" style="margin-top:.5rem">&#8679; Sync lyrics</button>
-                <div id="sync-lyrics-bar-wrap" class="sync-bar-wrap"><div class="sync-bar-fill" id="sync-lyrics-fill"></div></div>
-                <p id="sync-lyrics-result" class="admin-result sync-result"></p>
-                <span class="muted" style="margin-top:.5rem">&#9201; Lyric offsets</span>
-                <button id="sync-offsets-btn" onclick="startSyncItem('offsets')" style="margin-top:.5rem">&#8679; Sync offsets</button>
-                <p id="sync-offsets-result" class="admin-result sync-result"></p>
-              </div>
+              <div class="sync-bar-wrap" id="sync-bar-wrap"><div class="sync-bar-fill" id="sync-bar-fill"></div></div>
+              <div class="sync-log" id="sync-log"></div>
             </section>
 
             </div><div class="footer-note">RemotePlay settings &mdash; <a href="/">Open remote</a> &middot; <a href="/health" target="_blank">Health</a></div>
-            <script>
-            async function refreshRuntime(){{
-              const result=document.getElementById('admin-result');
-              result.textContent='Refreshing\u2026';
-              try{{
-                const r=await fetch('/api/health');
-                result.textContent=r.ok?'\u2714 Runtime refreshed.':'Refresh failed: '+r.status;
-              }}catch(e){{result.textContent='Refresh failed: '+e;}}
-            }}
-            async function rescanLibrary(){{
-              const result=document.getElementById('admin-result');
-              result.textContent='Starting rescan\u2026';
-              try{{await fetch('/api/rescan');result.textContent='Video library rescan started.';}}
-              catch(e){{result.textContent='Rescan failed: '+e;}}
-            }}
-            async function loadPeers(){{
-              const sel=document.getElementById('sync-peer-pick');
-              const status=document.getElementById('peer-pick-status');
-              if(status)status.textContent='Loading\u2026';
-              try{{
-                const res=await fetch('/api/peers');
-                if(!res.ok){{if(status)status.textContent='Failed (HTTP '+res.status+')';return;}}
-                const all=await res.json();
-                const peers=all.filter(p=>!p.isSelf);
-                // Rebuild options (keep placeholder)
-                while(sel.options.length>1)sel.remove(1);
-                peers.forEach(p=>{{
-                  const o=document.createElement('option');
-                  o.value=p.url;
-                  o.textContent=p.name+' ('+p.url.replace(/^https?:\/\//,'')+')';
-                  sel.appendChild(o);
-                }});
-                if(peers.length===0){{
-                  if(status)status.textContent='No peers discovered yet. Keep the other instance running on the same LAN.';
-                }}else{{
-                  if(status)status.textContent=peers.length+' peer(s) found';
-                  if(peers.length===1)sel.value=peers[0].url;
-                  if(sel.value)document.getElementById('sync-target-url').value=sel.value;
-                }}
-              }}catch(e){{if(status)status.textContent='Error: '+e.message;}}
-            }}
-            (function(){{const sel=document.getElementById('sync-peer-pick');if(sel&&sel.options.length>1){{sel.selectedIndex=1;document.getElementById('sync-target-url').value=sel.value;document.getElementById('peer-pick-status').textContent=sel.options.length-1+' peer(s) pre-loaded';}}else loadPeers();}})();
-            function syncPeerPick(sel){{if(sel.value)document.getElementById('sync-target-url').value=sel.value;}}
-            function _syncEl(id){{return document.getElementById(id);}}
-            function _showSyncFail(type,errors){{
-              if(!errors||!errors.length)return;
-              const res=_syncEl('sync-'+type+'-result');
-              const det=document.createElement('details');
-              det.style.cssText='margin-top:.4rem;font-size:.78rem;color:#ffb86c';
-              const sum=document.createElement('summary');
-              sum.textContent='Show failure details ('+errors.length+' samples)';
-              det.appendChild(sum);
-              const pre=document.createElement('pre');
-              pre.style.cssText='white-space:pre-wrap;margin:.3rem 0 0;font-size:.75rem;max-height:180px;overflow:auto';
-              pre.textContent=errors.join('\n');
-              det.appendChild(pre);
-              res.parentNode.insertBefore(det,res.nextSibling);
-            }}
-            async function startSyncItem(type){{
-              const url=(_syncEl('sync-target-url').value||'').trim();
-              const result=_syncEl('sync-'+type+'-result');
-              const btn=_syncEl('sync-'+type+'-btn');
-              const fill=_syncEl('sync-'+type+'-fill');
-              const barWrap=_syncEl('sync-'+type+'-bar-wrap');
-              if(!url){{result.textContent='Please enter a target URL.';return;}}
-              btn.disabled=true;
-              if(barWrap){{barWrap.style.display='';fill.style.width='5%';}}
-              result.textContent='Syncing\u2026';
-              try{{
-                if(type==='offsets'){{
-                  let map={{}};
-                  try{{const raw=localStorage.getItem('remotePlayLyricOffsets');if(raw)map=JSON.parse(raw);}}catch(_){{}}
-                  const count=Object.keys(map).length;
-                  if(count===0){{result.textContent='No offsets saved locally yet.';btn.disabled=false;return;}}
-                  const r=await fetch('/api/music/lyrics/offsets/export',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{targetUrl:url,offsets:map}})}});
-                  const d=await r.json();
-                  result.textContent=d.ok?'\u2714 Done \u2014 Pushed '+count+' offset(s) to peer.':'Sync failed: '+(d.error||'unknown error');
-                  btn.disabled=false;return;
-                }}
-                const endpoint=type==='art'?'/api/music/album-art/export':'/api/music/lyrics/export';
-                const r=await fetch(endpoint,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{targetUrl:url}})}});
-                if(fill)fill.style.width='100%';
-                const d=await r.json();
-                if(d.ok){{
-                  result.textContent='\u2714 Done \u2014 Sent: '+d.sent+' | Skipped: '+d.skipped+' | Failed: '+d.failed+' | Total: '+d.total;
-                  if(d.failed>0&&d.failSamples&&d.failSamples.length)_showSyncFail(type,d.failSamples);
-                }}else{{result.textContent='Sync failed: '+(d.error||'unknown error');}}
-              }}catch(e){{result.textContent='Sync failed: '+e;}}
-              finally{{btn.disabled=false;setTimeout(()=>{{if(barWrap)barWrap.style.display='none';if(fill)fill.style.width='0%';}},4000);}}
-            }}
-            </script>
+            <script>SETTINGS_JS_PLACEHOLDER</script>
             </body>
             </html>
-            """;
+            """
+        .Replace("SETTINGS_JS_PLACEHOLDER", SettingsPageScript);
         TrySendResponse(ctx, 200, "text/html; charset=utf-8", html);
     }
+
+    private const string SettingsPageScript = """
+        async function refreshRuntime() {
+          const result = document.getElementById('admin-result');
+          result.textContent = 'Refreshing\u2026';
+          try {
+            const r = await fetch('/api/health');
+            result.textContent = r.ok ? '\u2714 Runtime refreshed.' : 'Refresh failed: ' + r.status;
+          } catch(e) { result.textContent = 'Refresh failed: ' + e; }
+        }
+        async function rescanLibrary() {
+          const result = document.getElementById('admin-result');
+          result.textContent = 'Starting rescan\u2026';
+          try { await fetch('/api/rescan'); result.textContent = 'Video library rescan started.'; }
+          catch(e) { result.textContent = 'Rescan failed: ' + e; }
+        }
+        function _log(msg, cls) {
+          const box = document.getElementById('sync-log');
+          box.style.display = 'block';
+          const line = document.createElement('div');
+          if (cls) line.className = cls;
+          line.textContent = msg;
+          box.appendChild(line);
+          box.scrollTop = box.scrollHeight;
+        }
+        async function startSyncAll() {
+          const btn = document.getElementById('sync-btn');
+          const barWrap = document.getElementById('sync-bar-wrap');
+          const fill = document.getElementById('sync-bar-fill');
+          const log = document.getElementById('sync-log');
+          btn.disabled = true;
+          log.innerHTML = '';
+          log.style.display = 'block';
+          barWrap.style.display = 'block';
+          fill.style.width = '5%';
+          const pill = document.getElementById('sync-status-pill');
+          if (pill) pill.style.display = 'inline-block';
+          _log('Collecting local offsets\u2026', 'dim');
+          let _syncCh = null;
+          try { _syncCh = new BroadcastChannel('remoteplay-sync'); _syncCh.postMessage('sync-start'); } catch(_) {}
+          let offsets = {};
+          try { const raw = localStorage.getItem('remotePlayLyricOffsets'); if (raw) offsets = JSON.parse(raw); } catch(_) {}
+          const body = JSON.stringify({ offsets });
+          try {
+            const resp = await fetch('/api/sync/all', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body
+            });
+            if (!resp.ok || !resp.body) { _log('Server error: ' + resp.status, 'warn'); btn.disabled = false; return; }
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = '';
+            let peerCount = 0;
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += decoder.decode(value, { stream: true });
+              const parts = buf.split('\n\n');
+              buf = parts.pop();
+              for (const part of parts) {
+                const line = part.trim();
+                if (!line.startsWith('data:')) continue;
+                let ev;
+                try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
+                if (ev.type === 'peer') { peerCount++; fill.style.width = Math.min(10 + peerCount * 15, 85) + '%'; _log('\u2192 ' + ev.message, 'info'); }
+                else if (ev.type === 'step') { _log('  ' + ev.message, 'dim'); }
+                else if (ev.type === 'step_done') {
+                  const s = ev.step.charAt(0).toUpperCase() + ev.step.slice(1);
+                  _log('  \u2714 ' + s + ': sent ' + ev.sent + ', skipped ' + ev.skipped + (ev.failed > 0 ? ' \u26a0 failed ' + ev.failed : ''), 'ok');
+                }
+                else if (ev.type === 'step_error') { _log('  \u26a0 ' + ev.step + ': ' + ev.message, 'warn'); }
+                else if (ev.type === 'done') {
+                  fill.style.width = '100%';
+                  if (ev.peers === 0) { _log(ev.message || 'No peers found.', 'warn'); }
+                  else { _log('\u2714 Done \u2014 peers: ' + ev.peers + ' | sent: ' + ev.sent + ' | skipped: ' + ev.skipped + (ev.failed > 0 ? ' | failed: ' + ev.failed : ''), 'ok'); }
+                }
+              }
+            }
+          } catch(e) { _log('Sync failed: ' + e, 'warn'); }
+          finally {
+            btn.disabled = false;
+            if (_syncCh) {
+              try { _syncCh.postMessage('sync-done'); } catch(_) {}
+              try { _syncCh.close(); } catch(_) {}
+            }
+            setTimeout(() => {
+              barWrap.style.display = 'none';
+              log.style.display = 'none';
+              fill.style.width = '0%';
+              if (pill) pill.style.display = 'none';
+            }, 5000);
+          }
+        }
+        """;
 
     private static string BuildRuntimeHealthJson() =>
         JsonSerializer.Serialize(BuildRuntimeHealth(), new JsonSerializerOptions { WriteIndented = true });

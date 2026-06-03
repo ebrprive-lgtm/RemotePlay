@@ -8,7 +8,8 @@ internal sealed record MusicFile(
     string Name,
     string FullPath,
     string? Genre = null,
-    uint Year = 0);
+    uint Year = 0,
+    int Duration = -1);   // seconds; -1 = not yet enriched
 
 /// <summary>Represents an indexed M3U/M3U8 playlist: resolved absolute track paths and an album hint derived from the filename.</summary>
 internal sealed record M3uEntry(
@@ -227,21 +228,22 @@ internal static class MusicScanner
             cancellationToken.ThrowIfCancellationRequested();
 
             var mf = enriched[i];
-            // Skip files that were already enriched (e.g. loaded from cache).
-            if (mf.Genre != null || mf.Year > 0) continue;
+            // Skip files that were fully enriched (genre/year present AND duration already read).
+            if ((mf.Genre != null || mf.Year > 0) && mf.Duration >= 0) continue;
 
             try
             {
                 using var tagFile = TagLib.File.Create(mf.FullPath);
-                var genre = tagFile.Tag.FirstGenre;
-                var year  = tagFile.Tag.Year;
-                if (genre != null || year > 0)
+                var genre    = mf.Genre ?? tagFile.Tag.FirstGenre;
+                var year     = mf.Year > 0 ? mf.Year : tagFile.Tag.Year;
+                var duration = mf.Duration >= 0 ? mf.Duration : (int)Math.Round(tagFile.Properties.Duration.TotalSeconds);
+                if (genre != mf.Genre || year != mf.Year || duration != mf.Duration)
                 {
-                    enriched[i] = mf with { Genre = genre, Year = year };
+                    enriched[i] = mf with { Genre = genre, Year = year, Duration = duration };
                     changed++;
                 }
             }
-            catch { /* unreadable tags — leave Genre/Year as null/0 */ }
+            catch { /* unreadable tags — leave as-is */ }
 
             if (changed > 0 && (i + 1) % batchSize == 0)
             {

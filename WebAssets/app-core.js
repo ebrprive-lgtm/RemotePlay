@@ -608,6 +608,22 @@ async function _refreshExpertMode() {
   } catch {}
 }
 
+/** Debug Mode — set by server config, gates debug-only UI via body.debug-mode */
+function _setDebugMode(on) {
+  document.body.classList.toggle('debug-mode', !!on);
+  const chk = document.getElementById('debug-mode-chk');
+  if (chk) chk.checked = !!on;
+}
+
+async function _refreshDebugMode() {
+  try {
+    const res = await fetch('/api/debug-mode');
+    if (!res.ok) return;
+    const s = await res.json();
+    if (s && typeof s.debugMode === 'boolean') _setDebugMode(s.debugMode);
+  } catch {}
+}
+
 async function pollStatus() {
   try {
     const res = await fetch('/api/status');
@@ -621,6 +637,7 @@ async function pollStatus() {
     setConnectionStatus('Connected', false, true);
     updateDiagnosticsIndicator(s.lastError ? 'error' : 'ok');
     if (typeof s.expertMode === 'boolean') _setExpertMode(s.expertMode);
+    if (typeof s.debugMode  === 'boolean') _setDebugMode(s.debugMode);
     const bar = document.getElementById('now-playing-bar');
     updateQueueControls(s);
     const hasQueue = Array.isArray(s.queue) && s.queue.length > 0;
