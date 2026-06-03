@@ -134,20 +134,17 @@ public sealed class AppConfigTests : IDisposable
     public void ResolvedMoviesPath_ReturnsPath_WhenAlreadyRooted()
     {
         var rooted = Path.Combine(Path.GetTempPath(), "MyMovies");
-        var config = new AppConfig { MoviesPath = rooted };
+        var config = new AppConfig { AdditionalMoviesPaths = [rooted] };
 
         Assert.Equal(rooted, config.ResolvedMoviesPath);
     }
 
     [Fact]
-    public void ResolvedMoviesPath_ResolvesRelativePath_AgainstBaseDirectory()
+    public void ResolvedMoviesPath_ReturnsEmpty_WhenNoPathsConfigured()
     {
-        const string relative = "Movies";
-        var config = new AppConfig { MoviesPath = relative };
+        var config = new AppConfig();
 
-        var expected = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, relative));
-
-        Assert.Equal(expected, config.ResolvedMoviesPath);
+        Assert.Equal(string.Empty, config.ResolvedMoviesPath);
     }
 
     // ── WithBrowserDirs ──────────────────────────────────────────────────────

@@ -170,8 +170,7 @@ internal sealed partial class WebServer
                     scanRoot,
                     audioExtensions: m3uAudioExtSet,
                     ignoredFolderNames: _hiddenFolderNames);
-                Logger.Info($"M3U index: primary root found {newM3uIndex.Count} playlist(s)");
-                foreach (var additionalRoot in _config.ResolvedAdditionalMusicPaths)
+                foreach (var additionalRoot in _config.AllResolvedMusicPaths.Skip(1))
                 {
                     if (!Directory.Exists(additionalRoot)) continue;
                     var extra = MusicScanner.ScanM3uFiles(additionalRoot, m3uAudioExtSet, _hiddenFolderNames);
@@ -252,7 +251,7 @@ internal sealed partial class WebServer
                 // any additional roots with simple independent jobs.
                 MusicScanner.Scan(job, _musicExtensions, onFolderComplete, onFolder, progress, cts.Token, _hiddenFolderNames);
 
-                foreach (var additionalRoot in _config.ResolvedAdditionalMusicPaths)
+                foreach (var additionalRoot in _config.AllResolvedMusicPaths.Skip(1))
                 {
                     if (cts.Token.IsCancellationRequested) break;
                     if (!Directory.Exists(additionalRoot)) continue;
@@ -273,8 +272,7 @@ internal sealed partial class WebServer
                     audioExtensions: m3uAudioExtSet,
                     ignoredFolderNames: _hiddenFolderNames,
                     cancellationToken: cts.Token);
-                // Also scan additional roots
-                foreach (var additionalRoot in _config.ResolvedAdditionalMusicPaths)
+                foreach (var additionalRoot in _config.AllResolvedMusicPaths.Skip(1))
                 {
                     if (cts.Token.IsCancellationRequested) break;
                     if (!Directory.Exists(additionalRoot)) continue;

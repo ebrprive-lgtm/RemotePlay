@@ -32,7 +32,7 @@ public sealed class MusicDynamicFolderTests : IDisposable
 
         var port = FindFreePort();
         _server = new WebServer(
-            new AppConfig { Port = port, MusicPath = _tempRoot },
+            new AppConfig { Port = port, AdditionalMusicPaths = [_tempRoot] },
             BuildStubCallbacks());
         _server.Start();
         _client = new HttpClient { BaseAddress = new Uri($"http://localhost:{port}") };
@@ -1017,5 +1017,6 @@ public sealed class MusicDynamicFolderTests : IDisposable
         RadioSetEqPreset      = _ => { },
         SaveExpertMode        = _ => { },
         SaveDebugMode         = _ => { },
+        SaveSettings          = _ => { },
     };
 }

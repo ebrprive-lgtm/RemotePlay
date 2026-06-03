@@ -8,8 +8,6 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         AppConfig currentConfig,
         int port,
         bool useHttps,
-        string moviesPath,
-        string musicPath,
         string instanceName,
         double volume,
         double zoom,
@@ -31,8 +29,8 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         string updateSourcePath,
         int autoUpdateIntervalMinutes,
         string musicAudioDeviceId,
-        string[] additionalMoviesPaths,
-        string[] additionalMusicPaths,
+        string[] videoPaths,
+        string[] musicPaths,
         bool enableThumbnailGeneration,
         int libraryPageSize,
         string[] ignoredLibraryFolders,
@@ -43,14 +41,11 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         NetworkShareCredential[] networkShareCredentials)
     {
         ArgumentNullException.ThrowIfNull(currentConfig);
-        ArgumentException.ThrowIfNullOrWhiteSpace(moviesPath);
 
         return currentConfig with
         {
             Port                      = port,
             UseHttps                  = useHttps,
-            MoviesPath                = moviesPath,
-            MusicPath                 = string.IsNullOrWhiteSpace(musicPath) ? currentConfig.MusicPath : musicPath.Trim(),
             InstanceName              = string.IsNullOrWhiteSpace(instanceName) ? currentConfig.InstanceName : instanceName.Trim(),
             Volume                    = volume,
             Zoom                      = zoom,
@@ -72,8 +67,8 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             UpdateSourcePath          = updateSourcePath.Trim(),
             AutoUpdateIntervalMinutes = Math.Max(0, autoUpdateIntervalMinutes),
             MusicAudioDeviceId        = musicAudioDeviceId ?? string.Empty,
-            AdditionalMoviesPaths     = additionalMoviesPaths ?? [],
-            AdditionalMusicPaths      = additionalMusicPaths ?? [],
+            AdditionalMoviesPaths     = videoPaths ?? [],
+            AdditionalMusicPaths      = musicPaths ?? [],
             EnableThumbnailGeneration = enableThumbnailGeneration,
             LibraryPageSize           = Math.Clamp(libraryPageSize, 25, 1000),
             IgnoredLibraryFolders     = ignoredLibraryFolders ?? [],

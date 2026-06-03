@@ -73,6 +73,7 @@ internal sealed partial class WebServer
         "/api/version",
         "/api/peers",
         "/api/library-status",
+        "/api/server-log",
     };
 
     private static bool IsPollingPath(string path) => _pollingPaths.Contains(path);
@@ -99,7 +100,8 @@ internal sealed partial class WebServer
         {
             case "/" or "/index.html":
                 ctx.Response.AddHeader("Cache-Control", "no-cache");
-                TrySendResponse(ctx, 200, "text/html; charset=utf-8", GetHtmlPage());
+                TrySendResponse(ctx, 200, "text/html; charset=utf-8",
+                    GetHtmlPage().Replace("__INSTANCE_NAME__", System.Web.HttpUtility.HtmlEncode(_config.InstanceName), StringComparison.Ordinal));
                 break;
 
             case "/offline.html":
@@ -193,6 +195,11 @@ internal sealed partial class WebServer
             case "/api/rescan":
                 StartLibraryIndexRefresh(force: true);
                 TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true, scan = GetLibraryScanStatus() }));
+                break;
+
+            case "/api/rescan-music":
+                StartMusicIndexRefresh();
+                TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true }));
                 break;
 
             case "/api/library-status":
@@ -303,6 +310,29 @@ internal sealed partial class WebServer
 
             case "/api/debug-mode":
                 HandleDebugMode(ctx);
+                break;
+
+            case "/api/settings":
+                if (req.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase))
+                    HandleApiSettingsGet(ctx);
+                else
+                    HandleApiSettingsPost(ctx);
+                break;
+
+            case "/api/settings/test-path":
+                HandleApiSettingsTestPath(ctx);
+                break;
+
+            case "/api/settings/test-url":
+                HandleApiSettingsTestUrl(ctx);
+                break;
+
+            case "/api/audio-devices":
+                HandleApiAudioDevices(ctx);
+                break;
+
+            case "/api/displays":
+                HandleApiDisplays(ctx);
                 break;
 
             case "/api/seek":
@@ -610,6 +640,39 @@ internal sealed partial class WebServer
 
             case "/api/radio/stream-proxy":
                 await HandleRadioStreamProxyAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/server-log":
+            {
+                // Returns the last N lines of the log file as a JSON array of parsed entries.
+                // Query params: lines (default 500), level (INFO/DETAIL/WARN/ERROR), source.
+                var qp = ctx.Request.QueryString;
+                int maxLines = int.TryParse(qp["lines"], out var ml) ? Math.Clamp(ml, 1, 5000) : 500;
+                string? levelFilter = qp["level"];
+                string? sourceFilter = qp["source"];
+                try
+                {
+                    var entries = ReadLogEntries(Logger.FilePath, maxLines, levelFilter, sourceFilter);
+                    TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(entries));
+                }
+                catch (Exception ex)
+                {
+                    TrySendResponse(ctx, 500, "application/json",
+                        JsonSerializer.Serialize(new { error = ex.Message }));
+                }
+                break;
+            }
+
+            case "/api/server-log/clear":
+                if (ctx.Request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+                {
+                    Logger.Clear();
+                    TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+                }
+                else
+                {
+                    TrySendResponse(ctx, 405, "text/plain", "Method not allowed");
+                }
                 break;
 
             default:

@@ -71,4 +71,7 @@ internal sealed class WebServerCallbacks
     // ── Settings ────────────────────────────────────────────────────────────────
     public required Action<bool>                                                SaveExpertMode     { get; init; }
     public required Action<bool>                                                SaveDebugMode      { get; init; }
+
+    /// <summary>Saves updated config fields that can be changed from the web UI (excludes Port/UseHttps).</summary>
+    public required Action<AppConfig>                                           SaveSettings       { get; init; }
 }

@@ -1658,13 +1658,16 @@ function switchMode(mode, skipInitialBrowse = false) {
   const mClear = document.getElementById('music-recent-clear');
   const mPinned = document.getElementById('music-pinned-strip');
   const rStrip = document.getElementById('radio-recent-strip');
-  if (navRow) navRow.style.display = '';
-  if (vStrip) vStrip.style.display = mode === 'video' ? '' : 'none';
-  if (vClear) vClear.style.display = mode === 'video' && vStrip && vStrip.children.length ? '' : 'none';
-  if (vPinned) vPinned.style.display = mode === 'video' ? '' : 'none';
-  if (mStrip) mStrip.style.display = mode === 'music' ? '' : 'none';
-  if (mClear) mClear.style.display = mode === 'music' && mStrip && mStrip.children.length ? '' : 'none';
-  if (mPinned) mPinned.style.display = mode === 'music' ? '' : 'none';
+  // navRow and video/music strips are managed by the status poll (_applyVideoLibraryAvailable /
+  // _applyMusicLibraryAvailable) to avoid showing chrome when paths are invalid.
+  // Hide them now; the status poll will restore them if paths are valid.
+  if (navRow) navRow.style.display = mode === 'radio' ? '' : 'none';
+  if (vStrip) vStrip.style.display = 'none';
+  if (vClear) vClear.style.display = 'none';
+  if (vPinned) vPinned.style.display = 'none';
+  if (mStrip) mStrip.style.display = 'none';
+  if (mClear) mClear.style.display = 'none';
+  if (mPinned) mPinned.style.display = 'none';
   if (rStrip) rStrip.style.display = mode === 'radio' ? '' : 'none';
   if (mode === 'video') {
     if (searchRow) searchRow.style.display = '';
@@ -1673,7 +1676,8 @@ function switchMode(mode, skipInitialBrowse = false) {
     stopRadioStatusPoll();
     const back = document.getElementById('back-button');
     if (back) back.onclick = goBack;
-    _applyVideoCommandBar(true); // always show bar when entering video mode
+    // Hide all video chrome up-front; refreshLibraryStatus will reveal it only when paths are valid.
+    _applyVideoCommandBar(false);
     const mcb = document.getElementById('music-command-bar');
     if (mcb) mcb.style.display = 'none';
     const rcb = document.getElementById('radio-command-bar');
@@ -1687,7 +1691,8 @@ function switchMode(mode, skipInitialBrowse = false) {
     const rcb = document.getElementById('radio-command-bar');
     if (rcb) rcb.style.display = 'none';
     const mcb = document.getElementById('music-command-bar');
-    if (mcb) { mcb.style.display = 'flex'; _syncMusicCommandBar(); }
+    // Hide up-front; refreshMusicLibraryStatus will reveal it only when paths are valid.
+    if (mcb) { mcb.style.display = 'none'; _syncMusicCommandBar(); }
     if (searchRow) searchRow.style.display = '';
     searchEl.placeholder = 'Search music library...';
     stopRadioStatusPoll();
@@ -1703,6 +1708,8 @@ function switchMode(mode, skipInitialBrowse = false) {
     // restore music bar if already playing
     if (musicIsPlaying) startMusicPlaybackPoll();
     _ensureMusicKeyboardNav();
+    // Check whether music paths are valid; hides command bar / strips if not.
+    if (typeof refreshMusicLibraryStatus === 'function') refreshMusicLibraryStatus();
     if (typeof renderMusicPinnedStrip === 'function') renderMusicPinnedStrip();
     if (typeof _updateMusicPinButton === 'function') _updateMusicPinButton();
     if (!currentMusicData && !skipInitialBrowse) {
@@ -2226,6 +2233,18 @@ async function browseMusic(folder, offset = 0, append = false) {
     } else {
       currentMusicData = data;
       currentMusicData.folder = folder;
+    }
+    // If every configured music path is invalid, show empty state and hide chrome.
+    if (data.allMusicPathsInvalid) {
+      if (typeof _applyMusicLibraryAvailable === 'function') _applyMusicLibraryAvailable(false);
+      mb.innerHTML =
+        '<div id="empty" class="empty-invalid-path">'
+        + '<span class="empty-invalid-icon">&#127925;</span>'
+        + '<span class="empty-invalid-title">No music library configured</span>'
+        + '<span class="empty-invalid-sub">The configured music path is invalid or does not exist.<br>'
+        + 'Go to <a onclick="location.href=\'/settings\'">Settings</a> to update the library path.</span>'
+        + '</div>';
+      return;
     }
     if (currentMode === 'music') renderMusicHeader(currentMusicData, false);
     renderMusicCards(currentMusicData);
@@ -3123,8 +3142,18 @@ function render(data, searching) {
     html += '<div id="video-list-grid" class="movie-grid' + (_viewMode.video === 'list' ? ' list-view' : '') + '"></div>';
     // We'll populate the grid after inserting the HTML skeleton
   }
-  if (!data.folders.length && !data.files.length)
-    html = '<div id="empty">No subfolders or video files here.</div>';
+  if (!data.folders.length && !data.files.length) {
+    if (data.allPathsInvalid) {
+      html = '<div id="empty" class="empty-invalid-path">'
+           + '<span class="empty-invalid-icon">&#128193;</span>'
+           + '<span class="empty-invalid-title">No video library configured</span>'
+           + '<span class="empty-invalid-sub">The configured video path is invalid or does not exist.<br>'
+           + 'Go to <a onclick="location.href=\'/settings\'">Settings</a> to update the library path.</span>'
+           + '</div>';
+    } else {
+      html = '<div id="empty">No subfolders or video files here.</div>';
+    }
+  }
   document.getElementById('browser').innerHTML = html;
   if (data.files.length) {
     const sorted2 = _sortedFiles(_filteredFiles(data.files));

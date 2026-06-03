@@ -860,172 +860,975 @@ internal sealed partial class WebServer
             ? $"{artBytes / (1024.0 * 1024):F1} MB"
             : $"{artBytes / 1024.0:F0} KB";
 
+        var configJson = System.Text.Json.JsonSerializer.Serialize(BuildSettingsDto(_config), SettingsJsonOptions);
+
+        var movieCount  = _libraryIndex.Length;
+        var musicCount  = _musicIndex.Length;
+
+        var ipAddresses = GetLocalIpAddresses()
+            .Where(a => a.AddressFamily == AddressFamily.InterNetwork)
+            .Select(a => a.ToString())
+            .ToArray();
+        var primaryIp = ipAddresses.FirstOrDefault() ?? "localhost";
+        var serverUrl = $"{_activeScheme}://{primaryIp}:{_config.Port}/";
+        var allIpUrls = ipAddresses.Length > 1
+            ? string.Join(", ", ipAddresses.Select(ip => $"{_activeScheme}://{ip}:{_config.Port}/"))
+            : serverUrl;
+
+        var lastIndexed = _lastIndexRefreshUtc.HasValue
+            ? _lastIndexRefreshUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+            : "Not yet";
+        var lastMusicIndexed = _lastMusicIndexRefreshUtc.HasValue
+            ? _lastMusicIndexRefreshUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+            : "Not yet";
+
         ctx.Response.AddHeader("Cache-Control", "no-store");
-        var html = $$$$"""
-            <!doctype html>
-            <html lang="en">
-            <head>
-            <meta charset="utf-8"/>
-            <meta name="viewport" content="width=device-width,initial-scale=1"/>
-            <title>RemotePlay &#x2014; Settings</title>
-            <style>
-            *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-            body{font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9;min-height:100vh;padding:1.5rem 1rem 3rem}
-            .page{width:min(860px,100%);margin:0 auto}
-            h1{font-size:1.45rem;font-weight:700;margin-bottom:1.2rem;display:flex;align-items:center;gap:.6rem}
-            h2{font-size:1rem;font-weight:600;margin-bottom:.8rem;color:#58a6ff}
-            .card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:1.1rem 1.3rem;margin-bottom:1rem}
-            .actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.6rem}
-            button{cursor:pointer;border:1px solid #30363d;border-radius:8px;padding:.4rem .9rem;background:#21262d;color:#c9d1d9;font-size:.88rem;transition:background .15s}
-            button:hover{background:#30363d}
-            button.primary{background:#1f6feb;border-color:#1f6feb;color:#fff;font-weight:600}
-            button.primary:hover{background:#388bfd}
-            button:disabled{opacity:.45;cursor:not-allowed}
-            .admin-result{min-height:1.1rem;color:#ffd48a;font-weight:700;font-size:.88rem;margin-top:.5rem}
-            .muted{color:#8b949e;font-size:.82rem}
-            .divider{border:none;border-top:1px solid #30363d;margin:.8rem 0}
-            .sync-log{display:none;margin-top:.75rem;background:rgba(0,0,0,.35);border:1px solid #30363d;border-radius:8px;padding:.6rem .8rem;max-height:220px;overflow-y:auto;font-size:.8rem;line-height:1.6}
-            .sync-log .ok{color:#4ade80}.sync-log .warn{color:#fbbf24}.sync-log .info{color:#7dd3fc}.sync-log .dim{color:#6e7681}
-            .sync-bar-wrap{display:none;height:5px;border-radius:3px;background:rgba(255,255,255,.1);margin-top:.6rem}
-            .sync-bar-fill{height:100%;border-radius:3px;background:#22d3ee;width:0%;transition:width .4s}
-            .sync-status-pill{display:none;font-size:.75rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#22d3ee;background:rgba(34,211,238,.12);border:1px solid rgba(34,211,238,.28);border-radius:4px;padding:.15rem .5rem;animation:syncpulse 1.4s ease-in-out infinite;align-self:center}
-            @keyframes syncpulse{0%,100%{opacity:.6}50%{opacity:1}}
-            .footer-note{font-size:.78rem;color:#484f58;text-align:center;margin-top:2rem}
-            .footer-note a{color:#58a6ff;text-decoration:none}
-            </style>
-            </head>
-            <body><div class="page">
-            <h1>&#9881;&#65039; RemotePlay &mdash; Settings</h1>
-
-            <section class="card">
-              <h2>&#9881; Admin actions</h2>
-              <div class="actions">
-                <button class="primary" onclick="rescanLibrary()">&#8635; Rescan video lib</button>
-                <button onclick="location.href='/remoteplay.log'">&#128196; Download log</button>
-                <button onclick="refreshRuntime()">&#8635; Refresh runtime</button>
-              </div>
-              <p id="admin-result" class="admin-result"></p>
-            </section>
-
-            <section class="card">
-              <h2>&#8679; Sync data to peers</h2>
-              <dl style="display:grid;grid-template-columns:1fr 1fr;gap:.3rem .8rem;margin-bottom:.8rem">
-                <div><dt class="muted">Cached covers</dt><dd>{{{{artFiles}}}} images</dd></div>
-                <div><dt class="muted">Cover cache size</dt><dd>{{{{artSizeLabel}}}}</dd></div>
-              </dl>
-              <hr class="divider"/>
-              <p class="muted" style="margin-bottom:.75rem">Pushes covers, lyrics and offsets to every RemotePlay instance found on the network. Only changed data is transferred.</p>
-              <div class="actions" style="display:flex;align-items:center;gap:.75rem">
-                <button class="primary" id="sync-btn" onclick="startSyncAll()">&#8679; Sync Data</button>
-                <span class="sync-status-pill" id="sync-status-pill">&#8679; Syncing…</span>
-              </div>
-              <div class="sync-bar-wrap" id="sync-bar-wrap"><div class="sync-bar-fill" id="sync-bar-fill"></div></div>
-              <div class="sync-log" id="sync-log"></div>
-            </section>
-
-            </div><div class="footer-note">RemotePlay settings &mdash; <a href="/">Open remote</a> &middot; <a href="/health" target="_blank">Health</a></div>
-            <script>SETTINGS_JS_PLACEHOLDER</script>
-            </body>
-            </html>
-            """
-        .Replace("SETTINGS_JS_PLACEHOLDER", SettingsPageScript);
+        var html = SettingsPageHtml(artFiles, artSizeLabel, configJson,
+            _config.InstanceName, _activeScheme.ToUpperInvariant(), _config.Port, serverUrl, allIpUrls,
+            movieCount, musicCount, lastIndexed, lastMusicIndexed, _appVersion,
+            _isIndexing, _isMusicIndexing);
         TrySendResponse(ctx, 200, "text/html; charset=utf-8", html);
     }
 
-    private const string SettingsPageScript = """
-        async function refreshRuntime() {
-          const result = document.getElementById('admin-result');
-          result.textContent = 'Refreshing\u2026';
-          try {
-            const r = await fetch('/api/health');
-            result.textContent = r.ok ? '\u2714 Runtime refreshed.' : 'Refresh failed: ' + r.status;
-          } catch(e) { result.textContent = 'Refresh failed: ' + e; }
+    private static string SettingsPageHtml(int artFiles, string artSizeLabel, string configJsonEscaped,
+        string instanceName, string scheme, int port, string serverUrl, string allIpUrls,
+        int movieCount, int musicCount, string lastIndexed, string lastMusicIndexed, string appVersion,
+        bool isIndexing, bool isMusicIndexing)
+    {
+        var j = HtmlEncode(configJsonEscaped).Replace("&quot;", "\"").Replace("&#39;", "'");
+        var overviewHtml = BuildOverviewPanelHtml(instanceName, scheme, port, serverUrl, allIpUrls,
+            movieCount, musicCount, lastIndexed, lastMusicIndexed, appVersion, isIndexing, isMusicIndexing);
+        return SettingsPageTemplate
+            .Replace("{{artFiles}}", artFiles.ToString())
+            .Replace("{{artSizeLabel}}", artSizeLabel)
+            .Replace("SETTINGS_JSON_PLACEHOLDER", j)
+            .Replace("{{overviewHtml}}", overviewHtml);
+    }
+
+    private static string BuildOverviewPanelHtml(
+        string instanceName, string scheme, int port, string serverUrl, string allIpUrls,
+        int movieCount, int musicCount, string lastIndexed, string lastMusicIndexed, string appVersion,
+        bool isIndexing, bool isMusicIndexing)
+    {
+        var buildingBadge  = "<span class=\"ov-building\">&#9654; Building&hellip;</span>";
+        var movieCountHtml = $"<span class=\"ov-count\" id=\"ov-video-count\">{movieCount:N0}</span>{(isIndexing ? " " + buildingBadge : "")}";
+        var musicCountHtml = $"<span class=\"ov-count\" id=\"ov-music-count\">{musicCount:N0}</span>{(isMusicIndexing ? " " + buildingBadge : "")}";
+        var videoRefreshedHtml = HtmlEncode(lastIndexed);
+        var musicRefreshedHtml = HtmlEncode(lastMusicIndexed);
+        return $"""
+            <div class="card">
+              <h2>&#127758; Server</h2>
+              <div class="ov-grid">
+                <div class="ov-item"><div class="ov-label">Instance name</div><div class="ov-value">{HtmlEncode(instanceName)}</div></div>
+                <div class="ov-item"><div class="ov-label">Protocol</div><div class="ov-value">{HtmlEncode(scheme)}</div></div>
+                <div class="ov-item"><div class="ov-label">Port</div><div class="ov-value">{port}</div></div>
+                <div class="ov-item"><div class="ov-label">Version</div><div class="ov-value">{HtmlEncode(appVersion)}</div></div>
+                <div class="ov-item ov-wide"><div class="ov-label">Server URL</div><div class="ov-value ov-mono"><a href="{HtmlEncode(serverUrl)}" target="_blank" rel="noopener">{HtmlEncode(serverUrl)}</a></div></div>
+                {(allIpUrls != serverUrl ? $"""<div class="ov-item ov-wide"><div class="ov-label">All addresses</div><div class="ov-value ov-mono">{HtmlEncode(allIpUrls)}</div></div>""" : "")}
+              </div>
+            </div>
+            <div class="card">
+              <h2>&#128250; Video cache</h2>
+              <div class="ov-grid" style="margin-bottom:.7rem">
+                <div class="ov-item"><div class="ov-label">Movies in cache</div><div class="ov-value">{movieCountHtml}</div></div>
+                <div class="ov-item"><div class="ov-label">Last indexed</div><div class="ov-value ov-mono" style="font-size:.83rem">{videoRefreshedHtml}</div></div>
+              </div>
+              <div class="actions">
+                <button class="primary" onclick="ovReindex('video')">&#8635; Reindex video</button>
+              </div>
+            </div>
+            <div class="card">
+              <h2>&#127911; Music cache</h2>
+              <div class="ov-grid" style="margin-bottom:.7rem">
+                <div class="ov-item"><div class="ov-label">Tracks in cache</div><div class="ov-value">{musicCountHtml}</div></div>
+                <div class="ov-item"><div class="ov-label">Last indexed</div><div class="ov-value ov-mono" style="font-size:.83rem">{musicRefreshedHtml}</div></div>
+              </div>
+              <div class="actions">
+                <button class="primary" onclick="ovReindex('music')">&#8635; Reindex music</button>
+              </div>
+            </div>
+            <div class="card" style="border-color:#21262d">
+              <div class="actions" style="margin-top:0">
+                <a href="/health" target="_blank" rel="noopener" class="secondary" style="text-decoration:none;display:inline-flex;align-items:center;gap:.3rem;cursor:pointer;border:1px solid #30363d;border-radius:8px;padding:.38rem .9rem;background:#21262d;color:#c9d1d9;font-size:.875rem">&#10084; Full health dashboard</a>
+              </div>
+            </div>
+            """;
+    }
+
+    private const string SettingsPageTemplate = """
+        <!doctype html>
+        <html lang="en">
+        <head>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width,initial-scale=1"/>
+        <title>RemotePlay &#x2014; Settings</title>
+        <style>
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+        html,body{height:100%}
+        body{font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9;display:flex;flex-direction:column;min-height:100vh}
+        a{color:#58a6ff}
+        /* ── top bar ── */
+        .top-bar{background:#161b22;border-bottom:1px solid #30363d;padding:.65rem 1.2rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+        .top-bar h1{font-size:1.05rem;font-weight:700;flex:1;display:flex;align-items:center;gap:.45rem}
+        .top-bar .links{display:flex;gap:.5rem;font-size:.82rem;color:#6e7681}
+        .top-bar .links a{color:#8b949e;text-decoration:none}
+        .top-bar .links a:hover{color:#c9d1d9}
+        /* ── layout ── */
+        .layout{display:flex;flex:1;overflow:hidden}
+        .sidebar{width:178px;min-width:148px;background:#161b22;border-right:1px solid #30363d;padding:.65rem .45rem;display:flex;flex-direction:column;gap:.15rem;overflow-y:auto}
+        .sidebar-sep{margin:.4rem .5rem .25rem;font-size:.67rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#484f58}
+        .cat-btn{width:100%;text-align:left;background:none;border:none;border-radius:7px;padding:.46rem .7rem;color:#8b949e;font-size:.86rem;cursor:pointer;transition:background .13s,color .13s;display:flex;align-items:center;gap:.45rem}
+        .cat-btn:hover{background:#21262d;color:#c9d1d9}
+        .cat-btn.active{background:#1f6feb1e;color:#58a6ff;font-weight:600}
+        .cat-btn .ico{width:1.1em;text-align:center;flex-shrink:0}
+        /* ── panels ── */
+        .panels{flex:1;overflow-y:auto;padding:1.2rem 1.5rem 4rem}
+        .panel{display:none;max-width:800px}
+        .panel.active{display:block}
+        #panel-log{max-width:1400px}
+        /* ── cards ── */
+        .card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:1rem 1.2rem;margin-bottom:.9rem}
+        .card h2{font-size:.9rem;font-weight:700;color:#58a6ff;margin-bottom:.85rem;display:flex;align-items:center;gap:.4rem}
+        .card h2 .badge{font-size:.68rem;font-weight:600;padding:.08rem .42rem;border-radius:4px;background:#1f6feb22;color:#58a6ff;border:1px solid #1f6feb44;letter-spacing:.02em}
+        /* ── form rows ── */
+        .row{display:flex;align-items:center;gap:.6rem;margin-bottom:.6rem;flex-wrap:wrap}
+        .row label{width:210px;min-width:140px;font-size:.855rem;color:#8b949e;line-height:1.35}
+        .row input[type=text],.row input[type=number],.row select,.row textarea{flex:1;min-width:0;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:.34rem .6rem;color:#c9d1d9;font-size:.86rem;transition:border-color .15s}
+        .row input[type=text]:focus,.row input[type=number]:focus,.row select:focus,.row textarea:focus{outline:none;border-color:#388bfd}
+        .row input[type=checkbox]{width:17px;height:17px;cursor:pointer;accent-color:#1f6feb;flex-shrink:0}
+        .row textarea{resize:vertical;min-height:52px;font-family:monospace}
+        .row .narrow{width:100px;flex:none}
+        .hint{font-size:.77rem;color:#484f58;margin-top:-.38rem;margin-bottom:.52rem;padding-left:216px;line-height:1.4}
+        /* ── path / test ── */
+        .path-row{display:flex;align-items:center;gap:.4rem;flex:1;min-width:0}
+        .path-row input{flex:1;min-width:0;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:.34rem .6rem;color:#c9d1d9;font-size:.86rem}
+        .test-btn{cursor:pointer;border:1px solid #30363d;border-radius:6px;padding:.3rem .6rem;background:#21262d;color:#c9d1d9;font-size:.8rem;white-space:nowrap;transition:background .13s}
+        .test-btn:hover{background:#30363d}
+        .test-ok{color:#4ade80;font-size:.79rem}
+        .test-err{color:#f87171;font-size:.79rem}
+        /* ── buttons ── */
+        .actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.75rem}
+        button.primary{cursor:pointer;border:1px solid #1f6feb;border-radius:8px;padding:.38rem .95rem;background:#1f6feb;color:#fff;font-size:.875rem;font-weight:600;transition:background .13s}
+        button.primary:hover{background:#388bfd}
+        button.secondary{cursor:pointer;border:1px solid #30363d;border-radius:8px;padding:.38rem .9rem;background:#21262d;color:#c9d1d9;font-size:.875rem;transition:background .13s}
+        button.secondary:hover{background:#30363d}
+        button.danger{cursor:pointer;border:1px solid #6e2121;border-radius:8px;padding:.38rem .9rem;background:#2d1212;color:#f87171;font-size:.875rem;transition:background .13s}
+        button.danger:hover{background:#3d1919}
+        button:disabled{opacity:.42;cursor:not-allowed}
+        /* ── save footer ── */
+        .save-row{display:flex;align-items:center;gap:.85rem;margin-top:.75rem;flex-wrap:wrap}
+        .save-msg{min-height:1.2rem;font-size:.84rem;font-weight:600}
+        .save-msg.ok{color:#4ade80}.save-msg.err{color:#f87171}
+        /* ── misc ── */
+        .divider{border:none;border-top:1px solid #21262d;margin:.75rem 0}
+        .muted{color:#8b949e;font-size:.82rem}
+        .admin-result{min-height:1.1rem;color:#ffd48a;font-weight:700;font-size:.88rem;margin-top:.5rem}
+        /* ── sync ── */
+        .sync-log{display:none;margin-top:.75rem;background:rgba(0,0,0,.38);border:1px solid #30363d;border-radius:8px;padding:.6rem .8rem;max-height:220px;overflow-y:auto;font-size:.8rem;line-height:1.6}
+        .sync-log .ok{color:#4ade80}.sync-log .warn{color:#fbbf24}.sync-log .info{color:#7dd3fc}.sync-log .dim{color:#6e7681}
+        .sync-bar-wrap{display:none;height:4px;border-radius:3px;background:rgba(255,255,255,.08);margin-top:.6rem}
+        .sync-bar-fill{height:100%;border-radius:3px;background:#22d3ee;width:0%;transition:width .4s}
+        .sync-status-pill{display:none;font-size:.74rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#22d3ee;background:rgba(34,211,238,.12);border:1px solid rgba(34,211,238,.28);border-radius:4px;padding:.15rem .5rem;animation:syncpulse 1.4s ease-in-out infinite;align-self:center}
+        @keyframes syncpulse{0%,100%{opacity:.6}50%{opacity:1}}
+        /* ── list entries ── */
+        .list-entries{display:flex;flex-direction:column;gap:.32rem;margin-bottom:.4rem}
+        .list-entry{display:flex;gap:.4rem;align-items:center}
+        .list-entry input{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:.3rem .52rem;color:#c9d1d9;font-size:.84rem}
+        .list-entry button{cursor:pointer;border:1px solid #30363d;border-radius:6px;padding:.26rem .52rem;background:#21262d;color:#f87171;font-size:.8rem}
+        .list-entry button:hover{background:#30363d}
+        .add-entry-btn{cursor:pointer;border:1px dashed #30363d;border-radius:6px;padding:.28rem .65rem;background:none;color:#58a6ff;font-size:.81rem;transition:border-color .13s}
+        .add-entry-btn:hover{border-color:#388bfd}
+        /* ── credentials ── */
+        .cred-row{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:.4rem;margin-bottom:.32rem}
+        .cred-row input{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:.3rem .5rem;color:#c9d1d9;font-size:.82rem}
+        /* ── overview ── */
+        .ov-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem .7rem;margin-top:.2rem}
+        .ov-item{background:rgba(255,255,255,.025);border:1px solid #30363d;border-radius:10px;padding:.52rem .7rem}
+        .ov-wide{grid-column:1/-1}
+        .ov-label{color:#8b949e;font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;margin-bottom:.2rem}
+        .ov-value{color:#e8f0ff;font-size:.91rem;font-weight:600;word-break:break-all}
+        .ov-mono{font-family:Consolas,ui-monospace,monospace;font-size:.81rem}
+        .ov-count{font-size:1.4rem;font-weight:900;color:#58a6ff}
+        .ov-building{display:inline-flex;align-items:center;gap:.25rem;font-size:.71rem;font-weight:700;color:#fbbf24;background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.3);border-radius:4px;padding:.1rem .4rem;vertical-align:middle;animation:ov-pulse 1.4s ease-in-out infinite}
+        @keyframes ov-pulse{0%,100%{opacity:.55}50%{opacity:1}}
+        /* ── info callout ── */
+        .callout{display:flex;gap:.55rem;align-items:flex-start;background:rgba(31,111,235,.07);border:1px solid rgba(31,111,235,.22);border-radius:9px;padding:.65rem .85rem;margin-bottom:.75rem;font-size:.83rem;color:#7fbcff;line-height:1.45}
+        .callout .ico{font-size:1rem;flex-shrink:0;margin-top:.05rem}
+        .callout.warn{background:rgba(251,191,36,.07);border-color:rgba(251,191,36,.25);color:#fcd34d}
+        .callout.ok{background:rgba(74,222,128,.06);border-color:rgba(74,222,128,.22);color:#86efac}
+        /* -- log viewer -- */
+        .log-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;margin-bottom:.55rem}
+        .log-filters{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap}
+        .log-filters select,.log-filters input{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:.28rem .5rem;color:#c9d1d9;font-size:.8rem}
+        .log-actions{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap}
+        .log-viewer{background:#0d1117;border:1px solid #30363d;border-radius:8px;height:calc(100vh - 280px);min-height:300px;max-height:calc(100vh - 200px);overflow-y:auto;overflow-x:auto;font-family:Consolas,ui-monospace,monospace;font-size:.72rem;line-height:1.4;outline:none;user-select:none}
+        .log-table{width:100%;border-collapse:collapse;table-layout:fixed}
+        .log-table td{padding:.1rem .45rem;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .log-table .lv-msg{white-space:pre-wrap;word-break:break-all}
+        .log-table tr.lv-INFO .lv-badge{color:#7dd3fc}
+        .log-table tr.lv-DETAIL .lv-badge{color:#8b949e}
+        .log-table tr.lv-WARN .lv-badge{color:#fbbf24}
+        .log-table tr.lv-ERROR .lv-badge{color:#f87171;font-weight:700}
+        .log-table .lv-ts{color:#484f58;white-space:nowrap;width:135px}
+        .log-table .lv-badge-col{white-space:nowrap;width:76px;text-align:center}
+        .log-table .lv-src{color:#7c8590;white-space:nowrap;width:90px;overflow:hidden;text-overflow:ellipsis}
+        .log-table .lv-msg{color:#c9d1d9;width:auto}
+        .log-table tr.selected td{background:rgba(88,166,255,.12)}
+        .log-table tr:hover td{background:rgba(255,255,255,.03)}
+        .log-table tr.selected:hover td{background:rgba(88,166,255,.18)}
+        /* ── footer ── */
+        .footer{font-size:.74rem;color:#484f58;text-align:center;padding:.7rem 0;border-top:1px solid #21262d}
+        /* ── responsive ── */
+        @media(max-width:580px){
+          .sidebar{width:46px;min-width:46px}.sidebar-sep,.cat-btn span.lbl{display:none}
+          .cat-btn{justify-content:center;padding:.48rem}.cat-btn .ico{width:auto}
+          .row label{width:100%}.hint{padding-left:0}
+          .ov-grid{grid-template-columns:1fr}
         }
-        async function rescanLibrary() {
-          const result = document.getElementById('admin-result');
-          result.textContent = 'Starting rescan\u2026';
-          try { await fetch('/api/rescan'); result.textContent = 'Video library rescan started.'; }
-          catch(e) { result.textContent = 'Rescan failed: ' + e; }
-        }
-        function _log(msg, cls) {
-          const box = document.getElementById('sync-log');
-          box.style.display = 'block';
-          const line = document.createElement('div');
-          if (cls) line.className = cls;
-          line.textContent = msg;
-          box.appendChild(line);
-          box.scrollTop = box.scrollHeight;
-        }
-        async function startSyncAll() {
-          const btn = document.getElementById('sync-btn');
-          const barWrap = document.getElementById('sync-bar-wrap');
-          const fill = document.getElementById('sync-bar-fill');
-          const log = document.getElementById('sync-log');
-          btn.disabled = true;
-          log.innerHTML = '';
-          log.style.display = 'block';
-          barWrap.style.display = 'block';
-          fill.style.width = '5%';
-          const pill = document.getElementById('sync-status-pill');
-          if (pill) pill.style.display = 'inline-block';
-          _log('Collecting local offsets\u2026', 'dim');
-          let _syncCh = null;
-          try { _syncCh = new BroadcastChannel('remoteplay-sync'); _syncCh.postMessage('sync-start'); } catch(_) {}
-          let offsets = {};
-          try { const raw = localStorage.getItem('remotePlayLyricOffsets'); if (raw) offsets = JSON.parse(raw); } catch(_) {}
-          const body = JSON.stringify({ offsets });
-          try {
-            const resp = await fetch('/api/sync/all', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body
-            });
-            if (!resp.ok || !resp.body) { _log('Server error: ' + resp.status, 'warn'); btn.disabled = false; return; }
-            const reader = resp.body.getReader();
-            const decoder = new TextDecoder();
-            let buf = '';
-            let peerCount = 0;
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              buf += decoder.decode(value, { stream: true });
-              const parts = buf.split('\n\n');
-              buf = parts.pop();
-              for (const part of parts) {
-                const line = part.trim();
-                if (!line.startsWith('data:')) continue;
-                let ev;
-                try { ev = JSON.parse(line.slice(5).trim()); } catch { continue; }
-                if (ev.type === 'peer') { peerCount++; fill.style.width = Math.min(10 + peerCount * 15, 85) + '%'; _log('\u2192 ' + ev.message, 'info'); }
-                else if (ev.type === 'step') { _log('  ' + ev.message, 'dim'); }
-                else if (ev.type === 'step_done') {
-                  const s = ev.step.charAt(0).toUpperCase() + ev.step.slice(1);
-                  _log('  \u2714 ' + s + ': sent ' + ev.sent + ', skipped ' + ev.skipped + (ev.failed > 0 ? ' \u26a0 failed ' + ev.failed : ''), 'ok');
-                }
-                else if (ev.type === 'step_error') { _log('  \u26a0 ' + ev.step + ': ' + ev.message, 'warn'); }
-                else if (ev.type === 'done') {
-                  fill.style.width = '100%';
-                  if (ev.peers === 0) { _log(ev.message || 'No peers found.', 'warn'); }
-                  else { _log('\u2714 Done \u2014 peers: ' + ev.peers + ' | sent: ' + ev.sent + ' | skipped: ' + ev.skipped + (ev.failed > 0 ? ' | failed: ' + ev.failed : ''), 'ok'); }
-                }
-              }
-            }
-          } catch(e) { _log('Sync failed: ' + e, 'warn'); }
-          finally {
-            btn.disabled = false;
-            if (_syncCh) {
-              try { _syncCh.postMessage('sync-done'); } catch(_) {}
-              try { _syncCh.close(); } catch(_) {}
-            }
-            setTimeout(() => {
-              barWrap.style.display = 'none';
-              log.style.display = 'none';
-              fill.style.width = '0%';
-              if (pill) pill.style.display = 'none';
-            }, 5000);
+        </style>
+        </head>
+        <body>
+        <div class="top-bar">
+          <h1><span>&#9881;&#65039;</span> RemotePlay &mdash; Settings</h1>
+          <div class="links">
+            <a href="/">&#8592; Remote</a> &middot;
+            <a href="/health" target="_blank" rel="noopener">Health</a> &middot;
+            <a href="/setup">Setup</a>
+          </div>
+        </div>
+        <div class="layout">
+          <nav class="sidebar">
+            <button class="cat-btn active" onclick="showCat('overview')" id="cat-overview"><span class="ico">&#9432;</span><span class="lbl">Overview</span></button>
+            <div class="sidebar-sep">Library</div>
+            <button class="cat-btn" onclick="showCat('library')" id="cat-library"><span class="ico">&#128214;</span><span class="lbl">Paths</span></button>
+            <button class="cat-btn" onclick="showCat('scanning')" id="cat-scanning"><span class="ico">&#128269;</span><span class="lbl">Scanning</span></button>
+            <div class="sidebar-sep">Playback</div>
+            <button class="cat-btn" onclick="showCat('playback')" id="cat-playback"><span class="ico">&#9654;</span><span class="lbl">Video</span></button>
+            <button class="cat-btn" onclick="showCat('audio')" id="cat-audio"><span class="ico">&#127911;</span><span class="lbl">Audio</span></button>
+            <div class="sidebar-sep">System</div>
+            <button class="cat-btn" onclick="showCat('server')" id="cat-server"><span class="ico">&#128187;</span><span class="lbl">Server</span></button>
+            <button class="cat-btn" onclick="showCat('security')" id="cat-security"><span class="ico">&#128274;</span><span class="lbl">Security</span></button>
+            <button class="cat-btn" onclick="showCat('updates')" id="cat-updates"><span class="ico">&#8635;</span><span class="lbl">Updates</span></button>
+            <button class="cat-btn" onclick="showCat('appearance')" id="cat-appearance"><span class="ico">&#127912;</span><span class="lbl">Appearance</span></button>
+            <button class="cat-btn" onclick="showCat('desktop')" id="cat-desktop"><span class="ico">&#128444;</span><span class="lbl">Desktop</span></button>
+            <button class="cat-btn" onclick="showCat('tools')" id="cat-tools"><span class="ico">&#128295;</span><span class="lbl">Tools</span></button>
+            <button class="cat-btn" onclick="showCat('log')" id="cat-log"><span class="ico">&#128221;</span><span class="lbl">Log</span></button>
+          </nav>
+          <div class="panels">
+
+            <!-- ═══ OVERVIEW ═══ -->
+            <div class="panel active" id="panel-overview">
+              {{overviewHtml}}
+            </div>
+
+            <!-- ═══ LIBRARY PATHS ═══ -->
+            <div class="panel" id="panel-library">
+              <div class="card">
+                <h2>&#128250; Video library paths</h2>
+                <p class="muted" style="margin-bottom:.7rem">Add every folder root that contains movies or TV shows. Sub-folders are scanned recursively.</p>
+                <div class="list-entries" id="extra-movies-list"></div>
+                <button class="add-entry-btn" onclick="addListEntry('extra-movies-list','addlMovies',true)">+ Add video path</button>
+              </div>
+              <div class="card">
+                <h2>&#127911; Music library paths</h2>
+                <p class="muted" style="margin-bottom:.7rem">Add every folder root that contains music files.</p>
+                <div class="list-entries" id="extra-music-list"></div>
+                <button class="add-entry-btn" onclick="addListEntry('extra-music-list','addlMusic',true)">+ Add music path</button>
+              </div>
+              <div class="card">
+                <h2>&#128101; Network share credentials</h2>
+                <div class="callout"><span class="ico">&#128274;</span> Credentials are stored in plain text in the config file. Keep the config file private and accessible only to the service account.</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:.35rem .4rem;margin-bottom:.35rem;padding:0 .1rem">
+                  <span class="muted" style="font-size:.75rem">UNC path prefix</span>
+                  <span class="muted" style="font-size:.75rem">Username</span>
+                  <span class="muted" style="font-size:.75rem">Password</span>
+                  <span></span>
+                </div>
+                <div id="cred-list"></div>
+                <button class="add-entry-btn" onclick="addCredRow()">+ Add credentials</button>
+              </div>
+              </div>
+
+            <!-- ═══ SCANNING ═══ -->
+            <div class="panel" id="panel-scanning">
+              <div class="card">
+                <h2>&#128269; Scan schedule</h2>
+                <div class="row">
+                  <label>Auto-rescan interval</label>
+                  <input type="number" id="LibraryRescanDelayMinutes" min="0" class="narrow"/> <span class="muted" style="font-size:.82rem">minutes</span>
+                </div>
+                <div class="hint">How often the video library is rescanned while the app is running. Set to 0 to scan only at startup.</div>
+                <div class="row">
+                  <label>Results per page</label>
+                  <input type="number" id="LibraryPageSize" min="25" class="narrow"/>
+                </div>
+                <div class="hint">Number of movies shown per page in the browser.</div>
+              </div>
+              <div class="card">
+                <h2>&#128247; Thumbnails &amp; artwork</h2>
+                <div class="row"><label>Generate thumbnails</label><input type="checkbox" id="EnableThumbnailGeneration"/></div>
+                <div class="hint">Creates a JPEG preview for each video file on first access. Disable on slow storage.</div>
+              </div>
+              <div class="card">
+                <h2>&#128193; File filters</h2>
+                <div class="row">
+                  <label>Ignored folder names</label>
+                  <input type="text" id="IgnoredLibraryFolders" placeholder="Subs, Alt, Extras"/>
+                </div>
+                <div class="hint">Comma-separated folder names that will be skipped entirely during scanning (case-insensitive).</div>
+                <div class="row">
+                  <label>Video file extensions</label>
+                  <input type="text" id="VideoFileExtensions" placeholder=".mp4, .mkv, .avi"/>
+                </div>
+                <div class="hint">Comma-separated. Only files with these extensions are indexed.</div>
+                <div class="row">
+                  <label>Music file extensions</label>
+                  <input type="text" id="MusicFileExtensions" placeholder=".mp3, .flac, .aac"/>
+                </div>
+                <div class="hint">Comma-separated. Only files with these extensions are added to the music library.</div>
+              </div>
+              </div>
+
+            <!-- ═══ PLAYBACK ═══ -->
+            <div class="panel" id="panel-playback">
+              <div class="card">
+                <h2>&#127760; Language preferences</h2>
+                <div class="row">
+                  <label>Preferred audio language</label>
+                  <select id="PreferredAudioLanguage">
+                    <option value="eng">English</option>
+                    <option value="fra">French</option>
+                    <option value="deu">German</option>
+                    <option value="nld">Dutch</option>
+                    <option value="spa">Spanish</option>
+                    <option value="por">Portuguese</option>
+                  </select>
+                </div>
+                <div class="row">
+                  <label>Subtitle language</label>
+                  <select id="PreferredSubtitleLanguage">
+                    <option value="eng">English</option>
+                    <option value="fra">French</option>
+                    <option value="deu">German</option>
+                    <option value="nld">Dutch</option>
+                    <option value="spa">Spanish</option>
+                    <option value="por">Portuguese</option>
+                  </select>
+                </div>
+                <div class="row">
+                  <label>Secondary subtitle language</label>
+                  <select id="SecondarySubtitleLanguage">
+                    <option value="">None</option>
+                    <option value="eng">English</option>
+                    <option value="fra">French</option>
+                    <option value="deu">German</option>
+                    <option value="nld">Dutch</option>
+                    <option value="spa">Spanish</option>
+                    <option value="por">Portuguese</option>
+                  </select>
+                </div>
+                <div class="row"><label>Prefer forced subtitles</label><input type="checkbox" id="PreferForcedSubtitles"/></div>
+                <div class="hint">When available, always load the forced subtitle track for foreign-language inserts.</div>
+              </div>
+              <div class="card">
+                <h2>&#9654; Playback behaviour</h2>
+                <div class="row">
+                  <label>When video ends</label>
+                  <select id="PlaybackEndBehavior">
+                    <option value="Stop">Stop</option>
+                    <option value="PlayNext">Play next in folder</option>
+                    <option value="Repeat">Repeat</option>
+                  </select>
+                </div>
+                <div class="row">
+                  <label>Playback history limit</label>
+                  <input type="number" id="PlaybackHistoryLimit" min="1" class="narrow"/> <span class="muted" style="font-size:.82rem">items</span>
+                </div>
+                <div class="hint">Number of recently-played items kept in the history list.</div>
+              </div>
+              </div>
+
+            <!-- ═══ AUDIO ═══ -->
+            <div class="panel" id="panel-audio">
+              <div class="card">
+                <h2>&#127911; Audio output</h2>
+                <div class="row">
+                  <label>Music audio device</label>
+                  <select id="MusicAudioDeviceId" style="flex:1"></select>
+                </div>
+                <div class="hint">Output device used for music playback. The first entry uses the Windows default output. Changes take effect on the next track.</div>
+              </div>
+              </div>
+
+            <!-- ═══ SERVER ═══ -->
+            <div class="panel" id="panel-server">
+              <div class="callout" style="margin-bottom:.9rem"><span class="ico">&#128161;</span> Port and HTTPS changes take effect after restarting the application. Other server settings apply immediately.</div>
+              <div class="card">
+                <h2>&#127760; Connection</h2>
+                <div class="row">
+                  <label>HTTP port</label>
+                  <input type="number" id="Port" min="1" max="65535" class="narrow" disabled title="Restart required to change the port"/>
+                </div>
+                <div class="hint">Changing the port requires an app restart. Use the system tray or WPF window to change it.</div>
+                <div class="row">
+                  <label>Use HTTPS</label>
+                  <input type="checkbox" id="UseHttps" disabled title="Restart required to toggle HTTPS"/>
+                </div>
+                <div class="hint">Requires a restart. A self-signed certificate is created automatically on first use.</div>
+                <div class="row">
+                  <label>HTTPS certificate</label>
+                  <a href="/cert.cer" class="secondary" style="font-size:.83rem;padding:.3rem .7rem;border:1px solid #30363d;border-radius:7px;text-decoration:none;color:#c9d1d9;display:inline-block" download>&#128196; Download .cer</a>
+                </div>
+                <div class="hint">Install this certificate as a Trusted Root on client devices to eliminate browser HTTPS warnings.</div>
+              </div>
+              <div class="card">
+                <h2>&#128204; Identity</h2>
+                <div class="row">
+                  <label>Instance name</label>
+                  <input type="text" id="ServerInstanceName" placeholder="My RemotePlay"/>
+                </div>
+                <div class="hint">Friendly name shown to peers on the network and on the Setup page.</div>
+              </div>
+              </div>
+
+            <!-- ═══ SECURITY ═══ -->
+            <div class="panel" id="panel-security">
+              <div class="card">
+                <h2>&#128272; Rate limiting</h2>
+                <p class="muted" style="margin-bottom:.7rem">Limits how many HTTP requests a single IP address can make within a sliding time window. Protects against accidental hammering and basic abuse.</p>
+                <div class="row">
+                  <label>Max requests per IP</label>
+                  <input type="number" id="MaxRequestsPerIpPerWindow" min="0" class="narrow"/>
+                  <span class="muted" style="font-size:.82rem">per window</span>
+                </div>
+                <div class="hint">Set to 0 to disable rate limiting entirely.</div>
+                <div class="row">
+                  <label>Window duration</label>
+                  <input type="number" id="RateLimitWindowSeconds" min="1" class="narrow"/>
+                  <span class="muted" style="font-size:.82rem">seconds</span>
+                </div>
+              </div>
+              </div>
+
+            <!-- ═══ UPDATES ═══ -->
+            <div class="panel" id="panel-updates">
+              <div class="card">
+                <h2>&#8635; Auto-update source</h2>
+                <div class="row">
+                  <label>Source path&nbsp;/&nbsp;URL</label>
+                  <div class="path-row">
+                    <input type="text" id="UpdateSourcePath" placeholder="\\server\share\RemotePlay  or  https://…"/>
+                    <button class="test-btn" onclick="testPathOrUrl('UpdateSourcePath','update-source-result')">Test</button>
+                  </div>
+                </div>
+                <span id="update-source-result" class="hint"></span>
+                <div class="hint">A local folder path or HTTP URL that contains updated application files. Leave blank to disable auto-update.</div>
+                <div class="row">
+                  <label>Check interval</label>
+                  <input type="number" id="AutoUpdateIntervalMinutes" min="0" class="narrow"/>
+                  <span class="muted" style="font-size:.82rem">minutes &nbsp;(0 = startup only)</span>
+                </div>
+              </div>
+              </div>
+
+            <!-- ═══ APPEARANCE ═══ -->
+            <div class="panel" id="panel-appearance">
+              <div class="card">
+                <h2>&#127912; Developer &amp; diagnostics modes</h2>
+                <div class="row"><label>Expert mode</label><input type="checkbox" id="ExpertMode"/></div>
+                <div class="hint">Reveals advanced controls in the web UI (e.g. dynamic folder creation, codec hints).</div>
+                <div class="row"><label>Debug mode</label><input type="checkbox" id="DebugMode"/></div>
+                <div class="hint">Reveals debug-only controls (e.g. cache reset, raw index inspection). Not recommended for normal use.</div>
+              </div>
+              </div>
+
+            <!-- ═══ DESKTOP ═══ -->
+            <div class="panel" id="panel-desktop">
+              <div class="card">
+                <h2>&#128444; Display</h2>
+                <p class="muted" style="margin-bottom:.75rem">Choose which monitor the fullscreen video window opens on.</p>
+                <div class="row">
+                  <label>Fullscreen display</label>
+                  <select id="PreferredDisplayIndex" data-numeric="1" style="min-width:260px">
+                    <option value="-1">Primary monitor</option>
+                  </select>
+                </div>
+                <div class="hint">The list is populated from the monitors detected on the host machine.</div>
+              </div>
+              <div class="card">
+                <h2>&#9654; Startup</h2>
+                <p class="muted" style="margin-bottom:.75rem">Control how RemotePlay behaves when Windows starts and when its window is closed.</p>
+                <div class="row"><label>Start with Windows</label><input type="checkbox" id="StartWithWindows"/></div>
+                <div class="hint" style="margin-bottom:.85rem">Adds or removes RemotePlay from your Windows startup programs.</div>
+                <div class="row"><label>Keep in system tray when closed</label><input type="checkbox" id="UseTrayIcon"/></div>
+                <div class="hint">When enabled, closing the window hides RemotePlay to the tray instead of exiting.</div>
+              </div>
+              </div>
+
+            <!-- ═══ TOOLS ═══ -->
+            <div class="panel" id="panel-tools">
+              <div class="card">
+                <h2>&#8679; Peer sync</h2>
+                <p class="muted" style="margin-bottom:.75rem">Pushes cached artwork, lyrics and playback offsets to every RemotePlay instance discovered on the local network.</p>
+                <dl class="ov-grid" style="margin-bottom:.85rem">
+                  <div class="ov-item"><div class="ov-label">Cached covers</div><div class="ov-value">{{artFiles}} images</div></div>
+                  <div class="ov-item"><div class="ov-label">Cover cache size</div><div class="ov-value">{{artSizeLabel}}</div></div>
+                </dl>
+                <div class="row">
+                  <label>Auto-sync interval</label>
+                  <select id="SyncIntervalHours" data-numeric="1">
+                    <option value="0">Off &mdash; manual only</option>
+                    <option value="4">Every 4 hours</option>
+                    <option value="12">Every 12 hours</option>
+                    <option value="24">Every day</option>
+                    <option value="168">Every week</option>
+                  </select>
+                </div>
+                <div class="row"><label>Sync at startup</label><input type="checkbox" id="SyncAtStartup"/></div>
+                <div class="hint">Trigger a full sync automatically each time the application starts.</div>
+                <div class="actions" style="align-items:center;gap:.75rem">
+                  <button class="primary" id="sync-btn" onclick="startSyncAll()">&#8679; Sync now</button>
+                  <span class="sync-status-pill" id="sync-status-pill">&#8679; Syncing&#8230;</span>
+                </div>
+                <div class="sync-bar-wrap" id="sync-bar-wrap"><div class="sync-bar-fill" id="sync-bar-fill"></div></div>
+                <div class="sync-log" id="sync-log"></div>
+              </div>
+              <div class="card">
+                <h2>&#9881; Maintenance</h2>
+                <p class="muted" style="margin-bottom:.7rem">One-time actions that affect the running application state.</p>
+                <div class="actions">
+                  <button class="primary" onclick="rescanLibrary()">&#8635; Rescan video library</button>
+                  <button class="secondary" onclick="refreshRuntime()">&#8635; Refresh runtime</button>
+                  <button class="secondary" onclick="location.href='/remoteplay.log'">&#128196; Download log</button>
+                </div>
+                <p id="admin-result" class="admin-result"></p>
+              </div>
+              </div>
+
+            <!-- ═══ LOG ═══ -->
+            <div class="panel" id="panel-log">
+              <div class="card">
+                <h2>&#128221; Application log</h2>
+                <p class="muted" style="margin-bottom:.75rem">Most-recent entries at the bottom. Click any row to select it, then copy to clipboard.</p>
+                <div class="log-toolbar" id="log-toolbar">
+                  <div class="log-filters">
+                    <select id="log-filter-level" onchange="applyLogFilters()" title="Filter by severity">
+                      <option value="">All severities</option>
+                      <option value="INFO">Info</option>
+                      <option value="DETAIL">Detail</option>
+                      <option value="WARN">Warning</option>
+                      <option value="ERROR">Error</option>
+                    </select>
+                    <input id="log-filter-source" type="text" placeholder="Filter source&hellip;" oninput="applyLogFilters()" title="Filter by source / category" style="width:140px"/>
+                  </div>
+                  <div class="log-actions">
+                    <span id="log-sel-info" class="muted" style="font-size:.78rem"></span>
+                    <button class="secondary" id="log-copy-btn" onclick="copyLogSelection()" disabled title="Copy selected rows to clipboard">&#128203; Copy</button>
+                    <button class="secondary" onclick="clearLog()" title="Clear the log file">&#128465; Clear log</button>
+                    <button class="secondary" onclick="loadLog()" title="Refresh">&#8635; Refresh</button>
+                  </div>
+                </div>
+                <div class="log-viewer" id="log-viewer" tabindex="0">
+                  <table class="log-table" id="log-table"><tbody id="log-tbody"></tbody></table>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:.45rem">
+                  <span class="muted" style="font-size:.78rem" id="log-footer-info"></span>
+                  <span class="muted" style="font-size:.78rem">Click a row to select &bull; Shift-click for range &bull; Ctrl-click to multi-select</span>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+        <div class="footer">RemotePlay settings</div>
+        <script>
+        const INITIAL_CFG = SETTINGS_JSON_PLACEHOLDER;
+        function showCat(name) {
+          document.querySelectorAll('.cat-btn').forEach(b=>b.classList.remove('active'));
+          document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+          const btn=document.getElementById('cat-'+name), panel=document.getElementById('panel-'+name);
+          if(btn)btn.classList.add('active');
+          if(panel)panel.classList.add('active');
+          history.replaceState(null,'','?cat='+name);
+          if(name==='overview') startOverviewPoll();
+          if(name==='log') loadLog();
+          if(name==='desktop'){
+            const sel=document.getElementById('PreferredDisplayIndex');
+            const cur=sel?Number(sel.value):-1;
+            loadDisplaySelect(cur);
           }
         }
+        let _ovPollTimer=null;
+        let _ovVideoFloor=0, _ovMusicFloor=0; // never let displayed count drop below last known value during a scan
+        function startOverviewPoll(){
+          if(_ovPollTimer)return; // already running
+          _ovPollTimer=setInterval(async()=>{
+            const panel=document.getElementById('panel-overview');
+            if(!panel||!panel.classList.contains('active')){stopOverviewPoll();return;}
+            try{
+              const r=await fetch('/api/library-status');
+              if(r.ok){
+                const s=await r.json();
+                const count=s.IndexedFiles??0;
+                const el=document.getElementById('ov-video-count');
+                if(el){
+                  if(s.IsScanning){
+                    // during scan: only advance the floor, never show a drop
+                    if(count>_ovVideoFloor)_ovVideoFloor=count;
+                    el.textContent=_ovVideoFloor.toLocaleString();
+                  } else {
+                    // scan finished: show real value and reset floor
+                    _ovVideoFloor=count;
+                    el.textContent=count.toLocaleString();
+                  }
+                }
+              }
+            }catch(_){}
+            try{
+              const r=await fetch('/api/music/status');
+              if(r.ok){
+                const s=await r.json();
+                const count=s.indexedFiles??0;
+                const isIdx=s.isScanning??false;
+                const el=document.getElementById('ov-music-count');
+                if(el){
+                  if(isIdx){
+                    if(count>_ovMusicFloor)_ovMusicFloor=count;
+                    el.textContent=_ovMusicFloor.toLocaleString();
+                  } else {
+                    _ovMusicFloor=count;
+                    el.textContent=count.toLocaleString();
+                  }
+                }
+              }
+            }catch(_){}
+          },2000);
+        }
+        function stopOverviewPoll(){if(_ovPollTimer){clearInterval(_ovPollTimer);_ovPollTimer=null;}}
+        function populate(cfg) {
+          const set=(id,v)=>{const el=document.getElementById(id);if(!el)return;if(el.type==='checkbox')el.checked=!!v;else el.value=v??'';};
+          // Library / Scanning
+          set('ServerInstanceName',cfg.instanceName);
+          set('LibraryRescanDelayMinutes',cfg.libraryRescanDelayMinutes);
+          set('LibraryPageSize',cfg.libraryPageSize);
+          set('EnableThumbnailGeneration',cfg.enableThumbnailGeneration);
+          set('IgnoredLibraryFolders',cfg.ignoredLibraryFolders);
+          set('VideoFileExtensions',cfg.videoFileExtensions);
+          set('MusicFileExtensions',cfg.musicFileExtensions);
+          // Playback
+          set('PreferredAudioLanguage',cfg.preferredAudioLanguage);
+          set('PreferredSubtitleLanguage',cfg.preferredSubtitleLanguage);
+          set('SecondarySubtitleLanguage',cfg.secondarySubtitleLanguage);
+          set('PreferForcedSubtitles',cfg.preferForcedSubtitles);
+          set('PlaybackEndBehavior',cfg.playbackEndBehavior);
+          set('PlaybackHistoryLimit',cfg.playbackHistoryLimit);
+          // Audio
+          populateAudioDeviceSelect(cfg.musicAudioDeviceId);
+          // Security
+          set('MaxRequestsPerIpPerWindow',cfg.maxRequestsPerIpPerWindow);
+          set('RateLimitWindowSeconds',cfg.rateLimitWindowSeconds);
+          // Updates
+          set('UpdateSourcePath',cfg.updateSourcePath);
+          set('AutoUpdateIntervalMinutes',cfg.autoUpdateIntervalMinutes);
+          // Appearance
+          set('ExpertMode',cfg.expertMode);
+          set('DebugMode',cfg.debugMode);
+          // Desktop
+          set('StartWithWindows',cfg.startWithWindows);
+          set('UseTrayIcon',cfg.useTrayIcon);
+          populateDisplaySelect(cfg.preferredDisplayIndex??-1);
+          // Tools / Sync
+          set('SyncIntervalHours',cfg.syncIntervalHours??0);
+          set('SyncAtStartup',cfg.syncAtStartup);
+          // Lists
+          populateList('extra-movies-list','addlMovies',cfg.additionalMoviesPaths||[],true);
+          populateList('extra-music-list','addlMusic',cfg.additionalMusicPaths||[],true);
+          populateCredentials(cfg.networkShareCredentials||[]);
+        }
+        function populateList(listId,key,items,isPath) {
+          const el=document.getElementById(listId); el.innerHTML='';
+          (items.length>0?items:['']).forEach(v=>addListEntry(listId,key,isPath,v));
+        }
+        function addListEntry(listId,key,isPath,value) {
+          const el=document.getElementById(listId); const row=document.createElement('div'); row.className='list-entry';
+          const rid='lr-'+Math.random().toString(36).slice(2);
+          row.innerHTML=`<input type="text" data-key="${key}" value="${escAttr(value||'')}" placeholder="path..." />`
+            +(isPath?`<button class="test-btn" onclick="testPathEntry(this,'${rid}')">Test</button><span id="${rid}" class="test-ok" style="font-size:.78rem"></span>`:'')
+            +`<button onclick="this.closest('.list-entry').remove()" title="Remove">&#10005;</button>`;
+          el.appendChild(row);
+        }
+        function populateCredentials(creds) {
+          const el=document.getElementById('cred-list'); el.innerHTML='';
+          creds.forEach(c=>addCredRow(c.path,c.username,c.password));
+        }
+        function addCredRow(path,user,pass) {
+          const el=document.getElementById('cred-list'); const row=document.createElement('div'); row.className='cred-row';
+          row.innerHTML=`<input type="text" data-cred="path" value="${escAttr(path||'')}" placeholder="\\\\server\\share" />`
+            +`<input type="text" data-cred="username" value="${escAttr(user||'')}" placeholder="Username" />`
+            +`<input type="password" data-cred="password" value="${escAttr(pass||'')}" placeholder="Password" />`
+            +`<button onclick="this.closest('.cred-row').remove()" title="Remove">&#10005;</button>`;
+          el.appendChild(row);
+        }
+        const CAT_FIELDS={
+          library:[],   // handled entirely by list/cred collectors in collectCategory
+          scanning:['LibraryRescanDelayMinutes','LibraryPageSize','EnableThumbnailGeneration','IgnoredLibraryFolders','VideoFileExtensions','MusicFileExtensions'],
+          playback:['PreferredAudioLanguage','PreferredSubtitleLanguage','SecondarySubtitleLanguage','PreferForcedSubtitles','PlaybackEndBehavior','PlaybackHistoryLimit'],
+          audio:['MusicAudioDeviceId'],
+          server:[],    // ServerInstanceName handled in collectCategory
+          security:['MaxRequestsPerIpPerWindow','RateLimitWindowSeconds'],
+          updates:['UpdateSourcePath','AutoUpdateIntervalMinutes'],
+          appearance:['ExpertMode','DebugMode'],
+          desktop:['StartWithWindows','UseTrayIcon','PreferredDisplayIndex'],
+          tools:['SyncIntervalHours','SyncAtStartup'],
+        };
+        function readField(id){const el=document.getElementById(id);if(!el)return undefined;if(el.type==='checkbox')return el.checked;const v=el.value.trim();if(el.type==='number'||el.tagName==='SELECT'&&el.dataset.numeric)return v===''?null:Number(v);return v;}
+        function collectCategory(cat){
+          const p={};(CAT_FIELDS[cat]||[]).forEach(id=>{p[id]=readField(id);});
+          if(cat==='library'){
+            p['AdditionalMoviesPaths']=[...document.querySelectorAll('#extra-movies-list [data-key=addlMovies]')].map(i=>i.value.trim()).filter(Boolean);
+            p['AdditionalMusicPaths']=[...document.querySelectorAll('#extra-music-list [data-key=addlMusic]')].map(i=>i.value.trim()).filter(Boolean);
+            p['NetworkShareCredentials']=[...document.querySelectorAll('#cred-list .cred-row')].map(row=>({path:row.querySelector('[data-cred=path]')?.value.trim()||'',username:row.querySelector('[data-cred=username]')?.value.trim()||'',password:row.querySelector('[data-cred=password]')?.value||''})).filter(c=>c.path);
+          }
+          // ServerInstanceName is a display alias for InstanceName on the Server panel
+          if(cat==='server'){const v=readField('ServerInstanceName');if(v!==undefined)p['InstanceName']=v;}
+          return p;
+        }
+        let _autoSaveTimer=null;
+        function scheduleAutoSave(cat){
+          clearTimeout(_autoSaveTimer);
+          _autoSaveTimer=setTimeout(()=>saveCategory(cat),600);
+        }
+        function bindCategoryAutoSave(cat){
+          const panel=document.getElementById('panel-'+cat);
+          if(!panel)return;
+          panel.querySelectorAll('input,select,textarea').forEach(el=>{
+            const evt=el.type==='range'?'change':(el.type==='text'||el.type==='number'||el.tagName==='TEXTAREA'?'change':'change');
+            el.addEventListener(evt,()=>scheduleAutoSave(cat));
+          });
+        }
+        async function saveCategory(cat){
+          try{
+            const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collectCategory(cat))});
+            const d=await r.json();
+            if(d.ok&&d.settings)populate(d.settings);
+          }catch(e){console.warn('Auto-save failed:',e);}
+        }
+        async function testPath(inputId,resultId){
+          const val=document.getElementById(inputId)?.value.trim();
+          const el=document.getElementById(resultId); if(!el)return;
+          el.textContent='Testing\u2026'; el.className='hint';
+          const r=await fetch('/api/settings/test-path?path='+encodeURIComponent(val));
+          const d=await r.json();
+          el.textContent=d.exists?'\u2714 Found: '+d.resolved:'\u26a0 Not found'+(d.error?': '+d.error:'');
+          el.className=d.exists?'test-ok':'test-err';
+        }
+        async function testPathEntry(btn,resultId){
+          const input=btn.closest('.list-entry').querySelector('input');
+          const el=document.getElementById(resultId); if(!el)return;
+          el.textContent='Testing\u2026';
+          const r=await fetch('/api/settings/test-path?path='+encodeURIComponent(input?.value.trim()||''));
+          const d=await r.json();
+          el.textContent=d.exists?'\u2714':'\u26a0 Not found';
+          el.className=d.exists?'test-ok':'test-err';
+        }
+        async function testPathOrUrl(inputId,resultId){
+          const val=document.getElementById(inputId)?.value.trim()||'';
+          const el=document.getElementById(resultId); if(!el)return;
+          el.textContent='Testing\u2026'; el.className='hint';
+          if(/^https?:\/\//i.test(val)){
+            const r=await fetch('/api/settings/test-url?url='+encodeURIComponent(val));
+            const d=await r.json();
+            el.textContent=d.reachable?'\u2714 Reachable (HTTP '+d.status+')':'\u26a0 '+(d.error||'Unreachable');
+            el.className=d.reachable?'test-ok':'test-err';
+          }else{await testPath(inputId,resultId);}
+        }
+        async function refreshRuntime(){
+          const result=document.getElementById('admin-result'); result.textContent='Refreshing\u2026';
+          try{const r=await fetch('/api/health');result.textContent=r.ok?'\u2714 Runtime refreshed.':'Refresh failed: '+r.status;}
+          catch(e){result.textContent='Refresh failed: '+e;}
+        }
+        async function rescanLibrary(){
+          const result=document.getElementById('admin-result'); result.textContent='Starting rescan\u2026';
+          try{await fetch('/api/rescan');result.textContent='Video library rescan started.';}
+          catch(e){result.textContent='Rescan failed: '+e;}
+        }
+        function _log(msg,cls){const box=document.getElementById('sync-log');box.style.display='block';const line=document.createElement('div');if(cls)line.className=cls;line.textContent=msg;box.appendChild(line);box.scrollTop=box.scrollHeight;}
+        async function ovReindex(type){
+          const isVideo=type==='video';
+          const rescanUrl=isVideo?'/api/rescan':'/api/rescan-music';
+          try{
+            await fetch(rescanUrl,{method:'POST'});
+            if(isVideo)_ovVideoFloor=0; else _ovMusicFloor=0;
+            stopOverviewPoll(); // reset so startOverviewPoll re-arms fresh
+            startOverviewPoll();
+          }catch(e){alert('Reindex failed: '+e);}
+        }
+        async function startSyncAll(){
+          const btn=document.getElementById('sync-btn'),barWrap=document.getElementById('sync-bar-wrap'),fill=document.getElementById('sync-bar-fill'),log=document.getElementById('sync-log');
+          btn.disabled=true;log.innerHTML='';log.style.display='block';barWrap.style.display='block';fill.style.width='5%';
+          const pill=document.getElementById('sync-status-pill');if(pill)pill.style.display='inline-block';
+          _log('Collecting local offsets\u2026','dim');
+          let offsets={};try{const raw=localStorage.getItem('remotePlayLyricOffsets');if(raw)offsets=JSON.parse(raw);}catch(_){}
+          try{
+            const resp=await fetch('/api/sync/all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offsets})});
+            if(!resp.ok||!resp.body){_log('Server error: '+resp.status,'warn');btn.disabled=false;return;}
+            const reader=resp.body.getReader();const decoder=new TextDecoder();let buf='';let peerCount=0;
+            while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});
+              const parts=buf.split('\n\n');buf=parts.pop();
+              for(const part of parts){const line=part.trim();if(!line.startsWith('data:'))continue;
+                let ev;try{ev=JSON.parse(line.slice(5).trim());}catch{continue;}
+                if(ev.type==='peer'){peerCount++;fill.style.width=Math.min(10+peerCount*15,85)+'%';_log('\u2192 '+ev.message,'info');}
+                else if(ev.type==='step'){_log('  '+ev.message,'dim');}
+                else if(ev.type==='step_done'){_log('  \u2714 '+ev.step+': sent '+ev.sent+', skipped '+ev.skipped+(ev.failed>0?' \u26a0 failed '+ev.failed:''),'ok');}
+                else if(ev.type==='step_error'){_log('  \u26a0 '+ev.step+': '+ev.message,'warn');}
+                else if(ev.type==='done'){fill.style.width='100%';if(ev.peers===0){_log(ev.message||'No peers found.','warn');}else{_log('\u2714 Done \u2014 peers: '+ev.peers+' | sent: '+ev.sent+' | skipped: '+ev.skipped+(ev.failed>0?' | failed: '+ev.failed:''),'ok');}}
+              }
+            }
+          }catch(e){_log('Sync failed: '+e,'warn');}
+          finally{btn.disabled=false;setTimeout(()=>{barWrap.style.display='none';log.style.display='none';fill.style.width='0%';if(pill)pill.style.display='none';},5000);}
+        }
+        function escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
+        async function loadAudioDevices(selectedId){
+          const sel=document.getElementById('MusicAudioDeviceId'); if(!sel)return;
+          try{
+            const r=await fetch('/api/audio-devices'); if(!r.ok)return;
+            const devices=await r.json();
+            sel.innerHTML='';
+            devices.forEach(d=>{
+              const opt=document.createElement('option');
+              opt.value=d.id; opt.textContent=d.name;
+              if(d.id===(selectedId||''))opt.selected=true;
+              sel.appendChild(opt);
+            });
+          }catch(e){console.warn('Could not load audio devices',e);}
+        }
+        function populateAudioDeviceSelect(id){
+          const sel=document.getElementById('MusicAudioDeviceId'); if(!sel)return;
+          // Set immediately if options already loaded; will also be set by loadAudioDevices
+          for(const o of sel.options){if(o.value===(id||'')){o.selected=true;return;}}
+          sel.dataset.pendingValue=id||'';
+        }
+        async function loadDisplaySelect(selectedIndex){
+          const sel=document.getElementById('PreferredDisplayIndex'); if(!sel)return;
+          try{
+            const r=await fetch('/api/displays');
+            const screens=await r.json();
+            // Keep the Primary option, then add each screen
+            sel.innerHTML='<option value="-1">Primary monitor</option>';
+            screens.forEach(s=>{
+              const o=document.createElement('option');
+              o.value=s.index; o.textContent=s.name; sel.appendChild(o);
+            });
+          }catch(e){ /* leave default option */ }
+          // Select saved value
+          for(const o of sel.options){if(Number(o.value)===(selectedIndex??-1)){o.selected=true;break;}}
+        }
+        function populateDisplaySelect(idx){
+          // Try to set immediately; if options not yet loaded, loadDisplaySelect will set it
+          const sel=document.getElementById('PreferredDisplayIndex'); if(!sel)return;
+          for(const o of sel.options){if(Number(o.value)===idx){o.selected=true;return;}}
+          sel.dataset.pendingDisplayIndex=idx;
+        }
+        populate(INITIAL_CFG);
+        ['library','scanning','playback','audio','server','security','updates','appearance','desktop','tools'].forEach(bindCategoryAutoSave);
+        loadAudioDevices(INITIAL_CFG.musicAudioDeviceId);
+        loadDisplaySelect(INITIAL_CFG.preferredDisplayIndex??-1);
+        const catFromUrl=new URLSearchParams(location.search).get('cat');
+        if(catFromUrl)showCat(catFromUrl);
+        startOverviewPoll();
+        /* ---- LOG VIEWER ---- */
+        let _logAllEntries=[]; // full set from last fetch
+        let _logSelected=new Set(); // selected row indices (into _logAllEntries)
+        let _logAnchor=-1; // shift-click anchor
+        async function loadLog(){
+          const level=document.getElementById('log-filter-level')?.value||'';
+          const src=document.getElementById('log-filter-source')?.value||'';
+          let url='/api/server-log?lines=2000';
+          if(level)url+='&level='+encodeURIComponent(level);
+          if(src)url+='&source='+encodeURIComponent(src);
+          try{
+            const r=await fetch(url);
+            if(!r.ok){renderLogError('Failed to load log (HTTP '+r.status+')');return;}
+            const entries=await r.json();
+            _logAllEntries=entries;
+            _logSelected.clear();
+            _logAnchor=-1;
+            renderLogTable(entries);
+            updateLogSelInfo();
+          }catch(e){renderLogError(String(e));}
+        }
+        function applyLogFilters(){ loadLog(); }
+        function renderLogError(msg){
+          const tb=document.getElementById('log-tbody');
+          if(tb)tb.innerHTML='<tr><td colspan="4" style="color:#f87171;padding:.5rem .8rem">'+msg+'</td></tr>';
+        }
+        function renderLogTable(entries){
+          const tb=document.getElementById('log-tbody');
+          if(!tb)return;
+          if(!entries.length){tb.innerHTML='<tr><td colspan="4" style="color:#484f58;padding:.5rem .8rem">No log entries.</td></tr>';return;}
+          const rows=entries.map((e,i)=>{
+            const lvClass='lv-'+e.level;
+            return '<tr class="'+lvClass+'" data-idx="'+i+'" onclick="logRowClick(event,'+i+')">'
+              +'<td class="lv-ts">'+esc(e.timestamp)+'</td>'
+              +'<td class="lv-badge lv-badge-col">'+esc(e.level)+'</td>'
+              +'<td class="lv-src" title="'+esc(e.source)+'">'+esc(e.source)+'</td>'
+              +'<td class="lv-msg">'+esc(e.message)+'</td>'
+              +'</tr>';
+          });
+          tb.innerHTML=rows.join('');
+          // scroll to bottom (most recent)
+          const viewer=document.getElementById('log-viewer');
+          if(viewer)viewer.scrollTop=viewer.scrollHeight;
+          document.getElementById('log-footer-info').textContent=entries.length.toLocaleString()+' entries shown';
+        }
+        function logRowClick(ev,idx){
+          if(ev.ctrlKey||ev.metaKey){
+            if(_logSelected.has(idx))_logSelected.delete(idx); else _logSelected.add(idx);
+            _logAnchor=idx;
+          } else if(ev.shiftKey&&_logAnchor>=0){
+            const lo=Math.min(_logAnchor,idx), hi=Math.max(_logAnchor,idx);
+            for(let i=lo;i<=hi;i++)_logSelected.add(i);
+          } else {
+            _logSelected.clear();
+            _logSelected.add(idx);
+            _logAnchor=idx;
+          }
+          highlightSelected();
+          updateLogSelInfo();
+        }
+        function highlightSelected(){
+          const rows=document.querySelectorAll('#log-tbody tr');
+          rows.forEach(r=>{
+            const i=parseInt(r.dataset.idx,10);
+            r.classList.toggle('selected',_logSelected.has(i));
+          });
+        }
+        function updateLogSelInfo(){
+          const n=_logSelected.size;
+          document.getElementById('log-sel-info').textContent=n?n+' row'+(n>1?'s':'')+' selected':'';
+          const btn=document.getElementById('log-copy-btn');
+          if(btn)btn.disabled=n===0;
+        }
+        function copyLogSelection(){
+          const sel=[..._logSelected].sort((a,b)=>a-b);
+          const lines=sel.map(i=>_logAllEntries[i]?.raw||'');
+          navigator.clipboard.writeText(lines.join('\n')).catch(()=>{
+            // fallback
+            const ta=document.createElement('textarea');
+            ta.value=lines.join('\n');
+            document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);
+          });
+        }
+        async function clearLog(){
+          const r=await fetch('/api/server-log/clear',{method:'POST'});
+          if(r.ok){_logAllEntries=[];_logSelected.clear();renderLogTable([]);}
+        }
+        function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+        </script>
+        </body>
+        </html>
         """;
+
 
     private static string BuildRuntimeHealthJson() =>
         JsonSerializer.Serialize(BuildRuntimeHealth(), new JsonSerializerOptions { WriteIndented = true });
@@ -1040,6 +1843,74 @@ internal sealed partial class WebServer
 
         ctx.Response.AddHeader("Content-Disposition", "attachment; filename=remoteplay.log");
         TrySendBytes(ctx, 200, "text/plain; charset=utf-8", File.ReadAllBytes(Logger.FilePath));
+    }
+
+    /// <summary>Reads the last <paramref name="maxLines"/> lines from the log file and parses them into structured entries.</summary>
+    internal static List<LogEntry> ReadLogEntries(string filePath, int maxLines, string? levelFilter, string? sourceFilter)
+    {
+        if (!File.Exists(filePath))
+            return [];
+
+        string[] rawLines;
+        lock (typeof(Logger)) // best-effort; Logger uses its own lock but we just need a snapshot
+        {
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var sr = new StreamReader(fs);
+            rawLines = sr.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        }
+
+        // Parse lines — format: "yyyy-MM-dd HH:mm:ss [LEVEL] [Source] Message"
+        var entries = new List<LogEntry>(Math.Min(rawLines.Length, maxLines));
+        foreach (var raw in rawLines)
+        {
+            var line = raw.TrimEnd('\r');
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            var entry = ParseLogLine(line);
+            if (levelFilter is not null && !string.Equals(entry.Level, levelFilter, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (sourceFilter is not null && !entry.Source.Contains(sourceFilter, StringComparison.OrdinalIgnoreCase))
+                continue;
+            entries.Add(entry);
+        }
+
+        // Return only the last maxLines after filtering
+        if (entries.Count > maxLines)
+            entries.RemoveRange(0, entries.Count - maxLines);
+
+        return entries;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex _logLineRegex =
+        new(@"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[(\w+)\] \[([^\]]+)\] (.*)$",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static LogEntry ParseLogLine(string line)
+    {
+        var m = _logLineRegex.Match(line);
+        if (!m.Success)
+            return new LogEntry { Timestamp = "", Level = "INFO", Source = "General", Message = line, Raw = line };
+        return new LogEntry
+        {
+            Timestamp = m.Groups[1].Value,
+            Level     = m.Groups[2].Value,
+            Source    = m.Groups[3].Value,
+            Message   = m.Groups[4].Value,
+            Raw       = line
+        };
+    }
+
+    internal sealed record LogEntry
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("timestamp")]
+        public string Timestamp { get; init; } = "";
+        [System.Text.Json.Serialization.JsonPropertyName("level")]
+        public string Level     { get; init; } = "";
+        [System.Text.Json.Serialization.JsonPropertyName("source")]
+        public string Source    { get; init; } = "";
+        [System.Text.Json.Serialization.JsonPropertyName("message")]
+        public string Message   { get; init; } = "";
+        [System.Text.Json.Serialization.JsonPropertyName("raw")]
+        public string Raw       { get; init; } = "";
     }
 
     private static void HandleCertificateDownload(HttpListenerContext ctx)

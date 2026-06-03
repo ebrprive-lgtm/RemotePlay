@@ -266,7 +266,9 @@ internal sealed partial class WebServer
             lastError = _lastMusicScanError,
             lastRefreshUtc = _lastMusicIndexRefreshUtc,
             musicRoot = musicRoot,
-            folder = string.IsNullOrEmpty(folderParam) ? musicRoot : folderParam
+            folder = string.IsNullOrEmpty(folderParam) ? musicRoot : folderParam,
+            allMusicPathsInvalid = string.IsNullOrEmpty(folderParam) && !_isMusicIndexing
+                && !_config.AllResolvedMusicPaths.Any(Directory.Exists)
         }));
     }
 

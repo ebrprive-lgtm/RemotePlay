@@ -603,501 +603,75 @@
 
             <!-- ── SETTINGS tab ── -->
             <TabItem Header="⚙️  Settings" Style="{StaticResource DarkTab}">
-                <Grid Background="#111111">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="180"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Background="#111111">
+                    <StackPanel Margin="32,28,32,28" MaxWidth="640">
 
-                    <!-- Left sidebar -->
-                    <Border Grid.Column="0" Background="#0d0d1a" BorderBrush="#2a2a3e" BorderThickness="0,0,1,0">
-                        <StackPanel Margin="0,12,0,0">
-                            <TextBlock Text="SETTINGS" Foreground="#555" FontSize="10" FontWeight="Bold"
-                                       Margin="16,0,0,10"/>
-                            <Button x:Name="SettingsCatLibrary"   Content="📁  Library"         Click="OnSettingsCat" Tag="Library"   Style="{StaticResource SettingsCatBtn}" Background="#1a2a3a" Foreground="#E94560"/>
-                            <Button x:Name="SettingsCatServer"    Content="🌐  Server"          Click="OnSettingsCat" Tag="Server"    Style="{StaticResource SettingsCatBtn}"/>
-                            <Button x:Name="SettingsCatPlayback"  Content="▶  Playback"         Click="OnSettingsCat" Tag="Playback"  Style="{StaticResource SettingsCatBtn}"/>
-                            <Button x:Name="SettingsCatTracks"    Content="🎵  Audio &amp; Subs"   Click="OnSettingsCat" Tag="Tracks"    Style="{StaticResource SettingsCatBtn}"/>
-                            <Button x:Name="SettingsCatDisplay"   Content="🖥  Display"          Click="OnSettingsCat" Tag="Display"   Style="{StaticResource SettingsCatBtn}"/>
-                            <Button x:Name="SettingsCatStartup"   Content="🚀  Startup"          Click="OnSettingsCat" Tag="Startup"   Style="{StaticResource SettingsCatBtn}"/>
-                            <Button x:Name="SettingsCatAdvanced"  Content="🔧  Advanced"         Click="OnSettingsCat" Tag="Advanced"  Style="{StaticResource SettingsCatBtn}"/>
+                        <!-- Feedback banner -->
+                        <TextBlock x:Name="SettingsFeedback" Foreground="#00D4AA"
+                                   FontSize="12" Margin="0,0,0,16"
+                                   Visibility="Collapsed" TextWrapping="Wrap"/>
+
+                        <!-- Web Settings banner -->
+                        <Border Background="#0d1f0d" BorderBrush="#2a6e2a" BorderThickness="1"
+                                CornerRadius="8" Padding="16,12" Margin="0,0,0,28">
+                            <StackPanel>
+                                <TextBlock Foreground="#4ade80" FontSize="14" FontWeight="SemiBold"
+                                           Text="&#127760; All settings are now managed in the Web UI" Margin="0,0,0,5"/>
+                                <TextBlock Foreground="#666" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,10"
+                                           Text="Library paths, scanning, playback, audio, language, security, appearance, sync and tools are all configured from the browser. Only the port number and desktop-specific options remain here."/>
+                                <Button Content="Open Web Settings &#10142;" Click="OnOpenWebSettings"
+                                        Background="#1a3a1a" Foreground="#4ade80" BorderBrush="#2a6e2a"
+                                        BorderThickness="1" Padding="12,5" HorizontalAlignment="Left"
+                                        Cursor="Hand" FontSize="12"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- ── Server section ── -->
+                        <TextBlock Text="Server" Foreground="#E94560" FontSize="15" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,18"
+                                   Text="Configure the port the web interface listens on. Changing the port requires a server restart."/>
+
+                        <TextBlock Text="Port" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="PortBox" Grid.Column="0"
+                                     Background="#1e1e2e" Foreground="#EEE"
+                                     BorderBrush="#444" BorderThickness="1"
+                                     Padding="8,6" FontSize="13"
+                                     VerticalContentAlignment="Center"
+                                     LostFocus="OnSettingLostFocus"/>
+                            <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
+                                       VerticalAlignment="Center" Margin="12,0,0,0"
+                                       Text="(1024 – 65535)"/>
+                        </Grid>
+
+                        <CheckBox x:Name="UseHttpsBox"
+                                  Content="Use secure HTTPS (recommended for mobile PWA)"
+                                  Foreground="#EEE" FontSize="13" Margin="0,12,0,6"
+                                  Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
+                        <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,6" TextWrapping="Wrap"
+                                   Text="HTTPS lets mobile browsers install RemotePlay as a PWA. First-time setup may require running as administrator."/>
+
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,28">
+                            <Button Content="Export HTTPS Certificate" Click="OnExportCertificate"
+                                    Background="#333" Foreground="White" BorderThickness="0"
+                                    Padding="12,6" Cursor="Hand"/>
+                            <Button Content="Open Health Page" Click="OnOpenHealthPage"
+                                    Background="#333" Foreground="White" BorderThickness="0"
+                                    Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
                         </StackPanel>
-                    </Border>
 
-                    <!-- Right content area -->
-                    <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" Background="#111111">
-                        <StackPanel Margin="28,24,28,24">
+                        <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
+                                Background="#E94560" Foreground="White" BorderThickness="0"
+                                Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"
+                                Margin="0,0,0,36"/>
 
-                            <!-- Feedback banner (shared) -->
-                            <TextBlock x:Name="SettingsFeedback" Foreground="#00D4AA"
-                                       FontSize="12" Margin="0,0,0,16"
-                                       Visibility="Collapsed" TextWrapping="Wrap"/>
-
-                            <!-- ── LIBRARY panel ── -->
-                            <StackPanel x:Name="PanelLibrary" Visibility="Visible">
-                                <TextBlock Text="Library" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
-                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20"
-                                           Text="The folder scanned for video files (.mp4 .mkv .avi .mov .wmv .m4v .ts .flv). All subfolders are included."/>
-
-                                <TextBlock Text="Movies Folder" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <Grid Margin="0,0,0,20">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="MoviesFolderBox" Grid.Column="0"
-                                             Background="#1e1e2e" Foreground="#EEE"
-                                             BorderBrush="#444" BorderThickness="1"
-                                             Padding="8,6" FontSize="13"
-                                              VerticalContentAlignment="Center"
-                                              LostFocus="OnSettingLostFocus"/>
-                                    <Button Grid.Column="1" Content="Browse…" Click="OnBrowseFolder"
-                                            Background="#333" Foreground="White" BorderThickness="0"
-                                            Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
-                                </Grid>
-
-                                <TextBlock Text="Additional Movies Folders" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"
-                                           Text="Extra roots scanned alongside the primary Movies folder. All sub-folders are included."/>
-                                <ctrl:PathListEditor x:Name="AdditionalMoviesPathsEditor"
-                                                     BrowseTitle="Select an additional movies folder"
-                                                      PathsChanged="OnPathListSettingChanged"
-                                                     Margin="0,0,0,20"/>
-
-                                <TextBlock Text="Music Folder" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <Grid Margin="0,0,0,4">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="MusicFolderBox" Grid.Column="0"
-                                             Background="#1e1e2e" Foreground="#EEE"
-                                             BorderBrush="#444" BorderThickness="1"
-                                             Padding="8,6" FontSize="13"
-                                              VerticalContentAlignment="Center"
-                                              LostFocus="OnSettingLostFocus"/>
-                                    <Button Grid.Column="1" Content="Browse…" Click="OnBrowseMusicFolder"
-                                            Background="#333" Foreground="White" BorderThickness="0"
-                                            Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
-                                </Grid>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="Root folder scanned for music files (.mp3 .flac .aac .ogg .wav .m4a .wma .opus). All subfolders are included."/>
-
-                                <TextBlock Text="Additional Music Folders" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"
-                                           Text="Extra roots scanned alongside the primary Music folder."/>
-                                <ctrl:PathListEditor x:Name="AdditionalMusicPathsEditor"
-                                                     BrowseTitle="Select an additional music folder"
-                                                      PathsChanged="OnPathListSettingChanged"
-                                                     Margin="0,0,0,20"/>
-
-                                <TextBlock Text="Network Share Credentials" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"
-                                           Text="Credentials for UNC shares (e.g. \\server\share) that require authentication. The app uses these to connect before scanning. Passwords are stored in plain text — keep the config file private."/>
-                                <ctrl:NetworkCredentialsEditor x:Name="CredentialsEditor"
-                                                               CredentialsChanged="OnPathListSettingChanged"
-                                                               Margin="0,0,0,20"/>
-
-                                <TextBlock Text="Delayed auto-rescan interval" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <Grid Margin="0,0,0,20">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="120"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="AutoRescanIntervalMinutesBox" Grid.Column="0"
-                                                 Background="#1e1e2e" Foreground="#EEE"
-                                                 BorderBrush="#444" BorderThickness="1"
-                                                 Padding="8,6" FontSize="13"
-                                                  VerticalContentAlignment="Center"
-                                                  LostFocus="OnSettingLostFocus"/>
-                                        <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
-                                                   VerticalAlignment="Center" Margin="12,0,0,0"
-                                                   Text="Minutes between delayed library auto-rescans (0 disables auto-rescan)."/>
-                                    </Grid>
-
-                                    <TextBlock Text="Auto-Update Source Folder" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                    <Grid Margin="0,0,0,4">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBox x:Name="UpdateSourcePathBox" Grid.Column="0"
-                                                 Background="#1e1e2e" Foreground="#EEE"
-                                                 BorderBrush="#444" BorderThickness="1"
-                                                 Padding="8,6" FontSize="13"
-                                                  VerticalContentAlignment="Center"
-                                                  LostFocus="OnSettingLostFocus"/>
-                                        <Button Grid.Column="1" Content="Browse…" Click="OnBrowseUpdateSourceFolder"
-                                                Background="#333" Foreground="White" BorderThickness="0"
-                                                Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
-                                    </Grid>
-                                    <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                               Text="Folder containing updated app files. Leave empty to disable auto-update. Checked at startup and periodically."/>
-
-                                    <TextBlock Text="Auto-Update Check Interval" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                    <Grid Margin="0,0,0,20">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="120"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-                                        <TextBox x:Name="AutoUpdateIntervalMinutesBox" Grid.Column="0"
-                                                 Background="#1e1e2e" Foreground="#EEE"
-                                                 BorderBrush="#444" BorderThickness="1"
-                                                 Padding="8,6" FontSize="13"
-                                                  VerticalContentAlignment="Center"
-                                                  LostFocus="OnSettingLostFocus"/>
-                                        <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
-                                                   VerticalAlignment="Center" Margin="12,0,0,0"
-                                                   Text="Minutes between update checks while the app is running (0 = startup only)."/>
-                                    </Grid>
-
-                                    <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
-                                        Background="#E94560" Foreground="White" BorderThickness="0"
-                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
-
-                                <!-- ── Advanced library settings ── -->
-                                <TextBlock Text="Advanced" Foreground="#E94560" FontSize="13" FontWeight="Bold" Margin="0,28,0,14"/>
-
-                                <CheckBox x:Name="EnableThumbnailGenerationBox"
-                                          Content="Generate thumbnails for video files"
-                                           Foreground="#EEE" FontSize="13" Margin="0,0,0,6"
-                                           Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="When enabled, RemotePlay generates preview thumbnails for library videos in the background. Disable if disk space or CPU is a concern."/>
-
-                                <TextBlock Text="Library page size" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <Grid Margin="0,0,0,6">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="120"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="LibraryPageSizeBox" Grid.Column="0"
-                                             Background="#1e1e2e" Foreground="#EEE"
-                                             BorderBrush="#444" BorderThickness="1"
-                                             Padding="8,6" FontSize="13"
-                                              VerticalContentAlignment="Center"
-                                              LostFocus="OnSettingLostFocus"/>
-                                    <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
-                                               VerticalAlignment="Center" Margin="12,0,0,0"
-                                               Text="Videos per page in the browser (25 – 1000)."/>
-                                </Grid>
-
-                                <TextBlock Text="Ignored sub-folders" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,14,0,6"/>
-                                <TextBox x:Name="IgnoredLibraryFoldersBox"
-                                         Background="#1e1e2e" Foreground="#EEE"
-                                         BorderBrush="#444" BorderThickness="1"
-                                         Padding="8,6" FontSize="13"
-                                         VerticalContentAlignment="Center"
-                                          Margin="0,0,0,6"
-                                          LostFocus="OnSettingLostFocus"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="Comma-separated folder names to skip during library scans (e.g. Subs, Alt, Extras). Sub-folders matching any name are excluded entirely."/>
-
-                                <TextBlock Text="Video file extensions" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <TextBox x:Name="VideoFileExtensionsBox"
-                                         Background="#1e1e2e" Foreground="#EEE"
-                                         BorderBrush="#444" BorderThickness="1"
-                                         Padding="8,6" FontSize="13"
-                                         VerticalContentAlignment="Center"
-                                          Margin="0,0,0,6"
-                                          LostFocus="OnSettingLostFocus"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="Comma-separated list of extensions recognised as video files (e.g. .mp4, .mkv, .avi). Leave empty to restore defaults."/>
-
-                                <TextBlock Text="Music file extensions" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <TextBox x:Name="MusicFileExtensionsBox"
-                                         Background="#1e1e2e" Foreground="#EEE"
-                                         BorderBrush="#444" BorderThickness="1"
-                                         Padding="8,6" FontSize="13"
-                                         VerticalContentAlignment="Center"
-                                          Margin="0,0,0,6"
-                                          LostFocus="OnSettingLostFocus"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="Comma-separated list of extensions recognised as music files (e.g. .mp3, .flac, .ogg). Leave empty to restore defaults."/>
-
-                            </StackPanel>
-
-                            <!-- ── SERVER panel ── -->
-                            <StackPanel x:Name="PanelServer" Visibility="Collapsed">
-                                <TextBlock Text="Server" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
-                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20"
-                                           Text="Configure the web interface port and HTTPS settings."/>
-
-                                <TextBlock Text="Instance Name" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <TextBox x:Name="InstanceNameBox"
-                                         Background="#1e1e2e" Foreground="#EEE"
-                                         BorderBrush="#444" BorderThickness="1"
-                                         Padding="8,6" FontSize="13"
-                                         VerticalContentAlignment="Center"
-                                          Margin="0,0,0,4"
-                                          LostFocus="OnSettingLostFocus"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="Friendly label shown when other RemotePlay instances discover this one on the network (e.g. Living Room, Bedroom PC)."/>
-
-                                <TextBlock Text="Port" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <Grid Margin="0,0,0,6">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="120"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="PortBox" Grid.Column="0"
-                                             Background="#1e1e2e" Foreground="#EEE"
-                                             BorderBrush="#444" BorderThickness="1"
-                                             Padding="8,6" FontSize="13"
-                                              VerticalContentAlignment="Center"
-                                              LostFocus="OnSettingLostFocus"/>
-                                    <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
-                                               VerticalAlignment="Center" Margin="12,0,0,0"
-                                               Text="(1024 – 65535)"/>
-                                </Grid>
-
-                                <CheckBox x:Name="UseHttpsBox"
-                                          Content="Use secure HTTPS (recommended for mobile PWA)"
-                                           Foreground="#EEE" FontSize="13" Margin="0,12,0,6"
-                                           Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="HTTPS lets mobile browsers install RemotePlay as a PWA. First-time setup may require running as administrator. Browsers may prompt you to trust the local certificate."/>
-
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,20">
-                                    <Button Content="Export HTTPS Certificate" Click="OnExportCertificate"
-                                            Background="#333" Foreground="White" BorderThickness="0"
-                                            Padding="12,6" Cursor="Hand"/>
-                                    <Button Content="Open Health Page" Click="OnOpenHealthPage"
-                                            Background="#333" Foreground="White" BorderThickness="0"
-                                            Padding="12,6" Margin="8,0,0,0" Cursor="Hand"/>
-                                </StackPanel>
-
-                                <!-- ── Rate limiting ── -->
-                                <TextBlock Text="Rate Limiting" Foreground="#E94560" FontSize="13" FontWeight="Bold" Margin="0,8,0,14"/>
-
-                                <TextBlock Text="Max requests per IP per window" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <Grid Margin="0,0,0,6">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="120"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="MaxRequestsPerIpBox" Grid.Column="0"
-                                             Background="#1e1e2e" Foreground="#EEE"
-                                             BorderBrush="#444" BorderThickness="1"
-                                             Padding="8,6" FontSize="13"
-                                              VerticalContentAlignment="Center"
-                                              LostFocus="OnSettingLostFocus"/>
-                                    <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
-                                               VerticalAlignment="Center" Margin="12,0,0,0"
-                                               Text="Maximum HTTP requests accepted from one IP in the window below. Set to 0 to disable rate limiting."/>
-                                </Grid>
-
-                                <TextBlock Text="Rate limit window (seconds)" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,12,0,6"/>
-                                <Grid Margin="0,0,0,20">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="120"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="RateLimitWindowSecondsBox" Grid.Column="0"
-                                             Background="#1e1e2e" Foreground="#EEE"
-                                             BorderBrush="#444" BorderThickness="1"
-                                             Padding="8,6" FontSize="13"
-                                              VerticalContentAlignment="Center"
-                                              LostFocus="OnSettingLostFocus"/>
-                                    <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
-                                               VerticalAlignment="Center" Margin="12,0,0,0"
-                                               Text="Sliding window duration in seconds used to count requests per IP."/>
-                                </Grid>
-
-                                <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
-                                        Background="#E94560" Foreground="White" BorderThickness="0"
-                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
-                            </StackPanel>
-
-                            <!-- ── PLAYBACK panel ── -->
-                            <StackPanel x:Name="PanelPlayback" Visibility="Collapsed">
-                                <TextBlock Text="Playback" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
-                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20"
-                                           Text="Default behaviour when a video finishes playing."/>
-
-                                <TextBlock Text="When a video ends" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                                <ComboBox x:Name="PlaybackEndBehaviorCombo"
-                                          Style="{StaticResource DarkComboBox}"
-                                           HorizontalAlignment="Left" MinWidth="220" Margin="0,0,0,20"
-                                           SelectionChanged="OnSettingChanged">
-                                    <ComboBoxItem Content="Stop playback" Tag="Stop"/>
-                                    <ComboBoxItem Content="Play next video automatically" Tag="PlayNext"/>
-                                    <ComboBoxItem Content="Return to library" Tag="ReturnToLibrary"/>
-                                </ComboBox>
-
-                                <TextBlock Text="Playback history limit" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                <Grid Margin="0,0,0,20">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="120"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBox x:Name="PlaybackHistoryLimitBox" Grid.Column="0"
-                                             Background="#1e1e2e" Foreground="#EEE"
-                                             BorderBrush="#444" BorderThickness="1"
-                                             Padding="8,6" FontSize="13"
-                                              VerticalContentAlignment="Center"
-                                              LostFocus="OnSettingLostFocus"/>
-                                    <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
-                                               VerticalAlignment="Center" Margin="12,0,0,0"
-                                               Text="Maximum number of movies kept in Continue Watching / recent history."/>
-                                </Grid>
-
-                                <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
-                                        Background="#E94560" Foreground="White" BorderThickness="0"
-                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
-                            </StackPanel>
-
-                            <!-- ── AUDIO & SUBS panel ── -->
-                            <StackPanel x:Name="PanelTracks" Visibility="Collapsed">
-                                <TextBlock Text="Audio &amp; Subtitles" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
-                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="Language preferences applied automatically when a video starts."/>
-
-                                <TextBlock Text="Audio" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                                <Grid Margin="0,0,0,22">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="160"/>
-                                        <ColumnDefinition Width="240"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="Preferred language" Foreground="#888" FontSize="12" VerticalAlignment="Center"/>
-                                    <ComboBox x:Name="PreferredAudioLangCombo" Grid.Column="1"
-                                               Style="{StaticResource DarkComboBox}"
-                                               SelectionChanged="OnSettingChanged"/>
-                                    <TextBlock Grid.Column="2" Foreground="#555" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
-                                               Text="Blank uses the default audio track."/>
-                                </Grid>
-
-                                <TextBlock Text="Subtitles" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                                <Grid Margin="0,0,0,8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="160"/>
-                                        <ColumnDefinition Width="240"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="Primary language" Foreground="#888" FontSize="12" VerticalAlignment="Center"/>
-                                    <ComboBox x:Name="PreferredSubtitleLangCombo" Grid.Column="1"
-                                               Style="{StaticResource DarkComboBox}"
-                                               SelectionChanged="OnSettingChanged"/>
-                                    <TextBlock Grid.Column="2" Foreground="#555" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
-                                               Text="Tried first when matching subtitle tracks."/>
-                                </Grid>
-
-                                <Grid Margin="0,0,0,20">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="160"/>
-                                        <ColumnDefinition Width="240"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="Secondary language" Foreground="#888" FontSize="12" VerticalAlignment="Center"/>
-                                    <ComboBox x:Name="SecondarySubtitleLangCombo" Grid.Column="1"
-                                               Style="{StaticResource DarkComboBox}"
-                                               SelectionChanged="OnSettingChanged"/>
-                                    <TextBlock Grid.Column="2" Foreground="#555" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
-                                               Text="Optional fallback if the primary subtitle language is unavailable."/>
-                                </Grid>
-
-                                <CheckBox x:Name="PreferForcedSubtitlesBox"
-                                          Content="Prefer forced subtitle tracks (dialogue subtitles for foreign language portions)"
-                                           Foreground="#EEE" FontSize="13" Margin="0,0,0,24"
-                                           Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
-
-                                <TextBlock Text="Music Output" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,8"/>
-                                <Grid Margin="0,0,0,8">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="160"/>
-                                        <ColumnDefinition Width="280"/>
-                                        <ColumnDefinition Width="*"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="Audio output device" Foreground="#888" FontSize="12" VerticalAlignment="Center"/>
-                                    <ComboBox x:Name="MusicAudioDeviceCombo" Grid.Column="1"
-                                              Style="{StaticResource DarkComboBox}"
-                                               DisplayMemberPath="Name"
-                                               SelectionChanged="OnSettingChanged"/>
-                                    <TextBlock Grid.Column="2" Foreground="#555" FontSize="11" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
-                                               Text="Select the audio device used for music playback on this server machine."/>
-                                </Grid>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="160,0,0,16" TextWrapping="Wrap"
-                                           Text="'(Default)' uses the current Windows default output. Choose a specific device to route music independently (e.g. audio via video cable vs. audio driver)."/>
-
-                                <Button Content="Apply &amp; Restart Server" Click="OnApplySettings"
-                                        Background="#E94560" Foreground="White" BorderThickness="0"
-                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
-                            </StackPanel>
-
-                                            <!-- ── DISPLAY panel ── -->
-                                            <StackPanel x:Name="PanelDisplay" Visibility="Collapsed">
-                                                <TextBlock Text="Display" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
-                                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                                           Text="Choose which monitor the fullscreen video window opens on."/>
-
-                                                <TextBlock Text="Fullscreen display" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                                                 <TextBlock x:Name="CurrentDisplayText" Foreground="#888" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"/>
-                                                <ComboBox x:Name="PreferredDisplayCombo"
-                                                          Style="{StaticResource DarkComboBox}"
-                                                           HorizontalAlignment="Left" MinWidth="280" Margin="0,0,0,20"
-                                                           SelectionChanged="OnSettingChanged"/>
-
-                                                <Button Content="Apply" Click="OnApplySettings"
-                                                        Background="#E94560" Foreground="White" BorderThickness="0"
-                                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
-                                            </StackPanel>
-
-                            <!-- ── STARTUP panel ── -->
-                            <StackPanel x:Name="PanelStartup" Visibility="Collapsed">
-                                <TextBlock Text="Startup" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
-                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="Choose whether RemotePlay starts with Windows and keeps running in the system tray when closed."/>
-
-                                <CheckBox x:Name="StartWithWindowsBox"
-                                          Content="Start RemotePlay when Windows starts"
-                                           Foreground="#EEE" FontSize="13" Margin="0,0,0,8"
-                                           Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,18" TextWrapping="Wrap"
-                                           Text="Adds or removes RemotePlay from your current user's Windows startup apps."/>
-
-                                <CheckBox x:Name="UseTrayIconBox"
-                                          Content="Keep RemotePlay in the system tray when closed"
-                                           Foreground="#EEE" FontSize="13" Margin="0,0,0,8"
-                                           Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="When enabled, closing the window hides RemotePlay to the tray instead of exiting. Web playback can restore the app and enter fullscreen."/>
-
-                                <Button Content="Apply" Click="OnApplySettings"
-                                        Background="#E94560" Foreground="White" BorderThickness="0"
-                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
-                            </StackPanel>
-
-                            <!-- ── ADVANCED panel ── -->
-                            <StackPanel x:Name="PanelAdvanced" Visibility="Collapsed">
-                                <TextBlock Text="Advanced" Foreground="#E94560" FontSize="16" FontWeight="Bold" Margin="0,0,0,4"/>
-                                <TextBlock Foreground="#666" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="Expert Mode unlocks additional controls in the web UI, such as creating dynamic folders."/>
-
-                                <CheckBox x:Name="ExpertModeBox"
-                                          Content="Expert Mode"
-                                          Foreground="#EEE" FontSize="13" Margin="0,0,0,8"
-                                          Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="When enabled, expert-only controls become visible in the web interface (e.g. creating dynamic folders)."/>
-
-                                <CheckBox x:Name="DebugModeBox"
-                                          Content="Debug Mode"
-                                          Foreground="#EEE" FontSize="13" Margin="0,0,0,8"
-                                          Checked="OnSettingChanged" Unchecked="OnSettingChanged"/>
-                                <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,20" TextWrapping="Wrap"
-                                           Text="When enabled, debug-only controls become visible in the web interface (e.g. Reset M3U cache)."/>
-
-                                <Button Content="Apply" Click="OnApplySettings"
-                                        Background="#E94560" Foreground="White" BorderThickness="0"
-                                        Padding="14,8" HorizontalAlignment="Left" Cursor="Hand"/>
-                            </StackPanel>
-
-                        </StackPanel>
-                    </ScrollViewer>
-                </Grid>
+                    </StackPanel>
+                </ScrollViewer>
             </TabItem>
-
             <!-- ── LIBRARY LINKS tab ── -->
             <TabItem Header="🔗  Links" Style="{StaticResource DarkTab}">
                 <Grid Background="#111111">

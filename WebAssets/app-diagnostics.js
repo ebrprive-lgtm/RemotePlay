@@ -32,7 +32,12 @@ function updateLibraryStatus(scan) {
   const movies = Number(scan.indexedMovies ?? scan.IndexedMovies ?? indexed) || 0;
   const links = Number(scan.indexedLinks ?? scan.IndexedLinks) || 0;
   const isScanning = Boolean(scan.isScanning ?? scan.IsScanning);
+  const allPathsInvalid = Boolean(scan.allPathsInvalid ?? scan.AllPathsInvalid);
   const error = (scan.lastError ?? scan.LastError ?? '').trim();
+
+  // Gate command bar, nav row, and recent/pinned strips on path validity
+  _applyVideoLibraryAvailable(!allPathsInvalid);
+
   if (badge) badge.style.display = isScanning ? '' : 'none';
   if (error) {
     if (el) { el.style.display = ''; el.textContent = 'Library scan failed: ' + error; }
@@ -60,6 +65,28 @@ function updateLibraryStatus(scan) {
   }
 }
 
+// Show or hide all video-domain chrome that only makes sense when a valid library exists.
+function _applyVideoLibraryAvailable(available) {
+  const vcb = document.getElementById('video-command-bar');
+  const navRow = document.getElementById('browse-nav-row');
+  const vStrip = document.getElementById('video-recent-strip');
+  const vClear = document.getElementById('video-recent-clear');
+  const vPinned = document.getElementById('video-pinned-strip');
+  if (available) {
+    if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(true);
+    if (navRow) navRow.style.display = '';
+    if (vStrip) vStrip.style.display = '';
+    if (vClear) vClear.style.display = vStrip && vStrip.children.length ? '' : 'none';
+    if (vPinned) vPinned.style.display = '';
+  } else {
+    if (vcb) vcb.style.display = 'none';
+    if (navRow) navRow.style.display = 'none';
+    if (vStrip) vStrip.style.display = 'none';
+    if (vClear) vClear.style.display = 'none';
+    if (vPinned) vPinned.style.display = 'none';
+  }
+}
+
 function _startLibStatusPoll() {
   if (_libStatusPollTimer) return;
   _libStatusPollTimer = setInterval(async () => {
@@ -76,6 +103,36 @@ function _stopLibStatusPoll() {
   if (_libStatusPollTimer) {
     clearInterval(_libStatusPollTimer);
     _libStatusPollTimer = null;
+  }
+}
+
+// Fetch library-status once and apply visibility to music-domain chrome.
+async function refreshMusicLibraryStatus() {
+  try {
+    const res = await fetch('/api/library-status');
+    if (!res.ok) return;
+    const scan = await res.json();
+    const allMusicPathsInvalid = Boolean(scan.allMusicPathsInvalid ?? scan.AllMusicPathsInvalid);
+    _applyMusicLibraryAvailable(!allMusicPathsInvalid);
+  } catch (e) {}
+}
+
+// Show or hide all music-domain chrome that only makes sense when a valid music library exists.
+function _applyMusicLibraryAvailable(available) {
+  const mcb = document.getElementById('music-command-bar');
+  const mStrip = document.getElementById('music-recent-strip');
+  const mClear = document.getElementById('music-recent-clear');
+  const mPinned = document.getElementById('music-pinned-strip');
+  if (available) {
+    if (mcb) { mcb.style.display = 'flex'; if (typeof _syncMusicCommandBar === 'function') _syncMusicCommandBar(); }
+    if (mStrip) mStrip.style.display = '';
+    if (mClear) mClear.style.display = mStrip && mStrip.children.length ? '' : 'none';
+    if (mPinned) mPinned.style.display = '';
+  } else {
+    if (mcb) mcb.style.display = 'none';
+    if (mStrip) mStrip.style.display = 'none';
+    if (mClear) mClear.style.display = 'none';
+    if (mPinned) mPinned.style.display = 'none';
   }
 }
 

@@ -63,7 +63,7 @@ internal sealed partial class WebServer
         new(() => LoadWebAsset("us-states.json"));
     private static readonly string _appVersion = ReadAppVersion();
 
-    private readonly AppConfig _config;
+    private AppConfig _config;
     private readonly WebServerCallbacks _callbacks;
     private readonly PresenceBroadcaster? _broadcaster;
     private readonly PlaybackHistory _playbackHistory;
@@ -260,7 +260,9 @@ internal sealed partial class WebServer
             StartedUtc    = _scanStartedUtc,
             CompletedUtc  = _lastIndexRefreshUtc,
             LastError     = _lastScanError,
-            StaleLinkCount = _staleLinkCount
+            StaleLinkCount = _staleLinkCount,
+            AllPathsInvalid      = !_isIndexing && !_config.AllResolvedMoviesPaths.Any(Directory.Exists),
+            AllMusicPathsInvalid = !_isMusicIndexing && !_config.AllResolvedMusicPaths.Any(Directory.Exists),
         };
     }
 
@@ -716,7 +718,7 @@ internal sealed partial class WebServer
         _ = Task.Run(() =>
         {
             LoadLibraryIndexCache();
-            StartLibraryIndexRefresh(force: true);
+            StartLibraryIndexRefresh(force: false);
             LoadMusicIndexCache();
             LoadM3uIndexCache();
             // If no cache exists yet (first run), do a full scan to populate the index.

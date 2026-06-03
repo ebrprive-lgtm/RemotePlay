@@ -61,6 +61,10 @@ internal sealed record LibraryScanStatus
     public string LastError { get; init; } = string.Empty;
     /// <summary>Number of .rplink files found to have missing targets during the last stale-link background check.</summary>
     public int StaleLinkCount { get; init; }
+    /// <summary>True when every configured video library path (primary + additional) is missing or empty.</summary>
+    public bool AllPathsInvalid { get; init; }
+    /// <summary>True when every configured music library path (primary + additional) is missing or empty.</summary>
+    public bool AllMusicPathsInvalid { get; init; }
 }
 
 [ExcludeFromCodeCoverage]

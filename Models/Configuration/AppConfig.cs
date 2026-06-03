@@ -106,6 +106,15 @@ internal sealed record AppConfig
     /// <summary>Duration of the per-IP rate-limit sliding window in seconds.</summary>
     public int RateLimitWindowSeconds { get; init; } = 10;
 
+    /// <summary>
+    /// How often (in hours) to automatically sync data to peer instances.
+    /// 0 = never (manual only). Typical values: 4, 12, 24, 168.
+    /// </summary>
+    public int SyncIntervalHours { get; init; } = 0;
+
+    /// <summary>When true, a sync-to-peers run is triggered automatically at application startup.</summary>
+    public bool SyncAtStartup { get; init; }
+
     /// <summary>Last visited folder in the Links tab left (video) browser.</summary>
     public string LinkBrowserLeftDir { get; init; } = string.Empty;
 
@@ -124,41 +133,27 @@ internal sealed record AppConfig
     public double BrowserColTypeWidth   { get; init; } = 60;
     public double BrowserColTargetWidth { get; init; } = 260;
 
-    /// <summary>Returns the fully-resolved movies path (relative paths are resolved against the exe directory).</summary>
-    public string ResolvedMoviesPath =>
-        Path.IsPathRooted(MoviesPath)
-            ? MoviesPath
-            : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, MoviesPath));
-
-    /// <summary>Returns all additional movie roots with relative paths resolved against the exe directory.</summary>
-    public string[] ResolvedAdditionalMoviesPaths =>
+    /// <summary>Returns all video library roots with relative paths resolved against the exe directory.</summary>
+    public string[] AllResolvedMoviesPaths =>
         AdditionalMoviesPaths
             .Where(p => !string.IsNullOrWhiteSpace(p))
             .Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, p)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-    /// <summary>Returns all movie library roots: primary path first, then any additional paths.</summary>
-    public string[] AllResolvedMoviesPaths =>
-        new[] { ResolvedMoviesPath }.Concat(ResolvedAdditionalMoviesPaths).ToArray();
-
-    /// <summary>Returns the fully-resolved music library path (relative paths are resolved against the exe directory).</summary>
-    public string ResolvedMusicPath =>
-        Path.IsPathRooted(MusicPath)
-            ? MusicPath
-            : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, MusicPath));
-
-    /// <summary>Returns all additional music roots with relative paths resolved against the exe directory.</summary>
-    public string[] ResolvedAdditionalMusicPaths =>
+    /// <summary>Returns all music library roots with relative paths resolved against the exe directory.</summary>
+    public string[] AllResolvedMusicPaths =>
         AdditionalMusicPaths
             .Where(p => !string.IsNullOrWhiteSpace(p))
             .Select(p => Path.IsPathRooted(p) ? p : Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, p)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-    /// <summary>Returns all music library roots: primary path first, then any additional paths.</summary>
-    public string[] AllResolvedMusicPaths =>
-        new[] { ResolvedMusicPath }.Concat(ResolvedAdditionalMusicPaths).ToArray();
+    /// <summary>Returns the first resolved video path (for backward-compat code that reads a single primary path). Empty string if no paths are configured.</summary>
+    public string ResolvedMoviesPath => AllResolvedMoviesPaths.FirstOrDefault() ?? string.Empty;
+
+    /// <summary>Returns the first resolved music path (for backward-compat code that reads a single primary path). Empty string if no paths are configured.</summary>
+    public string ResolvedMusicPath => AllResolvedMusicPaths.FirstOrDefault() ?? string.Empty;
 
     public string Scheme => UseHttps ? "https" : "http";
 

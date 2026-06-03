@@ -378,8 +378,12 @@ internal sealed partial class WebServer
         if (!Directory.Exists(targetDir))
         {
             try { Directory.CreateDirectory(targetDir); } catch { }
+            // When browsing root and the primary path doesn't exist, check whether any
+            // configured movie root is valid so the client can show the right empty state.
+            bool allPathsInvalid = string.IsNullOrWhiteSpace(dirParam) &&
+                !_config.AllResolvedMoviesPaths.Any(Directory.Exists);
             TrySendResponse(ctx, 200, "application/json",
-                JsonSerializer.Serialize(new { folders = Array.Empty<object>(), files = Array.Empty<object>(), current = targetDir, isRoot = true, breadcrumbs = Array.Empty<object>() }));
+                JsonSerializer.Serialize(new { folders = Array.Empty<object>(), files = Array.Empty<object>(), current = targetDir, isRoot = true, breadcrumbs = Array.Empty<object>(), allPathsInvalid }));
             return;
         }
 

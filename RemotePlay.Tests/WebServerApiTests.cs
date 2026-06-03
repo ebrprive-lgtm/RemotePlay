@@ -245,5 +245,6 @@ public sealed class WebServerApiTests : IDisposable
         RadioSetEqPreset      = _ => { },
         SaveExpertMode        = _ => { },
         SaveDebugMode         = _ => { },
+        SaveSettings          = _ => { },
     };
 }

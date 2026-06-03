@@ -408,5 +408,6 @@ public sealed class WebServerIndexTests : IDisposable
         RadioSetEqPreset      = _ => { },
         SaveExpertMode        = _ => { },
         SaveDebugMode         = _ => { },
+        SaveSettings          = _ => { },
     };
 }

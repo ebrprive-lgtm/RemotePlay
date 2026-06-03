@@ -160,7 +160,7 @@ public partial class MainWindow : Window
 
             _config = _appConfigService.Load();
             _volume = Math.Clamp(_config.Volume, 0, 1);
-            _brightness = 0.5;
+            _brightness = Math.Clamp(_config.Brightness, 0, 1);
             _saturation = 1;
             _zoom = Math.Clamp(_config.Zoom, 1, 2);
             _audioBoost = Math.Clamp(_config.AudioBoost, 1, 2);
@@ -218,59 +218,28 @@ public partial class MainWindow : Window
             Logger.Error("MainWindow constructor failed", ex);
             throw;
         }
-
-        RefreshCurrentDisplayText();
-    }
-
-    private static void PopulateDisplayCombo(System.Windows.Controls.ComboBox combo, int savedIdx)
-    {
-        combo.Items.Clear();
-        combo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = "Primary screen (default)", Tag = -1 });
-        var screens = System.Windows.Forms.Screen.AllScreens;
-        for (int i = 0; i < screens.Length; i++)
-        {
-            var s = screens[i];
-            var label = $"Screen {i + 1}  ({s.Bounds.Width}x{s.Bounds.Height}){(s.Primary ? "  [Primary]" : "")}";
-            combo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = label, Tag = i });
-        }
-        var items = combo.Items.Cast<System.Windows.Controls.ComboBoxItem>().ToList();
-        foreach (var item in items)
-            if (item.Tag is int tag && tag == savedIdx)
-                combo.SelectedItem = item;
-        if (combo.SelectedItem is null)
-            combo.SelectedIndex = 0;
     }
 
     private void PopulateMusicAudioDeviceCombo(string savedDeviceId)
     {
-        MusicAudioDeviceCombo.Items.Clear();
+        if (FindName("MusicAudioDeviceCombo") is not System.Windows.Controls.ComboBox combo) return;
+        combo.Items.Clear();
         foreach (var (num, name) in Services.MusicPlayer.EnumerateDevices())
-            MusicAudioDeviceCombo.Items.Add(new MusicAudioDevice(num, name));
+            combo.Items.Add(new MusicAudioDevice(num, name));
 
         // Select saved device
-        foreach (MusicAudioDevice item in MusicAudioDeviceCombo.Items)
+        foreach (MusicAudioDevice item in combo.Items)
         {
-            if (item.DeviceNumber == -1 && string.IsNullOrWhiteSpace(savedDeviceId)) { MusicAudioDeviceCombo.SelectedItem = item; break; }
-            if (!string.IsNullOrWhiteSpace(savedDeviceId) && item.Name.Contains(savedDeviceId, StringComparison.OrdinalIgnoreCase)) { MusicAudioDeviceCombo.SelectedItem = item; break; }
+            if (item.DeviceNumber == -1 && string.IsNullOrWhiteSpace(savedDeviceId)) { combo.SelectedItem = item; break; }
+            if (!string.IsNullOrWhiteSpace(savedDeviceId) && item.Name.Contains(savedDeviceId, StringComparison.OrdinalIgnoreCase)) { combo.SelectedItem = item; break; }
         }
-        if (MusicAudioDeviceCombo.SelectedItem is null && MusicAudioDeviceCombo.Items.Count > 0)
-            MusicAudioDeviceCombo.SelectedIndex = 0;
-    }
-
-    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
-    {
-        Dispatcher.Invoke(() =>
-        {
-            RefreshCurrentDisplayText();
-            if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox combo)
-                PopulateDisplayCombo(combo, _config.PreferredDisplayIndex);
-        });
+        if (combo.SelectedItem is null && combo.Items.Count > 0)
+            combo.SelectedIndex = 0;
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         _isInitializingSettings = true;
-        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         var version = System.Reflection.Assembly.GetExecutingAssembly()
             .GetName().Version;
         Title = version is not null
@@ -284,13 +253,13 @@ public partial class MainWindow : Window
 
         UpdateUpdateReadiness();
 
-        MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
-
-        PopulateSettingsFromConfig();
+        MoviesPathText.Text = _config.AllResolvedMoviesPaths.Length > 0
+            ? $"Video paths: {_config.AllResolvedMoviesPaths.Length}"
+            : "Video paths: (none)";
         _isInitializingSettings = false;
 
         AppendLog($"RemotePlay started");
-        AppendLog($"Movies: {_config.ResolvedMoviesPath}");
+        AppendLog($"Video paths: {string.Join(", ", _config.AllResolvedMoviesPaths.Take(2))}{(_config.AllResolvedMoviesPaths.Length > 2 ? ", ..." : "")}");
         UpdateFilterButtonStyles();
 
         // Route all Logger writes to the live log viewer
@@ -324,8 +293,6 @@ public partial class MainWindow : Window
 
     private void PopulateSettingsFromConfig()
     {
-        MoviesFolderBox.Text = _config.ResolvedMoviesPath;
-        MusicFolderBox.Text = _config.ResolvedMusicPath;
         PortBox.Text = _config.Port.ToString();
         if (FindName("InstanceNameBox") is System.Windows.Controls.TextBox instanceNameBox)
             instanceNameBox.Text = _config.InstanceName;
@@ -353,14 +320,21 @@ public partial class MainWindow : Window
         if (FindName("AutoUpdateIntervalMinutesBox") is System.Windows.Controls.TextBox autoUpdateIntervalBox)
             autoUpdateIntervalBox.Text = _config.AutoUpdateIntervalMinutes.ToString();
 
-        AdditionalMoviesPathsEditor.Paths.Clear();
-        foreach (var p in _config.AdditionalMoviesPaths)
-            AdditionalMoviesPathsEditor.Paths.Add(p);
-        AdditionalMusicPathsEditor.Paths.Clear();
-        foreach (var p in _config.AdditionalMusicPaths)
-            AdditionalMusicPathsEditor.Paths.Add(p);
+        if (FindName("AdditionalMoviesPathsEditor") is Controls.PathListEditor moviesEditor)
+        {
+            moviesEditor.Paths.Clear();
+            foreach (var p in _config.AdditionalMoviesPaths)
+                moviesEditor.Paths.Add(p);
+        }
+        if (FindName("AdditionalMusicPathsEditor") is Controls.PathListEditor musicEditor)
+        {
+            musicEditor.Paths.Clear();
+            foreach (var p in _config.AdditionalMusicPaths)
+                musicEditor.Paths.Add(p);
+        }
 
-        CredentialsEditor.LoadEntries(_config.NetworkShareCredentials);
+        if (FindName("CredentialsEditor") is Controls.NetworkCredentialsEditor credEditor)
+            credEditor.LoadEntries(_config.NetworkShareCredentials);
 
         if (FindName("EnableThumbnailGenerationBox") is System.Windows.Controls.CheckBox thumbBox)
             thumbBox.IsChecked = _config.EnableThumbnailGeneration;
@@ -376,16 +350,10 @@ public partial class MainWindow : Window
             maxReqBox.Text = _config.MaxRequestsPerIpPerWindow.ToString();
         if (FindName("RateLimitWindowSecondsBox") is System.Windows.Controls.TextBox rateLimitBox)
             rateLimitBox.Text = _config.RateLimitWindowSeconds.ToString();
-        if (FindName("StartWithWindowsBox") is System.Windows.Controls.CheckBox startWithWindowsBox)
-            startWithWindowsBox.IsChecked = _config.StartWithWindows;
-        if (FindName("UseTrayIconBox") is System.Windows.Controls.CheckBox useTrayIconBox)
-            useTrayIconBox.IsChecked = _config.UseTrayIcon;
         if (FindName("ExpertModeBox") is System.Windows.Controls.CheckBox expertModeBox)
             expertModeBox.IsChecked = _config.ExpertMode;
         if (FindName("DebugModeBox") is System.Windows.Controls.CheckBox debugModeBox)
             debugModeBox.IsChecked = _config.DebugMode;
-        if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo)
-            PopulateDisplayCombo(displayCombo, _config.PreferredDisplayIndex);
         PopulateMusicAudioDeviceCombo(_config.MusicAudioDeviceId);
     }
 
@@ -621,10 +589,8 @@ public partial class MainWindow : Window
 
     private void OnClosing(object? sender, CancelEventArgs e)
     {
-        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         SaveWindowLayout();
-
-
+        SavePlaybackPreferences();
         SaveCurrentPlaybackPosition();
         _webServer?.Stop();
         _broadcaster?.Stop();
@@ -1082,66 +1048,9 @@ public partial class MainWindow : Window
             : System.Windows.Forms.Screen.PrimaryScreen ?? screens[0];
     }
 
-    private void RefreshDisplaySettings()
-    {
-        if (FindName("PreferredDisplayCombo") is not System.Windows.Controls.ComboBox displayCombo)
-            return;
-
-        displayCombo.Items.Clear();
-        displayCombo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = "Primary screen (default)", Tag = -1 });
-        var screens = System.Windows.Forms.Screen.AllScreens;
-        for (int i = 0; i < screens.Length; i++)
-        {
-            var screen = screens[i];
-            var label = $"Screen {i + 1}  ({screen.Bounds.Width}�{screen.Bounds.Height}){(screen.Primary ? "  [Primary]" : string.Empty)}";
-            displayCombo.Items.Add(new System.Windows.Controls.ComboBoxItem { Content = label, Tag = i });
-        }
-
-        var savedDisplayIndex = _config.PreferredDisplayIndex;
-        System.Windows.Controls.ComboBoxItem? savedItem = null;
-        foreach (System.Windows.Controls.ComboBoxItem item in displayCombo.Items)
-        {
-            if (item.Tag is int tag && tag == savedDisplayIndex)
-            {
-                savedItem = item;
-                break;
-            }
-        }
-
-        if (savedItem is null && savedDisplayIndex >= 0)
-        {
-            savedItem = new System.Windows.Controls.ComboBoxItem
-            {
-                Content = $"Saved screen {savedDisplayIndex + 1} (not currently connected)",
-                Tag = savedDisplayIndex
-            };
-            displayCombo.Items.Add(savedItem);
-        }
-
-        displayCombo.SelectedItem = savedItem ?? displayCombo.Items[0];
-        RefreshCurrentDisplayText();
-    }
-
     private void RefreshCurrentDisplayText()
     {
-        if (FindName("CurrentDisplayText") is not System.Windows.Controls.TextBlock currentDisplayText)
-            return;
-
-        try
-        {
-            var screen = GetPreferredFullscreenScreen();
-            var screens = System.Windows.Forms.Screen.AllScreens;
-            var index = Array.IndexOf(screens, screen);
-            var screenName = index >= 0 ? $"Screen {index + 1}" : "Primary screen";
-            var savedDisplay = _config.PreferredDisplayIndex < 0
-                ? "Primary screen (default)"
-                : $"Screen {_config.PreferredDisplayIndex + 1}";
-            currentDisplayText.Text = $"Current fullscreen target: {screenName} ({screen.Bounds.Width}�{screen.Bounds.Height}){(screen.Primary ? " [Primary]" : string.Empty)}. Saved preference: {savedDisplay}.";
-        }
-        catch (Exception ex)
-        {
-            currentDisplayText.Text = $"Current fullscreen target unavailable: {ex.Message}";
-        }
+        // no-op: display info is now shown in the WebUI Desktop settings
     }
 
     private bool EnsureFullscreenWindowBounds(bool force = false)
@@ -1538,30 +1447,6 @@ public partial class MainWindow : Window
 
     // -- Settings -------------------------------------------------------------
 
-    private void OnBrowseFolder(object sender, RoutedEventArgs e)
-    {
-        var dialog = new Microsoft.Win32.OpenFolderDialog
-        {
-            Title = "Select the folder containing your video files",
-            InitialDirectory = MoviesFolderBox.Text
-        };
-
-        if (dialog.ShowDialog() == true)
-            MoviesFolderBox.Text = dialog.FolderName;
-    }
-
-    private void OnBrowseMusicFolder(object sender, RoutedEventArgs e)
-    {
-        var dialog = new Microsoft.Win32.OpenFolderDialog
-        {
-            Title = "Select the root folder for your music library",
-            InitialDirectory = MusicFolderBox.Text
-        };
-
-        if (dialog.ShowDialog() == true)
-            MusicFolderBox.Text = dialog.FolderName;
-    }
-
     private void OnBrowseUpdateSourceFolder(object sender, RoutedEventArgs e)
     {
         var currentPath = FindName("UpdateSourcePathBox") is System.Windows.Controls.TextBox box ? box.Text : string.Empty;
@@ -1606,6 +1491,21 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnOpenWebSettings(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var scheme = _webServer?.ActiveScheme ?? _config.Scheme;
+            var url = $"{scheme}://{GetLocalIp()}:{_config.Port}/settings";
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to open web settings", ex);
+            ShowSettingsFeedback($"⚠ Could not open web settings: {ex.Message}", isError: true);
+        }
+    }
+
     private void OnOpenHealthPage(object sender, RoutedEventArgs e)
     {
         try
@@ -1646,8 +1546,6 @@ public partial class MainWindow : Window
         if (_isInitializingSettings || _isPersistingSettings)
             return;
 
-        var folder = MoviesFolderBox.Text.Trim();
-        var musicFolder = MusicFolderBox.Text.Trim();
         var portText = PortBox.Text.Trim();
         var instanceName = FindName("InstanceNameBox") is System.Windows.Controls.TextBox instanceNameBox2
             ? instanceNameBox2.Text.Trim()
@@ -1703,17 +1601,9 @@ public partial class MainWindow : Window
         }
 
         var preferredDisplayIndex = _config.PreferredDisplayIndex;
-        if (FindName("PreferredDisplayCombo") is System.Windows.Controls.ComboBox displayCombo2
-            && displayCombo2.SelectedItem is System.Windows.Controls.ComboBoxItem displayItem
-            && displayItem.Tag is int displayTag)
-            preferredDisplayIndex = displayTag;
 
-        var startWithWindows = FindName("StartWithWindowsBox") is System.Windows.Controls.CheckBox startWithWindowsBox2
-            ? startWithWindowsBox2.IsChecked == true
-            : _config.StartWithWindows;
-        var useTrayIcon = FindName("UseTrayIconBox") is System.Windows.Controls.CheckBox useTrayIconBox2
-            ? useTrayIconBox2.IsChecked == true
-            : _config.UseTrayIcon;
+        var startWithWindows = _config.StartWithWindows;
+        var useTrayIcon = _config.UseTrayIcon;
         var expertMode = FindName("ExpertModeBox") is System.Windows.Controls.CheckBox expertModeBox2
             ? expertModeBox2.IsChecked == true
             : _config.ExpertMode;
@@ -1722,7 +1612,8 @@ public partial class MainWindow : Window
             : _config.DebugMode;
 
         var musicAudioDeviceId = _config.MusicAudioDeviceId;
-        if (MusicAudioDeviceCombo.SelectedItem is MusicAudioDevice selectedDev)
+        if (FindName("MusicAudioDeviceCombo") is System.Windows.Controls.ComboBox musicDevCombo &&
+            musicDevCombo.SelectedItem is MusicAudioDevice selectedDev)
             musicAudioDeviceId = selectedDev.DeviceNumber == -1 ? string.Empty : selectedDev.Name;
 
         var enableThumbnailGeneration = FindName("EnableThumbnailGenerationBox") is System.Windows.Controls.CheckBox thumbBox2
@@ -1780,7 +1671,7 @@ public partial class MainWindow : Window
             }
         }
 
-        var validation = _settingsValidationService.Validate(folder, portText);
+        var validation = _settingsValidationService.Validate(portText);
         if (!validation.IsValid)
         {
             ShowSettingsFeedback(validation.ErrorMessage ?? "?? Invalid settings.", isError: true);
@@ -1797,8 +1688,6 @@ public partial class MainWindow : Window
                 _config,
                 port,
                 useHttps,
-                folder,
-                musicFolder,
                 instanceName,
                 _volume,
                 _zoom,
@@ -1820,8 +1709,8 @@ public partial class MainWindow : Window
                 updateSourcePath,
                 autoUpdateIntervalMinutes,
                 musicAudioDeviceId,
-                AdditionalMoviesPathsEditor.Paths.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray(),
-                AdditionalMusicPathsEditor.Paths.Where(p => !string.IsNullOrWhiteSpace(p)).ToArray(),
+                (FindName("AdditionalMoviesPathsEditor") is Controls.PathListEditor moviesEd ? moviesEd.Paths.Where(p => !string.IsNullOrWhiteSpace(p)) : _config.AdditionalMoviesPaths).ToArray(),
+                (FindName("AdditionalMusicPathsEditor") is Controls.PathListEditor musicEd ? musicEd.Paths.Where(p => !string.IsNullOrWhiteSpace(p)) : _config.AdditionalMusicPaths).ToArray(),
                 enableThumbnailGeneration,
                 libraryPageSize,
                 ignoredLibraryFolders,
@@ -1829,10 +1718,9 @@ public partial class MainWindow : Window
                 musicFileExtensions,
                 maxRequestsPerIpPerWindow,
                 rateLimitWindowSeconds,
-                CredentialsEditor.Entries
-                    .Where(e => !string.IsNullOrWhiteSpace(e.Path))
-                    .Select(e => new NetworkShareCredential { Path = e.Path.Trim(), Username = e.Username.Trim(), Password = e.Password })
-                    .ToArray());
+                (FindName("CredentialsEditor") is Controls.NetworkCredentialsEditor credsEditor
+                    ? credsEditor.Entries.Where(e => !string.IsNullOrWhiteSpace(e.Path)).Select(e => new NetworkShareCredential { Path = e.Path.Trim(), Username = e.Username.Trim(), Password = e.Password })
+                    : _config.NetworkShareCredentials.AsEnumerable()).ToArray());
 
             _config = _settingsApplyService.ApplyAndReload(updatedConfig);
             ApplySettingsSideEffects();
@@ -1845,7 +1733,7 @@ public partial class MainWindow : Window
                     ShowSettingsFeedback("Saving\u2026 restarting server.", isError: false);
 
                 var configSnapshot = _config;
-                _ = RestartServerAfterSettingsApplyAsync(configSnapshot, folder);
+                _ = RestartServerAfterSettingsApplyAsync(configSnapshot);
             }
             else
             {
@@ -1878,8 +1766,9 @@ public partial class MainWindow : Window
         _musicPlayer.SetDevice(_config.MusicAudioDeviceId);
         _radioPlayer.SetDevice(_config.MusicAudioDeviceId);
 
-        MoviesPathText.Text = $"Movies folder: {_config.ResolvedMoviesPath}";
-        RefreshDisplaySettings();
+        MoviesPathText.Text = _config.AllResolvedMoviesPaths.Length > 0
+            ? $"Video paths: {_config.AllResolvedMoviesPaths.Length}"
+            : "Video paths: (none)";
         UpdateUpdateReadiness();
         RefreshBothBrowsers();
     }
@@ -1889,8 +1778,6 @@ public partial class MainWindow : Window
         return previousConfig.Port != currentConfig.Port
             || previousConfig.UseHttps != currentConfig.UseHttps
             || !string.Equals(previousConfig.InstanceName, currentConfig.InstanceName, StringComparison.Ordinal)
-            || !string.Equals(previousConfig.MoviesPath, currentConfig.MoviesPath, StringComparison.Ordinal)
-            || !string.Equals(previousConfig.MusicPath, currentConfig.MusicPath, StringComparison.Ordinal)
             || !previousConfig.AdditionalMoviesPaths.SequenceEqual(currentConfig.AdditionalMoviesPaths, StringComparer.Ordinal)
             || !previousConfig.AdditionalMusicPaths.SequenceEqual(currentConfig.AdditionalMusicPaths, StringComparer.Ordinal)
             || previousConfig.LibraryRescanDelayMinutes != currentConfig.LibraryRescanDelayMinutes
@@ -1926,7 +1813,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task RestartServerAfterSettingsApplyAsync(AppConfig configSnapshot, string folder)
+    private async Task RestartServerAfterSettingsApplyAsync(AppConfig configSnapshot)
     {
         await StartServerPipelineAsync(configSnapshot, isRestart: true);
         await Dispatcher.InvokeAsync(() =>
@@ -1935,8 +1822,8 @@ public partial class MainWindow : Window
                 return;
 
             ClearRestartNeededCue();
-            AppendLog($"Settings applied \u2014 folder: {folder}, scheme: {_webServer.ActiveScheme}, port: {configSnapshot.Port}");
-            Logger.Info($"Settings updated \u2014 MoviesPath: {folder}, Scheme: {_webServer.ActiveScheme}, Port: {configSnapshot.Port}");
+            AppendLog($"Settings applied \u2014 scheme: {_webServer.ActiveScheme}, port: {configSnapshot.Port}");
+            Logger.Info($"Settings updated \u2014 Scheme: {_webServer.ActiveScheme}, Port: {configSnapshot.Port}");
             if (string.IsNullOrWhiteSpace(_webServer.StartupWarning))
                 ShowSettingsFeedback("Settings saved and server restarted.", isError: false);
             else

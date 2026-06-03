@@ -1078,6 +1078,48 @@ public partial class MainWindow
             {
                 _config = _config with { DebugMode = on };
                 _appConfigService.Save(_config);
+            },
+            SaveSettings         = updatedConfig =>
+            {
+                // All _config reads/writes must happen on the UI thread to avoid races with
+                // SaveWindowLayout (which also reads _config and writes to disk on the UI thread).
+                Dispatcher.Invoke(() =>
+                {
+                    _config = updatedConfig with
+                    {
+                        // Preserve WPF-only fields that must not be overwritten from the web UI
+                        Port              = _config.Port,
+                        UseHttps          = _config.UseHttps,
+                        Volume            = _config.Volume,
+                        Brightness        = _config.Brightness,
+                        Zoom              = _config.Zoom,
+                        AudioBoost        = _config.AudioBoost,
+                        PlaybackSpeed     = _config.PlaybackSpeed,
+                        SubtitlesEnabled  = _config.SubtitlesEnabled,
+                        WindowWidth       = _config.WindowWidth,
+                        WindowHeight      = _config.WindowHeight,
+                        WindowLeft        = _config.WindowLeft,
+                        WindowTop         = _config.WindowTop,
+                        WindowMaximized   = _config.WindowMaximized,
+                        BrowserColNameWidth   = _config.BrowserColNameWidth,
+                        BrowserColTypeWidth   = _config.BrowserColTypeWidth,
+                        BrowserColTargetWidth = _config.BrowserColTargetWidth,
+                        LinkBrowserLeftDir    = _config.LinkBrowserLeftDir,
+                        LinkBrowserRightDir   = _config.LinkBrowserRightDir,
+                        InstanceId        = _config.InstanceId,
+                    };
+                    _appConfigService.Save(_config);
+                    _isInitializingSettings = true;
+                    try
+                    {
+                        ApplySettingsSideEffects();
+                        PopulateSettingsFromConfig();
+                    }
+                    finally
+                    {
+                        _isInitializingSettings = false;
+                    }
+                });
             }
         }, _broadcaster, _playbackHistory, _appUpdater);
     }

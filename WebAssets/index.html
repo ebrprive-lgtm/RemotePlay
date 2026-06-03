@@ -17,9 +17,11 @@
         <div id="install-hint"><span>Install RemotePlay from your browser menu for a fullscreen app-like remote.</span><button onclick="dismissInstallHint()">Hide</button></div>
         <header>
           <div id="brand">
-            <h1>&#127916; RemotePlay <span id="version-chip" class="version-chip"></span></h1>
-            <div id="brand-actions">
-              <!-- ── Icon matrix (replaces old pill buttons + mode tabs) ── -->
+            <div id="title-row">
+              <h1>&#127916; RemotePlay <span id="version-chip" class="version-chip"></span></h1>
+              <span id="instance-name-label" class="instance-name-label">__INSTANCE_NAME__</span>
+            </div>
+            <!-- ── Icon matrix ── -->
               <div id="icon-matrix">
                 <!-- Row 1: navigation / utility -->
                 <a id="health-link" class="im-btn" href="/health" target="_blank" rel="noopener" title="Health / diagnostics" aria-label="Health"><span class="im-icon"><span id="diag-dot"></span>&#10084;&#65039;</span><span class="im-label">Health</span></a>

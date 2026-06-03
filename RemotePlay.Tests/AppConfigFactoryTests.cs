@@ -15,8 +15,6 @@ public sealed class AppConfigFactoryTests
             current,
             port: 5000,
             useHttps: true,
-            moviesPath: "C:\\Movies",
-            musicPath: string.Empty,
             instanceName: "Living Room",
             volume: 0.8,
             zoom: 1.15,
@@ -38,8 +36,8 @@ public sealed class AppConfigFactoryTests
             updateSourcePath: @"C:\Updates",
             autoUpdateIntervalMinutes: 30,
             musicAudioDeviceId: string.Empty,
-            additionalMoviesPaths: [],
-            additionalMusicPaths: [],
+            videoPaths: [@"C:\Movies"],
+            musicPaths: [],
             enableThumbnailGeneration: false,
             libraryPageSize: 100,
             ignoredLibraryFolders: [],
@@ -51,7 +49,7 @@ public sealed class AppConfigFactoryTests
 
         Assert.Equal(5000, config.Port);
         Assert.True(config.UseHttps);
-        Assert.Equal("C:\\Movies", config.MoviesPath);
+        Assert.Equal(@"C:\Movies", config.ResolvedMoviesPath);
         Assert.Equal(0.8, config.Volume);
         Assert.Equal(1.2, config.AudioBoost);
         Assert.Equal(1.1, config.PlaybackSpeed);
@@ -81,7 +79,7 @@ public sealed class AppConfigFactoryTests
         {
             Port = 6000,
             UseHttps = true,
-            MoviesPath = "D:\\Media",
+            AdditionalMoviesPaths = [@"D:\Media"],
             Zoom = 1.2,
             PreferredAudioLanguage = "jpn",
             PreferredSubtitleLanguage = "eng",
@@ -105,7 +103,7 @@ public sealed class AppConfigFactoryTests
 
         Assert.Equal(6000, config.Port);
         Assert.True(config.UseHttps);
-        Assert.Equal("D:\\Media", config.MoviesPath);
+        Assert.Equal(@"D:\Media", config.ResolvedMoviesPath);
         Assert.Equal(0.6, config.Volume);
         Assert.Equal(1.5, config.AudioBoost);
         Assert.Equal(1.25, config.PlaybackSpeed);
@@ -132,27 +130,13 @@ public sealed class AppConfigFactoryTests
 
         Assert.Throws<ArgumentNullException>(() =>
             factory.CreateForSettingsApply(
-                null!, 5000, false, @"C:\Movies", string.Empty, "Test", 1, 1, 1, 1,
+                null!, 5000, false, "Test", 1, 1, 1, 1,
                 true, "eng", "eng", string.Empty, true,
                 PlaybackEndMode.Stop, 7, 10, -1, false, true, false, false, string.Empty, 60, string.Empty,
                 [], [], false, 100, [], [], [], 0, 60, []));
     }
 
-    [Fact]
-    public void CreateForSettingsApply_ThrowsArgumentException_WhenMoviesPathIsWhitespace()
-    {
-        var factory = new AppConfigFactory();
-        var current = new AppConfig();
-
-        Assert.Throws<ArgumentException>(() =>
-            factory.CreateForSettingsApply(
-                current, 5000, false, "   ", string.Empty, "Test", 1, 1, 1, 1,
-                true, "eng", "eng", string.Empty, true,
-                PlaybackEndMode.Stop, 7, 10, -1, false, true, false, false, string.Empty, 60, string.Empty,
-                [], [], false, 100, [], [], [], 0, 60, []));
-    }
-
-    // ── InstanceName fallback ────────────────────────────────────────────────
+    // ── InstanceName fallback
 
     [Fact]
     public void CreateForSettingsApply_UsesCurrentInstanceName_WhenInstanceNameIsBlankOrWhitespace()
@@ -161,7 +145,7 @@ public sealed class AppConfigFactoryTests
         var current = new AppConfig { InstanceName = "My Server" };
 
         var config = factory.CreateForSettingsApply(
-            current, 5000, false, @"C:\Movies", string.Empty, "   ", 1, 1, 1, 1,
+            current, 5000, false, "   ", 1, 1, 1, 1,
             true, "eng", "eng", string.Empty, true,
             PlaybackEndMode.Stop, 7, 10, -1, false, true, false, false, string.Empty, 60, string.Empty,
             [], [], false, 100, [], [], [], 0, 60, []);
@@ -178,7 +162,7 @@ public sealed class AppConfigFactoryTests
         var current = new AppConfig();
 
         var config = factory.CreateForSettingsApply(
-            current, 5000, false, @"C:\Movies", string.Empty, "Test", 1, 1, 1, 1,
+            current, 5000, false, "Test", 1, 1, 1, 1,
             true, "eng", "eng", string.Empty, true,
             PlaybackEndMode.Stop, 7, 10, -1, false, true, false, false, string.Empty, -99, string.Empty,
             [], [], false, 100, [], [], [], 0, 60, []);
@@ -193,7 +177,7 @@ public sealed class AppConfigFactoryTests
         var current = new AppConfig();
 
         var config = factory.CreateForSettingsApply(
-            current, 5000, false, @"C:\Movies", string.Empty, "Test", 1, 1, 1, 1,
+            current, 5000, false, "Test", 1, 1, 1, 1,
             true, "eng", "eng", string.Empty, true,
             PlaybackEndMode.Stop, 7, 10, -1, false, true, false, false, string.Empty, 0, string.Empty,
             [], [], false, 100, [], [], [], 0, 60, []);

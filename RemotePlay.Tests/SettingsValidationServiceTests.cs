@@ -6,37 +6,22 @@ namespace RemotePlay.Tests;
 public sealed class SettingsValidationServiceTests
 {
     [Fact]
-    public void ValidateReturnsFailureForMissingFolder()
-    {
-        var service = new SettingsValidationService();
-
-        var result = service.Validate("", "5000");
-
-        Assert.False(result.IsValid);
-        Assert.Equal("⚠️ Folder does not exist. Please choose a valid path.", result.ErrorMessage);
-    }
-
-    [Fact]
     public void ValidateReturnsFailureForInvalidPort()
     {
-        var folder = Path.Combine(Path.GetTempPath(), "RemotePlay.Tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(folder);
         var service = new SettingsValidationService();
 
-        var result = service.Validate(folder, "99999");
+        var result = service.Validate("99999");
 
         Assert.False(result.IsValid);
         Assert.Equal("⚠️ Port must be a number between 1024 and 65535.", result.ErrorMessage);
     }
 
     [Fact]
-    public void ValidateReturnsSuccessForExistingFolderAndValidPort()
+    public void ValidateReturnsSuccessForValidPort()
     {
-        var folder = Path.Combine(Path.GetTempPath(), "RemotePlay.Tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(folder);
         var service = new SettingsValidationService();
 
-        var result = service.Validate(folder, "5000");
+        var result = service.Validate("5000");
 
         Assert.True(result.IsValid);
         Assert.Equal(5000, result.ParsedPort);
@@ -66,11 +51,9 @@ public sealed class SettingsValidationServiceTests
     [InlineData(65535)]
     public void ValidateReturnsSuccess_ForPortBoundaryValues(int port)
     {
-        var folder = Path.Combine(Path.GetTempPath(), "RemotePlay.Tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(folder);
         var service = new SettingsValidationService();
 
-        var result = service.Validate(folder, port.ToString());
+        var result = service.Validate(port.ToString());
 
         Assert.True(result.IsValid);
         Assert.Equal(port, result.ParsedPort);
@@ -81,11 +64,9 @@ public sealed class SettingsValidationServiceTests
     [InlineData("65536")]
     public void ValidateReturnsFailure_ForOutOfRangePorts(string portText)
     {
-        var folder = Path.Combine(Path.GetTempPath(), "RemotePlay.Tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(folder);
         var service = new SettingsValidationService();
 
-        var result = service.Validate(folder, portText);
+        var result = service.Validate(portText);
 
         Assert.False(result.IsValid);
         Assert.Equal("⚠️ Port must be a number between 1024 and 65535.", result.ErrorMessage);
@@ -96,40 +77,27 @@ public sealed class SettingsValidationServiceTests
     [Fact]
     public void ValidateReturnsFailure_WhenPortIsNonNumeric()
     {
-        var folder = Path.Combine(Path.GetTempPath(), "RemotePlay.Tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(folder);
         var service = new SettingsValidationService();
 
-        var result = service.Validate(folder, "abc");
+        var result = service.Validate("abc");
 
         Assert.False(result.IsValid);
         Assert.Equal("⚠️ Port must be a number between 1024 and 65535.", result.ErrorMessage);
     }
 
-    // ── Non-existent folder ──────────────────────────────────────────────────
+    // ── Non-existent folder
 
-    [Fact]
-    public void ValidateReturnsFailure_WhenFolderDoesNotExist()
-    {
-        var nonExistent = Path.Combine(Path.GetTempPath(), "RemotePlay.Tests", Guid.NewGuid().ToString("N"), "NotCreated");
-        var service = new SettingsValidationService();
+    // (Folder validation was removed from SettingsValidationService - paths are
+    //  validated lazily at scan time, not at save time.)
 
-        var result = service.Validate(nonExistent, "5000");
-
-        Assert.False(result.IsValid);
-        Assert.Equal("⚠️ Folder does not exist. Please choose a valid path.", result.ErrorMessage);
-    }
-
-    // ── Port whitespace trimming ─────────────────────────────────────────────
+    // ── Port whitespace trimming
 
     [Fact]
     public void ValidateReturnsSuccess_WhenPortHasLeadingAndTrailingWhitespace()
     {
-        var folder = Path.Combine(Path.GetTempPath(), "RemotePlay.Tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(folder);
         var service = new SettingsValidationService();
 
-        var result = service.Validate(folder, " 5000 ");
+        var result = service.Validate(" 5000 ");
 
         Assert.True(result.IsValid);
         Assert.Equal(5000, result.ParsedPort);
