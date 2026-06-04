@@ -1,4 +1,4 @@
-ï»¿using System.IO;
+using System.IO;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Media.Animation;
@@ -132,7 +132,7 @@ public partial class MainWindow
                 ApplyAudioLevel();
                 ApplyVideoZoom();
                 _historyTimer.Start();
-                NowPlayingText.Text = "â–¶  " + Path.GetFileNameWithoutExtension(filePath);
+                NowPlayingText.Text = "?  " + Path.GetFileNameWithoutExtension(filePath);
                 ShowBanner();
                 AppendLog($"Playing: {Path.GetFileName(filePath)}");
                 Logger.Info($"Playing: {filePath}");
@@ -155,7 +155,7 @@ public partial class MainWindow
 
     /// <summary>
     /// Re-opens the currently playing media with updated VLC options (e.g. reverb preset)
-    /// without any UI transition â€” no loading overlay, no banner flash, no preference re-apply.
+    /// without any UI transition — no loading overlay, no banner flash, no preference re-apply.
     /// Seeks back to the position that was active before the restart.
     /// Must be called on the dispatcher thread.
     /// </summary>
@@ -179,7 +179,7 @@ public partial class MainWindow
             _hasSubtitles = TryAttachSubtitle(media, filePath);
             _mediaPlayer.Play(media);
             _mediaPlayer.SetRate((float)_playbackSpeed);
-            // Re-apply equalizer â€” it is lost when media is re-opened.
+            // Re-apply equalizer — it is lost when media is re-opened.
             if (_currentEqPreset >= 0)
             {
                 try
@@ -362,13 +362,13 @@ public partial class MainWindow
                 {
                     _mediaPlayer.Play();
                     _isPaused = false;
-                    NowPlayingText.Text = NowPlayingText.Text.Replace("â¸", "â–¶");
+                    NowPlayingText.Text = NowPlayingText.Text.Replace("?", "?");
                 }
                 else
                 {
                     _mediaPlayer.Pause();
                     _isPaused = true;
-                    NowPlayingText.Text = NowPlayingText.Text.Replace("â–¶", "â¸");
+                    NowPlayingText.Text = NowPlayingText.Text.Replace("?", "?");
                     ShowBanner();
                     _bannerTimer.Stop();
                 }
@@ -420,7 +420,7 @@ public partial class MainWindow
         var trackId = GetPreferredSubtitleTrackId();
         if (trackId is not int id)
         {
-            Logger.Info($"[Subtitle] {caller}: no track selected â€” will retry via ESAdded");
+            Logger.Info($"[Subtitle] {caller}: no track selected — will retry via ESAdded");
             return;
         }
 
@@ -493,7 +493,7 @@ public partial class MainWindow
             Logger.Error("Media playback failed");
             ShowIdleOverlay();
             AppendLog("MEDIA ERROR: VLC playback failed");
-            ShowDiag("Playback error â€” VLC could not play this file");
+            ShowDiag("Playback error — VLC could not play this file");
         });
     }
 
@@ -504,7 +504,7 @@ public partial class MainWindow
         IdleOverlay.IsHitTestVisible = false;
 
         // VideoPanel was pre-created Hidden (HWND exists at correct size, just SW_HIDE).
-        // Switching to Visible is SW_SHOW only â€” no resize, no WM_PAINT white flash.
+        // Switching to Visible is SW_SHOW only — no resize, no WM_PAINT white flash.
         VideoPanel.Visibility = Visibility.Visible;
 
         if (VideoPanel.FindName("VideoBrightnessOverlay") is UIElement brightnessOverlay)
@@ -585,10 +585,10 @@ public partial class MainWindow
         CancelVideoTransition();
 
         // In audio-only mode (radio or music playing server-side, OR browser local playback active)
-        // the fullscreen overlay is a plain black screen â€” no QR, no text, nothing distracting.
+        // the fullscreen overlay is a plain black screen — no QR, no text, nothing distracting.
         // For radio we also treat "connecting" (URL set but stream not yet open) as active
         // because the background connection task is async and IsPlaying flips true only after
-        // the MediaFoundationReader opens â€” typically 5-30 s after Play() is called.
+        // the MediaFoundationReader opens — typically 5-30 s after Play() is called.
         var radioStatus = _radioPlayer.GetStatus();
         var audioOnly = (radioStatus.IsPlaying || !string.IsNullOrEmpty(radioStatus.StationUrl))
                      || _musicPlayer.GetStatus().IsPlaying
@@ -606,7 +606,7 @@ public partial class MainWindow
             catch (Exception ex) { Logger.Error("Failed to refresh idle overlay QR", ex); }
         }
 
-        // IdleOverlay is the fullscreen idle/QR screen â€” only relevant in video mode.
+        // IdleOverlay is the fullscreen idle/QR screen — only relevant in video mode.
         // In windowed mode the regular UI is visible, so the overlay must stay hidden
         // to avoid covering and blocking the window.
         if (_isVideoMode)
@@ -730,12 +730,25 @@ public partial class MainWindow
                 Logger.Error("Could not inspect subtitle tracks", ex);
             }
 
+            var vlcActive = _mediaPlayer.Media is not null
+                && _mediaPlayer.State is not VLCState.Stopped
+                                       and not VLCState.NothingSpecial
+                                       and not VLCState.Ended;
+
+            // When VLC is idle, fall back to the music player so that sync can
+            // read IsPlaying / FilePath / position during music-only playback.
+            var musicStatus = vlcActive ? null : _musicPlayer.GetStatus();
+
             result = new PlaybackStatus
             {
-                IsPlaying = _mediaPlayer.Media is not null && _mediaPlayer.State is not VLCState.Stopped and not VLCState.NothingSpecial and not VLCState.Ended,
-                IsPaused = _isPaused,
-                PositionSeconds = Math.Max(0, _mediaPlayer.Time / 1000d),
-                DurationSeconds = Math.Max(0, _duration.TotalSeconds),
+                IsPlaying = vlcActive || (musicStatus?.IsPlaying ?? false),
+                IsPaused = vlcActive ? _isPaused : (musicStatus?.IsPaused ?? false),
+                PositionSeconds = vlcActive
+                    ? Math.Max(0, _mediaPlayer.Time / 1000d)
+                    : Math.Max(0, musicStatus?.Position ?? 0),
+                DurationSeconds = vlcActive
+                    ? Math.Max(0, _duration.TotalSeconds)
+                    : Math.Max(0, musicStatus?.Duration ?? 0),
                 Title = NowPlayingText.Text,
                 Volume = _volume,
                 IsMuted = _mediaPlayer.Mute,
@@ -756,7 +769,7 @@ public partial class MainWindow
                 CurrentSubtitleTrackId = currentSubtitleTrackId,
                 PreviousTitle = GetAdjacentVideoTitle(-1),
                 NextTitle = GetAdjacentVideoTitle(1),
-                FilePath = _currentFilePath,
+                FilePath = vlcActive ? _currentFilePath : musicStatus?.CurrentPath,
                 Queue = GetPlaybackQueue(),
                 QueueCount = _playbackQueue.Count,
                 Chapters = chapters,
@@ -998,7 +1011,7 @@ public partial class MainWindow
 
         _forceSwAudio = true;
         SaveCurrentMoviePreferences();
-        AppendLog("[Audio] Software decode enabled â€” restarting playback...");
+        AppendLog("[Audio] Software decode enabled — restarting playback...");
         PlayMovie(filePath);
     }
 
@@ -1039,7 +1052,7 @@ public partial class MainWindow
             MarkWatchedHistory = _playbackHistory.MarkWatched,
             GetDisplayDiagnostics = GetDisplayDiagnostics,
             FixAudio = FixAudio,
-            // Music â€” backed by WPF MediaPlayer, not VLC
+            // Music — backed by WPF MediaPlayer, not VLC
             PlayMusic      = (path, pos) => _musicPlayer.Play(path, pos),
             PauseMusic     = _musicPlayer.Pause,
             StopMusic      = _musicPlayer.Stop,
@@ -1050,7 +1063,7 @@ public partial class MainWindow
             SetMusicNextTrack = _musicPlayer.SetNextTrack,
             SetMusicReverbPreset = _musicPlayer.SetReverbPreset,
             SetMusicEqPreset     = _musicPlayer.SetEqPreset,
-            // Radio â€” backed by RadioPlayer + RadioBrowserClient
+            // Radio — backed by RadioPlayer + RadioBrowserClient
             RadioSearch         = (q, c, t, l, o) => _radioBrowser.SearchAsync(q, c, t, l, o),
             RadioTopStations    = (l, o) => _radioBrowser.TopStationsAsync(l, o),
             RadioGetTags        = (cc) => _radioBrowser.GetTagsAsync(cc),
@@ -1088,7 +1101,7 @@ public partial class MainWindow
                     _config = updatedConfig with
                     {
                         // Preserve WPF-only fields that must not be overwritten from the web UI
-                        Port              = _config.Port,
+                        // Note: Port IS allowed through from the web UI (user tested it before saving)
                         UseHttps          = _config.UseHttps,
                         Volume            = _config.Volume,
                         Brightness        = _config.Brightness,
@@ -1120,7 +1133,13 @@ public partial class MainWindow
                         _isInitializingSettings = false;
                     }
                 });
-            }
+            },
+            RestartApp = () => Dispatcher.Invoke(() =>
+            {
+                _appConfigService.Save(_config);
+                System.Windows.Application.Current.Shutdown();
+                System.Diagnostics.Process.Start(System.Diagnostics.Process.GetCurrentProcess().MainModule!.FileName!);
+            }),
         }, _broadcaster, _playbackHistory, _appUpdater);
     }
 
@@ -1255,7 +1274,7 @@ public partial class MainWindow
             var subtitleTracks = _mediaPlayer.SpuDescription;
             if (subtitleTracks is null || subtitleTracks.Length == 0)
             {
-                Logger.Info("[Subtitle] SpuDescription is empty â€” no tracks available yet");
+                Logger.Info("[Subtitle] SpuDescription is empty — no tracks available yet");
                 return null;
             }
 
@@ -1484,7 +1503,7 @@ public partial class MainWindow
             if (tracks is null || tracks.Length == 0)
                 return null;
 
-            // Codec fourcc â†’ human-readable ASCII string (e.g. "h264", "mp4a").
+            // Codec fourcc ? human-readable ASCII string (e.g. "h264", "mp4a").
             static string FourCc(uint fourcc) =>
                 fourcc == 0 ? "N/A" : new string([
                     (char)(fourcc & 0xFF),
@@ -1493,7 +1512,7 @@ public partial class MainWindow
                     (char)((fourcc >> 24) & 0xFF)
                 ]).Trim('\0').Trim();
 
-            // Well-known fourcc â†’ friendly display name.
+            // Well-known fourcc ? friendly display name.
             static string FourCcDesc(uint fourcc) => FourCc(fourcc) switch
             {
                 "h264" or "H264" or "avc1" => "H.264 / AVC",

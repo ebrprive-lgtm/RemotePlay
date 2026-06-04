@@ -197,6 +197,11 @@ internal sealed partial class WebServer
                 TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true, scan = GetLibraryScanStatus() }));
                 break;
 
+            case "/api/restart":
+                TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true }));
+                _ = Task.Run(() => { Thread.Sleep(500); _callbacks.RestartApp(); });
+                break;
+
             case "/api/rescan-music":
                 StartMusicIndexRefresh();
                 TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true }));
@@ -317,6 +322,10 @@ internal sealed partial class WebServer
                     HandleApiSettingsGet(ctx);
                 else
                     HandleApiSettingsPost(ctx);
+                break;
+
+            case "/api/settings/test-port":
+                HandleApiSettingsTestPort(ctx);
                 break;
 
             case "/api/settings/test-path":

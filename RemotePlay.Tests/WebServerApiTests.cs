@@ -246,5 +246,6 @@ public sealed class WebServerApiTests : IDisposable
         SaveExpertMode        = _ => { },
         SaveDebugMode         = _ => { },
         SaveSettings          = _ => { },
+        RestartApp            = () => { },
     };
 }

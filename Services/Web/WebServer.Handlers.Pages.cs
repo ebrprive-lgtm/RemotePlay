@@ -1107,8 +1107,7 @@ internal sealed partial class WebServer
             <button class="cat-btn" onclick="showCat('audio')" id="cat-audio"><span class="ico">&#127911;</span><span class="lbl">Audio</span></button>
             <div class="sidebar-sep">System</div>
             <button class="cat-btn" onclick="showCat('server')" id="cat-server"><span class="ico">&#128187;</span><span class="lbl">Server</span></button>
-            <button class="cat-btn" onclick="showCat('security')" id="cat-security"><span class="ico">&#128274;</span><span class="lbl">Security</span></button>
-            <button class="cat-btn" onclick="showCat('updates')" id="cat-updates"><span class="ico">&#8635;</span><span class="lbl">Updates</span></button>
+            <button class="cat-btn" onclick="showCat('application')" id="cat-application"><span class="ico">&#8635;</span><span class="lbl">Application</span></button>
             <button class="cat-btn" onclick="showCat('appearance')" id="cat-appearance"><span class="ico">&#127912;</span><span class="lbl">Appearance</span></button>
             <button class="cat-btn" onclick="showCat('desktop')" id="cat-desktop"><span class="ico">&#128444;</span><span class="lbl">Desktop</span></button>
             <button class="cat-btn" onclick="showCat('tools')" id="cat-tools"><span class="ico">&#128295;</span><span class="lbl">Tools</span></button>
@@ -1264,12 +1263,24 @@ internal sealed partial class WebServer
             <div class="panel" id="panel-server">
               <div class="callout" style="margin-bottom:.9rem"><span class="ico">&#128161;</span> Port and HTTPS changes take effect after restarting the application. Other server settings apply immediately.</div>
               <div class="card">
+                <h2>&#128204; Identity</h2>
+                <div class="row">
+                  <label>Instance name</label>
+                  <input type="text" id="ServerInstanceName" placeholder="My RemotePlay"/>
+                </div>
+                <div class="hint">Friendly name shown to peers on the network and on the Setup page.</div>
+              </div>
+              <div class="card">
                 <h2>&#127760; Connection</h2>
                 <div class="row">
                   <label>HTTP port</label>
-                  <input type="number" id="Port" min="1" max="65535" class="narrow" disabled title="Restart required to change the port"/>
+                  <div class="path-row" style="align-items:center;gap:.5rem">
+                    <input type="number" id="Port" min="1" max="65535" class="narrow" oninput="_portTested=false;document.getElementById('port-test-result').textContent='';document.getElementById('port-test-result').className='hint'"/>
+                    <button class="test-btn" onclick="testPort()">Test</button>
+                  </div>
                 </div>
-                <div class="hint">Changing the port requires an app restart. Use the system tray or WPF window to change it.</div>
+                <span id="port-test-result" class="hint"></span>
+                <div class="hint">Enter a new port and press <strong>Test</strong> to verify it is available. The change takes effect after a reboot.</div>
                 <div class="row">
                   <label>Use HTTPS</label>
                   <input type="checkbox" id="UseHttps" disabled title="Restart required to toggle HTTPS"/>
@@ -1282,19 +1293,7 @@ internal sealed partial class WebServer
                 <div class="hint">Install this certificate as a Trusted Root on client devices to eliminate browser HTTPS warnings.</div>
               </div>
               <div class="card">
-                <h2>&#128204; Identity</h2>
-                <div class="row">
-                  <label>Instance name</label>
-                  <input type="text" id="ServerInstanceName" placeholder="My RemotePlay"/>
-                </div>
-                <div class="hint">Friendly name shown to peers on the network and on the Setup page.</div>
-              </div>
-              </div>
-
-            <!-- ═══ SECURITY ═══ -->
-            <div class="panel" id="panel-security">
-              <div class="card">
-                <h2>&#128272; Rate limiting</h2>
+                <h2>&#128274; Security</h2>
                 <p class="muted" style="margin-bottom:.7rem">Limits how many HTTP requests a single IP address can make within a sliding time window. Protects against accidental hammering and basic abuse.</p>
                 <div class="row">
                   <label>Max requests per IP</label>
@@ -1308,16 +1307,24 @@ internal sealed partial class WebServer
                   <span class="muted" style="font-size:.82rem">seconds</span>
                 </div>
               </div>
+              <div class="card" style="border-color:#da3633">
+                <h2 style="color:#f85149">&#9888; Danger zone</h2>
+                <p class="muted" style="margin-bottom:.85rem">Restart the RemotePlay application. Active playback will be interrupted.</p>
+                <div class="actions">
+                  <button style="background:#da3633;color:#fff;border:none;border-radius:7px;padding:.45rem 1.1rem;font-size:.88rem;cursor:pointer;font-weight:600" onclick="rebootServer()">&#9211; Reboot server</button>
+                </div>
+                <p id="reboot-result" class="admin-result"></p>
+              </div>
               </div>
 
-            <!-- ═══ UPDATES ═══ -->
-            <div class="panel" id="panel-updates">
+            <!-- ═══ APPLICATION ═══ -->
+            <div class="panel" id="panel-application">
               <div class="card">
                 <h2>&#8635; Auto-update source</h2>
                 <div class="row">
                   <label>Source path&nbsp;/&nbsp;URL</label>
                   <div class="path-row">
-                    <input type="text" id="UpdateSourcePath" placeholder="\\server\share\RemotePlay  or  https://…"/>
+                    <input type="text" id="UpdateSourcePath" placeholder="\\server\share\RemotePlay  or  https://..."/>
                     <button class="test-btn" onclick="testPathOrUrl('UpdateSourcePath','update-source-result')">Test</button>
                   </div>
                 </div>
@@ -1328,6 +1335,14 @@ internal sealed partial class WebServer
                   <input type="number" id="AutoUpdateIntervalMinutes" min="0" class="narrow"/>
                   <span class="muted" style="font-size:.82rem">minutes &nbsp;(0 = startup only)</span>
                 </div>
+              </div>
+              <div class="card">
+                <h2>&#9654; Startup</h2>
+                <p class="muted" style="margin-bottom:.75rem">Control how RemotePlay behaves when Windows starts and when its window is closed.</p>
+                <div class="row"><label>Start with Windows</label><input type="checkbox" id="StartWithWindows"/></div>
+                <div class="hint" style="margin-bottom:.85rem">Adds or removes RemotePlay from your Windows startup programs.</div>
+                <div class="row"><label>Keep in system tray when closed</label><input type="checkbox" id="UseTrayIcon"/></div>
+                <div class="hint">When enabled, closing the window hides RemotePlay to the tray instead of exiting.</div>
               </div>
               </div>
 
@@ -1354,14 +1369,6 @@ internal sealed partial class WebServer
                   </select>
                 </div>
                 <div class="hint">The list is populated from the monitors detected on the host machine.</div>
-              </div>
-              <div class="card">
-                <h2>&#9654; Startup</h2>
-                <p class="muted" style="margin-bottom:.75rem">Control how RemotePlay behaves when Windows starts and when its window is closed.</p>
-                <div class="row"><label>Start with Windows</label><input type="checkbox" id="StartWithWindows"/></div>
-                <div class="hint" style="margin-bottom:.85rem">Adds or removes RemotePlay from your Windows startup programs.</div>
-                <div class="row"><label>Keep in system tray when closed</label><input type="checkbox" id="UseTrayIcon"/></div>
-                <div class="hint">When enabled, closing the window hides RemotePlay to the tray instead of exiting.</div>
               </div>
               </div>
 
@@ -1397,9 +1404,8 @@ internal sealed partial class WebServer
                 <h2>&#9881; Maintenance</h2>
                 <p class="muted" style="margin-bottom:.7rem">One-time actions that affect the running application state.</p>
                 <div class="actions">
-                  <button class="primary" onclick="rescanLibrary()">&#8635; Rescan video library</button>
+                  <button class="primary" onclick="rescanLibrary()">&#8635; Rescan library</button>
                   <button class="secondary" onclick="refreshRuntime()">&#8635; Refresh runtime</button>
-                  <button class="secondary" onclick="location.href='/remoteplay.log'">&#128196; Download log</button>
                 </div>
                 <p id="admin-result" class="admin-result"></p>
               </div>
@@ -1426,6 +1432,7 @@ internal sealed partial class WebServer
                     <button class="secondary" id="log-copy-btn" onclick="copyLogSelection()" disabled title="Copy selected rows to clipboard">&#128203; Copy</button>
                     <button class="secondary" onclick="clearLog()" title="Clear the log file">&#128465; Clear log</button>
                     <button class="secondary" onclick="loadLog()" title="Refresh">&#8635; Refresh</button>
+                    <a href="/remoteplay.log" class="secondary" style="font-size:.83rem;padding:.3rem .7rem;border:1px solid #30363d;border-radius:7px;text-decoration:none;color:#c9d1d9;display:inline-block" download>&#128196; Download log</a>
                   </div>
                 </div>
                 <div class="log-viewer" id="log-viewer" tabindex="0">
@@ -1509,6 +1516,7 @@ internal sealed partial class WebServer
           const set=(id,v)=>{const el=document.getElementById(id);if(!el)return;if(el.type==='checkbox')el.checked=!!v;else el.value=v??'';};
           // Library / Scanning
           set('ServerInstanceName',cfg.instanceName);
+          if(!_portLoaded){set('Port',cfg.port);_portLoaded=true;}_portTested=false;
           set('LibraryRescanDelayMinutes',cfg.libraryRescanDelayMinutes);
           set('LibraryPageSize',cfg.libraryPageSize);
           set('EnableThumbnailGeneration',cfg.enableThumbnailGeneration);
@@ -1574,11 +1582,10 @@ internal sealed partial class WebServer
           scanning:['LibraryRescanDelayMinutes','LibraryPageSize','EnableThumbnailGeneration','IgnoredLibraryFolders','VideoFileExtensions','MusicFileExtensions'],
           playback:['PreferredAudioLanguage','PreferredSubtitleLanguage','SecondarySubtitleLanguage','PreferForcedSubtitles','PlaybackEndBehavior','PlaybackHistoryLimit'],
           audio:['MusicAudioDeviceId'],
-          server:[],    // ServerInstanceName handled in collectCategory
-          security:['MaxRequestsPerIpPerWindow','RateLimitWindowSeconds'],
-          updates:['UpdateSourcePath','AutoUpdateIntervalMinutes'],
+          server:[],    // ServerInstanceName, MaxRequestsPerIpPerWindow, RateLimitWindowSeconds handled in collectCategory
+          application:['UpdateSourcePath','AutoUpdateIntervalMinutes','StartWithWindows','UseTrayIcon'],
           appearance:['ExpertMode','DebugMode'],
-          desktop:['StartWithWindows','UseTrayIcon','PreferredDisplayIndex'],
+          desktop:['PreferredDisplayIndex'],
           tools:['SyncIntervalHours','SyncAtStartup'],
         };
         function readField(id){const el=document.getElementById(id);if(!el)return undefined;if(el.type==='checkbox')return el.checked;const v=el.value.trim();if(el.type==='number'||el.tagName==='SELECT'&&el.dataset.numeric)return v===''?null:Number(v);return v;}
@@ -1590,7 +1597,7 @@ internal sealed partial class WebServer
             p['NetworkShareCredentials']=[...document.querySelectorAll('#cred-list .cred-row')].map(row=>({path:row.querySelector('[data-cred=path]')?.value.trim()||'',username:row.querySelector('[data-cred=username]')?.value.trim()||'',password:row.querySelector('[data-cred=password]')?.value||''})).filter(c=>c.path);
           }
           // ServerInstanceName is a display alias for InstanceName on the Server panel
-          if(cat==='server'){const v=readField('ServerInstanceName');if(v!==undefined)p['InstanceName']=v;}
+          if(cat==='server'){const v=readField('ServerInstanceName');if(v!==undefined)p['InstanceName']=v;const r1=readField('MaxRequestsPerIpPerWindow');if(r1!==undefined)p['MaxRequestsPerIpPerWindow']=r1;const r2=readField('RateLimitWindowSeconds');if(r2!==undefined)p['RateLimitWindowSeconds']=r2;if(_portTested){const pv=readField('Port');if(pv!==undefined&&pv!==null)p['Port']=pv;}}
           return p;
         }
         let _autoSaveTimer=null;
@@ -1602,6 +1609,7 @@ internal sealed partial class WebServer
           const panel=document.getElementById('panel-'+cat);
           if(!panel)return;
           panel.querySelectorAll('input,select,textarea').forEach(el=>{
+            if(el.id==='Port')return; // Port requires Test before save, excluded from auto-save
             const evt=el.type==='range'?'change':(el.type==='text'||el.type==='number'||el.tagName==='TEXTAREA'?'change':'change');
             el.addEventListener(evt,()=>scheduleAutoSave(cat));
           });
@@ -1647,10 +1655,42 @@ internal sealed partial class WebServer
           try{const r=await fetch('/api/health');result.textContent=r.ok?'\u2714 Runtime refreshed.':'Refresh failed: '+r.status;}
           catch(e){result.textContent='Refresh failed: '+e;}
         }
+        let _portTested=false,_portLoaded=false;
+        async function testPort(){
+          const el=document.getElementById('port-test-result'); if(!el)return;
+          const port=parseInt(document.getElementById('Port')?.value||'0',10);
+          if(!port||port<1||port>65535){el.textContent='\u26a0 Enter a valid port (1-65535)';el.className='test-err';return;}
+          el.textContent='Testing\u2026';el.className='hint';
+          try{
+            const r=await fetch('/api/settings/test-port?port='+port);
+            const d=await r.json();
+            if(d.available){_portTested=true;el.textContent='\u2714 Port '+port+' is available. Save settings to apply (reboot required).';el.className='test-ok';}
+            else{_portTested=false;el.textContent='\u26a0 Port '+port+' is in use: '+(d.error||'unavailable');el.className='test-err';}
+          }catch(e){_portTested=false;el.textContent='Test failed: '+e;el.className='test-err';}
+        }
+        async function rebootServer(){
+          const result=document.getElementById('reboot-result');
+          if(!confirm('Reboot the RemotePlay server? Active playback will stop.'))return;
+          result.textContent='Rebooting\u2026';
+          try{
+            // If the user tested a new port, save it before rebooting so it takes effect
+            if(_portTested){
+              result.textContent='Saving port change\u2026';
+              const sr=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collectCategory('server'))});
+              if(!sr.ok){result.textContent='\u26a0 Failed to save port change. Reboot cancelled.';return;}
+            }
+            await fetch('/api/restart',{method:'POST'});
+            result.textContent='Reboot signal sent. The page will reload shortly.';
+            setTimeout(()=>location.reload(),4000);
+          }
+          catch(e){result.textContent='Reboot request failed: '+e;}
+        }
         async function rescanLibrary(){
           const result=document.getElementById('admin-result'); result.textContent='Starting rescan\u2026';
-          try{await fetch('/api/rescan');result.textContent='Video library rescan started.';}
-          catch(e){result.textContent='Rescan failed: '+e;}
+          try{
+            await Promise.all([fetch('/api/rescan'),fetch('/api/rescan-music')]);
+            result.textContent='Library rescan started (video + music).';
+          }catch(e){result.textContent='Rescan failed: '+e;}
         }
         function _log(msg,cls){const box=document.getElementById('sync-log');box.style.display='block';const line=document.createElement('div');if(cls)line.className=cls;line.textContent=msg;box.appendChild(line);box.scrollTop=box.scrollHeight;}
         async function ovReindex(type){

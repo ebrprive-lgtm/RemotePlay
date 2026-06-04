@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Text.Json;
@@ -61,9 +61,11 @@ internal sealed partial class WebServer
             return;
         }
 
-        // Map DTO → updated AppConfig (Port / UseHttps / WPF-only fields are never touched here)
+        // Map DTO → updated AppConfig (UseHttps / WPF-only fields are never touched here)
+        // Port is only included in the payload when the client ran a successful test-port check.
         var updated = _config with
         {
+            Port                        = (dto.Port is int p && p >= 1 && p <= 65535) ? p : _config.Port,
             InstanceName                = string.IsNullOrWhiteSpace(dto.InstanceName) ? _config.InstanceName : dto.InstanceName.Trim(),
             AdditionalMoviesPaths       = dto.AdditionalMoviesPaths ?? _config.AdditionalMoviesPaths,
             AdditionalMusicPaths        = dto.AdditionalMusicPaths  ?? _config.AdditionalMusicPaths,
@@ -119,6 +121,47 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 200, "application/json; charset=utf-8", json);
     }
 
+
+    // -- GET /api/settings/test-port ---------------------------------------------------
+    private void HandleApiSettingsTestPort(HttpListenerContext ctx)
+    {
+        var portStr = ctx.Request.QueryString["port"];
+        if (!int.TryParse(portStr, out var port) || port < 1 || port > 65535)
+        {
+            TrySendResponse(ctx, 400, "application/json", @"{""available"":false,""error"":""Invalid port number.""}");
+            return;
+        }
+
+        // If the requested port is already the active one it is available (we own it)
+        if (port == _config.Port)
+        {
+            TrySendResponse(ctx, 200, "application/json; charset=utf-8",
+                $@"{{""available"":true,""port"":{port}}}");
+            return;
+        }
+
+        bool available;
+        string? error = null;
+        try
+        {
+            var listener = new System.Net.HttpListener();
+            listener.Prefixes.Add($"http://*:{port}/");
+            listener.Start();
+            listener.Stop();
+            listener.Close();
+            available = true;
+        }
+        catch (Exception ex)
+        {
+            available = false;
+            error = ex.Message;
+        }
+
+        var json = available
+            ? $@"{{""available"":true,""port"":{port}}}"
+            : $@"{{""available"":false,""port"":{port},""error"":""{JsonEncodedString(error ?? "Port unavailable")}""}}";
+        TrySendResponse(ctx, 200, "application/json; charset=utf-8", json);
+    }
     // ── GET /api/audio-devices ────────────────────────────────────────────────
     private static void HandleApiAudioDevices(HttpListenerContext ctx)
     {
@@ -204,6 +247,7 @@ internal sealed partial class WebServer
     private WebSettingsDto BuildSettingsDto(AppConfig c) => new()
     {
         InstanceName                = c.InstanceName,
+        Port                        = c.Port,
         AdditionalMoviesPaths       = c.AdditionalMoviesPaths,
         AdditionalMusicPaths        = c.AdditionalMusicPaths,
         NetworkShareCredentials     = c.NetworkShareCredentials
@@ -252,6 +296,7 @@ internal sealed partial class WebServer
     private sealed class WebSettingsDto
     {
         public string?  InstanceName                { get; set; }
+        public int?     Port                        { get; set; }
         public string[]? AdditionalMoviesPaths      { get; set; }
         public string[]? AdditionalMusicPaths       { get; set; }
         public WebNetworkShareCredentialDto[]? NetworkShareCredentials { get; set; }

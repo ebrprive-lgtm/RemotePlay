@@ -611,42 +611,31 @@
                                    FontSize="12" Margin="0,0,0,16"
                                    Visibility="Collapsed" TextWrapping="Wrap"/>
 
-                        <!-- Web Settings banner -->
-                        <Border Background="#0d1f0d" BorderBrush="#2a6e2a" BorderThickness="1"
-                                CornerRadius="8" Padding="16,12" Margin="0,0,0,28">
-                            <StackPanel>
-                                <TextBlock Foreground="#4ade80" FontSize="14" FontWeight="SemiBold"
-                                           Text="&#127760; All settings are now managed in the Web UI" Margin="0,0,0,5"/>
-                                <TextBlock Foreground="#666" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,10"
-                                           Text="Library paths, scanning, playback, audio, language, security, appearance, sync and tools are all configured from the browser. Only the port number and desktop-specific options remain here."/>
-                                <Button Content="Open Web Settings &#10142;" Click="OnOpenWebSettings"
-                                        Background="#1a3a1a" Foreground="#4ade80" BorderBrush="#2a6e2a"
-                                        BorderThickness="1" Padding="12,5" HorizontalAlignment="Left"
-                                        Cursor="Hand" FontSize="12"/>
-                            </StackPanel>
-                        </Border>
-
                         <!-- ── Server section ── -->
                         <TextBlock Text="Server" Foreground="#E94560" FontSize="15" FontWeight="Bold" Margin="0,0,0,4"/>
                         <TextBlock Foreground="#555" FontSize="11" Margin="0,0,0,18"
                                    Text="Configure the port the web interface listens on. Changing the port requires a server restart."/>
 
                         <TextBlock Text="Port" Foreground="#CCC" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,6"/>
-                        <Grid Margin="0,0,0,6">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="120"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBox x:Name="PortBox" Grid.Column="0"
-                                     Background="#1e1e2e" Foreground="#EEE"
-                                     BorderBrush="#444" BorderThickness="1"
-                                     Padding="8,6" FontSize="13"
-                                     VerticalContentAlignment="Center"
-                                     LostFocus="OnSettingLostFocus"/>
-                            <TextBlock Grid.Column="1" Foreground="#555" FontSize="11"
-                                       VerticalAlignment="Center" Margin="12,0,0,0"
-                                       Text="(1024 – 65535)"/>
-                        </Grid>
+                        <StackPanel Margin="0,0,0,4">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBox x:Name="PortBox" Width="120"
+                                         Background="#1e1e2e" Foreground="#EEE"
+                                         BorderBrush="#444" BorderThickness="1"
+                                         Padding="8,6" FontSize="13"
+                                         VerticalContentAlignment="Center"
+                                         TextChanged="OnPortBoxTextChanged"/>
+                                <Button x:Name="PortTestBtn" Content="Test" Click="OnTestPort"
+                                        Background="#333" Foreground="White" BorderThickness="0"
+                                        Padding="12,6" Margin="8,0,0,0" Cursor="Hand" FontSize="12"
+                                        VerticalAlignment="Center"/>
+                                <TextBlock Foreground="#555" FontSize="11"
+                                           VerticalAlignment="Center" Margin="12,0,0,0"
+                                           Text="(1024 – 65535)"/>
+                            </StackPanel>
+                            <TextBlock x:Name="PortTestResult" FontSize="11" Margin="0,5,0,0"
+                                       Visibility="Collapsed" TextWrapping="Wrap"/>
+                        </StackPanel>
 
                         <CheckBox x:Name="UseHttpsBox"
                                   Content="Use secure HTTPS (recommended for mobile PWA)"

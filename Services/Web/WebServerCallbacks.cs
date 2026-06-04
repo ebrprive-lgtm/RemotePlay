@@ -74,4 +74,7 @@ internal sealed class WebServerCallbacks
 
     /// <summary>Saves updated config fields that can be changed from the web UI (excludes Port/UseHttps).</summary>
     public required Action<AppConfig>                                           SaveSettings       { get; init; }
+
+    /// <summary>Requests an application restart.</summary>
+    public required Action                                                      RestartApp         { get; init; }
 }

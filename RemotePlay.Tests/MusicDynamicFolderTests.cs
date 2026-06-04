@@ -1018,5 +1018,6 @@ public sealed class MusicDynamicFolderTests : IDisposable
         SaveExpertMode        = _ => { },
         SaveDebugMode         = _ => { },
         SaveSettings          = _ => { },
+        RestartApp            = () => { },
     };
 }

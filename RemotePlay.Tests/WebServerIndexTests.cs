@@ -409,5 +409,6 @@ public sealed class WebServerIndexTests : IDisposable
         SaveExpertMode        = _ => { },
         SaveDebugMode         = _ => { },
         SaveSettings          = _ => { },
+        RestartApp            = () => { },
     };
 }
