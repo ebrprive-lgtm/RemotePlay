@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
@@ -33,7 +33,7 @@ public sealed class WebServerApiTests : IDisposable
         _client.Dispose();
     }
 
-    // ── /api/status ──────────────────────────────────────────────────────────
+    // â”€â”€ /api/status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     [Fact]
     public async Task Status_ReturnsOk()
@@ -63,7 +63,7 @@ public sealed class WebServerApiTests : IDisposable
         Assert.True(doc.RootElement.TryGetProperty("volume", out _));
     }
 
-    // ── /api/library-status ─────────────────────────────────────────────────
+    // â”€â”€ /api/library-status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     [Fact]
     public async Task LibraryStatus_ReturnsOk()
@@ -86,7 +86,7 @@ public sealed class WebServerApiTests : IDisposable
             doc.RootElement.TryGetProperty("isScanning", out _));
     }
 
-    // ── /api/version ────────────────────────────────────────────────────────
+    // â”€â”€ /api/version â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     [Fact]
     public async Task Version_ReturnsOk()
@@ -106,7 +106,7 @@ public sealed class WebServerApiTests : IDisposable
         Assert.True(doc.RootElement.TryGetProperty("version", out _));
     }
 
-    // ── /health ─────────────────────────────────────────────────────────────
+    // â”€â”€ /health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     [Fact]
     public async Task Health_ReturnsOk()
@@ -125,7 +125,7 @@ public sealed class WebServerApiTests : IDisposable
         Assert.Contains("<!DOCTYPE html>", html, StringComparison.OrdinalIgnoreCase);
     }
 
-    // ── 404 for unknown paths ────────────────────────────────────────────────
+    // â”€â”€ 404 for unknown paths â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     [Fact]
     public async Task UnknownPath_Returns404()
@@ -135,7 +135,7 @@ public sealed class WebServerApiTests : IDisposable
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
-    // ── Rate limiting ────────────────────────────────────────────────────────
+    // â”€â”€ Rate limiting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     [Fact]
     public async Task RateLimiting_Returns429_WhenLimitExceeded()
@@ -174,8 +174,87 @@ public sealed class WebServerApiTests : IDisposable
         openServer.Stop();
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+    // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+    // -- /api/dlna/renderers ---------------------------------------------------
+
+    [Fact]
+    public async Task DlnaRenderers_WhenNoDlnaDiscovery_ReturnsOkWithEmptyArray()
+    {
+        var response = await _client.GetAsync("/api/dlna/renderers");
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(JsonValueKind.Array, doc.RootElement.ValueKind);
+        Assert.Equal(0, doc.RootElement.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task DlnaRenderers_ResponseContentTypeIsJson()
+    {
+        var response = await _client.GetAsync("/api/dlna/renderers");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    // -- /api/dlna/play --------------------------------------------------------
+
+    [Fact]
+    public async Task DlnaPlay_WhenNoDlnaDiscovery_Returns503()
+    {
+        using var content = new StringContent(
+            """{"controlUrl":"http://192.168.1.1/ctl","mediaUrl":"http://localhost/video.mp4"}""",
+            System.Text.Encoding.UTF8, "application/json");
+
+        var response = await _client.PostAsync("/api/dlna/play", content);
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.True(doc.RootElement.TryGetProperty("ok", out var okProp));
+        Assert.False(okProp.GetBoolean());
+    }
+
+    [Fact]
+    public async Task DlnaPlay_WhenBodyIsInvalidJson_Returns400OrServiceUnavailable()
+    {
+        // When DlnaDiscovery is not injected the server returns 503 before parsing the body.
+        // When it is injected and the body is malformed, it returns 400.
+        using var content = new StringContent("not json", System.Text.Encoding.UTF8, "application/json");
+
+        var response = await _client.PostAsync("/api/dlna/play", content);
+
+        Assert.True(
+            response.StatusCode == HttpStatusCode.BadRequest ||
+            response.StatusCode == HttpStatusCode.ServiceUnavailable);
+    }
+
+    [Fact]
+    public async Task DlnaPlay_WhenControlUrlMissingFromBody_Returns503OrBadRequest()
+    {
+        using var content = new StringContent(
+            """{"mediaUrl":"http://localhost/video.mp4"}""",
+            System.Text.Encoding.UTF8, "application/json");
+
+        var response = await _client.PostAsync("/api/dlna/play", content);
+
+        // 503 = no DLNA running; 400 = missing required field.
+        Assert.True(
+            response.StatusCode == HttpStatusCode.BadRequest ||
+            response.StatusCode == HttpStatusCode.ServiceUnavailable);
+    }
+
+    // -- /api/dlna unknown sub-path --------------------------------------------
+
+    [Fact]
+    public async Task DlnaUnknownSubPath_Returns404()
+    {
+        var response = await _client.GetAsync("/api/dlna/does-not-exist");
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
     private static int FindFreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -246,5 +325,7 @@ public sealed class WebServerApiTests : IDisposable
         SaveExpertMode        = _ => { },
         SaveDebugMode         = _ => { },
         SaveSettings          = _ => { },
+        RestartApp            = () => { },
+                RestartServer         = () => { },
     };
 }

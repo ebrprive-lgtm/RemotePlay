@@ -489,6 +489,7 @@ internal sealed partial class WebServer
         _callbacks.Play(filePath);
         Logger.Info("Playback", $"Playing Video: '{Path.GetFileName(filePath)}' on Server");
         TrySendResponse(ctx, 200, "text/plain", "OK");
+        ScheduleSsePush(delayMs: 300);
     }
 
     // Sets the browser-local-playing flag so the WPF window can update its idle overlay.
@@ -537,6 +538,7 @@ internal sealed partial class WebServer
 
         _callbacks.Enqueue(filePath);
         TrySendResponse(ctx, 200, "text/plain", "OK");
+        ScheduleSsePush();
     }
 
     private void HandleQueueRemove(HttpListenerContext ctx)
@@ -550,6 +552,7 @@ internal sealed partial class WebServer
 
         _callbacks.RemoveFromQueue(WebPathHelpers.DecodePath(encodedPath));
         TrySendResponse(ctx, 200, "text/plain", "OK");
+        ScheduleSsePush();
     }
 
     private void HandleQueueMove(HttpListenerContext ctx)
@@ -565,6 +568,7 @@ internal sealed partial class WebServer
         var direction = string.Equals(directionParam, "up", StringComparison.OrdinalIgnoreCase) ? -1 : 1;
         _callbacks.MoveQueueItem(WebPathHelpers.DecodePath(encodedPath), direction);
         TrySendResponse(ctx, 200, "text/plain", "OK");
+        ScheduleSsePush();
     }
 
 
@@ -688,6 +692,156 @@ internal sealed partial class WebServer
 
         ctx.Response.AddHeader("Cache-Control", "no-store");
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(peers));
+    }
+
+    // ── DLNA handlers ──────────────────────────────────────────────────────────
+
+    /// <summary>GET /api/dlna/renderers — returns the currently cached renderer list.</summary>
+    private void HandleDlnaRenderers(HttpListenerContext ctx)
+    {
+        if (_dlna is null)
+        {
+            TrySendResponse(ctx, 200, "application/json", "[]");
+            return;
+        }
+
+        var renderers = _dlna.GetRenderers().Select(r => new
+        {
+            name       = r.Name,
+            host       = r.Host,
+            controlUrl = r.ControlUrl,
+            usn        = r.Usn,
+        });
+
+        ctx.Response.AddHeader("Cache-Control", "no-store");
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(renderers));
+    }
+
+    /// <summary>
+    /// POST /api/dlna/play — queues a media URL on a DLNA renderer.
+    /// Body JSON: { "controlUrl": "http://…/ctrl", "mediaUrl": "http://…/file.mp4" }
+    /// </summary>
+    private void HandleDlnaPlay(HttpListenerContext ctx)
+    {
+        if (_dlna is null)
+        {
+            TrySendResponse(ctx, 503, "application/json", "{\"ok\":false,\"error\":\"DLNA discovery not running\"}");
+            return;
+        }
+
+        string controlUrl, mediaUrl;
+        try
+        {
+            using var reader = new System.IO.StreamReader(ctx.Request.InputStream);
+            var body = reader.ReadToEnd();
+            using var doc = JsonDocument.Parse(body);
+            controlUrl = doc.RootElement.GetProperty("controlUrl").GetString() ?? string.Empty;
+            mediaUrl   = doc.RootElement.GetProperty("mediaUrl").GetString()   ?? string.Empty;
+        }
+        catch (Exception ex)
+        {
+            TrySendResponse(ctx, 400, "application/json",
+                JsonSerializer.Serialize(new { ok = false, error = $"Invalid request body: {ex.Message}" }));
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(controlUrl) || string.IsNullOrWhiteSpace(mediaUrl))
+        {
+            TrySendResponse(ctx, 400, "application/json",
+                JsonSerializer.Serialize(new { ok = false, error = "controlUrl and mediaUrl are required" }));
+            return;
+        }
+
+        // Fire-and-forget with result returned synchronously for simplicity.
+        var task   = _dlna.PlayOnRendererAsync(controlUrl, mediaUrl);
+        task.Wait(TimeSpan.FromSeconds(8));
+
+        if (!task.IsCompletedSuccessfully)
+        {
+            TrySendResponse(ctx, 500, "application/json",
+                JsonSerializer.Serialize(new { ok = false, error = "Timed out waiting for renderer response" }));
+            return;
+        }
+
+        var (ok, error) = task.Result;
+        TrySendResponse(ctx, ok ? 200 : 502, "application/json",
+            JsonSerializer.Serialize(new { ok, error }));
+    }
+
+    /// <summary>
+    /// Returns the next (or previous) video file in the same folder as the currently-playing
+    /// file, sorted by natural order.  Used by the browser "Up Next" card.
+    /// Query params: <c>path</c> (URL-encoded path of the current file), <c>direction</c>
+    /// ("next" default or "previous").
+    /// Response: <c>{ found, path, title }</c>.
+    /// </summary>
+    private void HandleNextInFolder(HttpListenerContext ctx)
+    {
+        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
+        var directionParam = ctx.Request.QueryString["direction"] ?? string.Empty;
+        var direction = string.Equals(directionParam, "previous", StringComparison.OrdinalIgnoreCase) ? -1 : 1;
+
+        if (string.IsNullOrWhiteSpace(encodedPath))
+        {
+            TrySendResponse(ctx, 400, "application/json",
+                JsonSerializer.Serialize(new { found = false, path = string.Empty, title = string.Empty, error = "Missing path" }));
+            return;
+        }
+
+        var currentFile = WebPathHelpers.DecodePath(encodedPath);
+        if (string.IsNullOrWhiteSpace(currentFile) || !File.Exists(currentFile))
+        {
+            TrySendResponse(ctx, 200, "application/json",
+                JsonSerializer.Serialize(new { found = false, path = string.Empty, title = string.Empty }));
+            return;
+        }
+
+        var directory = Path.GetDirectoryName(currentFile);
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            TrySendResponse(ctx, 200, "application/json",
+                JsonSerializer.Serialize(new { found = false, path = string.Empty, title = string.Empty }));
+            return;
+        }
+
+        var files = Directory.EnumerateFiles(directory)
+            .Where(f => WebPathHelpers.IsVideoFile(f, _videoExtensions))
+            .OrderBy(f => Path.GetFileNameWithoutExtension(f), _naturalComparer)
+            .ToArray();
+
+        if (files.Length == 0)
+        {
+            TrySendResponse(ctx, 200, "application/json",
+                JsonSerializer.Serialize(new { found = false, path = string.Empty, title = string.Empty }));
+            return;
+        }
+
+        var currentIndex = Array.FindIndex(files,
+            f => string.Equals(f, currentFile, StringComparison.OrdinalIgnoreCase));
+
+        if (currentIndex < 0)
+        {
+            TrySendResponse(ctx, 200, "application/json",
+                JsonSerializer.Serialize(new { found = false, path = string.Empty, title = string.Empty }));
+            return;
+        }
+
+        var nextIndex = currentIndex + Math.Sign(direction);
+        if (nextIndex < 0 || nextIndex >= files.Length)
+        {
+            TrySendResponse(ctx, 200, "application/json",
+                JsonSerializer.Serialize(new { found = false, path = string.Empty, title = string.Empty }));
+            return;
+        }
+
+        var nextFile = files[nextIndex];
+        TrySendResponse(ctx, 200, "application/json",
+            JsonSerializer.Serialize(new
+            {
+                found = true,
+                path = WebPathHelpers.EncodePath(nextFile),
+                title = Path.GetFileNameWithoutExtension(nextFile)
+            }));
     }
 
     /// <summary>Extracts the client's IP address as a plain string, stripping the IPv4-mapped

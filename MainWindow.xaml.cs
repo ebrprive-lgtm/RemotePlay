@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Text.RegularExpressions;
 using System.Net;
 using System.Net.Http;
@@ -38,6 +38,7 @@ public partial class MainWindow : Window
     private readonly RemotePlay.Services.RadioBrowserClient _radioBrowser;
     private WebServer? _webServer;
     private PresenceBroadcaster? _broadcaster;
+    private RemotePlay.Services.Discovery.DlnaDiscovery? _dlna;
     private RemotePlay.Services.AppUpdater? _appUpdater;
     private System.Windows.Forms.NotifyIcon? _trayIcon;
     private double _windowedLeft = double.NaN;
@@ -74,8 +75,12 @@ public partial class MainWindow : Window
     private bool _forceSwAudio;
     private bool _isInitializingSettings;
     private bool _isPersistingSettings;
+    private bool _portTested;        // true once the user ran a successful Test on a new port value
     private bool _restartNeeded;
     private TimeSpan _duration = TimeSpan.Zero;
+    private long _positionMs;
+    private long _positionBaseMs;
+    private DateTimeOffset? _positionClockStartedUtc;
     private bool _isApplyingMoviePreferences;
     private CancellationTokenSource? _videoTransitionCts;
     private MediaCodecInfo? _codecInfo;
@@ -199,10 +204,12 @@ public partial class MainWindow : Window
             _lyricsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
             _lyricsTimer.Tick += (_, _) => TickLyricsOverlay();
 
+            _musicPlayer.TrackAdvanced += _ => { if (_isVideoMode) Dispatcher.InvokeAsync(ShowIdleOverlay); };
             _mediaPlayer.Playing += OnMediaPlaying;
             _mediaPlayer.EndReached += OnMediaEnded;
             _mediaPlayer.EncounteredError += OnMediaFailed;
             _mediaPlayer.LengthChanged += OnMediaLengthChanged;
+            _mediaPlayer.TimeChanged += OnMediaTimeChanged;
             _mediaPlayer.ESAdded += OnESAdded;
             ApplyAudioLevel();
             ApplyBrightnessOverlay();
@@ -256,6 +263,8 @@ public partial class MainWindow : Window
         MoviesPathText.Text = _config.AllResolvedMoviesPaths.Length > 0
             ? $"Video paths: {_config.AllResolvedMoviesPaths.Length}"
             : "Video paths: (none)";
+
+        PopulateSettingsFromConfig();
         _isInitializingSettings = false;
 
         AppendLog($"RemotePlay started");
@@ -294,6 +303,9 @@ public partial class MainWindow : Window
     private void PopulateSettingsFromConfig()
     {
         PortBox.Text = _config.Port.ToString();
+        _portTested = false;
+        if (FindName("PortTestResult") is System.Windows.Controls.TextBlock ptrBlock)
+            ptrBlock.Visibility = Visibility.Collapsed;
         if (FindName("InstanceNameBox") is System.Windows.Controls.TextBox instanceNameBox)
             instanceNameBox.Text = _config.InstanceName;
         if (FindName("UseHttpsBox") is System.Windows.Controls.CheckBox useHttpsBox)
@@ -464,6 +476,10 @@ public partial class MainWindow : Window
             _broadcaster?.Dispose();
             _broadcaster = new PresenceBroadcaster(config);
             _broadcaster.Start();
+            _dlna?.Stop();
+            _dlna?.Dispose();
+            _dlna = new RemotePlay.Services.Discovery.DlnaDiscovery();
+            _dlna.Start();
 
             Logger.Info($"{actionName}: creating web server");
             await Dispatcher.InvokeAsync(() => AppendLog($"{actionName}: creating web server…"));
@@ -595,6 +611,8 @@ public partial class MainWindow : Window
         _webServer?.Stop();
         _broadcaster?.Stop();
         _broadcaster?.Dispose();
+        _dlna?.Stop();
+        _dlna?.Dispose();
         _trayIcon?.Dispose();
         _mediaPlayer.Dispose();
         _musicPlayer.Dispose();
@@ -1396,6 +1414,7 @@ public partial class MainWindow : Window
     {
         _webServer?.Stop();
         _broadcaster?.Stop();
+        _dlna?.Stop();
         _musicPlayer.Stop();
         _radioPlayer.Stop();
         StopMovie();
@@ -1523,6 +1542,12 @@ public partial class MainWindow : Window
 
     private void OnApplySettings(object sender, RoutedEventArgs e)
     {
+        var portText = PortBox.Text.Trim();
+        if (int.TryParse(portText, out var newPort) && newPort != _config.Port && !_portTested)
+        {
+            ShowPortTestResult("⚠ Test the new port before applying.", isError: true);
+            return;
+        }
         SaveSettingsFromUi(restartServer: true, showFeedback: true);
     }
 
@@ -1534,6 +1559,76 @@ public partial class MainWindow : Window
     private void OnSettingLostFocus(object sender, RoutedEventArgs e)
     {
         SaveSettingsFromUi(restartServer: false, showFeedback: true);
+    }
+
+    private void OnPortBoxTextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    {
+        if (_isInitializingSettings) return;
+        _portTested = false;
+        if (FindName("PortTestResult") is System.Windows.Controls.TextBlock ptrBlock)
+            ptrBlock.Visibility = Visibility.Collapsed;
+    }
+
+    private async void OnTestPort(object sender, RoutedEventArgs e)
+    {
+        var portText = PortBox.Text.Trim();
+        if (!int.TryParse(portText, out var port) || port < 1024 || port > 65535)
+        {
+            ShowPortTestResult("⚠ Enter a valid port (1024 – 65535).", isError: true);
+            return;
+        }
+
+        // Same port as current — no need to test
+        if (port == _config.Port)
+        {
+            _portTested = true;
+            ShowPortTestResult("✔ Same as current port — no change needed.", isError: false);
+            return;
+        }
+
+        var testBtn = FindName("PortTestBtn") as System.Windows.Controls.Button;
+        if (testBtn != null) testBtn.IsEnabled = false;
+        ShowPortTestResult("Testing…", isError: false);
+
+        bool available;
+        string? error = null;
+        try
+        {
+            available = await Task.Run(() =>
+            {
+                var listener = new System.Net.HttpListener();
+                listener.Prefixes.Add($"http://*:{port}/");
+                listener.Start();
+                listener.Stop();
+                listener.Close();
+                return true;
+            });
+        }
+        catch (Exception ex)
+        {
+            available = false;
+            error = ex.Message;
+        }
+        finally
+        {
+            if (testBtn != null) testBtn.IsEnabled = true;
+        }
+
+        _portTested = available;
+        if (available)
+            ShowPortTestResult($"✔ Port {port} is available. Click Apply & Restart to save.", isError: false);
+        else
+            ShowPortTestResult($"⚠ Port {port} is in use: {error ?? "unavailable"}", isError: true);
+    }
+
+    private void ShowPortTestResult(string message, bool isError)
+    {
+        if (FindName("PortTestResult") is not System.Windows.Controls.TextBlock el) return;
+        el.Text = message;
+        el.Foreground = isError
+            ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xE9, 0x45, 0x60))
+            : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x4A, 0xDE, 0x80));
+        el.Visibility = Visibility.Visible;
     }
 
     private void OnPathListSettingChanged(object? sender, EventArgs e)

@@ -74,4 +74,13 @@ internal sealed class WebServerCallbacks
 
     /// <summary>Saves updated config fields that can be changed from the web UI (excludes Port/UseHttps).</summary>
     public required Action<AppConfig>                                           SaveSettings       { get; init; }
+
+    /// <summary>Requests a full application restart (shutdown + relaunch).</summary>
+    public required Action                                                      RestartApp         { get; init; }
+
+    /// <summary>
+    /// Restarts only the web server in-process (stop listener, reload config, start listener on new port).
+    /// No app shutdown. Invoked by the WebUI REBOOT button.
+    /// </summary>
+    public required Action                                                      RestartServer      { get; init; }
 }

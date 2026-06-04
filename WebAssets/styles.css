@@ -494,10 +494,11 @@
         :root{--vlc-cols: 1fr 4.5rem 3.5rem 3.2rem 5.5rem 38px;--vlc-gap:.75rem}
         .movie-grid.list-view{display:flex;flex-direction:column;gap:0;padding:0 0 .5rem;max-width:1200px}
         /* header row */
-        .vlc-header-row{display:grid;grid-template-columns:var(--vlc-cols);align-items:center;column-gap:var(--vlc-gap);padding:.26rem 0;border-bottom:2px solid rgba(255,255,255,.12);font-size:.66rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted,#9aa8c2);position:sticky;top:0;background:var(--folder-bg,#1a1a2e);z-index:2}
+        .vlc-header-row{display:grid;grid-template-columns:var(--vlc-cols);align-items:center;column-gap:var(--vlc-gap);padding:.26rem 0;border-bottom:2px solid rgba(255,255,255,.12);font-size:.66rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted,#9aa8c2);position:sticky;top:calc(var(--header-h,0px) + var(--nav-row-h,0px));background:var(--folder-bg,#1a1a2e);z-index:2}
         .vlc-h{padding:0 .2rem;white-space:nowrap;overflow:visible}
         .vlc-h.sortable{cursor:pointer;user-select:none}
         .vlc-h.sortable:hover{color:var(--text,#e0e6f0)}
+        .vlc-h.sort-active{color:var(--player-accent,#e94560)}
         .vlc-h-title{padding-left:.1rem}
         /* cards as CSS grid rows */
         .movie-grid.list-view .movie-card{display:grid;grid-template-columns:var(--vlc-cols);align-items:center;column-gap:var(--vlc-gap);min-height:unset;height:2.4rem;border-radius:0;border:none;border-left:5px solid transparent;border-bottom:1px solid rgba(255,255,255,.04);background:#0000;background-image:none!important;transform:none!important;box-shadow:none!important;cursor:pointer;transition:background .1s;position:relative;padding:0}
@@ -749,11 +750,109 @@
         .transport-controls .btn{font-weight:700;min-width:0;flex:1}
         #pause-btn{flex:1.6}
         #progress-row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:.65rem}
-        #progress{width:100%;accent-color:var(--player-accent,#e94560);cursor:pointer;height:12px;min-height:36px;-webkit-appearance:none;background:transparent}
-        #progress::-webkit-slider-runnable-track{height:6px;background:var(--player-track-bg,#34344f);border-radius:999px}
-        #progress::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:var(--player-accent,#e94560);border:2px solid #fff;box-shadow:0 0 0 6px rgba(0,0,0,.15);margin-top:-8px}
-        #progress::-moz-range-track{height:6px;background:var(--player-track-bg,#34344f);border-radius:999px}
-        #progress::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:var(--player-accent,#e94560);border:2px solid #fff;box-shadow:0 0 0 6px rgba(0,0,0,.15)}
+        #seek-wrapper{position:relative;display:flex;flex-direction:column;align-items:stretch}
+        /* seek track fill: accent up to thumb, dark beyond — driven by --seek-pct set from JS */
+        #progress{
+          width:100%;cursor:pointer;
+          height:8px;min-height:36px;
+          -webkit-appearance:none;appearance:none;
+          background:transparent;accent-color:transparent;
+        }
+        #progress::-webkit-slider-runnable-track{
+          height:8px;border-radius:999px;
+          background:linear-gradient(to right,
+            var(--player-accent,#e94560)         0%,
+            var(--player-accent,#e94560)         var(--seek-pct,0%),
+            rgba(255,255,255,.12)                var(--seek-pct,0%),
+            rgba(255,255,255,.12)                100%
+          );
+          box-shadow:0 1px 4px rgba(0,0,0,.35);
+        }
+        #progress::-moz-range-track{
+          height:8px;border-radius:999px;
+          background:linear-gradient(to right,
+            var(--player-accent,#e94560)         0%,
+            var(--player-accent,#e94560)         var(--seek-pct,0%),
+            rgba(255,255,255,.12)                var(--seek-pct,0%),
+            rgba(255,255,255,.12)                100%
+          );
+          box-shadow:0 1px 4px rgba(0,0,0,.35);
+        }
+        #progress::-moz-range-progress{
+          height:8px;border-radius:999px;
+          background:var(--player-accent,#e94560);
+        }
+        #progress::-webkit-slider-thumb{
+          -webkit-appearance:none;
+          width:20px;height:20px;border-radius:50%;
+          background:var(--player-accent,#e94560);
+          border:2.5px solid #fff;
+          box-shadow:0 0 0 5px rgba(233,69,96,.25),0 2px 8px rgba(0,0,0,.45);
+          margin-top:-6px;
+          transition:box-shadow .15s,transform .12s;
+        }
+        #progress:active::-webkit-slider-thumb,
+        #progress:focus-visible::-webkit-slider-thumb{
+          box-shadow:0 0 0 8px rgba(233,69,96,.35),0 2px 10px rgba(0,0,0,.5);
+          transform:scale(1.15);
+        }
+        #progress::-moz-range-thumb{
+          width:20px;height:20px;border-radius:50%;
+          background:var(--player-accent,#e94560);
+          border:2.5px solid #fff;
+          box-shadow:0 0 0 5px rgba(233,69,96,.25),0 2px 8px rgba(0,0,0,.45);
+          transition:box-shadow .15s,transform .12s;
+        }
+        #progress:active::-moz-range-thumb{
+          box-shadow:0 0 0 8px rgba(233,69,96,.35),0 2px 10px rgba(0,0,0,.5);
+          transform:scale(1.15);
+        }
+        /* chapter markers — teardrop / notch pins that poke through the track */
+        #chapter-markers{position:absolute;left:0;right:0;top:50%;transform:translateY(-50%);height:0;pointer-events:none}
+        .chapter-pin{
+          position:absolute;top:-14px;
+          transform:translateX(-50%);
+          width:2px;height:9px;
+          background:rgba(255,255,255,.45);
+          border-radius:1px;
+          pointer-events:auto;cursor:pointer;
+          transition:background .15s,width .12s,box-shadow .15s;
+        }
+        /* small diamond dot at the top of each pin */
+        .chapter-pin::before{
+          content:'';
+          position:absolute;top:-8px;left:50%;
+          transform:translateX(-50%) rotate(45deg);
+          width:8px;height:8px;
+          background:inherit;
+          border-radius:1px;
+          transition:width .12s,height .12s,top .12s;
+        }
+        .chapter-pin:hover,.chapter-pin:focus{
+          background:rgba(255,255,255,.9);
+          width:3px;
+          box-shadow:0 0 6px rgba(255,255,255,.4);
+          outline:none;
+        }
+        .chapter-pin:hover::before,.chapter-pin:focus::before{
+          width:8px;height:8px;top:-5px;
+        }
+        .chapter-pin.active{background:var(--player-accent,#e94560);box-shadow:0 0 6px var(--player-accent,#e94560)}
+        .chapter-pin.active::before{background:var(--player-accent,#e94560)}
+        .chapter-pin:hover::after,.chapter-pin:focus::after{
+          content:attr(data-label);
+          position:absolute;bottom:-38px;left:50%;
+          transform:translateX(-50%);
+          background:rgba(10,10,20,.88);color:#fff;
+          font-size:.7rem;font-weight:600;
+          white-space:nowrap;
+          padding:.25em .6em;
+          border-radius:6px;
+          pointer-events:none;z-index:20;
+          max-width:180px;overflow:hidden;text-overflow:ellipsis;
+          box-shadow:0 3px 10px rgba(0,0,0,.4);
+          border:1px solid rgba(255,255,255,.08);
+        }
         #time-label{font-size:.9rem;color:var(--player-text,#ddd);white-space:nowrap;min-width:112px;text-align:right;font-weight:600}
         #resume-card{display:none;grid-template-columns:minmax(0,1fr) auto;gap:.7rem;align-items:center;background:var(--resume-bg,#241927);border:1px solid var(--resume-border,#e94560);border-radius:12px;padding:.65rem .75rem;box-shadow:0 8px 22px rgba(0,0,0,.18)}
         #resume-card.visible{display:grid}
@@ -761,6 +860,14 @@
         #resume-detail{font-size:.74rem;color:var(--player-sub,#ffd7df);margin-top:.1rem}
         #resume-actions{display:flex;gap:.4rem;flex-wrap:wrap;justify-content:flex-end}
         #resume-actions .btn{min-height:38px;font-weight:800}
+        #up-next-card{display:none;grid-template-columns:minmax(0,1fr) auto;gap:.7rem;align-items:center;background:var(--up-next-bg,#171f2e);border:1px solid var(--up-next-border,#3a6090);border-radius:12px;padding:.65rem .75rem;box-shadow:0 8px 22px rgba(0,0,0,.18)}
+        #up-next-card.visible{display:grid}
+        .up-next-info{display:flex;flex-direction:column;gap:.1rem;min-width:0}
+        .up-next-label{font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em;color:var(--up-next-accent,#5fa8e8);margin-bottom:.05rem}
+        .up-next-title{font-size:.84rem;font-weight:700;color:var(--player-text,#fff);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .up-next-actions{display:flex;gap:.4rem;flex-wrap:wrap;justify-content:flex-end;align-items:center}
+        .up-next-actions .btn{min-height:38px;font-weight:800}
+        .up-next-countdown{font-size:.73rem;color:var(--player-sub,#9ea2b8);white-space:nowrap}
         #speed-row{display:flex;gap:.35rem;flex-wrap:wrap;align-items:center;justify-content:center;padding:0 .35rem}
         .speed-chip{border:1px solid var(--player-chip-border,#3a3a57);background:var(--player-chip-bg,#22263b);color:var(--player-text,#cfd3e9);padding:.28rem .52rem;border-radius:999px;font-size:.74rem;font-weight:700;cursor:pointer;min-width:52px}
         .speed-chip.active{background:var(--player-accent,#e94560);border-color:var(--player-accent,#e94560);color:#fff}
@@ -971,6 +1078,8 @@
           body.phone-remote-only .control-card{padding:.65rem;border-radius:12px;background:#18182c}
           body.phone-remote-only #resume-card{grid-template-columns:1fr;gap:.55rem}
           body.phone-remote-only #resume-actions{display:grid;grid-template-columns:1fr 1fr;justify-content:stretch}
+          body.phone-remote-only #up-next-card{grid-template-columns:1fr;gap:.55rem}
+          body.phone-remote-only .up-next-actions{display:grid;grid-template-columns:1fr 1fr;justify-content:stretch}
           body.phone-remote-only .slider-wrap{gap:.55rem}
           body.phone-remote-only #volume,
           body.phone-remote-only #brightness,
@@ -988,7 +1097,7 @@
         .crumb-back{display:inline-flex;align-items:center;gap:.35rem;flex-shrink:0;width:fit-content;color:var(--path-link,#00d4aa);background:var(--pill-bg,#161624);border:1px solid var(--pill-border,#2a2a3e);border-radius:8px;padding:.59rem 1.17rem;cursor:pointer;text-decoration:none;font-size:1.1rem;font-weight:700;box-sizing:border-box;margin:0}
         @media(hover:hover){.crumb-back:hover{background:var(--pill-hover,#1e1e30)}}
         /* Browse nav row: back button + inline recent strip */
-        #browse-nav-row{display:flex;align-items:flex-start;flex-wrap:nowrap;gap:.4rem;overflow:hidden;padding:.5rem .75rem .05rem;min-height:0}
+        #browse-nav-row{display:flex;align-items:flex-start;flex-wrap:nowrap;gap:.4rem;overflow:hidden;padding:.5rem .75rem .05rem;min-height:0;position:sticky;top:var(--header-h,0px);z-index:9;background:var(--folder-bg,#1a1a2e)}
         .browse-nav-spacer{flex:1;min-width:0}
         #browse-nav-row .crumb-back{align-self:flex-start;height:62px;padding-top:0;padding-bottom:0;display:inline-flex;align-items:center}
         #video-recent-strip,#music-recent-strip,#radio-recent-strip{display:flex;align-items:flex-start;gap:.35rem;overflow-x:auto;flex:0 1 auto;min-width:0;scrollbar-width:none;padding:0 0 .2rem}
@@ -1080,11 +1189,11 @@
         /* Art fill area */
         .mpl-card-art{flex:1;display:flex;align-items:center;justify-content:center;min-height:0}
         .mpl-card-note{font-size:3.8rem;opacity:.28;line-height:1;user-select:none;filter:drop-shadow(0 2px 8px rgba(0,0,0,.6))}
-        /* When real album art is loaded the note glyph hides (via JS) and art becomes the whole card background */
-        .music-playlist-card.has-album-art{background:none}
-        .music-playlist-card.has-album-art .mpl-card-art{position:absolute;inset:0;z-index:0;border-radius:inherit}
+        /* When real album art is loaded the background-image is set directly on the card (JS),
+           top pills and footer float above it via z-index. */
         .music-playlist-card.has-album-art .mpl-card-top-pills{position:relative;z-index:3}
-        .music-playlist-card.has-album-art .mpl-card-footer{z-index:2;background:transparent}
+        .music-playlist-card.has-album-art .mpl-card-footer{position:relative;z-index:2;background:linear-gradient(to top,rgba(0,0,0,.72),transparent)}
+        .music-playlist-card.has-album-art .mpl-card-art{opacity:0}
         /* Bottom footer â€” gradient scrim for readability over cover art */
         .mpl-card-footer{position:relative;z-index:2;padding:.35rem .6rem 1.4rem;background:transparent}        .mpl-card-name{display:block;font-size:.84rem;font-weight:800;color:#fff;line-height:1.3;word-break:break-word;
           text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000,0 2px 6px rgba(0,0,0,.7);
@@ -1176,6 +1285,9 @@
         .peer-addr{font-size:.7rem;color:#5a7a9b;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:.08rem}
         .peer-badge{font-size:.62rem;background:#0d2340;color:#5a90cc;border-radius:999px;padding:.12rem .42rem;font-weight:700;flex-shrink:0;margin-left:auto}
         .peer-no-others{padding:.65rem .75rem;font-size:.78rem;color:#555;font-style:italic}
+        .peers-section-header{padding:.4rem .75rem .3rem;font-size:.65rem;text-transform:uppercase;letter-spacing:.07em;color:#6a7a9b;font-weight:700;border-top:1px solid #252545;border-bottom:1px solid #252545;margin-top:.2rem}
+        .peer-dot-dlna{background:#a066ff}
+        .peer-dlna{cursor:default}
         /* -- Radio sticky filter row ---------------------------------------- */
         #radio-filter-sticky{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;background:inherit}
         /* -- Local player bar ---------------------------------------------- */
@@ -1414,4 +1526,121 @@ body:not(.debug-mode) .vcb-reset-m3u-btn{display:none!important}
 /* Bars overlay on the hero */
 .music-grid:not(.list-view) .mtc-bars-overlay{
   position:absolute;bottom:.35rem;left:50%;transform:translateX(-50%);z-index:3
+}
+/* ================================================================
+   PHONE LAYOUT  (max-width: 480 px)
+   Fixes the broken header on small phones where the brand title
+   consumed half the viewport, utility icons stacked vertically,
+   and the Video / Music / Radio mode tabs fell off-screen.
+   ================================================================ */
+@media (max-width:480px) {
+
+  /* --- Header: single-column, tight padding -------------------- */
+  header {
+    grid-template-columns: 1fr;
+    gap: .4rem;
+    padding: .45rem .6rem .35rem;
+  }
+
+  /* --- Brand row: title left, icon-matrix right in a single row  */
+  #brand {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: .35rem;
+    flex-wrap: nowrap;
+    width: 100%;
+  }
+
+  /* Title stays left, shrinks gracefully */
+  #title-row {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+  }
+  h1 {
+    font-size: .92rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .instance-name-label {
+    display: none;
+  }
+
+  /* Icon matrix: row, right-aligned, all icons in one line */
+  #icon-matrix {
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0;
+    flex-shrink: 0;
+  }
+
+  /* Compact icon buttons: icon-only (no label), 36 px tap target */
+  .im-btn {
+    min-width: 36px;
+    padding: .28rem .3rem;
+    gap: .1rem;
+  }
+  .im-label {
+    display: none;
+  }
+  .im-icon {
+    width: 20px;
+    height: 20px;
+    font-size: .95rem;
+  }
+
+  /* --- Search wrap: full width, no left border divider ---------- */
+  #search-wrap {
+    padding-left: 0;
+    border-left: none;
+    width: 100%;
+  }
+
+  /* Mode tabs: stretch full width so all three tabs are visible   */
+  #mode-tabs {
+    display: flex;
+    width: 100%;
+  }
+  .mode-tab {
+    flex: 1;
+    justify-content: center;
+    padding: .32rem .3rem;
+    font-size: .82rem;
+    gap: .22rem;
+  }
+
+  /* Search input: full width */
+  #search {
+    max-width: none;
+    width: 100%;
+  }
+
+  /* Dropdown panels that open right-aligned might overflow left
+     on narrow screens — anchor them to the left instead */
+  .theme-picker-panel,
+  .sleep-popup-panel,
+  #settings-panel {
+    left: 0;
+    right: auto;
+    min-width: min(280px, 90vw);
+    max-width: 90vw;
+  }
+  /* But if they sit at the very right edge, prefer right-anchoring */
+  #sleep-popup-wrap .sleep-popup-panel,
+  #settings-wrap .settings-panel {
+    right: 0;
+    left: auto;
+  }
+
+  /* Peers dropdown is already right-anchored via the 760px rule;
+     keep that behaviour */
+
+  /* Indexing / syncing badges: slim down */
+  #indexing-badge, #syncing-badge {
+    font-size: .5rem;
+    padding: .08rem .28rem;
+  }
 }

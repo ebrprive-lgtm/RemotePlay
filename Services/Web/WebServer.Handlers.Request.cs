@@ -72,8 +72,12 @@ internal sealed partial class WebServer
         "/api/thumbnails/status",
         "/api/version",
         "/api/peers",
+        "/api/dlna/renderers",
+        "/api/next-in-folder",
         "/api/library-status",
         "/api/server-log",
+        // SSE long-poll: one persistent connection per client, not a repeated request.
+        "/api/events",
     };
 
     private static bool IsPollingPath(string path) => _pollingPaths.Contains(path);
@@ -197,6 +201,14 @@ internal sealed partial class WebServer
                 TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true, scan = GetLibraryScanStatus() }));
                 break;
 
+            case "/api/restart":
+                // Return the port the server will be listening on after restart,
+                // so the browser can redirect itself to the correct origin.
+                var restartNewPort = _config.Port;
+                TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true, newPort = restartNewPort }));
+                _ = Task.Run(() => { Thread.Sleep(500); _callbacks.RestartServer(); });
+                break;
+
             case "/api/rescan-music":
                 StartMusicIndexRefresh();
                 TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true }));
@@ -283,17 +295,20 @@ internal sealed partial class WebServer
             case "/api/queue/clear":
                 _callbacks.ClearQueue();
                 TrySendResponse(ctx, 200, "text/plain", "OK");
+                ScheduleSsePush();
                 break;
 
             case "/api/stop":
                 _callbacks.Stop();
                 Logger.Info("Playback", "Stopping Video on Server");
                 TrySendResponse(ctx, 200, "text/plain", "OK");
+                ScheduleSsePush();
                 break;
 
             case "/api/pause":
                 _callbacks.Pause();
                 TrySendResponse(ctx, 200, "text/plain", "OK");
+                ScheduleSsePush();
                 break;
 
             case "/api/thumb":
@@ -302,6 +317,11 @@ internal sealed partial class WebServer
 
             case "/api/status":
                 HandleStatus(ctx);
+                break;
+
+            // Long-lived Server-Sent Events stream: replaces 1 s polling on clients.
+            case "/api/events":
+                await HandleSseEventsAsync(ctx, _listenerCts.Token).ConfigureAwait(false);
                 break;
 
             case "/api/expert-mode":
@@ -317,6 +337,10 @@ internal sealed partial class WebServer
                     HandleApiSettingsGet(ctx);
                 else
                     HandleApiSettingsPost(ctx);
+                break;
+
+            case "/api/settings/test-port":
+                HandleApiSettingsTestPort(ctx);
                 break;
 
             case "/api/settings/test-path":
@@ -391,6 +415,11 @@ internal sealed partial class WebServer
                 HandleAdjacent(ctx);
                 break;
 
+            // -- Next video in the same folder (for the "Up Next" browser card) --------
+            case "/api/next-in-folder":
+                HandleNextInFolder(ctx);
+                break;
+
             case "/api/subtitles":
                 _callbacks.ToggleSubtitles();
                 TrySendResponse(ctx, 200, "text/plain", "OK");
@@ -411,6 +440,15 @@ internal sealed partial class WebServer
 
             case "/api/peers":
                 HandlePeers(ctx);
+                break;
+
+            // ── DLNA / UPnP renderer discovery ────────────────────────────────
+            case "/api/dlna/renderers":
+                HandleDlnaRenderers(ctx);
+                break;
+
+            case "/api/dlna/play":
+                HandleDlnaPlay(ctx);
                 break;
 
             case "/api/version":
@@ -541,12 +579,14 @@ internal sealed partial class WebServer
             case "/api/music/pause":
                 _callbacks.PauseMusic();
                 TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+                ScheduleSsePush();
                 break;
 
             case "/api/music/stop":
                 _callbacks.StopMusic();
                 Logger.Info("Playback", "Stopping Music on Server");
                 TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+                ScheduleSsePush();
                 break;
 
             case "/api/music/seek":
@@ -598,6 +638,7 @@ internal sealed partial class WebServer
                 _callbacks.RadioStop();
                 Logger.Info("Playback", "Stopping Radio on Server");
                 TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+                ScheduleSsePush();
                 break;
 
             case "/api/radio/volume":

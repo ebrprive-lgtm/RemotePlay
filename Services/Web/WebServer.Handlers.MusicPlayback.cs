@@ -44,6 +44,7 @@ internal sealed partial class WebServer
             _callbacks.RadioStop();
             _callbacks.PlayMusic(filePath, startPos);
             Logger.Info("Playback", $"Playing Music: '{Path.GetFileName(filePath)}' on Server" + (startPos > 0 ? $" at {startPos:F1}s" : ""));
+            ScheduleSsePush(delayMs: 300);
         }
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
     }

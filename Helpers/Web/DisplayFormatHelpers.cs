@@ -6,7 +6,7 @@ namespace RemotePlay;
 internal static class DisplayFormatHelpers
 {
     private static readonly Regex YearPattern =
-        new(@"\b(19|20)\d{2}\b", RegexOptions.Compiled);
+        new(@"(?<![-,]\s*)\b(19|20)\d{2}\b", RegexOptions.Compiled);
     private static readonly Regex QualityTagPattern =
         new(@"\b(1080p|720p|2160p|4k|x264|x265|h264|h265|web[- ]?dl|webrip|bluray|brrip|dvdrip|hdrip|aac|dts)\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);

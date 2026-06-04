@@ -89,45 +89,48 @@ internal sealed partial class WebServer
 
         var page = filteredAll.Skip(offset).Take(limit).ToArray();
 
-        // At root: show direct subdirectories of the music root.
-        // Inside a subfolder: no nested folders shown (flat file list).
+        // Show direct subfolders and folder-link .rplink entries in the current browse directory.
+        var browseDir = string.IsNullOrEmpty(folderParam) ? musicRoot : folderParam;
         object[] folders;
-        if (string.IsNullOrEmpty(folderParam))
+        try
         {
-            try
-            {
-                folders = Directory.Exists(musicRoot)
-                    ? Directory.GetDirectories(musicRoot)
-                        .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)))
-                        .OrderBy(d => string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-                        .ThenBy(d => d, _naturalComparer)
-                        .Select(d => (object)new { name = Path.GetFileName(d), folder = d, isAll = string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase) })
-                        .ToArray()
-                    : [];
-            }
-            catch
+            if (!Directory.Exists(browseDir))
             {
                 folders = [];
+            }
+            else
+            {
+                var regularFolders = Directory.GetDirectories(browseDir)
+                    .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)))
+                    .Select(d => (
+                        name: Path.GetFileName(d),
+                        folder: d,
+                        isAll: string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase),
+                        isLink: false,
+                        linkPath: string.Empty));
+
+                var linkedFolders = Directory.EnumerateFiles(browseDir, "*" + RplinkHelper.Extension, SearchOption.TopDirectoryOnly)
+                    .Where(RplinkHelper.IsTargetFolder)
+                    .Select(f => (rplinkPath: f, target: RplinkHelper.TryReadTarget(f)))
+                    .Where(x => !string.IsNullOrWhiteSpace(x.target) && Directory.Exists(x.target))
+                    .Select(x => (
+                        name: Path.GetFileNameWithoutExtension(x.rplinkPath),
+                        folder: x.target!,
+                        isAll: false,
+                        isLink: true,
+                        linkPath: WebPathHelpers.EncodePath(x.rplinkPath)));
+
+                folders = regularFolders
+                    .Concat(linkedFolders)
+                    .OrderBy(f => f.isAll ? 0 : 1)
+                    .ThenBy(f => f.name, _naturalComparer)
+                    .Select(f => (object)new { f.name, f.folder, f.isAll, f.isLink, f.linkPath })
+                    .ToArray();
             }
         }
-        else
+        catch
         {
-            // Show direct sub-directories of the requested folder
-            try
-            {
-                folders = Directory.Exists(folderParam)
-                    ? Directory.GetDirectories(folderParam)
-                        .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)))
-                        .OrderBy(d => string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase) ? 0 : 1)
-                        .ThenBy(d => d, _naturalComparer)
-                        .Select(d => (object)new { name = Path.GetFileName(d), folder = d, isAll = string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase) })
-                        .ToArray()
-                    : [];
-            }
-            catch
-            {
-                folders = [];
-            }
+            folders = [];
         }
 
         var files = page
@@ -433,10 +436,11 @@ internal sealed partial class WebServer
                 ? e.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0).ToArray()
                 : (string[])[],  (string[])[]);
         var genre        = root.TryGetProperty("genre",       out var gp)  ? gp.GetString()  ?? string.Empty : ExistOr("genre",       e => e.GetString() ?? string.Empty, string.Empty);
-        var yearFrom     = root.TryGetProperty("yearFrom",    out var yfp) && yfp.ValueKind == JsonValueKind.Number ? (int?)yfp.GetInt32() : ExistOr("yearFrom",    e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
-        var yearTo       = root.TryGetProperty("yearTo",      out var ytp) && ytp.ValueKind == JsonValueKind.Number ? (int?)ytp.GetInt32() : ExistOr("yearTo",      e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
-        var minDuration  = root.TryGetProperty("minDuration", out var mnp) && mnp.ValueKind == JsonValueKind.Number ? (int?)mnp.GetInt32() : ExistOr("minDuration", e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
-        var maxDuration  = root.TryGetProperty("maxDuration", out var mxp) && mxp.ValueKind == JsonValueKind.Number ? (int?)mxp.GetInt32() : ExistOr("maxDuration", e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
+        // For nullable number fields: key present + Number = use it; key present + Null = explicit clear (null); key absent = fall back to existing value.
+        var yearFrom    = root.TryGetProperty("yearFrom",    out var yfp) ? (yfp.ValueKind == JsonValueKind.Number ? (int?)yfp.GetInt32() : null) : ExistOr("yearFrom",    e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
+        var yearTo      = root.TryGetProperty("yearTo",      out var ytp) ? (ytp.ValueKind == JsonValueKind.Number ? (int?)ytp.GetInt32() : null) : ExistOr("yearTo",      e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
+        var minDuration = root.TryGetProperty("minDuration", out var mnp) ? (mnp.ValueKind == JsonValueKind.Number ? (int?)mnp.GetInt32() : null) : ExistOr("minDuration", e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
+        var maxDuration = root.TryGetProperty("maxDuration", out var mxp) ? (mxp.ValueKind == JsonValueKind.Number ? (int?)mxp.GetInt32() : null) : ExistOr("maxDuration", e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
         var autoPlay     = root.TryGetProperty("autoPlay",    out var app) ? app.GetBoolean() : ExistOr("autoPlay",    e => e.GetBoolean(), false);
 
         // If name changed, rename the file
@@ -678,15 +682,11 @@ internal sealed partial class WebServer
             orderedCandidates = OrderCandidates(indexCandidates).Concat(OrderCandidates(m3uCandidates));
         }
 
-        // Build a fast pathâ†’MusicFile lookup for in-memory genre/year checks (covers index candidates;
-        // M3U-sourced candidates will fall back to a tag read only if not found in the index).
-        Dictionary<string, MusicFile>? indexLookup = null;
-        if (needsTagFilter)
-        {
-            indexLookup = new Dictionary<string, MusicFile>(index.Length, StringComparer.OrdinalIgnoreCase);
-            foreach (var mf in index)
-                indexLookup.TryAdd(mf.FullPath, mf);
-        }
+        // Build a fast path→MusicFile lookup for in-memory genre/year/duration checks AND
+        // to allow BuildMusicFileObj to skip a TagLib read for tracks already in the index.
+        var indexLookup = new Dictionary<string, MusicFile>(index.Length, StringComparer.OrdinalIgnoreCase);
+        foreach (var mf in index)
+            indexLookup.TryAdd(mf.FullPath, mf);
 
         int need = mode == "all" ? int.MaxValue : Math.Max(1, count);
         var picked = new List<string>(Math.Min(need, 200));
@@ -695,28 +695,42 @@ internal sealed partial class WebServer
         {
             if (picked.Count >= need) break;
 
-            // Filter: use cached metadata from the index when available; otherwise one TagLib read covers all fields.
+            // Filter: use cached metadata from the index when available.
+            // Sentinel values for Duration:
+            //   -1 = not yet enriched (enrichment still running)  → pass: don't exclude during warm-up
+            //   -2 = enrichment attempted but TagLib failed       → exclude when any metadata filter is active
+            //   >=0 = real value
             if (needsTagFilter)
             {
                 string? trackGenre = null;
                 uint trackYear = 0;
                 int trackDuration = -1;
 
-                bool fromIndex = indexLookup!.TryGetValue(f, out var cachedMf);
-                bool indexHasAllNeeded =
-                    fromIndex &&
-                    (string.IsNullOrWhiteSpace(genre) || cachedMf!.Genre != null) &&
-                    (!yearFrom.HasValue && !yearTo.HasValue || cachedMf!.Year > 0) &&
-                    (!minDuration.HasValue && !maxDuration.HasValue || cachedMf!.Duration >= 0);
+                bool fromIndex = indexLookup.TryGetValue(f, out var cachedMf);
 
-                if (indexHasAllNeeded)
+                if (fromIndex)
                 {
                     trackGenre    = cachedMf!.Genre;
                     trackYear     = cachedMf.Year;
                     trackDuration = cachedMf.Duration;
+                    // Duration=-2: tags unreadable — exclude when any filter is active
+                    if (trackDuration == -2) continue;
+                    // Artist is not stored in the index; open the file once only when needed.
+                    if (!string.IsNullOrWhiteSpace(artist))
+                    {
+                        try
+                        {
+                            using var tagForArtist = TagLib.File.Create(f);
+                            var performers = tagForArtist.Tag.AlbumArtists.Length > 0 ? tagForArtist.Tag.AlbumArtists : tagForArtist.Tag.Performers;
+                            var ta = performers.Length > 0 ? performers[0] : null;
+                            if (ta == null || !ta.Contains(artist, StringComparison.OrdinalIgnoreCase)) continue;
+                        }
+                        catch { continue; } // unreadable — exclude
+                    }
                 }
                 else
                 {
+                    // Not in index (e.g. M3U-sourced track). One TagLib read covers all fields.
                     try
                     {
                         using var tagFile = TagLib.File.Create(f);
@@ -730,28 +744,29 @@ internal sealed partial class WebServer
                             if (ta == null || !ta.Contains(artist, StringComparison.OrdinalIgnoreCase)) continue;
                         }
                     }
-                    catch { }
+                    catch { continue; } // unreadable — exclude
                 }
 
+                // --- Genre filter ---
                 if (!string.IsNullOrWhiteSpace(genre) && (trackGenre == null || !trackGenre.Contains(genre, StringComparison.OrdinalIgnoreCase))) continue;
-                if ((yearFrom.HasValue || yearTo.HasValue) && trackYear == 0) continue;
-                if (yearFrom.HasValue && trackYear < (uint)yearFrom.Value) continue;
-                if (yearTo.HasValue   && trackYear > (uint)yearTo.Value)   continue;
-                if (trackDuration >= 0)
+
+                // --- Year filter ---
+                if (yearFrom.HasValue || yearTo.HasValue)
                 {
+                    // Not enriched or no year tag — cannot satisfy year range filter.
+                    if (trackDuration == -1 || trackYear == 0) continue;
+                    if (yearFrom.HasValue && trackYear < (uint)yearFrom.Value) continue;
+                    if (yearTo.HasValue   && trackYear > (uint)yearTo.Value)   continue;
+                }
+
+                // --- Duration filter ---
+                if (minDuration.HasValue || maxDuration.HasValue)
+                {
+                    // Not enriched — cannot verify duration; exclude.
+                    if (trackDuration == -1) continue;
+                    // trackDuration >= 0 here (Duration=-2 was already excluded above)
                     if (minDuration.HasValue && trackDuration < minDuration.Value) continue;
                     if (maxDuration.HasValue && trackDuration > maxDuration.Value) continue;
-                }
-                if (indexHasAllNeeded && !string.IsNullOrWhiteSpace(artist))
-                {
-                    try
-                    {
-                        using var tagForArtist = TagLib.File.Create(f);
-                        var performers = tagForArtist.Tag.AlbumArtists.Length > 0 ? tagForArtist.Tag.AlbumArtists : tagForArtist.Tag.Performers;
-                        var ta = performers.Length > 0 ? performers[0] : null;
-                        if (ta == null || !ta.Contains(artist, StringComparison.OrdinalIgnoreCase)) continue;
-                    }
-                    catch { }
                 }
             }
             picked.Add(f);
@@ -764,7 +779,8 @@ internal sealed partial class WebServer
         var tracks = picked.Select(f =>
         {
             var hint = trackAlbumHint.TryGetValue(f, out var h) ? h : null;
-            return (object)BuildMusicFileObj(new MusicFile(Path.GetFileNameWithoutExtension(f), f), hint);
+            var cached = indexLookup.TryGetValue(f, out var cm) ? cm : new MusicFile(Path.GetFileNameWithoutExtension(f), f);
+            return (object)BuildMusicFileObj(cached, hint);
         }).ToArray();
 
         // Write lastExpanded timestamp and lastCount back to the .rpDynamic file (best-effort)
@@ -834,12 +850,13 @@ internal sealed partial class WebServer
         string artist   = Path.GetFileName(Path.GetDirectoryName(dir)) ?? string.Empty;
         string tagTitle = string.Empty;
         int?   trackNum = null;
-        int?   durationSec = null;
-        string genre = string.Empty;
-        int?   year  = null;
+        int?   durationSec = f.Duration >= 0 ? f.Duration : (int?)null;
+        string genre = f.Genre ?? string.Empty;
+        int?   year  = f.Year > 0 ? (int)f.Year : (int?)null;
         bool   hasCover = false;
 
-        // Try to read embedded ID3/Vorbis/etc. tags
+        // Try to read embedded ID3/Vorbis/etc. tags for display fields.
+        // Duration/genre/year pre-populated from the index above; only overwritten if TagLib has a better value.
         try
         {
             using var tfile = TagLib.File.Create(f.FullPath);
@@ -856,7 +873,8 @@ internal sealed partial class WebServer
                 genre = tag.Genres[0];
             hasCover = tfile.Tag.Pictures.Length > 0
                     || FolderHasCoverImage(dir);
-            durationSec = (int)Math.Round(tfile.Properties.Duration.TotalSeconds);
+            if (durationSec == null)
+                durationSec = (int)Math.Round(tfile.Properties.Duration.TotalSeconds);
         }
         catch
         {

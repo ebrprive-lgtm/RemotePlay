@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Media.Imaging;
 
 namespace RemotePlay;
 
@@ -26,10 +27,19 @@ public partial class MainWindow
         if (!status.IsPlaying && !status.IsPaused)
             return;
 
+        // Always show art backdrop when music is playing in fullscreen,
+        // regardless of whether synced lyrics are available.
+        var trackPath = status.CurrentPath;
+        if (!string.IsNullOrEmpty(trackPath))
+            _ = LoadKaraokeArtBackdropAsync(trackPath);
+
         var artist = status.Artist ?? string.Empty;
         var title  = status.Title  ?? string.Empty;
         if (string.IsNullOrWhiteSpace(artist) && string.IsNullOrWhiteSpace(title))
+        {
+            _lyricsTimer.Start();
             return;
+        }
 
         var lines = TryLoadCachedSyncedLyrics(artist, title);
         if (lines is not null && lines.Length > 0)
@@ -50,6 +60,7 @@ public partial class MainWindow
         _lrcLines     = null;
         _lrcLineIndex = -1;
         HideKaraokeLines();
+        ClearKaraokeArtBackdrop();
     }
 
     private void HideKaraokeLines()
@@ -61,6 +72,76 @@ public partial class MainWindow
         KaraokePrevLine.Text          = string.Empty;
         KaraokeActiveLine.Text        = string.Empty;
         KaraokeNextLine.Text          = string.Empty;
+    }
+
+    private static readonly string[] _karaokeCoverNames =
+        ["cover.jpg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png", "album.jpg", "album.png"];
+
+    /// <summary>
+    /// Reads album art for <paramref name="filePath"/> on a background thread (embedded ID3 picture
+    /// first, then folder cover images) and sets it as the blurred backdrop of the karaoke overlay.
+    /// </summary>
+    private async Task LoadKaraokeArtBackdropAsync(string filePath)
+    {
+        byte[]? artBytes = await Task.Run(() =>
+        {
+            // 1. Embedded picture via TagLib
+            try
+            {
+                using var tfile = TagLib.File.Create(filePath);
+                var pic = tfile.Tag.Pictures.FirstOrDefault();
+                if (pic?.Data?.Data is { Length: > 0 } data)
+                    return data;
+            }
+            catch { /* fall through */ }
+
+            // 2. Folder cover image
+            var dir = Path.GetDirectoryName(filePath) ?? string.Empty;
+            foreach (var name in _karaokeCoverNames)
+            {
+                var candidate = Path.Combine(dir, name);
+                if (!File.Exists(candidate)) continue;
+                try { return File.ReadAllBytes(candidate); }
+                catch { }
+            }
+
+            return null;
+        }).ConfigureAwait(false);
+
+        await Dispatcher.InvokeAsync(() =>
+        {
+            if (artBytes is not { Length: > 0 })
+            {
+                ClearKaraokeArtBackdrop();
+                return;
+            }
+
+            try
+            {
+                var bitmap = new BitmapImage();
+                bitmap.BeginInit();
+                bitmap.StreamSource = new MemoryStream(artBytes);
+                bitmap.CacheOption  = BitmapCacheOption.OnLoad;
+                bitmap.EndInit();
+                bitmap.Freeze();
+
+                KaraokeArtBackdrop.Source     = bitmap;
+                KaraokeArtBackdrop.Visibility = Visibility.Visible;
+                KaraokeArtScrim.Visibility    = Visibility.Visible;
+            }
+            catch
+            {
+                ClearKaraokeArtBackdrop();
+            }
+        });
+    }
+
+    private void ClearKaraokeArtBackdrop()
+    {
+        if (FindName("KaraokeArtBackdrop") is not System.Windows.Controls.Image img) return;
+        img.Source                = null;
+        img.Visibility            = Visibility.Collapsed;
+        KaraokeArtScrim.Visibility = Visibility.Collapsed;
     }
 
     /// <summary>

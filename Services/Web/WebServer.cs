@@ -41,6 +41,7 @@ internal sealed partial class WebServer
         new(() => LoadWebAsset("styles.css"));
     private static readonly string[] _appJsModules =
     [
+        "app-sse.js",
         "app-core.js",
         "app-diagnostics.js",
         "app-playback.js",
@@ -66,6 +67,7 @@ internal sealed partial class WebServer
     private AppConfig _config;
     private readonly WebServerCallbacks _callbacks;
     private readonly PresenceBroadcaster? _broadcaster;
+    private readonly RemotePlay.Services.Discovery.DlnaDiscovery? _dlna;
     private readonly PlaybackHistory _playbackHistory;
     // Per-IP histories: keyed on sanitized client IP string, lazy-created on first request.
     private readonly ConcurrentDictionary<string, PlaybackHistory> _perIpHistories = new(StringComparer.OrdinalIgnoreCase);
@@ -150,13 +152,14 @@ internal sealed partial class WebServer
     // â”€â”€ Graceful-shutdown token â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private CancellationTokenSource _listenerCts = new();
 
-    public WebServer(AppConfig config, WebServerCallbacks callbacks, PresenceBroadcaster? broadcaster = null, PlaybackHistory? playbackHistory = null, RemotePlay.Services.AppUpdater? appUpdater = null)
+    public WebServer(AppConfig config, WebServerCallbacks callbacks, PresenceBroadcaster? broadcaster = null, PlaybackHistory? playbackHistory = null, RemotePlay.Services.AppUpdater? appUpdater = null, RemotePlay.Services.Discovery.DlnaDiscovery? dlna = null)
     {
         _config = config;
         _expertMode = config.ExpertMode;
         _debugMode  = config.DebugMode;
         _callbacks = callbacks;
         _broadcaster = broadcaster;
+        _dlna = dlna;
         _playbackHistory = playbackHistory ?? new PlaybackHistory();
         _videoExtensions = BuildExtensionSet(config.EffectiveVideoFileExtensions);
         _musicExtensions = BuildExtensionSet(config.EffectiveMusicFileExtensions);
@@ -686,8 +689,23 @@ internal sealed partial class WebServer
     /// request quota for the current sliding window. Always returns <c>false</c> when
     /// <see cref="AppConfig.MaxRequestsPerIpPerWindow"/> is zero (rate limiting disabled).
     /// </summary>
+    private static bool IsLocalAddress(string clientIp)
+    {
+        if (!IPAddress.TryParse(clientIp, out var addr))
+            return false;
+        if (IPAddress.IsLoopback(addr))
+            return true;
+        var bytes = addr.MapToIPv4().GetAddressBytes();
+        return bytes[0] == 10
+            || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+            || (bytes[0] == 192 && bytes[1] == 168);
+    }
+
     private bool IsRateLimited(string clientIp)
     {
+        if (IsLocalAddress(clientIp))
+            return false;
+
         var limit = _config.MaxRequestsPerIpPerWindow;
         if (limit <= 0)
             return false;
@@ -797,6 +815,7 @@ internal sealed partial class WebServer
     public void Stop()
     {
         try { _listenerCts.Cancel(); } catch { }
+        try { DisposeAllSseClients(); } catch { }
         try { _listenerCts.Dispose(); } catch { }
         try { CancelThumbnailQueue(); } catch { }
         try { _thumbnailQueueCancellation?.Dispose(); } catch { }

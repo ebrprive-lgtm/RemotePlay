@@ -120,16 +120,19 @@ async function refreshMusicLibraryStatus() {
 // Show or hide all music-domain chrome that only makes sense when a valid music library exists.
 function _applyMusicLibraryAvailable(available) {
   const mcb = document.getElementById('music-command-bar');
+  const navRow = document.getElementById('browse-nav-row');
   const mStrip = document.getElementById('music-recent-strip');
   const mClear = document.getElementById('music-recent-clear');
   const mPinned = document.getElementById('music-pinned-strip');
   if (available) {
     if (mcb) { mcb.style.display = 'flex'; if (typeof _syncMusicCommandBar === 'function') _syncMusicCommandBar(); }
+    if (navRow) navRow.style.display = '';
     if (mStrip) mStrip.style.display = '';
     if (mClear) mClear.style.display = mStrip && mStrip.children.length ? '' : 'none';
     if (mPinned) mPinned.style.display = '';
   } else {
     if (mcb) mcb.style.display = 'none';
+    if (navRow) navRow.style.display = 'none';
     if (mStrip) mStrip.style.display = 'none';
     if (mClear) mClear.style.display = 'none';
     if (mPinned) mPinned.style.display = 'none';

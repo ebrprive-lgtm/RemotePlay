@@ -41,6 +41,49 @@ public sealed class DisplayFormatHelpersTests
     }
 
     [Fact]
+    public void CleanDisplayTitle_YearInParensStripped()
+    {
+        var result = DisplayFormatHelpers.CleanDisplayTitle("Blade Runner (1982)");
+        Assert.DoesNotContain("1982", result);
+        Assert.Contains("Blade Runner", result);
+    }
+
+    [Fact]
+    public void CleanDisplayTitle_YearAfterDashPreserved()
+    {
+        // "1984 - 2010, The year we made contact" — the "2010" is part of the title
+        var result = DisplayFormatHelpers.CleanDisplayTitle("1984 - 2010, The year we made contact");
+        Assert.Contains("2010", result);
+    }
+
+    [Fact]
+    public void CleanDisplayTitle_YearAfterCommaPreserved()
+    {
+        // Year after a comma is also part of a title subtitle
+        var result = DisplayFormatHelpers.CleanDisplayTitle("Title, 2001 A Space Odyssey");
+        Assert.Contains("2001", result);
+    }
+
+    [Fact]
+    public void CleanDisplayTitle_StandaloneYearAtEndStripped()
+    {
+        // A year at the end with no dash/comma before it is metadata noise
+        var result = DisplayFormatHelpers.CleanDisplayTitle("The Matrix 1999");
+        Assert.DoesNotContain("1999", result);
+        Assert.Contains("Matrix", result);
+    }
+
+    [Fact]
+    public void CleanDisplayTitle_TitleWithYearRangeInFilename()
+    {
+        // Full reproduction of the reported bug
+        var result = DisplayFormatHelpers.CleanDisplayTitle("1984 - 2010, The year we made contact");
+        Assert.DoesNotContain("1984", result); // first year stripped (not preceded by dash/comma)
+        Assert.Contains("2010", result);        // second year preserved (preceded by " - ")
+        Assert.Contains("The year we made contact", result);
+    }
+
+    [Fact]
     public void CleanDisplayTitle_QualityTagStripped()
     {
         var result = DisplayFormatHelpers.CleanDisplayTitle("Movie.1080p.BluRay");

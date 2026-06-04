@@ -63,6 +63,7 @@ internal sealed partial class WebServer
         _callbacks.RadioPlay(url, name);
         Logger.Info("Playback", $"Playing Radio: '{name}' on Server");
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+        ScheduleSsePush(delayMs: 300);
     }
 
     private void HandleRadioVolume(HttpListenerContext ctx)

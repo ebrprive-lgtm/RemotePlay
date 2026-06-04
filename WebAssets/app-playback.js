@@ -43,8 +43,18 @@ async function startFromBeginning() {
   await pollStatus();
 }
 
+// Updates the CSS gradient fill on the seek bar to reflect current position.
+function updateSeekFill(el) {
+  const max = parseFloat(el.max) || 1;
+  const val = parseFloat(el.value) || 0;
+  const pct = Math.max(0, Math.min(100, (val / max) * 100)).toFixed(3) + '%';
+  el.style.setProperty('--seek-pct', pct);
+}
+
 async function onSeekDrag() {
   seekDragging = true;
+  const el = document.getElementById('progress');
+  if (el) updateSeekFill(el);
 }
 async function onSeekCommit() {
   const pos = parseFloat(document.getElementById('progress').value);
@@ -380,6 +390,9 @@ function updateTrackControls(s) {
   _syncEqWrapVisibility();
   document.getElementById('options-card').style.display =
     showAny || s.isPlaying ? 'flex' : 'none';
+  updateChapterMarkers(s);
+  if (s.isPlaying) updateUpNext(s);
+  else _clearUpNext();
 }
 function renderTrackSelect(select, tracks, currentId) {
   const signature = JSON.stringify((tracks || []).map((t) => [t.id, t.name]));
@@ -1060,7 +1073,7 @@ function renderPinnedStrip() {
       const icon = p.isDynamic ? '\uD83C\uDFB2' : '\uD83D\uDCC1';
       return (
         '<div class="vr-card pinned-card" role="button" tabindex="0" title="' + esc(p.name) + '"' +
-        ' data-music-pin-path="' + esc(p.path) + '"' + dynAttr + nameAttr +
+        ' data-pin-path="' + esc(p.path) + '"' + dynAttr + nameAttr +
         ' oncontextmenu="_ctxShow(event,\'music-pinned\',{dir:\'' + esc(p.path) + '\',name:\'' + esc(p.name) + '\'})"' +
         ' onkeydown="activateKeyboardClick(event,this)">' +
         '<div class="vr-thumb vr-thumb-placeholder">' + icon + '</div>' +
@@ -1068,7 +1081,7 @@ function renderPinnedStrip() {
         (parts.parent ? '<span class="pinned-parent">' + esc(parts.parent) + '</span>' : '') +
         '<span class="pinned-name">' + esc(parts.name) + '</span>' +
         '</div>' +
-        '<button class="pinned-card-remove" title="Unpin" data-music-unpin-path="' + esc(p.path) + '">\u00D7</button>' +
+        '<button class="pinned-card-remove" title="Unpin" data-unpin-path="' + esc(p.path) + '">\u00D7</button>' +
         '</div>'
       );
     }).join('');
@@ -1197,5 +1210,185 @@ function _updateMusicPinButton() {
   btn.title = pinned ? 'Unpin this folder' : 'Pin this folder';
   btn.innerHTML = pinned ? '📌 Pinned' : '📁 Pin folder';
   btn.disabled = !dir;
+}
+
+// ── Chapter markers on the seek bar ──────────────────────────────────────────
+
+/**
+ * Renders tick marks on #chapter-markers that overlay the #progress range input.
+ * Each tick is positioned as a percentage of total duration.
+ * Clicking a tick jumps to that chapter.
+ */
+function updateChapterMarkers(s) {
+  const container = document.getElementById('chapter-markers');
+  if (!container) return;
+
+  const chapters = Array.isArray(s.chapters) ? s.chapters : [];
+  const duration = Number(s.duration) || 0;
+
+  // Skip chapter 0/first (that's the start — no marker needed there)
+  const markable = duration > 0
+    ? chapters.filter((c) => c.startSeconds > 0)
+    : [];
+
+  const currentChapter = s.currentChapter ?? -1;
+  const signature = markable.map((c) => `${c.id}:${c.startSeconds}`).join(',') + '|' + currentChapter;
+  if (container.dataset.signature === signature) return;
+  container.dataset.signature = signature;
+
+  container.innerHTML = markable
+    .map((c) => {
+      const pct = ((c.startSeconds / duration) * 100).toFixed(3);
+      const isActive = c.id === currentChapter;
+      return (
+        `<span class="chapter-pin${isActive ? ' active' : ''}" ` +
+        `style="left:${pct}%" ` +
+        `data-chapter-id="${c.id}" ` +
+        `data-start-seconds="${c.startSeconds}" ` +
+        `data-label="${esc(c.name || 'Chapter ' + c.id)}" ` +
+        `aria-label="Jump to ${esc(c.name || 'Chapter ' + c.id)}" ` +
+        `role="button" tabindex="0"></span>`
+      );
+    })
+    .join('');
+}
+
+// Wire up click delegation on chapter-markers (runs once on first call)
+(function _initChapterMarkerClicks() {
+  function _jumpToPin(pin) {
+    const id = parseInt(pin.dataset.chapterId, 10);
+    if (Number.isNaN(id)) return;
+    const startSec = parseFloat(pin.dataset.startSeconds);
+    const progress = document.getElementById('progress');
+    if (progress && !Number.isNaN(startSec)) {
+      progress.value = startSec;
+      updateSeekFill(progress);
+    }
+    // Immediately update active class without waiting for the next poll
+    const container = document.getElementById('chapter-markers');
+    if (container) {
+      container.querySelectorAll('.chapter-pin').forEach((p) =>
+        p.classList.toggle('active', p === pin)
+      );
+      // Invalidate signature so the next poll re-renders with server-confirmed state
+      delete container.dataset.signature;
+    }
+    haptic(10);
+    api('/api/chapter?id=' + id);
+  }
+  document.addEventListener('click', (e) => {
+    const pin = e.target.closest('.chapter-pin[data-chapter-id]');
+    if (pin) _jumpToPin(pin);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const pin = e.target.closest('.chapter-pin[data-chapter-id]');
+    if (!pin) return;
+    e.preventDefault();
+    _jumpToPin(pin);
+  });
+})();
+
+// ── Up Next card ─────────────────────────────────────────────────────────────
+
+let _upNextPath = null;           // encoded path of next file
+let _upNextTitle = null;          // display title
+let _upNextCountdownSec = 0;      // seconds remaining before auto-play
+let _upNextTimer = null;          // setInterval handle
+let _upNextDismissedPath = null;  // encoded path last dismissed (suppress re-show)
+let _upNextFetchedForPath = null; // last filePath we fetched next-in-folder for
+
+/** Called from updateTrackControls when s.isPlaying is true. */
+async function updateUpNext(s) {
+  const duration = Number(s.duration) || 0;
+  const position = Number(s.position) || 0;
+  const filePath = s.filePath || '';
+
+  // Only show for videos longer than 60 s, and in the last 30 s
+  const shouldShow = duration > 60 && position >= duration - 30 && filePath;
+
+  if (!shouldShow) {
+    _clearUpNext();
+    return;
+  }
+
+  // Already dismissed for this file
+  if (_upNextDismissedPath && _upNextDismissedPath === filePath) return;
+
+  // Already showing
+  const card = document.getElementById('up-next-card');
+  if (card && card.classList.contains('visible')) return;
+
+  // Only fetch if the file changed
+  if (_upNextFetchedForPath === filePath) return;
+  _upNextFetchedForPath = filePath;
+
+  try {
+    const res = await fetch('/api/next-in-folder?path=' + encodeURIComponent(filePath));
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.found || !data.path) return;
+
+    _upNextPath = data.path;
+    _upNextTitle = data.title || 'Next video';
+    _showUpNext();
+  } catch { /* network error — silently ignore */ }
+}
+
+function _showUpNext() {
+  const card = document.getElementById('up-next-card');
+  if (!card) return;
+  const titleEl = document.getElementById('up-next-title');
+  const countdownEl = document.getElementById('up-next-countdown');
+  if (titleEl) titleEl.textContent = _upNextTitle || '';
+  _upNextCountdownSec = 10;
+  if (countdownEl) countdownEl.textContent = `Auto-playing in ${_upNextCountdownSec}s`;
+  card.classList.add('visible');
+
+  _upNextTimer = setInterval(() => {
+    _upNextCountdownSec -= 1;
+    if (countdownEl) countdownEl.textContent = `Auto-playing in ${_upNextCountdownSec}s`;
+    if (_upNextCountdownSec <= 0) {
+      clearInterval(_upNextTimer);
+      _upNextTimer = null;
+      _triggerUpNextPlay();
+    }
+  }, 1000);
+}
+
+/** User pressed "Play Now" */
+async function upNextPlayNow() {
+  clearInterval(_upNextTimer);
+  _upNextTimer = null;
+  haptic(12);
+  await _triggerUpNextPlay();
+}
+
+/** User pressed "Dismiss" */
+function upNextDismiss() {
+  _upNextDismissedPath = _upNextFetchedForPath;
+  _clearUpNext();
+  setStatus('Up Next dismissed.');
+}
+
+async function _triggerUpNextPlay() {
+  if (!_upNextPath) return;
+  const path = _upNextPath;
+  _clearUpNext();
+  await api('/api/play?path=' + encodeURIComponent(path));
+  if (typeof pollStatus === 'function') await pollStatus();
+}
+
+function _clearUpNext() {
+  clearInterval(_upNextTimer);
+  _upNextTimer = null;
+  _upNextPath = null;
+  _upNextTitle = null;
+  _upNextCountdownSec = 0;
+  _upNextFetchedForPath = null;
+  const card = document.getElementById('up-next-card');
+  if (card) card.classList.remove('visible');
+  const countdownEl = document.getElementById('up-next-countdown');
+  if (countdownEl) countdownEl.textContent = '';
 }
 

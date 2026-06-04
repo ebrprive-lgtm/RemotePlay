@@ -421,6 +421,15 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     ro.observe(hdr);
   }
+  // Keep --nav-row-h in sync so the video list-view column header sticks below the pinned strip.
+  const navRow = document.getElementById('browse-nav-row');
+  if (navRow && typeof ResizeObserver !== 'undefined') {
+    const ro2 = new ResizeObserver(entries => {
+      const h = entries[0].borderBoxSize?.[0]?.blockSize ?? entries[0].contentRect.height;
+      document.documentElement.style.setProperty('--nav-row-h', h + 'px');
+    });
+    ro2.observe(navRow);
+  }
 });
 function setTheme(theme, save = true) {
   document.body.classList.remove(
@@ -645,7 +654,8 @@ async function pollStatus() {
     updateStopBtn(s.isPlaying, hasQueue);
     updateAdjacentButtons(s);
     if (s.isPlaying || hasQueue) {
-      setPlayerBarVisible(true);
+      if (typeof currentMode === 'undefined' || currentMode === 'video')
+        setPlayerBarVisible(true);
     }
     if (s.isPlaying) {
       if (s.filePath && s.filePath !== playingPath) setPlayerPoster(s.filePath);
@@ -725,8 +735,13 @@ async function pollStatus() {
       if (s.duration > 0) {
         progress.max = s.duration;
         if (!seekDragging) progress.value = s.position;
+        updateSeekFill(progress);
+        document.getElementById('time-label').textContent = fmt(s.position) + ' / ' + fmt(s.duration);
+      } else if (!s.isPlaying) {
+        // Not playing and no duration — show zeroes
+        document.getElementById('time-label').textContent = fmt(0) + ' / ' + fmt(0);
       }
-      document.getElementById('time-label').textContent = fmt(s.position) + ' / ' + fmt(s.duration);
+      // If isPlaying but duration still 0 (VLC hasn't reported length yet), keep whatever was shown
       if (s.duration > 0) updateCardProgress(s.filePath, s.position, s.duration);
       currentPlaybackSpeed = Math.max(0.5, Math.min(2, Number(s.playbackSpeed) || 1));
       syncSpeedChips(currentPlaybackSpeed);
@@ -734,7 +749,7 @@ async function pollStatus() {
       document.getElementById('player-meta').textContent = buildPlayerMeta(s, volume, boostAmount);
       requestWakeLock();
       if (isPhoneRemoteOnly) applyPhonePlaybackState(true);
-      else applyDesktopDockedLayout(true);
+      else if (typeof currentMode === 'undefined' || currentMode === 'video') applyDesktopDockedLayout(true);
     } else if (isPhoneRemoteOnly) {
       releaseWakeLock();
       updateResumePrompt(null);
@@ -762,11 +777,13 @@ async function pollStatus() {
       document.getElementById('player-meta').textContent = hasQueue
         ? 'Next up: ' + s.queue.length + ' queued video(s)'
         : '';
-      if (hasQueue) {
-        document.body.classList.add('desktop-player-docked');
-      } else {
-        applyDesktopDockedLayout(false);
-        setPlayerBarVisible(false);
+      if (typeof currentMode === 'undefined' || currentMode === 'video') {
+        if (hasQueue) {
+          document.body.classList.add('desktop-player-docked');
+        } else {
+          applyDesktopDockedLayout(false);
+          setPlayerBarVisible(false);
+        }
       }
     }
   } catch (e) {

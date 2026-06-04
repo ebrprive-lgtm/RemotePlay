@@ -853,6 +853,174 @@ public sealed class MusicDynamicFolderTests : IDisposable
         Assert.DoesNotContain("blueslive", trackNames);
     }
 
+    [Fact]
+    public async Task Expand_YearFromFilter_ExcludesTracksOutsideRange()
+    {
+        var dir = Path.Combine(_tempRoot, "YearFrom");
+        Directory.CreateDirectory(dir);
+        var oldPath = Path.Combine(dir, "old.mp3");
+        var newPath = Path.Combine(dir, "new.mp3");
+        File.WriteAllText(oldPath, string.Empty);
+        File.WriteAllText(newPath, string.Empty);
+
+        InjectMusicIndex([
+            MakeMusicFile("old", oldPath, year: 1990u, duration: 200),
+            MakeMusicFile("new", newPath, year: 2010u, duration: 200),
+        ]);
+
+        var filePath = CreateRpDynamicFile("YearFromFilter",
+            """{"name":"YearFromFilter","count":20,"sort":"random","mode":"all","recursive":true,"yearFrom":2000}""");
+
+        var response = await _client.GetAsync($"/api/music/dynamic/expand?path={Q(filePath)}");
+        var doc = await ParseJsonAsync(response);
+
+        var trackNames = doc.RootElement.GetProperty("tracks").EnumerateArray()
+            .Select(t => t.GetProperty("name").GetString())
+            .ToList();
+        Assert.Contains("new", trackNames);
+        Assert.DoesNotContain("old", trackNames);
+    }
+
+    [Fact]
+    public async Task Expand_YearToFilter_ExcludesTracksOutsideRange()
+    {
+        var dir = Path.Combine(_tempRoot, "YearTo");
+        Directory.CreateDirectory(dir);
+        var oldPath = Path.Combine(dir, "old.mp3");
+        var newPath = Path.Combine(dir, "new.mp3");
+        File.WriteAllText(oldPath, string.Empty);
+        File.WriteAllText(newPath, string.Empty);
+
+        InjectMusicIndex([
+            MakeMusicFile("old", oldPath, year: 1990u, duration: 200),
+            MakeMusicFile("new", newPath, year: 2010u, duration: 200),
+        ]);
+
+        var filePath = CreateRpDynamicFile("YearToFilter",
+            """{"name":"YearToFilter","count":20,"sort":"random","mode":"all","recursive":true,"yearTo":1999}""");
+
+        var response = await _client.GetAsync($"/api/music/dynamic/expand?path={Q(filePath)}");
+        var doc = await ParseJsonAsync(response);
+
+        var trackNames = doc.RootElement.GetProperty("tracks").EnumerateArray()
+            .Select(t => t.GetProperty("name").GetString())
+            .ToList();
+        Assert.Contains("old", trackNames);
+        Assert.DoesNotContain("new", trackNames);
+    }
+
+    [Fact]
+    public async Task Expand_YearFilter_ExcludesUnenrichedTracks()
+    {
+        var dir = Path.Combine(_tempRoot, "YearUnenriched");
+        Directory.CreateDirectory(dir);
+        var unenrichedPath = Path.Combine(dir, "unenriched.mp3");
+        var enrichedPath   = Path.Combine(dir, "enriched.mp3");
+        File.WriteAllText(unenrichedPath, string.Empty);
+        File.WriteAllText(enrichedPath,   string.Empty);
+
+        InjectMusicIndex([
+            MakeMusicFile("unenriched", unenrichedPath, year: 0u,    duration: -1),
+            MakeMusicFile("enriched",   enrichedPath,   year: 2005u,  duration: 200),
+        ]);
+
+        var filePath = CreateRpDynamicFile("YearUnenrichedFilter",
+            """{"name":"YearUnenrichedFilter","count":20,"sort":"random","mode":"all","recursive":true,"yearFrom":2000,"yearTo":2010}""");
+
+        var response = await _client.GetAsync($"/api/music/dynamic/expand?path={Q(filePath)}");
+        var doc = await ParseJsonAsync(response);
+
+        var trackNames = doc.RootElement.GetProperty("tracks").EnumerateArray()
+            .Select(t => t.GetProperty("name").GetString())
+            .ToList();
+        Assert.Contains("enriched", trackNames);
+        Assert.DoesNotContain("unenriched", trackNames);
+    }
+
+    [Fact]
+    public async Task Expand_MinDurationFilter_ExcludesShortTracks()
+    {
+        var dir = Path.Combine(_tempRoot, "MinDur");
+        Directory.CreateDirectory(dir);
+        var shortPath = Path.Combine(dir, "short.mp3");
+        var longPath  = Path.Combine(dir, "long.mp3");
+        File.WriteAllText(shortPath, string.Empty);
+        File.WriteAllText(longPath,  string.Empty);
+
+        InjectMusicIndex([
+            MakeMusicFile("short", shortPath, duration: 60),
+            MakeMusicFile("long",  longPath,  duration: 300),
+        ]);
+
+        var filePath = CreateRpDynamicFile("MinDurFilter",
+            """{"name":"MinDurFilter","count":20,"sort":"random","mode":"all","recursive":true,"minDuration":120}""");
+
+        var response = await _client.GetAsync($"/api/music/dynamic/expand?path={Q(filePath)}");
+        var doc = await ParseJsonAsync(response);
+
+        var trackNames = doc.RootElement.GetProperty("tracks").EnumerateArray()
+            .Select(t => t.GetProperty("name").GetString())
+            .ToList();
+        Assert.Contains("long", trackNames);
+        Assert.DoesNotContain("short", trackNames);
+    }
+
+    [Fact]
+    public async Task Expand_MaxDurationFilter_ExcludesLongTracks()
+    {
+        var dir = Path.Combine(_tempRoot, "MaxDur");
+        Directory.CreateDirectory(dir);
+        var shortPath = Path.Combine(dir, "short.mp3");
+        var longPath  = Path.Combine(dir, "long.mp3");
+        File.WriteAllText(shortPath, string.Empty);
+        File.WriteAllText(longPath,  string.Empty);
+
+        InjectMusicIndex([
+            MakeMusicFile("short", shortPath, duration: 60),
+            MakeMusicFile("long",  longPath,  duration: 300),
+        ]);
+
+        var filePath = CreateRpDynamicFile("MaxDurFilter",
+            """{"name":"MaxDurFilter","count":20,"sort":"random","mode":"all","recursive":true,"maxDuration":120}""");
+
+        var response = await _client.GetAsync($"/api/music/dynamic/expand?path={Q(filePath)}");
+        var doc = await ParseJsonAsync(response);
+
+        var trackNames = doc.RootElement.GetProperty("tracks").EnumerateArray()
+            .Select(t => t.GetProperty("name").GetString())
+            .ToList();
+        Assert.Contains("short", trackNames);
+        Assert.DoesNotContain("long", trackNames);
+    }
+
+    [Fact]
+    public async Task Expand_DurationFilter_ExcludesUnenrichedTracks()
+    {
+        var dir = Path.Combine(_tempRoot, "DurUnenriched");
+        Directory.CreateDirectory(dir);
+        var unenrichedPath = Path.Combine(dir, "unenriched.mp3");
+        var enrichedPath   = Path.Combine(dir, "enriched.mp3");
+        File.WriteAllText(unenrichedPath, string.Empty);
+        File.WriteAllText(enrichedPath,   string.Empty);
+
+        InjectMusicIndex([
+            MakeMusicFile("unenriched", unenrichedPath, duration: -1),
+            MakeMusicFile("enriched",   enrichedPath,   duration: 200),
+        ]);
+
+        var filePath = CreateRpDynamicFile("DurUnenrichedFilter",
+            """{"name":"DurUnenrichedFilter","count":20,"sort":"random","mode":"all","recursive":true,"minDuration":100}""");
+
+        var response = await _client.GetAsync($"/api/music/dynamic/expand?path={Q(filePath)}");
+        var doc = await ParseJsonAsync(response);
+
+        var trackNames = doc.RootElement.GetProperty("tracks").EnumerateArray()
+            .Select(t => t.GetProperty("name").GetString())
+            .ToList();
+        Assert.Contains("enriched", trackNames);
+        Assert.DoesNotContain("unenriched", trackNames);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// <summary>Encodes a filesystem path as URL-safe Base64 to pass as a query-string value.</summary>
@@ -1018,5 +1186,7 @@ public sealed class MusicDynamicFolderTests : IDisposable
         SaveExpertMode        = _ => { },
         SaveDebugMode         = _ => { },
         SaveSettings          = _ => { },
+        RestartApp            = () => { },
+                RestartServer         = () => { },
     };
 }

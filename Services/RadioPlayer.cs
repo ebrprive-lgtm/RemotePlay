@@ -24,6 +24,9 @@ internal sealed class RadioPlayer : IDisposable
     private int _eqPreset = -1;
     private DateTime _playStartUtc = DateTime.MinValue;
     private DateTime _lastSampleUtc = DateTime.MinValue; // updated when audio data flows
+    private int  _reconnectAttempts = 0;
+    private const int MaxReconnectAttempts = 5;
+    private const int ReconnectDelayMs     = 4_000;
 
     // Reuse the same device enumeration helpers as MusicPlayer.
     public static IReadOnlyList<(int DeviceNumber, string Name)> EnumerateDevices() =>
@@ -42,7 +45,9 @@ internal sealed class RadioPlayer : IDisposable
 
     // ── Playback ─────────────────────────────────────────────────────────────
 
-    public void Play(string streamUrl, string stationName)
+    public void Play(string streamUrl, string stationName) => Play(streamUrl, stationName, isReconnect: false);
+
+    private void Play(string streamUrl, string stationName, bool isReconnect)
     {
         // Cancel any in-flight connection attempt and stop any current stream
         CancellationTokenSource cts;
@@ -51,14 +56,15 @@ internal sealed class RadioPlayer : IDisposable
             _connectCts?.Cancel();
             _connectCts?.Dispose();
             _connectCts = cts = new CancellationTokenSource();
-            StopLocked();
-            _lastError     = string.Empty;
-            _streamTitle   = string.Empty;
-            _playStartUtc  = DateTime.UtcNow;
-            _lastSampleUtc = DateTime.UtcNow;
-            _currentUrl    = streamUrl;
-            _currentName   = stationName;
-            _isPlaying     = false; // will flip to true once stream opens
+            if (!isReconnect) StopLocked();
+            _lastError          = string.Empty;
+            _streamTitle        = string.Empty;
+            _playStartUtc       = DateTime.UtcNow;
+            _lastSampleUtc      = DateTime.UtcNow;
+            _currentUrl         = streamUrl;
+            _currentName        = stationName;
+            _isPlaying          = false; // will flip to true once stream opens
+            if (!isReconnect) _reconnectAttempts = 0;
         }
 
         // Open the stream on a background thread — MediaFoundationReader can block for
@@ -114,6 +120,7 @@ internal sealed class RadioPlayer : IDisposable
                         _isPlaying    = false;
                         _playStartUtc = DateTime.MinValue;
                         DisposePlaybackLocked();
+                        Logger.Error("Radio", $"Failed to open stream '{stationName}': {ex.Message}");
                     }
                 }
             }
@@ -218,15 +225,55 @@ internal sealed class RadioPlayer : IDisposable
 
     private void OnPlaybackStopped(object? sender, StoppedEventArgs e)
     {
+        string urlToReconnect;
+        string nameToReconnect;
+        int attempt;
+
         lock (_lock)
         {
-            if (e.Exception != null) _lastError = e.Exception.Message;
+            if (e.Exception != null)
+            {
+                _lastError = e.Exception.Message;
+                Logger.Error("Radio", $"Stream error on '{_currentName}': {e.Exception.Message}");
+            }
+            else
+            {
+                Logger.Detail("Radio", $"Stream stopped for '{_currentName}' (no exception).");
+            }
+
+            urlToReconnect  = _currentUrl;
+            nameToReconnect = _currentName;
+            attempt         = ++_reconnectAttempts;
+
             _isPlaying     = false;
-            _currentUrl    = string.Empty;
             _playStartUtc  = DateTime.MinValue;
             _lastSampleUtc = DateTime.MinValue;
             DisposePlaybackLocked();
         }
+
+        // Auto-reconnect unless the stream was stopped intentionally (url already cleared)
+        // or we have exhausted retries.
+        if (string.IsNullOrEmpty(urlToReconnect) || attempt > MaxReconnectAttempts)
+        {
+            if (attempt > MaxReconnectAttempts)
+                Logger.Warning("Radio", $"Giving up reconnect for '{nameToReconnect}' after {MaxReconnectAttempts} attempts.");
+            lock (_lock) _currentUrl = string.Empty;
+            return;
+        }
+
+        Logger.Detail("Radio", $"Reconnecting to '{nameToReconnect}' (attempt {attempt}/{MaxReconnectAttempts}) in {ReconnectDelayMs / 1000}s…");
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(ReconnectDelayMs);
+            bool shouldReconnect;
+            lock (_lock)
+            {
+                // If Stop() was called while we were waiting, _currentUrl will be empty
+                shouldReconnect = _currentUrl == urlToReconnect && !_isPlaying;
+            }
+            if (shouldReconnect)
+                Play(urlToReconnect, nameToReconnect, isReconnect: true);
+        });
     }
 
     private void DisposePlaybackLocked()

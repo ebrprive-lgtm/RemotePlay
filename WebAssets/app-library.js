@@ -1688,6 +1688,8 @@ function switchMode(mode, skipInitialBrowse = false) {
     else browse(null);
   } else if (mode === 'music') {
     if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
+    // Hide the video player bar — it must not show alongside the music player bar.
+    if (typeof setPlayerBarVisible === 'function') setPlayerBarVisible(false);
     const rcb = document.getElementById('radio-command-bar');
     if (rcb) rcb.style.display = 'none';
     const mcb = document.getElementById('music-command-bar');
@@ -1922,11 +1924,16 @@ function startMusicStatusPoll() {
       if (currentMode !== 'music') return stopMusicStatusPoll();
       if (!s.isScanning) {
         stopMusicStatusPoll();
-        // Only re-browse on scan complete if we're at root, or the current folder
-        // has no tracks yet (avoid wiping an already-populated folder view).
-        const currentHasTracks = currentMusicData && currentMusicData.files && currentMusicData.files.length > 0;
-        if (!currentMusicFolder || !currentHasTracks) browseMusic(currentMusicFolder);
-        else renderMusicHeader(currentMusicData, false); // just refresh the header badge
+        // Never re-browse when a dynamic folder is open or loading — the sentinel
+        // value starts with \0 and browseMusic would navigate away from the track list.
+        const _isDynView = currentMusicFolder && currentMusicFolder.startsWith('\0dynamic:');
+        if (!_isDynView) {
+          // Only re-browse on scan complete if we're at root, or the current folder
+          // has no tracks yet (avoid wiping an already-populated folder view).
+          const currentHasTracks = currentMusicData && currentMusicData.files && currentMusicData.files.length > 0;
+          if (!currentMusicFolder || !currentHasTracks) browseMusic(currentMusicFolder);
+          else renderMusicHeader(currentMusicData, false); // just refresh the header badge
+        }
       } else {
         // Update live count directly in the scan status element
         const scanStatus = document.getElementById('scan-status');
@@ -1947,9 +1954,11 @@ function startMusicStatusPoll() {
         // Re-browse every ~10s during scan so tracks appear progressively,
         // but only if the current folder view has no tracks yet (avoid wiping
         // a folder that was already populated by the instant scan).
+        // Never re-browse when a dynamic folder is open — it would navigate away.
         pollCount++;
+        const _isDynView2 = currentMusicFolder && currentMusicFolder.startsWith('\0dynamic:');
         const currentHasTracks = currentMusicData && currentMusicData.files && currentMusicData.files.length > 0;
-        if (pollCount % 5 === 0 && !currentHasTracks) browseMusic(currentMusicFolder, 0, false);
+        if (pollCount % 5 === 0 && !currentHasTracks && !_isDynView2) browseMusic(currentMusicFolder, 0, false);
       }
     } catch (e) {}
   }, 2000);
@@ -2414,30 +2423,27 @@ async function _loadPlaylistAlbumArt(cardEl, signal) {
   const artist = cardEl.dataset.plartist || '';
   if (!album) return;
 
-  const artEl = cardEl.querySelector('.mpl-card-art');
-  if (!artEl) return;
-
   try {
     const params = new URLSearchParams({ album });
     if (artist) params.set('artist', artist);
     const res = await fetch('/api/music/album-art?' + params.toString(), { signal });
-    if (!res.ok) return; // 404 = not found, stay with gradient
+    if (!res.ok) return;
 
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
 
-    // Apply the image as a cover-fill background on the art area
-    artEl.style.backgroundImage  = `url(${url})`;
-    artEl.style.backgroundSize   = 'cover';
-    artEl.style.backgroundPosition = 'center';
-    // Dim the note glyph so the artwork reads clearly
-    const note = artEl.querySelector('.mpl-card-note');
+    // Apply art directly on the card element (same approach as movie cards).
+    cardEl.style.backgroundImage    = `url(${url})`;
+    cardEl.style.backgroundSize     = 'cover';
+    cardEl.style.backgroundPosition = 'center';
+
+    const note = cardEl.querySelector('.mpl-card-note');
     if (note) note.style.opacity = '0';
+
     cardEl.classList.add('has-album-art');
-    // Stash resolved URL so the player bar can use it when this playlist is active
     cardEl._albumArtUrl = url;
   } catch (e) {
-    if (e.name !== 'AbortError') { /* Network failure — keep gradient, no error surfaced */ }
+    if (e.name !== 'AbortError') { /* Network failure — keep gradient */ }
   }
 }
 
@@ -2527,7 +2533,8 @@ function renderMusicCards(data, searching) {
       });
       data.folders.filter(f => !f.isDynamic).forEach(function(f) {
         const isAll = f.isAll || f.name === 'All';
-        gridHtml += '<div class="mfc-card mfc-folder-card' + (isAll ? ' folder-row-all' : '') + '" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
+        const isLink = !!f.isLink;
+        gridHtml += '<div class="mfc-card mfc-folder-card' + (isAll ? ' folder-row-all' : '') + (isLink ? ' folder-row-link' : '') + '" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
           + ' oncontextmenu="_ctxShow(event,\'music-folder\',{dir:btoa(unescape(encodeURIComponent(\'' + jsStr(f.folder) + '\'))),name:\'' + jsStr(f.name) + '\'})"'
           + ' onclick="browseMusic(\'' + jsStr(f.folder) + '\')">'
           + '<div class="mfc-card-hero">'
@@ -2535,6 +2542,7 @@ function renderMusicCards(data, searching) {
           + '</div>'
           + '<div class="mfc-card-footer">'
           + '<span class="mfc-card-name">' + esc(f.name) + '</span>'
+          + (isLink ? '<span class="folder-link-badge" title="Library link">🔗</span>' : '')
           + '</div>'
           + '</div>';
       });
@@ -2545,7 +2553,7 @@ function renderMusicCards(data, searching) {
         const count = pl.trackCount > 0 ? pl.trackCount : null;
         const parsed = _parsePlName(pl.name);
         const displayName = parsed.displayName; const year = parsed.year; const parsedArtist = parsed.artist;
-        const artist = (pl.artist && pl.artist.trim()) || parsedArtist || '';
+        const artist = (pl.artist && pl.artist.trim()) || '';
         const gradIdx = idx % 8;
         gridHtml += '<div class="music-playlist-card mpl-grad-' + gradIdx + '" role="button" tabindex="0" title="' + esc(displayName) + '"'
           + ' onkeydown="activateKeyboardClick(event,this)" data-plpath="' + esc(pl.path) + '" data-plalbum="' + esc(displayName) + '"' + (artist ? ' data-plartist="' + esc(artist) + '"' : '') + '>'
@@ -2595,11 +2603,14 @@ function renderMusicCards(data, searching) {
             + '<button class="folder-dyn-edit-btn" title="Edit" onclick="event.stopPropagation();_editDynamicFolder(\'' + _dp + '\')">\u270F\uFE0F</button>'
             + '</div>';
         } else {
-          html += '<div class="folder-row' + (isAll ? ' folder-row-all' : '') + '" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
+          const isLink = !!f.isLink;
+          html += '<div class="folder-row' + (isAll ? ' folder-row-all' : '') + (isLink ? ' folder-row-link' : '') + '" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
             + ' oncontextmenu="_ctxShow(event,\'music-folder\',{dir:btoa(unescape(encodeURIComponent(\'' + jsStr(f.folder) + '\'))),name:\'' + jsStr(f.name) + '\'})"'
             + ' onclick="browseMusic(\'' + jsStr(f.folder) + '\')">'
             + '<span class="folder-icon">' + (isAll ? '\uD83D\uDCC2' : '&#128193;') + '</span><span class="folder-name">'
-            + esc(f.name) + '</span></div>';
+            + esc(f.name) + '</span>'
+            + (isLink ? '<span class="folder-link-badge" title="Library link">🔗</span>' : '')
+            + '</div>';
         }
       });
       html += '</div>';
@@ -2735,6 +2746,30 @@ function renderMusicCards(data, searching) {
   mb.innerHTML =
     html ||
     '<div style="padding:1rem;color:var(--muted,#9aa8c2)">Select a folder to browse tracks.</div>';
+
+  // Grid-only: apply resolved cover image as hero background so card mode shows art reliably.
+  if (isGrid) {
+    mb.querySelectorAll('.music-track-card[data-cover-url]').forEach((card) => {
+      const hero = card.querySelector('.mtc-play-indicator');
+      const img = card.querySelector('.mtc-thumb');
+      if (!hero || !img) return;
+
+      const applyHeroBackground = () => {
+        const src = img.currentSrc || img.src;
+        if (!src) return;
+        hero.style.backgroundImage = `url("${src}")`;
+        hero.style.backgroundSize = 'cover';
+        hero.style.backgroundPosition = 'center';
+        hero.style.backgroundRepeat = 'no-repeat';
+      };
+
+      if (img.complete && img.naturalWidth > 0) applyHeroBackground();
+      img.addEventListener('load', applyHeroBackground);
+      img.addEventListener('error', () => {
+        hero.style.backgroundImage = '';
+      });
+    });
+  }
 
   // Grid cover art: wire up two-stage fallback (local → online album art → no-cover placeholder)
   // data-no-cover="1" means the index confirmed no embedded/folder art exists — skip straight to
@@ -2939,7 +2974,8 @@ async function searchLibrary(q, offset = 0, append = false) {
 }
 // ── Video command-bar filter / sort state ────────────────────────────
 let _videoFilter = 'all'; // 'all' | 'unwatched' | 'watched' | 'fav' | 'progress'
-let _videoSort   = 'name'; // 'name' | 'folder' | 'duration' | 'size' | 'progress'
+let _videoSort    = 'name'; // 'name' | 'folder' | 'duration' | 'size' | 'progress'
+let _videoSortDir = 'asc';  // 'asc' | 'desc'
 let _currentRawFiles = []; // last unfiltered file list from server
 
 function setVideoFilter(f) {
@@ -2948,9 +2984,14 @@ function setVideoFilter(f) {
   _rerenderVideoFiles();
 }
 function setVideoSort(s) {
-  _videoSort = s;
+  if (_videoSort === s) {
+    _videoSortDir = _videoSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _videoSort    = s;
+    _videoSortDir = 'asc';
+  }
   const sel = document.getElementById('vcb-sort');
-  if (sel && sel.value !== s) sel.value = s;
+  if (sel && sel.value !== _videoSort) sel.value = _videoSort;
   _rerenderVideoFiles();
 }
 function _applyVideoCommandBar(show) {
@@ -2984,12 +3025,13 @@ function _applyVcbViewBtn() {
 }
 function _sortedFiles(files) {
   const arr = files.slice();
+  const asc = _videoSortDir !== 'desc';
   switch (_videoSort) {
-    case 'folder':   arr.sort((a,b) => (a.folder||'').localeCompare(b.folder||'') || (a.displayName||a.name||'').localeCompare(b.displayName||b.name||'')); break;
-    case 'duration': arr.sort((a,b) => (Number(b.duration)||0) - (Number(a.duration)||0)); break;
-    case 'year':     arr.sort((a,b) => { const ya = _parseYear(a.name||''), yb = _parseYear(b.name||''); return (yb||'0').localeCompare(ya||'0') || (a.displayName||a.name||'').localeCompare(b.displayName||b.name||''); }); break;
-    case 'progress': arr.sort((a,b) => (Number(b.progress)||0) - (Number(a.progress)||0)); break;
-    default:         arr.sort((a,b) => (a.displayName||a.name||'').localeCompare(b.displayName||b.name||'')); break;
+    case 'folder':   arr.sort((a,b) => { const r = (a.folder||'').localeCompare(b.folder||'') || (a.displayName||a.name||'').localeCompare(b.displayName||b.name||''); return asc ? r : -r; }); break;
+    case 'duration': arr.sort((a,b) => { const r = (Number(a.duration)||0) - (Number(b.duration)||0); return asc ? -r : r; }); break;
+    case 'year':     arr.sort((a,b) => { const ya = _parseYear(a.name||''), yb = _parseYear(b.name||''); const r = (yb||'0').localeCompare(ya||'0') || (a.displayName||a.name||'').localeCompare(b.displayName||b.name||''); return asc ? r : -r; }); break;
+    case 'progress': arr.sort((a,b) => { const r = (Number(a.progress)||0) - (Number(b.progress)||0); return asc ? -r : r; }); break;
+    default:         arr.sort((a,b) => { const r = (a.displayName||a.name||'').localeCompare(b.displayName||b.name||''); return asc ? r : -r; }); break;
   }
   return arr;
 }
@@ -3186,11 +3228,11 @@ function _renderVideoFileRows(files) {
 
   const HEADER = isList
     ? '<div class="vlc-header-row">' +
-        '<div class="vlc-h vlc-h-title sortable" onclick="setVideoSort(\'name\')" title="Sort by title">Title</div>' +
-        '<div class="vlc-h vlc-h-progress sortable" onclick="setVideoSort(\'progress\')" title="Sort by progress">Progress</div>' +
-        '<div class="vlc-h vlc-h-year sortable" onclick="setVideoSort(\'year\')" title="Sort by year">Year</div>' +
+        `<div class="vlc-h vlc-h-title sortable${_videoSort==='name'?' sort-active':''}" onclick="setVideoSort('name')" title="Sort by title">Title${_videoSort==='name'?(_videoSortDir==='asc'?' ▲':' ▼'):''}</div>` +
+        `<div class="vlc-h vlc-h-progress sortable${_videoSort==='progress'?' sort-active':''}" onclick="setVideoSort('progress')" title="Sort by progress">Progress${_videoSort==='progress'?(_videoSortDir==='asc'?' ▲':' ▼'):''}</div>` +
+        `<div class="vlc-h vlc-h-year sortable${_videoSort==='year'?' sort-active':''}" onclick="setVideoSort('year')" title="Sort by year">Year${_videoSort==='year'?(_videoSortDir==='asc'?' ▲':' ▼'):''}</div>` +
         '<div class="vlc-h vlc-h-ext">Format</div>' +
-        '<div class="vlc-h vlc-h-duration sortable" onclick="setVideoSort(\'duration\')" title="Sort by duration">Duration</div>' +
+        `<div class="vlc-h vlc-h-duration sortable${_videoSort==='duration'?' sort-active':''}" onclick="setVideoSort('duration')" title="Sort by duration">Duration${_videoSort==='duration'?(_videoSortDir==='asc'?' ▲':' ▼'):''}</div>` +
         '<div class="vlc-h vlc-h-cb"></div>' +
       '</div>'
     : '';
@@ -3629,7 +3671,7 @@ async function play(p, name) {
   }
   await api('/api/play?path=' + encodeURIComponent(p));
   setTimeout(() => loadRecent().then((files) => renderRecent(files)), 300);
-  startPolling();
+  startSse();
   await pollStatus();
 }
 function setPlayerPoster(p) {
@@ -3773,7 +3815,7 @@ async function playQueueStart() {
   if (!lastQueue.length) return;
   const first = lastQueue[0];
   setStatus('Playing next queued: ' + (first.title || 'Queued video'));
-  startPolling();
+  startSse();
   await api('/api/adjacent?direction=next');
   await pollStatus();
 }
@@ -4110,7 +4152,7 @@ if (nowPlayingBar) {
     { passive: true }
   );
 }
-startPolling();
+startSse();
 refreshPeers();
 setInterval(refreshPeers, 8000);
 refreshVersion();
@@ -4152,23 +4194,27 @@ document.addEventListener('pointerdown', (e) => {
 
 async function refreshPeers() {
   try {
-    const res = await fetch('/api/peers');
-    if (!res.ok) return;
-    const peers = await res.json();
+    const [peersRes, dlnaRes] = await Promise.all([
+      fetch('/api/peers'),
+      fetch('/api/dlna/renderers'),
+    ]);
+    const peers = peersRes.ok ? await peersRes.json() : [];
+    const renderers = dlnaRes.ok ? await dlnaRes.json() : [];
     const dot = document.getElementById('peers-dot');
     const others = peers.filter((p) => !p.isSelf);
-    const count = others.length;
-    dot.className = count > 0 ? 'multi' : '';
-    const label = count > 0 ? `Instances (${count})` : 'Instances';
+    const totalOthers = others.length + renderers.length;
+    dot.className = totalOthers > 0 ? 'multi' : '';
+    const label = totalOthers > 0 ? `Instances (${totalOthers})` : 'Instances';
     const labelEl = document.querySelector('#peers-btn .im-label');
     if (labelEl) labelEl.textContent = label;
     document.getElementById('peers-btn').title =
-      count > 0 ? `${count} other instance(s) on the network` : 'No other instances found';
-    renderPeersDropdown(peers);
+      totalOthers > 0 ? `${totalOthers} other instance(s)/renderer(s) on the network` : 'No other instances found';
+    renderPeersDropdown(peers, renderers);
   } catch {}
 }
 
-function renderPeersDropdown(peers) {
+function renderPeersDropdown(peers, renderers) {
+  renderers = renderers || [];
   const dd = document.getElementById('peers-dropdown');
   dd.innerHTML = '';
   const header = document.createElement('div');
@@ -4204,6 +4250,29 @@ function renderPeersDropdown(peers) {
       syncBtn.textContent = '⇒ Sync';
       syncBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); syncToPeer(p.url); };
       row.appendChild(syncBtn);
+      dd.appendChild(row);
+    });
+  }
+
+  // ── DLNA renderers section ──────────────────────────────────────────────────
+  if (renderers.length > 0) {
+    const dlnaHeader = document.createElement('div');
+    dlnaHeader.className = 'peers-section-header';
+    dlnaHeader.textContent = '📺 DLNA renderers';
+    dd.appendChild(dlnaHeader);
+    renderers.forEach((r) => {
+      const row = document.createElement('div');
+      row.className = 'peer-item-row';
+      const info = document.createElement('div');
+      info.className = 'peer-item peer-dlna';
+      info.innerHTML = `<span class="peer-dot peer-dot-dlna"></span><span class="peer-info"><div class="peer-name">${esc(r.name)}</div><div class="peer-addr">${esc(r.host)}</div></span>`;
+      row.appendChild(info);
+      const playBtn = document.createElement('button');
+      playBtn.className = 'peer-sync-btn';
+      playBtn.title = `Cast current video to ${esc(r.name)}`;
+      playBtn.textContent = '📺 Cast';
+      playBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); playOnDlna(r.controlUrl, r.name); };
+      row.appendChild(playBtn);
       dd.appendChild(row);
     });
   }
@@ -4248,6 +4317,32 @@ async function syncToPeer(peerUrl) {
     await fetch(`${base}/api/seek?` + new URLSearchParams({ position: String(Math.round(s.position)) }));
   } catch (err) {
     alert('Sync failed: ' + err.message);
+  }
+}
+
+async function playOnDlna(controlUrl, rendererName) {
+  closePeers();
+  try {
+    const statusRes = await fetch('/api/status');
+    if (!statusRes.ok) return;
+    const s = await statusRes.json();
+    if (!s.isPlaying || !s.filePath) {
+      alert('Nothing is currently playing to cast.');
+      return;
+    }
+    // Build an HTTP URL for the media file that the DLNA renderer can reach.
+    const mediaUrl = `${location.protocol}//${location.host}/api/play?path=${encodeURIComponent(s.filePath)}`;
+    const res = await fetch('/api/dlna/play', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ controlUrl, mediaUrl }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      alert(`Cast to ${rendererName} failed: ${data.error || 'unknown error'}`);
+    }
+  } catch (err) {
+    alert('Cast failed: ' + err.message);
   }
 }
 
@@ -4465,6 +4560,7 @@ async function _saveDynamicFolder() {
       });
     }
     if (!res.ok) { alert('Could not save: ' + await res.text()); return; }
+    const saved = await res.json();
     _closeDynamicDialog();
     if (typeof browseMusic === 'function') await browseMusic(currentMusicFolder);
   } catch (e) {
@@ -4548,15 +4644,16 @@ function _dynSpreadArtists(tracks) {
 async function _openDynamicFolder(encodedPath, name) {
   const mb = document.getElementById('music-browser');
   if (mb) mb.innerHTML = '<div style="padding:.75rem;color:var(--muted,#9aa8c2)">\uD83C\uDFB2 Loading dynamic folder\u2026</div>';
+  // Set the sentinel immediately so the music scan-status poller never fires
+  // browseMusic() and navigates away while the async expand request is in flight.
+  const prevFolder = currentMusicFolder && !currentMusicFolder.startsWith('\0dynamic:')
+    ? currentMusicFolder : (currentMusicData && currentMusicData._prevFolder) || null;
+  currentMusicFolder = '\0dynamic:' + encodedPath;
   try {
     const res = await fetch('/api/music/dynamic/expand?path=' + encodeURIComponent(encodedPath));
     if (!res.ok) { if (mb) mb.innerHTML = '<div style="padding:.75rem">Error ' + res.status + '</div>'; return; }
     const data = await res.json();
     const tracks = _dynSpreadArtists(data.tracks || []);
-
-    // Build a synthetic browse-data object that looks like a real folder result.
-    const prevFolder = currentMusicFolder && !currentMusicFolder.startsWith('\0dynamic:')
-      ? currentMusicFolder : (currentMusicData && currentMusicData._prevFolder) || null;
     const musicRoot = (currentMusicData && currentMusicData.musicRoot) || null;
     const dynamicName = data.name || name;
 
