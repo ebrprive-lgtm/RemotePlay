@@ -53,6 +53,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _miniPreviewTimer;
     private readonly string _miniPreviewSnapshotPath =
         Path.Combine(Path.GetTempPath(), "remoteplay_preview.png");
+    private VideoTextOverlay? _videoOverlay;
     private bool _isPaused;
     private int _currentEqPreset = -1; // -1 = flat / no EQ
     private int _currentReverbPreset = 0; // 0 = Off
@@ -186,6 +187,10 @@ public partial class MainWindow : Window
             _bannerTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
             _bannerTimer.Tick += (_, _) => HideBanner();
 
+            // Initialize video overlay
+            _videoOverlay = new VideoTextOverlay();
+            _videoOverlay.Initialize(this);
+
             _overlayTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
             _overlayTimer.Tick += (_, _) => HideVideoOverlay();
 
@@ -276,6 +281,19 @@ public partial class MainWindow : Window
         UpdateServerReadiness(isReady: false, "Server: starting\u2026");
         UpdateLibraryReadiness("Library: waiting for server\u2026", isReady: false, isBusy: true);
         ServerStatusText.Text = $"Server starting on {_config.Scheme}://*:{_config.Port}\u2026";
+
+        // Keep overlay synced if window moves or resizes
+        this.LocationChanged += (s, e) =>
+        {
+            if (_isVideoMode && _videoOverlay != null)
+                _videoOverlay.UpdatePosition(this);
+        };
+
+        this.SizeChanged += (s, e) =>
+        {
+            if (_isVideoMode && _videoOverlay != null)
+                _videoOverlay.UpdatePosition(this);
+        };
 
         // Animate the startup indicator dot
         if (FindResource("PulseAnim") is System.Windows.Media.Animation.Storyboard pulse)
@@ -427,7 +445,18 @@ public partial class MainWindow : Window
         _appConfigService.Save(updated);
     }
 
-    private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e) => SaveWindowLayout();
+    private void OnWindowSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        SaveWindowLayout();
+        if (_isVideoMode && _videoOverlay != null)
+            _videoOverlay.UpdatePosition(this);
+    }
+
+    private void OnWindowLocationChanged(object? sender, EventArgs e)
+    {
+        if (_isVideoMode && _videoOverlay != null)
+            _videoOverlay.UpdatePosition(this);
+    }
 
     private void OnWindowStateChanged(object? sender, EventArgs e) => SaveWindowLayout();
 
@@ -951,6 +980,10 @@ public partial class MainWindow : Window
         _fullscreenWatchdogTimer.Stop();
         _overlayTimer.Stop();
         HideVideoOverlay(immediate: true);
+
+        // Hide the video overlay window
+        _videoOverlay?.Hide();
+
         IdleOverlay.Visibility = Visibility.Collapsed;
         IdleOverlay.IsHitTestVisible = false;
         VideoPanel.Visibility = Visibility.Collapsed;
@@ -1040,7 +1073,20 @@ public partial class MainWindow : Window
         // switching away from the window and back into fullscreen.
         Focus();
 
+        // Show and position the video overlay window
+        if (_videoOverlay != null)
+        {
+            _videoOverlay.UpdatePosition(this);
+            _videoOverlay.Show();
+        }
+
         FadeOutFlashCover();
+
+        // Show banner if media is already playing (delayed slightly to ensure overlay is ready)
+        if (_mediaPlayer.IsPlaying)
+        {
+            Dispatcher.InvokeAsync(() => ShowBanner(), System.Windows.Threading.DispatcherPriority.Loaded);
+        }
     }
 
     private void FadeOutFlashCover()
@@ -1104,6 +1150,9 @@ public partial class MainWindow : Window
             physBounds.Top,
             physBounds.Width,
             physBounds.Height);
+
+        // Update overlay position to match
+        _videoOverlay?.UpdatePosition(this);
 
         if (!force)
         {
@@ -1176,7 +1225,7 @@ public partial class MainWindow : Window
             WindowWidth = windowWidthPx,
             WindowHeight = windowHeightPx,
             CurrentFilePath = _currentFilePath ?? string.Empty,
-            CurrentTitle = NowPlayingText.Text,
+            CurrentTitle = _currentFilePath != null ? Path.GetFileNameWithoutExtension(_currentFilePath) : "",
             Zoom = Math.Round(_zoom, 3),
             Brightness = Math.Round(_brightness, 3),
             Saturation = Math.Round(_saturation, 3),

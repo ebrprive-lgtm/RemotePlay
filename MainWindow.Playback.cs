@@ -136,8 +136,6 @@ public partial class MainWindow
                 ApplyAudioLevel();
                 ApplyVideoZoom();
                 _historyTimer.Start();
-                NowPlayingText.Text = "?  " + Path.GetFileNameWithoutExtension(filePath);
-                ShowBanner();
                 AppendLog($"Playing: {Path.GetFileName(filePath)}");
                 Logger.Info($"Playing: {filePath}");
 
@@ -148,6 +146,8 @@ public partial class MainWindow
                     OnToggleView(this, new RoutedEventArgs());
                 else
                     EnsureFullscreenWindowBounds();
+
+                // Banner will be shown from OnMediaPlaying when playback actually starts
             }
             catch (Exception ex)
             {
@@ -370,14 +370,15 @@ public partial class MainWindow
                     _mediaPlayer.Play();
                     _isPaused = false;
                     StartPositionClock(GetCurrentVideoPositionMilliseconds());
-                    NowPlayingText.Text = NowPlayingText.Text.Replace("?", "?");
+                    // NowPlayingText removed - text is managed by ShowBanner
+                    ShowBanner();
                 }
                 else
                 {
                     StopPositionClock(GetCurrentVideoPositionMilliseconds());
                     _mediaPlayer.Pause();
                     _isPaused = true;
-                    NowPlayingText.Text = NowPlayingText.Text.Replace("?", "?");
+                    // NowPlayingText removed - text is managed by ShowBanner
                     ShowBanner();
                     _bannerTimer.Stop();
                 }
@@ -452,6 +453,9 @@ public partial class MainWindow
             {
                 VideoPlayer.Visibility = Visibility.Visible;
                 _ = CompleteVideoTransitionAsync();
+
+                // Show banner now that we're in video mode and media is playing
+                ShowBanner();
             }
 
             if (!_isVideoMode)
@@ -665,8 +669,20 @@ public partial class MainWindow
     private void ShowBanner()
     {
         _bannerTimer.Stop();
-        NowPlayingBanner.BeginAnimation(OpacityProperty,
-            new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(300)));
+
+        if (_videoOverlay != null && _isVideoMode)
+        {
+            // Ensure overlay window is visible
+            _videoOverlay.Show();
+
+            // Get the text with play/pause indicator
+            var icon = _isPaused ? "⏸" : "🎬";
+            var text = icon + "  " + Path.GetFileNameWithoutExtension(_currentFilePath ?? "");
+            _videoOverlay.UpdatePosition(this);
+            _videoOverlay.ShowText(text);
+        }
+
+        // Auto-hide after 4 seconds if not paused
         if (!_isPaused)
             _bannerTimer.Start();
     }
@@ -674,8 +690,7 @@ public partial class MainWindow
     private void HideBanner()
     {
         _bannerTimer.Stop();
-        NowPlayingBanner.BeginAnimation(OpacityProperty,
-            new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(600)));
+        _videoOverlay?.HideText();
     }
 
     // Returns current playback state for the web interface
@@ -765,7 +780,7 @@ public partial class MainWindow
                 IsPaused = vlcActive ? _isPaused : (musicStatus?.IsPaused ?? false),
                 PositionSeconds = positionSeconds,
                 DurationSeconds = durationSeconds,
-                Title = NowPlayingText.Text,
+                Title = _currentFilePath != null ? Path.GetFileNameWithoutExtension(_currentFilePath) : "",
                 Volume = _volume,
                 IsMuted = _mediaPlayer.Mute,
                 LastError = _lastPlaybackError,

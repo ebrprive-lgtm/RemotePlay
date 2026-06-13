@@ -107,7 +107,8 @@ internal sealed partial class WebServer
                         folder: d,
                         isAll: string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase),
                         isLink: false,
-                        linkPath: string.Empty));
+                        linkPath: string.Empty,
+                        virtualPath: string.Empty));
 
                 var linkedFolders = Directory.EnumerateFiles(browseDir, "*" + RplinkHelper.Extension, SearchOption.TopDirectoryOnly)
                     .Where(RplinkHelper.IsTargetFolder)
@@ -115,16 +116,19 @@ internal sealed partial class WebServer
                     .Where(x => !string.IsNullOrWhiteSpace(x.target) && Directory.Exists(x.target))
                     .Select(x => (
                         name: Path.GetFileNameWithoutExtension(x.rplinkPath),
-                        folder: x.target!,
+                        folder: x.target!.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
                         isAll: false,
                         isLink: true,
-                        linkPath: WebPathHelpers.EncodePath(x.rplinkPath)));
+                        linkPath: WebPathHelpers.EncodePath(x.rplinkPath),
+                        virtualPath: Path.Combine(
+                            Path.GetDirectoryName(x.rplinkPath) ?? string.Empty,
+                            Path.GetFileNameWithoutExtension(x.rplinkPath))));
 
                 folders = regularFolders
                     .Concat(linkedFolders)
                     .OrderBy(f => f.isAll ? 0 : 1)
                     .ThenBy(f => f.name, _naturalComparer)
-                    .Select(f => (object)new { f.name, f.folder, f.isAll, f.isLink, f.linkPath })
+                    .Select(f => (object)new { f.name, f.folder, f.isAll, f.isLink, f.linkPath, f.virtualPath })
                     .ToArray();
             }
         }
