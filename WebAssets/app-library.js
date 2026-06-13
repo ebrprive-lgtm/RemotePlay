@@ -1,6 +1,7 @@
-﻿let currentMode = localStorage.getItem('remotePlayMode') || 'video';
+let currentMode = localStorage.getItem('remotePlayMode') || 'video';
 let musicBrowseHistory = [];
 let currentMusicFolder = null;
+let _musicLinkBase = null; // {real: string, virtual: string} | null — virtual path base for rplink folder navigation
 let currentMusicData = null;
 let musicStatusPollTimer = null;
 let musicPlaybackPollTimer = null;
@@ -1767,22 +1768,32 @@ function renderMusicHeader(data, searching) {
     } else {
       const root = data.musicRoot || '';
       const folder = data.folder || root;
+      // When inside a linked folder tree, display the virtual path instead of the real resolved path.
+      // Segments before the virtual link point are identical to real paths; segments at or after it
+      // are mapped back to real paths for onclick handlers so navigation still works.
+      const displayFolder = _musicLinkBase && folder && folder.toLowerCase().startsWith(_musicLinkBase.real.toLowerCase())
+        ? _musicLinkBase.virtual + folder.slice(_musicLinkBase.real.length)
+        : folder;
       let html = '<a onclick="browseMusic(null)">&#128193; Music Root</a>';
-      if (folder && root && folder.toLowerCase() !== root.toLowerCase()) {
+      if (displayFolder && root && displayFolder.toLowerCase() !== root.toLowerCase()) {
         // Build segments relative to music root
-        const rel = folder.startsWith(root) ? folder.slice(root.length) : '';
+        const rel = displayFolder.startsWith(root) ? displayFolder.slice(root.length) : '';
         const sep = rel.indexOf('/') !== -1 ? '/' : '\\';
         const parts = rel.split(sep).filter((p) => p.length > 0);
-        let cumulative = root;
+        let displayCumulative = root;
         parts.forEach((part, i) => {
-          cumulative += sep + part;
-          const captured = cumulative;
+          displayCumulative += sep + part;
+          // Map the display path back to the real path for the onclick handler.
+          // Segments at or inside the virtual link point substitute the virtual prefix with the real one.
+          const realForClick = _musicLinkBase && displayCumulative.toLowerCase().startsWith(_musicLinkBase.virtual.toLowerCase())
+            ? _musicLinkBase.real + displayCumulative.slice(_musicLinkBase.virtual.length)
+            : displayCumulative;
           if (i === parts.length - 1) {
             html += '<span> &rsaquo; </span><span class="crumb-current">' + esc(part) + '</span>';
           } else {
             html +=
               '<span> &rsaquo; </span><a onclick="browseMusic(\'' +
-              jsStr(captured) +
+              jsStr(realForClick) +
               '\')">' +
               esc(part) +
               '</a>';
@@ -1810,6 +1821,12 @@ function renderMusicHeader(data, searching) {
         const prev = musicBrowseHistory.length > 0 ? musicBrowseHistory.pop() : null;
         // Navigate directly without re-pushing to history
         currentMusicFolder = prev;
+        // Keep the virtual link base only when going back into the same linked tree
+        if (_musicLinkBase && prev && prev.toLowerCase().startsWith(_musicLinkBase.real.toLowerCase())) {
+          // Still inside the linked folder tree — keep existing base
+        } else {
+          _musicLinkBase = null;
+        }
         const mb = document.getElementById('music-browser');
         if (mb)
           mb.innerHTML =
@@ -1958,7 +1975,7 @@ function startMusicStatusPoll() {
         pollCount++;
         const _isDynView2 = currentMusicFolder && currentMusicFolder.startsWith('\0dynamic:');
         const currentHasTracks = currentMusicData && currentMusicData.files && currentMusicData.files.length > 0;
-        if (pollCount % 5 === 0 && !currentHasTracks && !_isDynView2) browseMusic(currentMusicFolder, 0, false);
+        if (pollCount % 5 === 0 && !currentHasTracks && !_isDynView2) browseMusic(currentMusicFolder, null, 0, false);
       }
     } catch (e) {}
   }, 2000);
@@ -2191,7 +2208,7 @@ function _stopMusicFolderFastPoll() {
   }
 }
 
-async function browseMusic(folder, offset = 0, append = false) {
+async function browseMusic(folder, virtualPath = null, offset = 0, append = false) {
   if (!append) {
     _musicSelectionClear();
     _stopMusicFolderFastPoll();
@@ -2204,6 +2221,14 @@ async function browseMusic(folder, offset = 0, append = false) {
       if (folder === null || folder === undefined) musicBrowseHistory = [];
     }
     currentMusicFolder = folder;
+    // Track virtual path base for rplink folder navigation
+    if (virtualPath) {
+      _musicLinkBase = { real: folder.replace(/[\/\\]+$/, ''), virtual: virtualPath };
+    } else if (_musicLinkBase && folder && folder.toLowerCase().startsWith(_musicLinkBase.real.toLowerCase())) {
+      // Still inside the linked folder tree — keep the existing base
+    } else {
+      _musicLinkBase = null;
+    }
     // Always show the dynamic-folder button when browsing real folders; hide reroll
     const _dynBtn = document.getElementById('mcb-dynamic-btn');
     if (_dynBtn) _dynBtn.style.display = '';
@@ -2536,9 +2561,9 @@ function renderMusicCards(data, searching) {
         const isLink = !!f.isLink;
         gridHtml += '<div class="mfc-card mfc-folder-card' + (isAll ? ' folder-row-all' : '') + (isLink ? ' folder-row-link' : '') + '" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
           + ' oncontextmenu="_ctxShow(event,\'music-folder\',{dir:btoa(unescape(encodeURIComponent(\'' + jsStr(f.folder) + '\'))),name:\'' + jsStr(f.name) + '\'})"'
-          + ' onclick="browseMusic(\'' + jsStr(f.folder) + '\')">'
+          + ' onclick="browseMusic(\'' + jsStr(f.folder) + '\'' + (isLink && f.virtualPath ? ',\'' + jsStr(f.virtualPath) + '\'' : '') + ')">'
           + '<div class="mfc-card-hero">'
-          + '<span class="mfc-card-icon">' + (isAll ? '📂' : '&#128193;') + '</span>'
+          + '<span class="mfc-card-icon">' + (isAll ? '\uD83D\uDCC2' : '&#128193;') + '</span>'
           + '</div>'
           + '<div class="mfc-card-footer">'
           + '<span class="mfc-card-name">' + esc(f.name) + '</span>'
@@ -2606,10 +2631,10 @@ function renderMusicCards(data, searching) {
           const isLink = !!f.isLink;
           html += '<div class="folder-row' + (isAll ? ' folder-row-all' : '') + (isLink ? ' folder-row-link' : '') + '" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
             + ' oncontextmenu="_ctxShow(event,\'music-folder\',{dir:btoa(unescape(encodeURIComponent(\'' + jsStr(f.folder) + '\'))),name:\'' + jsStr(f.name) + '\'})"'
-            + ' onclick="browseMusic(\'' + jsStr(f.folder) + '\')">'
+            + ' onclick="browseMusic(\'' + jsStr(f.folder) + '\'' + (isLink && f.virtualPath ? ',\'' + jsStr(f.virtualPath) + '\'' : '') + ')">'
             + '<span class="folder-icon">' + (isAll ? '\uD83D\uDCC2' : '&#128193;') + '</span><span class="folder-name">'
             + esc(f.name) + '</span>'
-            + (isLink ? '<span class="folder-link-badge" title="Library link">🔗</span>' : '')
+            + (isLink ? '<span class="folder-link-badge" title="Library link">&#128279;</span>' : '')
             + '</div>';
         }
       });
@@ -2891,7 +2916,7 @@ function loadMoreMusic() {
   const offset = (currentMusicData.files || []).length;
   if (currentMusicData.query !== undefined)
     searchMusicLibrary(currentMusicData.query || '', offset, true);
-  else browseMusic(currentMusicData.folder || currentMusicFolder, offset, true);
+  else browseMusic(currentMusicData.folder || currentMusicFolder, null, offset, true);
 }
 
 // kept for compatibility — routes to the card renderer

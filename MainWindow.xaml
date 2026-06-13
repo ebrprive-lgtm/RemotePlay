@@ -16,6 +16,7 @@
         PreviewKeyDown="OnWindowPreviewKeyDown"
         PreviewKeyUp="OnWindowPreviewKeyUp"
         SizeChanged="OnWindowSizeChanged"
+        LocationChanged="OnWindowLocationChanged"
         StateChanged="OnWindowStateChanged">
 
     <Window.Resources>
@@ -1224,7 +1225,7 @@
                 <TextBlock x:Name="KaraokeActiveLine"
                            Grid.Row="1"
                            TextWrapping="Wrap" TextAlignment="Center"
-                           FontSize="72" FontWeight="Bold"
+                           FontSize="58" FontWeight="Bold"
                            Foreground="White"
                            Margin="0,0,0,28">
                     <TextBlock.Effect>
@@ -1282,19 +1283,10 @@
                     Height="18" Background="Transparent"
                     MouseEnter="OnVideoTopHotZoneMouseEnter"
                     Panel.ZIndex="11"/>
-
-            <!-- Now-playing banner -->
-            <Border x:Name="NowPlayingBanner"
-                    VerticalAlignment="Bottom" HorizontalAlignment="Stretch"
-                    Background="#AA000000" Padding="24,12" Opacity="0"
-                    Panel.ZIndex="9">
-                <TextBlock x:Name="NowPlayingText" FontSize="22" Foreground="White"
-                           TextTrimming="CharacterEllipsis"/>
-            </Border>
         </Grid>
 
         <!-- ── Flash cover: full-window black mask used to hide resize/render flashes
-                 during fullscreen entry. Faded out after the window has settled. ── -->
+             during fullscreen entry. Faded out after the window has settled. ── -->
         <Border x:Name="FlashCover"
                 Grid.Row="0" Grid.RowSpan="2"
                 Background="Black"

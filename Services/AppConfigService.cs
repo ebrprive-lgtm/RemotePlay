@@ -62,8 +62,6 @@ internal sealed class AppConfigService : IAppConfigService
 
         var json = JsonSerializer.Serialize(config, WriteOptions);
 
-        Logger.Info($"AppConfigService.Save → {ConfigFile} | VideoPaths={config.AdditionalMoviesPaths.Length} | MusicPaths={config.AdditionalMusicPaths.Length} | InstanceName={config.InstanceName}");
-        Logger.Info($"AppConfigService.Save caller: {new System.Diagnostics.StackTrace(1, false).ToString().Split('\n')[0].Trim()}");
 
         // Write to a temp file first, then atomically replace the real config file.
         // This prevents a crash mid-write from corrupting the config and silently resetting all settings.
@@ -74,8 +72,6 @@ internal sealed class AppConfigService : IAppConfigService
             File.Replace(tmp, ConfigFile, destinationBackupFileName: ConfigFile + ".bak");
         else
             File.Move(tmp, ConfigFile);
-
-        Logger.Info($"AppConfigService.Save ✓ complete");
     }
 
     /// <summary>

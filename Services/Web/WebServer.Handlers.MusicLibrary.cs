@@ -1,6 +1,8 @@
 ﻿using System.IO;
 using System.Net;
 using System.Text.Json;
+using System.Globalization;
+using System.Text;
 
 namespace RemotePlay;
 
@@ -107,7 +109,8 @@ internal sealed partial class WebServer
                         folder: d,
                         isAll: string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase),
                         isLink: false,
-                        linkPath: string.Empty));
+                        linkPath: string.Empty,
+                        virtualPath: string.Empty));
 
                 var linkedFolders = Directory.EnumerateFiles(browseDir, "*" + RplinkHelper.Extension, SearchOption.TopDirectoryOnly)
                     .Where(RplinkHelper.IsTargetFolder)
@@ -115,16 +118,19 @@ internal sealed partial class WebServer
                     .Where(x => !string.IsNullOrWhiteSpace(x.target) && Directory.Exists(x.target))
                     .Select(x => (
                         name: Path.GetFileNameWithoutExtension(x.rplinkPath),
-                        folder: x.target!,
+                        folder: x.target!.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
                         isAll: false,
                         isLink: true,
-                        linkPath: WebPathHelpers.EncodePath(x.rplinkPath)));
+                        linkPath: WebPathHelpers.EncodePath(x.rplinkPath),
+                        virtualPath: Path.Combine(
+                            Path.GetDirectoryName(x.rplinkPath) ?? string.Empty,
+                            Path.GetFileNameWithoutExtension(x.rplinkPath))));
 
                 folders = regularFolders
                     .Concat(linkedFolders)
                     .OrderBy(f => f.isAll ? 0 : 1)
                     .ThenBy(f => f.name, _naturalComparer)
-                    .Select(f => (object)new { f.name, f.folder, f.isAll, f.isLink, f.linkPath })
+                    .Select(f => (object)new { f.name, f.folder, f.isAll, f.isLink, f.linkPath, f.virtualPath })
                     .ToArray();
             }
         }
@@ -1045,6 +1051,40 @@ internal sealed partial class WebServer
         return Path.Combine(AlbumArtCacheDir, safe + ".jpg");
     }
 
+    /// <summary>
+    /// Computes a normalized cache key for album art using artist+album.
+    /// This normalizes unicode, removes diacritics, trims and lowercases to reduce
+    /// accidental collisions when artists/titles differ only by case or diacritics.
+    /// </summary>
+    private static string ComputeAlbumArtCacheKey(string artist, string album)
+    {
+        static string Normalize(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return string.Empty;
+            var trimmed = s.Trim();
+            // Decompose to separate base characters and diacritics
+            var decomposed = trimmed.Normalize(NormalizationForm.FormD);
+            var sb = new StringBuilder(decomposed.Length);
+            foreach (var ch in decomposed)
+            {
+                var uc = CharUnicodeInfo.GetUnicodeCategory(ch);
+                if (uc != UnicodeCategory.NonSpacingMark)
+                    sb.Append(ch);
+            }
+            // Recompose, collapse whitespace, lowercase
+            var recomposed = sb.ToString().Normalize(NormalizationForm.FormC);
+            // Collapse multiple whitespace to single space
+            var collapsed = System.Text.RegularExpressions.Regex.Replace(recomposed, "\\s+", " ");
+            return collapsed.ToLowerInvariant();
+        }
+
+        var a = Normalize(artist);
+        var al = Normalize(album);
+        if (string.IsNullOrEmpty(a)) a = "__noartist__";
+        if (string.IsNullOrEmpty(al)) al = "__noalbum__";
+        return $"{a}|{al}";
+    }
+
     // â”€â”€ Album art export / import â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// <summary>
@@ -1605,7 +1645,7 @@ internal sealed partial class WebServer
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         var ct = cts.Token;
 
-        var cacheKey  = $"{artist}|{album}".ToLowerInvariant();
+        var cacheKey  = ComputeAlbumArtCacheKey(artist, album);
         var cacheFile = AlbumArtCacheFile(cacheKey);
 
         // 1. Fast path â€” in-memory cache
