@@ -187,6 +187,7 @@ async function playMusic(path, name) {
       setTimeout(() => loadMusicRecent().then((files) => renderMusicRecent(files)), 300);
     }
     // In local mode the stream is handled by the browser; no server-side play call needed for queue tracks
+    requestWakeLock();
     return;
   }
 
@@ -217,6 +218,7 @@ async function playMusic(path, name) {
     coverPath: path,
   });
   startMusicPlaybackPoll();
+  requestWakeLock();
 }
 
 async function musicToggle() {
@@ -237,6 +239,7 @@ async function musicStop() {
   if (bar) bar.style.display = 'none';
   document.body.classList.remove('music-player-docked');
   stopMusicPlaybackPoll();
+  if (!playingPath) releaseWakeLock();
   localStop(); // also silence local browser audio
 }
 
@@ -1608,7 +1611,10 @@ function startMusicPlaybackPoll() {
     }
 
     // Stop polling only when truly idle (nothing playing and we didn't just advance)
-    if (!s.isPlaying && !s.isPaused && !s.currentPath && !musicCurrentPath) stopMusicPlaybackPoll();
+    if (!s.isPlaying && !s.isPaused && !s.currentPath && !musicCurrentPath) {
+      stopMusicPlaybackPoll();
+      if (!playingPath) releaseWakeLock();
+    }
   }, 1500);
 }
 
@@ -3995,7 +4001,7 @@ async function releaseWakeLock() {
   wakeLock = null;
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && playingPath) requestWakeLock();
+  if (document.visibilityState === 'visible' && (playingPath || musicIsPlaying)) requestWakeLock();
   if (document.visibilityState === 'visible') _onPageVisible();
 });
 window.addEventListener('pageshow', (e) => {
