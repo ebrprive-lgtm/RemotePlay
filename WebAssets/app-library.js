@@ -2584,7 +2584,7 @@ function renderMusicCards(data, searching) {
         const count = pl.trackCount > 0 ? pl.trackCount : null;
         const parsed = _parsePlName(pl.name);
         const displayName = parsed.displayName; const year = parsed.year; const parsedArtist = parsed.artist;
-        const artist = (pl.artist && pl.artist.trim()) || '';
+        const artist = (pl.artist && pl.artist.trim()) || parsedArtist || '';
         const gradIdx = idx % 8;
         gridHtml += '<div class="music-playlist-card mpl-grad-' + gradIdx + '" role="button" tabindex="0" title="' + esc(displayName) + '"'
           + ' onkeydown="activateKeyboardClick(event,this)" data-plpath="' + esc(pl.path) + '" data-plalbum="' + esc(displayName) + '"' + (artist ? ' data-plartist="' + esc(artist) + '"' : '') + '>'
@@ -2652,8 +2652,8 @@ function renderMusicCards(data, searching) {
       data.playlists.forEach(function(pl, idx) {
         const count = pl.trackCount > 0 ? pl.trackCount + ' track' + (pl.trackCount !== 1 ? 's' : '') : '';
         const parsed = _parsePlName(pl.name);
-        const displayName = parsed.displayName; const year = parsed.year;
-        const artist = (pl.artist && pl.artist.trim()) || '';
+        const displayName = parsed.displayName; const year = parsed.year; const parsedArtist = parsed.artist;
+        const artist = (pl.artist && pl.artist.trim()) || parsedArtist || '';
         html += '<div class="music-playlist-list-row' + (idx % 2 === 1 ? ' alt-row' : '') + (year ? ' has-year' : '') + '" role="button" tabindex="0" title="' + esc(displayName) + '"'
           + ' onkeydown="activateKeyboardClick(event,this)" data-plpath="' + esc(pl.path) + '" data-plalbum="' + esc(displayName) + '"' + (artist ? ' data-plartist="' + esc(artist) + '"' : '') + '>'
           + '<span class="mpl-list-thumb">&#9835;</span>'
