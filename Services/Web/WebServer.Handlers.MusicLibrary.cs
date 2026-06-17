@@ -1851,10 +1851,16 @@ internal sealed partial class WebServer
     private static async Task<byte[]?> FetchAlbumArtFromMusicBrainzAsync(string artist, string album,
         CancellationToken ct = default)
     {
+        // Require artist so we never return a cover for a different artist who happens to share
+        // the same album/track title.  No artist → prefer no cover over a wrong one.
+        if (string.IsNullOrWhiteSpace(artist))
+        {
+            Logger.Detail("AlbumArt", $"Skipping MB search for '{album}' — no artist provided");
+            return null;
+        }
+
         // Step 1: Search MusicBrainz for matching releases (up to 5), including release-group ids
-        var searchTerms = string.IsNullOrWhiteSpace(artist)
-            ? Uri.EscapeDataString($"release:\"{album}\"")
-            : Uri.EscapeDataString($"release:\"{album}\" AND artist:\"{artist}\"");
+        var searchTerms = Uri.EscapeDataString($"release:\"{album}\" AND artist:\"{artist}\"");
 
         var searchUrl = $"https://musicbrainz.org/ws/2/release/?query={searchTerms}&limit=5&fmt=json&inc=release-groups";
         Logger.Detail("AlbumArt", $"MusicBrainz search: {searchUrl}");
@@ -1882,7 +1888,7 @@ internal sealed partial class WebServer
         }
 
         var searchJson = await searchResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        var (releaseIds, releaseGroupIds) = ExtractMusicBrainzIds(searchJson);
+        var (releaseIds, releaseGroupIds) = ExtractMusicBrainzIds(searchJson, artist);
 
         if (releaseIds.Count == 0 && releaseGroupIds.Count == 0)
         {
@@ -1953,7 +1959,7 @@ internal sealed partial class WebServer
         }
 
         var json = await searchResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-        var releaseGroupIds = ExtractReleaseGroupsFromRecordingSearch(json);
+        var releaseGroupIds = ExtractReleaseGroupsFromRecordingSearch(json, artist);
 
         if (releaseGroupIds.Count == 0)
         {
@@ -1972,11 +1978,12 @@ internal sealed partial class WebServer
     /// Parses a MusicBrainz recording-search JSON response and returns release-group IDs
     /// ordered by primary-type preference: Album first, then EP, then others (e.g. Single).
     /// Duplicate release-group IDs are removed.
+    /// Only recordings whose artist-credit approximately matches <paramref name="artist"/> are included.
     /// </summary>
-    private static List<string> ExtractReleaseGroupsFromRecordingSearch(string json)
+    private static List<string> ExtractReleaseGroupsFromRecordingSearch(string json, string artist)
     {
         // MB JSON structure:
-        // { "recordings": [ { "releases": [ { "id": "...", "release-group": { "id": "...", "primary-type": "Album" } } ] } ] }
+        // { "recordings": [ { "artist-credit": [...], "releases": [ { "id": "...", "release-group": { "id": "...", "primary-type": "Album" } } ] } ] }
         var seen    = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var albums  = new List<string>();
         var eps     = new List<string>();
@@ -1989,6 +1996,9 @@ internal sealed partial class WebServer
 
             foreach (var recording in recordings.EnumerateArray())
             {
+                // Skip recordings whose credited artist doesn't match the requested artist.
+                if (!ReleaseArtistMatchesQuery(recording, artist)) continue;
+
                 if (!recording.TryGetProperty("releases", out var releases)) continue;
                 foreach (var release in releases.EnumerateArray())
                 {
@@ -2066,13 +2076,70 @@ internal sealed partial class WebServer
     }
 
     /// <summary>
-    /// Parses a MusicBrainz release-search JSON response and returns
-    /// (releaseIds, releaseGroupIds) â€” both in result order, deduplicated.
+    /// Normalizes an artist name for fuzzy comparison: trims, lowercases, and strips a
+    /// leading "the " so that "The Beatles" and "Beatles" compare as equal.
     /// </summary>
-    private static (List<string> ReleaseIds, List<string> ReleaseGroupIds) ExtractMusicBrainzIds(string json)
+    private static string NormalizeArtistName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return string.Empty;
+        var n = name.Trim().ToLowerInvariant();
+        if (n.StartsWith("the ", StringComparison.Ordinal)) n = n[4..];
+        return n;
+    }
+
+    /// <summary>
+    /// Yields every artist name (display name and sort-name) from a MusicBrainz
+    /// <c>artist-credit</c> array attached to the given JSON element.
+    /// </summary>
+    private static IEnumerable<string> GetArtistNamesFromCredit(JsonElement element)
+    {
+        if (!element.TryGetProperty("artist-credit", out var credits)) yield break;
+        foreach (var credit in credits.EnumerateArray())
+        {
+            if (credit.TryGetProperty("artist", out var artist))
+            {
+                if (artist.TryGetProperty("name", out var n) && n.GetString() is { Length: > 0 } nm)
+                    yield return nm;
+                if (artist.TryGetProperty("sort-name", out var sn) && sn.GetString() is { Length: > 0 } snm)
+                    yield return snm;
+            }
+            // MB sometimes exposes a display-name override directly on the credit
+            if (credit.TryGetProperty("name", out var cn) && cn.GetString() is { Length: > 0 } cnm)
+                yield return cnm;
+        }
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> if any artist in the <c>artist-credit</c> array of
+    /// <paramref name="element"/> approximately matches <paramref name="requestedArtist"/>.
+    /// When <paramref name="requestedArtist"/> is empty the method always returns true
+    /// (no filter applied).  Matching is case-insensitive, strips "the " prefixes, and
+    /// allows one name to contain the other so "George Strait" still matches
+    /// "George Strait &amp; His Band".
+    /// </summary>
+    private static bool ReleaseArtistMatchesQuery(JsonElement element, string requestedArtist)
+    {
+        if (string.IsNullOrWhiteSpace(requestedArtist)) return true;
+        var normalized = NormalizeArtistName(requestedArtist);
+        foreach (var creditedName in GetArtistNamesFromCredit(element))
+        {
+            var n = NormalizeArtistName(creditedName);
+            if (n == normalized) return true;
+            if (n.Contains(normalized, StringComparison.Ordinal)) return true;
+            if (normalized.Contains(n, StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Parses a MusicBrainz release-search JSON response and returns
+    /// (releaseIds, releaseGroupIds) â€" both in result order, deduplicated.
+    /// Only releases whose artist-credit approximately matches <paramref name="artist"/> are included.
+    /// </summary>
+    private static (List<string> ReleaseIds, List<string> ReleaseGroupIds) ExtractMusicBrainzIds(string json, string artist)
     {
         // MB JSON structure (simplified):
-        // { "releases": [ { "id": "<release-mbid>", "release-group": { "id": "<rg-mbid>" }, ... } ] }
+        // { "releases": [ { "id": "<release-mbid>", "artist-credit": [...], "release-group": { "id": "<rg-mbid>" }, ... } ] }
         var releaseIds      = new List<string>();
         var releaseGroupIds = new List<string>();
         var seenRg          = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -2084,6 +2151,9 @@ internal sealed partial class WebServer
 
             foreach (var release in releases.EnumerateArray())
             {
+                // Only include releases whose credited artist matches the requested artist.
+                if (!ReleaseArtistMatchesQuery(release, artist)) continue;
+
                 if (release.TryGetProperty("id", out var idProp))
                     releaseIds.Add(idProp.GetString() ?? string.Empty);
 
