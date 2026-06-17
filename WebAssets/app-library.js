@@ -2436,7 +2436,15 @@ function musicSortBy(col) {
 function _parsePlName(name) {
   const m = /^(\d{4})_(.+)$/.exec(name);
   const raw = m ? m[2] : name;
-  const year = m ? m[1] : null;
+  let year = m ? m[1] : null;
+  // If no underscore-year prefix, check for "YYYY - Album" (dash-separated year).
+  // Without this, "1992 - Dit ben ik" would be mis-parsed as artist="1992".
+  if (!year) {
+    const mDashYear = /^(\d{4})\s+[-\u2013\u2014]\s+(.+)$/.exec(raw);
+    if (mDashYear) {
+      return { displayName: mDashYear[2].trim(), year: mDashYear[1], artist: null };
+    }
+  }
   // Try to split "Artist - Album" or "Artist – Album"
   const sep = /^(.+?)\s+[-\u2013\u2014]\s+(.+)$/.exec(raw);
   const artist = sep ? sep[1].trim() : null;
