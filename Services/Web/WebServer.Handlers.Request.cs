@@ -178,6 +178,10 @@ internal sealed partial class WebServer
                 HandleCertificateDownload(ctx);
                 break;
 
+            case "/certificate-help":
+                HandleCertificateHelp(ctx);
+                break;
+
             case "/qr.svg":
                 HandleQrCode(ctx);
                 break;
@@ -576,6 +580,10 @@ internal sealed partial class WebServer
                 await HandleSyncAllAsync(ctx).ConfigureAwait(false);
                 break;
 
+            case "/api/sync/full":
+                await HandleSyncFullAsync(ctx).ConfigureAwait(false);
+                break;
+
             case "/api/music/pause":
                 _callbacks.PauseMusic();
                 TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
@@ -717,7 +725,16 @@ internal sealed partial class WebServer
                 break;
 
             default:
-                TrySendResponse(ctx, 404, "text/plain", "Not found");
+                if (!urlPath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+                {
+                    ctx.Response.AddHeader("Cache-Control", "no-cache");
+                    TrySendResponse(ctx, 200, "text/html; charset=utf-8",
+                        GetHtmlPage().Replace("__INSTANCE_NAME__", System.Web.HttpUtility.HtmlEncode(_config.InstanceName), StringComparison.Ordinal));
+                }
+                else
+                {
+                    TrySendResponse(ctx, 404, "text/plain", "Not found");
+                }
                 break;
         }
     }

@@ -274,6 +274,17 @@ public partial class MainWindow : Window
 
         AppendLog($"RemotePlay started");
         AppendLog($"Video paths: {string.Join(", ", _config.AllResolvedMoviesPaths.Take(2))}{(_config.AllResolvedMoviesPaths.Length > 2 ? ", ..." : "")}");
+
+        // Add HTTPS certificate notice if HTTPS is enabled
+        if (_config.UseHttps)
+        {
+            AppendLog("HTTPS is enabled. If you get a certificate warning in your browser:");
+            AppendLog("  1. Click 'Advanced' → 'Proceed anyway' (or continue to site)");
+            AppendLog("  2. Go to Settings → Server → Connection → 'Trust Certificate' button");
+            AppendLog("  3. Follow the step-by-step instructions to install the certificate");
+            AppendLog("  4. Restart your browser and the warning will be gone");
+        }
+
         UpdateFilterButtonStyles();
 
         // Route all Logger writes to the live log viewer
@@ -643,6 +654,8 @@ public partial class MainWindow : Window
         _dlna?.Stop();
         _dlna?.Dispose();
         _trayIcon?.Dispose();
+        _videoOverlay?.Dispose();
+        _videoOverlay = null;
         _mediaPlayer.Dispose();
         _musicPlayer.Dispose();
         _radioPlayer.Dispose();

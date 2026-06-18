@@ -1,4 +1,5 @@
-let currentMode = localStorage.getItem('remotePlayMode') || 'video';
+// Initialize to 'video'; will be updated by _bootstrapFromRoute() if URL specifies otherwise
+let currentMode = 'video';
 let musicBrowseHistory = [];
 let currentMusicFolder = null;
 let _musicLinkBase = null; // {real: string, virtual: string} | null — virtual path base for rplink folder navigation
@@ -165,7 +166,7 @@ async function playMusic(path, name) {
     musicIsPlaying = false;
     stopMusicPlaybackPoll();
     // Show music bar with local data (localPlay will also show the local docked bar)
-    const trackMeta = musicTrackList.find(t => t.path === path) || {};
+    const trackMeta = _findTrackMetaByPath(path) || {};
     updateMusicBar({
       isPlaying: true,
       isPaused: false,
@@ -202,7 +203,7 @@ async function playMusic(path, name) {
   // Immediately tell the server which track comes next so playback continues
   // even when this browser tab is closed before the current song ends.
   _queueNextTrackOnServer();
-  const trackMetaSrv = musicTrackList.find(t => t.path === path) || {};
+  const trackMetaSrv = _findTrackMetaByPath(path) || {};
   updateMusicBar({
     isPlaying: true,
     isPaused: false,
@@ -350,6 +351,76 @@ function pathToName(p) {
   return file.replace(/\.[^.]+$/, '');
 }
 
+function _normalizeMusicPath(path) {
+  let s = String(path || '').trim();
+  if (!s) return '';
+  try { s = decodeURIComponent(s); } catch (_) {}
+  s = s.split('?')[0].split('#')[0];
+  s = s.replace(/^file:\/\//i, '');
+  s = s.replace(/\\/g, '/').replace(/\/+/g, '/');
+  return s.toLowerCase();
+}
+
+function _trackBaseName(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const last = raw.replace(/\\/g, '/').split('/').pop() || raw;
+  return last.replace(/\.[^.]+$/, '').toLowerCase();
+}
+
+function _allTrackMetaSources() {
+  const all = [];
+  if (Array.isArray(musicTrackList) && musicTrackList.length) all.push(...musicTrackList);
+  if (Array.isArray(window._musicQueue) && window._musicQueue.length) all.push(...window._musicQueue);
+  if (currentMusicData && Array.isArray(currentMusicData.files) && currentMusicData.files.length) all.push(...currentMusicData.files);
+  return all;
+}
+
+function _findTrackMetaByPath(path) {
+  const key = _normalizeMusicPath(path);
+  if (!key) return null;
+
+  const all = _allTrackMetaSources();
+  const exact = all.find(t => _normalizeMusicPath(t.path) === key);
+  if (exact) return exact;
+
+  const base = _trackBaseName(key);
+  if (!base) return null;
+  return all.find(t => _trackBaseName(t.path) === base) || null;
+}
+
+function _findTrackMetaForStatus(s) {
+  const status = s || {};
+  const byPath = _findTrackMetaByPath(status.coverPath || status.currentPath || musicCurrentPath || '');
+  if (byPath) return byPath;
+
+  const all = _allTrackMetaSources();
+  const titleKey = _trackBaseName(status.title || '');
+  if (!titleKey || !all.length) return null;
+
+  const artistKey = String(status.artist || '').trim().toLowerCase();
+  let best = null;
+  let bestScore = -1;
+
+  for (const t of all) {
+    const pathName = _trackBaseName(t.path || '');
+    const nameKey = _trackBaseName(t.name || '');
+    if (pathName !== titleKey && nameKey !== titleKey) continue;
+
+    let score = 1;
+    const a = String(t.artist || '').trim().toLowerCase();
+    if (artistKey && a === artistKey) score += 2;
+    if (t.album && !['all', 'all songs', 'albums', 'singles'].includes(String(t.album).trim().toLowerCase())) score += 1;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = t;
+    }
+  }
+
+  return best;
+}
+
 function updateMusicBar(s) {
   window._lastMusicBarState = s;
   const bar = document.getElementById('music-player-bar');
@@ -358,6 +429,24 @@ function updateMusicBar(s) {
   bar.style.display = active ? 'flex' : 'none';
   const isDocked = active && window.matchMedia('(min-width:900px)').matches;
   document.body.classList.toggle('music-player-docked', isDocked);
+
+  const isGenericAlbum = (v) => {
+    const n = String(v || '').trim().toLowerCase();
+    return n === 'all' || n === 'all songs' || n === 'albums' || n === 'singles';
+  };
+  const lookupPath = s.coverPath || s.currentPath || musicCurrentPath || '';
+  let barTrackMeta = _findTrackMetaForStatus({ ...s, currentPath: lookupPath });
+
+  if (barTrackMeta) {
+    s.artist = s.artist || barTrackMeta.artist || '';
+    if (!s.album || isGenericAlbum(s.album))
+      s.album = barTrackMeta.album || s.album || '';
+    s.genre = s.genre || barTrackMeta.genre || '';
+    s.year = s.year || barTrackMeta.year || null;
+    s.ext = s.ext || barTrackMeta.ext || '';
+    s.durationSec = s.durationSec || barTrackMeta.durationSec || 0;
+    s.hasCover = s.hasCover ?? barTrackMeta.hasCover;
+  }
 
   // Title
   const title = document.getElementById('music-bar-title');
@@ -1181,21 +1270,31 @@ function _buildShuffleOrder() {
   _musicShuffleOrder = arr;
   _musicShufflePos = 0;
 }
-function toggleMusicShuffle() {
-  _musicShuffle = !_musicShuffle;
+async function _setMusicShuffleEnabled(enabled) {
+  const next = !!enabled;
+  if (_musicShuffle === next) {
+    if (_musicShuffle && !_musicShuffleOrder.length) _buildShuffleOrder();
+    _refreshMusicNavLabels();
+    return;
+  }
+
+  _musicShuffle = next;
   const btn = document.getElementById('music-btn-shuffle');
   if (btn) btn.classList.toggle('active', _musicShuffle);
+
   if (_musicShuffle) {
     // Load ALL tracks in the current folder before building shuffle order so
     // the shuffle pool is the full folder, not just the first page.
-    _loadAllMusicTracksForShuffle().then(() => {
-      _buildShuffleOrder();
-      // Refresh nav-label display without touching server state
-      _refreshMusicNavLabels();
-    });
-  } else {
-    _refreshMusicNavLabels();
+    await _loadAllMusicTracksForShuffle();
+    _buildShuffleOrder();
   }
+
+  // Refresh nav-label display without touching server state
+  _refreshMusicNavLabels();
+}
+
+function toggleMusicShuffle() {
+  _setMusicShuffleEnabled(!_musicShuffle).catch(() => {});
 }
 async function resetM3uCache() {
   const btn = document.getElementById('mcb-reset-m3u-btn');
@@ -1569,14 +1668,17 @@ function startMusicPlaybackPoll() {
 
     // Enrich server status with track-list metadata for the player bar.
     // Look in musicTrackList first, then fall back to the active queue entry.
-    const trackMeta = musicCurrentPath
-      ? (musicTrackList.find(t => t.path === musicCurrentPath)
-          || (window._musicQueue && window._musicQueue.find(q => q.path === musicCurrentPath))
-          || null)
-      : null;
+    const trackMeta = _findTrackMetaForStatus({ ...s, currentPath: musicCurrentPath || s.currentPath || '' });
     if (trackMeta) {
+      const genericAlbum = (v) => {
+        const n = String(v || '').trim().toLowerCase();
+        return n === 'all' || n === 'all songs' || n === 'albums' || n === 'singles';
+      };
+
       s.artist    = s.artist    || trackMeta.artist    || '';
-      s.album     = s.album     || trackMeta.album     || '';
+      if (!s.album || genericAlbum(s.album)) {
+        s.album = trackMeta.album || s.album || '';
+      }
       s.genre     = s.genre     || trackMeta.genre     || '';
       s.year      = s.year      || trackMeta.year      || null;
       s.ext       = s.ext       || trackMeta.ext       || '';
@@ -1630,20 +1732,25 @@ function stopMusicPlaybackPoll() {
 }
 
 function switchMode(mode, skipInitialBrowse = false) {
+  console.log('[BOOTSTRAP] switchMode called: mode =', mode, ', skipInitialBrowse =', skipInitialBrowse);
   // Stop whichever player is active before switching away from it.
   const leavingVideo = currentMode === 'video' && mode !== 'video';
   const leavingMusic = currentMode === 'music' && mode !== 'music';
   const leavingRadio = currentMode === 'radio' && mode !== 'radio';
+  console.log('[BOOTSTRAP] Leaving: video =', leavingVideo, ', music =', leavingMusic, ', radio =', leavingRadio);
+
   if (leavingVideo && playingPath && typeof stop !== 'undefined') stop();
   if (leavingMusic && musicIsPlaying && typeof musicStop !== 'undefined') musicStop();
-  if (leavingRadio && typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying && typeof radioStop !== 'undefined') radioStop();
+  // Use window._ prefix to safely access potentially uninitialized global variables
+  if (leavingRadio && window._radioIsPlaying && typeof radioStop !== 'undefined') radioStop();
   if (typeof _hideSearchFilterBar === 'function') _hideSearchFilterBar();
 
   currentMode = mode;
+  console.log('[BOOTSTRAP] currentMode updated to:', currentMode);
   localStorage.setItem('remotePlayMode', mode);
   // Remove music dock when leaving music mode
   if (mode !== 'music') document.body.classList.remove('music-player-docked');
-  if (mode !== 'radio' && !_radioIsPlaying) document.body.classList.remove('radio-player-docked');
+  if (mode !== 'radio' && !window._radioIsPlaying) document.body.classList.remove('radio-player-docked');
   document.body.classList.toggle('radio-mode', mode === 'radio');
   ['video', 'music', 'radio'].forEach((m) => {
     const tab = document.getElementById('tab-' + m);
@@ -1732,7 +1839,13 @@ function switchMode(mode, skipInitialBrowse = false) {
       if (_sess && _sess.encodedPath && _browsedThisLoad) _openDynamicFolder(_sess.encodedPath, _sess.name || '');
       else browseMusic(null);
     }
-    else renderMusicHeader(currentMusicData, false);
+    else if (skipInitialBrowse && !currentMusicData) {
+      // Bootstrap without data - load root
+      browseMusic(null);
+    }
+    else if (currentMusicData) {
+      renderMusicHeader(currentMusicData, false);
+    }
   } else if (mode === 'radio') {
     if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
     const mcb = document.getElementById('music-command-bar');
@@ -2218,6 +2331,7 @@ function _stopMusicFolderFastPoll() {
 }
 
 async function browseMusic(folder, virtualPath = null, offset = 0, append = false) {
+  console.log('[MUSIC] browseMusic called: folder =', folder, ', append =', append);
   if (!append) {
     _musicSelectionClear();
     _stopMusicFolderFastPoll();
@@ -2230,6 +2344,7 @@ async function browseMusic(folder, virtualPath = null, offset = 0, append = fals
       if (folder === null || folder === undefined) musicBrowseHistory = [];
     }
     currentMusicFolder = folder;
+    console.log('[MUSIC] currentMusicFolder set to:', currentMusicFolder);
     // Track virtual path base for rplink folder navigation
     if (virtualPath) {
       _musicLinkBase = { real: folder.replace(/[\/\\]+$/, ''), virtual: virtualPath };
@@ -2289,6 +2404,42 @@ async function browseMusic(folder, virtualPath = null, offset = 0, append = fals
         + '</div>';
       return;
     }
+    if (!append) {
+      // Build a friendly URL path from breadcrumbs or folder path
+      let friendlyPath = null;
+      if (data.breadcrumbs && data.breadcrumbs.length) {
+        console.log('[MUSIC] Breadcrumbs from server:', data.breadcrumbs);
+        friendlyPath = _buildFriendlyPathFromBreadcrumbs(data.breadcrumbs);
+        console.log('[MUSIC] Friendly path from breadcrumbs:', friendlyPath);
+      } else if (folder) {
+        friendlyPath = _encodeRouteFolder(folder);
+        console.log('[MUSIC] Friendly path from folder:', friendlyPath);
+      }
+
+      if (friendlyPath || folder) {
+        // Build URL with friendly names + base64url-encoded path at the end
+        let path = '/music/';
+        if (friendlyPath) {
+          path += friendlyPath;
+        }
+        if (folder) {
+          const encoded = _folderPathToBase64Url(folder);
+          if (encoded) {
+            if (friendlyPath) path += '/';
+            path += encoded;
+          }
+        }
+        console.log('[MUSIC] Setting URL to:', path);
+        if (window.history && typeof window.history.replaceState === 'function') {
+          window.history.replaceState(window.history.state, '', path);
+        }
+      } else {
+        if (window.history && typeof window.history.replaceState === 'function') {
+          window.history.replaceState(window.history.state, '', '/music');
+        }
+      }
+    }
+
     if (currentMode === 'music') renderMusicHeader(currentMusicData, false);
     renderMusicCards(currentMusicData);
     // Mark that the user has browsed music at least once this page lifetime,
@@ -2529,7 +2680,16 @@ function renderMusicCards(data, searching) {
       t += f.exclude.map(x => '<span class="folder-dyn-tag folder-dyn-tag-exclude">\u2212' + esc(x) + '</span>').join('');
     if (f.genre) t += '<span class="folder-dyn-tag folder-dyn-tag-genre">\uD83C\uDFB5 ' + esc(f.genre) + '</span>';
     if (f.yearFrom || f.yearTo)
-      t += '<span class="folder-dyn-tag folder-dyn-tag-year">\uD83D\uDCC5 ' + (f.yearFrom || '?') + '\u2013' + (f.yearTo || '?') + '</span>';
+      t += '<span class="folder-dyn-tag folder-dyn-tag-year">\uD83D\uDCC5 ' + esc(String(f.yearFrom || '?')) + '\u2013' + esc(String(f.yearTo || '?')) + '</span>';
+    if (f.minDuration != null || f.maxDuration != null) {
+      const minTxt = f.minDuration != null ? _fmtDuration(f.minDuration) : '0:00';
+      const maxTxt = f.maxDuration != null ? _fmtDuration(f.maxDuration) : '∞';
+      t += '<span class="folder-dyn-tag folder-dyn-tag-time">⏱ ' + esc(minTxt + '–' + maxTxt) + '</span>';
+    }
+    if (f.mode === 'maxTotalDuration' && f.maxTotalDuration != null)
+      t += '<span class="folder-dyn-tag folder-dyn-tag-total">🧮 ≤ ' + esc(_fmtDuration(f.maxTotalDuration)) + '</span>';
+    if (f.recursive === false)
+      t += '<span class="folder-dyn-tag folder-dyn-tag-scope">📁 Flat</span>';
     return t;
   }
   function _dynLastSeen(f) {
@@ -2551,7 +2711,6 @@ function renderMusicCards(data, searching) {
       data.folders.filter(f => f.isDynamic).forEach(function(f) {
         const _dp = jsStr(f.dynamicPath || f.folder);
         const filterTags = _dynFilterTags(f);
-        const lastSeen = _dynLastSeen(f);
         const sortIcon = f.sort === 'alphabetical' ? '\u21d3 A\u2013Z' : f.sort === 'oldest' ? '\u21d3 Oldest' : f.sort === 'newest' ? '\u21d3 Recent' : '\uD83C\uDFB2';
         const modeLabel = f.mode === 'all' ? 'All' : f.mode === 'top' ? 'Top' : 'Random';
         gridHtml += '<div class="mfc-card mfc-dyn-card folder-row-dynamic" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
@@ -2561,15 +2720,18 @@ function renderMusicCards(data, searching) {
           + '<div class="mfc-card-hero">'
           + '<div class="mfc-dyn-top-row">'
           + '<span class="mfc-dyn-badge">DYNAMIC</span>'
-          + '<span class="mfc-dyn-badge" style="opacity:.8">' + sortIcon + ' · ' + modeLabel + '</span>'
           + '</div>'
           + '<span class="mfc-card-icon">🎲</span>'
           + (f.trackCount ? '<span class="mfc-dyn-count">' + f.trackCount + ' songs</span>' : '')
           + '</div>'
-          + '<div class="mfc-card-footer">'
-          + '<span class="mfc-card-name">' + esc(f.name) + '</span>'
+          + '<div class="mfc-card-footer mfc-dyn-footer">'
+          + '<div class="mfc-dyn-side">'
+          + '<span class="mfc-dyn-side-mode">' + esc(sortIcon + ' · ' + modeLabel) + '</span>'
           + (filterTags ? '<div class="mfc-dyn-tags">' + filterTags + '</div>' : '')
-          + (lastSeen ? '<span class="mfc-dyn-last">🕒 ' + lastSeen + '</span>' : '')
+          + '</div>'
+          + '<div class="mfc-dyn-main">'
+          + '<span class="mfc-card-name" title="' + esc(f.name) + '">' + esc(f.name) + '</span>'
+          + '</div>'
           + '</div>'
           + '</div>';
       });
@@ -2692,6 +2854,7 @@ function renderMusicCards(data, searching) {
         + `<span class="sortable" onclick="musicSortBy('name')" title="Sort by title">Title${_si('name')}</span>`
         + `<span class="sortable" onclick="musicSortBy('ext')" title="Sort by format">Fmt${_si('ext')}</span>`
         + `<span class="sortable" onclick="musicSortBy('artist')" title="Sort by artist">Artist${_si('artist')}</span>`
+        + `<span class="sortable" onclick="musicSortBy('year')" title="Sort by year">Year${_si('year')}</span>`
         + `<span class="sortable" onclick="musicSortBy('album')" title="Sort by album">Album${_si('album')}</span>`
         + `<span class="sortable mtc-dur-hdr" onclick="musicSortBy('durationSec')" title="Sort by duration">Time${_si('durationSec')}</span>`
         + '<span></span>'
@@ -2753,10 +2916,15 @@ function renderMusicCards(data, searching) {
       // ── Col 4: artist ─────────────────────────────────────────────────
       card += `<span class="mtc-artist">${esc(artist)}</span>`;
 
-      // ── Col 5: album ──────────────────────────────────────────────────
+      // ── Col 5 (list only): year ──────────────────────────────────────
+      if (isList) {
+        card += `<span class="mtc-year">${year != null ? esc(String(year)) : ''}</span>`;
+      }
+
+      // ── Col 6: album ──────────────────────────────────────────────────
       card += `<span class="mtc-album">${esc(album)}</span>`;
 
-      // ── Col 6 (list only): duration ───────────────────────────────────
+      // ── Col 7 (list only): duration ───────────────────────────────────
       if (isList) {
         card += `<span class="mtc-duration">${esc(duration)}</span>`;
       }
@@ -4176,11 +4344,61 @@ document.addEventListener('keydown', (e) => {
     skip(10);
   }
 });
-browse(null);
-refreshLibraryStatus();
-refreshThumbnailStatus();
-setInterval(refreshLibraryStatus, 2500);
-setInterval(refreshThumbnailStatus, 2500);
+function _bootstrapFromRoute() {
+  console.log('[BOOTSTRAP] _bootstrapFromRoute started');
+  const route = _parseInitialUiRoute();
+  console.log('[BOOTSTRAP] route parsed:', route);
+
+  if (!route.hasExplicitRoute) {
+    // No URL route specified; restore from localStorage or default to video
+    const savedMode = localStorage.getItem('remotePlayMode') || 'video';
+    console.log('[BOOTSTRAP] No explicit URL route; restored mode from localStorage:', savedMode);
+
+    if (savedMode === 'music') {
+      console.log('[BOOTSTRAP] Switching to music mode');
+      switchMode('music', true);
+      browseMusic(null);
+      return;
+    }
+    if (savedMode === 'radio') {
+      console.log('[BOOTSTRAP] Switching to radio mode');
+      switchMode('radio', true);
+      return;
+    }
+    // Default to video
+    console.log('[BOOTSTRAP] Defaulting to video mode');
+    browse(null);
+    return;
+  }
+
+  // URL route detected; switch to the specified mode and start from root
+  console.log('[BOOTSTRAP] Explicit URL route detected: mode =', route.mode);
+
+  if (route.mode === 'radio') {
+    console.log('[BOOTSTRAP] Switching to radio mode (from URL)');
+    switchMode('radio', true);
+    return;
+  }
+
+  if (route.mode === 'music') {
+    console.log('[BOOTSTRAP] Switching to music mode (from URL)');
+    switchMode('music', true);
+    // Use folderPath from sessionStorage if available, otherwise start at root
+    const folderToLoad = route.folderPath || null;
+    console.log('[BOOTSTRAP] Loading music folder:', folderToLoad);
+    browseMusic(folderToLoad);
+    return;
+  }
+
+  console.log('[BOOTSTRAP] Switching to video mode (from URL)');
+  switchMode('video', true);
+  // Use folderPath from sessionStorage if available, otherwise start at root
+  const videoFolderToLoad = route.folderPath ? _encodePath(route.folderPath) : null;
+  console.log('[BOOTSTRAP] Loading video folder:', videoFolderToLoad);
+  browse(videoFolderToLoad);
+}
+
+// Bootstrap is now called at the end of app-local.js after all modules are loaded
 updateVolumeIcon(parseFloat(document.getElementById('video-combined-vol')?.value) || 0);
 // updateAudioBoostIcon is a no-op — boost state now reflected by combined slider colour
 syncSpeedChips(currentPlaybackSpeed);
@@ -4474,6 +4692,49 @@ function toggleSettingsPanel() {
   }
 }
 
+function _rpdynParseDurationInput(value) {
+  const raw = (value || '').trim();
+  if (!raw) return null;
+
+  if (/^\d+$/.test(raw)) return parseInt(raw, 10);
+
+  const parts = raw.split(':').map(p => p.trim());
+  if (parts.length !== 2 && parts.length !== 3) return Number.NaN;
+  if (parts.some(p => !/^\d+$/.test(p))) return Number.NaN;
+
+  if (parts.length === 2) {
+    const mm = parseInt(parts[0], 10);
+    const ss = parseInt(parts[1], 10);
+    if (ss >= 60) return Number.NaN;
+    return mm * 60 + ss;
+  }
+
+  const hh = parseInt(parts[0], 10);
+  const mm = parseInt(parts[1], 10);
+  const ss = parseInt(parts[2], 10);
+  if (mm >= 60 || ss >= 60) return Number.NaN;
+  return hh * 3600 + mm * 60 + ss;
+}
+
+function _rpdynFormatDurationInput(seconds) {
+  const sec = Number(seconds);
+  if (!Number.isFinite(sec) || sec < 0) return '';
+  return fmtSec(sec);
+}
+
+function _rpdynNormalizeDurationField(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const parsed = _rpdynParseDurationInput(el.value);
+  if (parsed === null) {
+    el.value = '';
+    return;
+  }
+  if (!Number.isNaN(parsed)) {
+    el.value = _rpdynFormatDurationInput(parsed);
+  }
+}
+
 /** Called when clicking the Shift+button — opens the creation dialog */
 function _createDynamicFolder() {
   _rpdynMode = 'create';
@@ -4495,6 +4756,7 @@ function _createDynamicFolder() {
   document.getElementById('rpdyn-year-to').value = '';
   document.getElementById('rpdyn-min-dur').value = '';
   document.getElementById('rpdyn-max-dur').value = '';
+  document.getElementById('rpdyn-max-total-dur').value = '1:00:00';
   document.getElementById('rpdyn-autoplay').checked = false;
   _rpdynModeChange();
   dlg.style.display = 'flex';
@@ -4504,8 +4766,12 @@ function _createDynamicFolder() {
 /** Show/hide the count row depending on mode */
 function _rpdynModeChange() {
   const modeEl = document.getElementById('rpdyn-mode');
-  const row = document.getElementById('rpdyn-count-row');
-  if (row) row.style.display = (modeEl && modeEl.value === 'all') ? 'none' : '';
+  const countRow = document.getElementById('rpdyn-count-row');
+  const maxTotalRow = document.getElementById('rpdyn-max-total-row');
+  const mode = modeEl ? modeEl.value : 'sample';
+
+  if (countRow) countRow.style.display = (mode === 'all' || mode === 'maxTotalDuration') ? 'none' : '';
+  if (maxTotalRow) maxTotalRow.style.display = mode === 'maxTotalDuration' ? '' : 'none';
 }
 
 /** Open the edit dialog for an existing dynamic folder */
@@ -4529,6 +4795,7 @@ async function _editDynamicFolder(encodedPath) {
   document.getElementById('rpdyn-year-to').value = '';
   document.getElementById('rpdyn-min-dur').value = '';
   document.getElementById('rpdyn-max-dur').value = '';
+  document.getElementById('rpdyn-max-total-dur').value = '1:00:00';
   document.getElementById('rpdyn-autoplay').checked = false;
   try {
     const res = await fetch('/api/music/dynamic?path=' + encodeURIComponent(encodedPath));
@@ -4546,8 +4813,9 @@ async function _editDynamicFolder(encodedPath) {
       if (s.genre) document.getElementById('rpdyn-genre').value = s.genre;
       if (s.yearFrom != null) document.getElementById('rpdyn-year-from').value = s.yearFrom;
       if (s.yearTo   != null) document.getElementById('rpdyn-year-to').value   = s.yearTo;
-      if (s.minDuration != null) document.getElementById('rpdyn-min-dur').value = s.minDuration;
-      if (s.maxDuration != null) document.getElementById('rpdyn-max-dur').value = s.maxDuration;
+      if (s.minDuration != null) document.getElementById('rpdyn-min-dur').value = _rpdynFormatDurationInput(s.minDuration);
+      if (s.maxDuration != null) document.getElementById('rpdyn-max-dur').value = _rpdynFormatDurationInput(s.maxDuration);
+      if (s.maxTotalDuration != null) document.getElementById('rpdyn-max-total-dur').value = _rpdynFormatDurationInput(s.maxTotalDuration);
       if (s.autoPlay != null) document.getElementById('rpdyn-autoplay').checked = !!s.autoPlay;
     }
   } catch (e) { /* keep defaults */ }
@@ -4582,11 +4850,18 @@ async function _saveDynamicFolder() {
   const yearTo    = yearToVal   ? parseInt(yearToVal,   10) : null;
   const minDurVal = document.getElementById('rpdyn-min-dur').value.trim();
   const maxDurVal = document.getElementById('rpdyn-max-dur').value.trim();
-  const minDuration = minDurVal ? parseInt(minDurVal, 10) : null;
-  const maxDuration = maxDurVal ? parseInt(maxDurVal, 10) : null;
+  const minDuration = _rpdynParseDurationInput(minDurVal);
+  const maxDuration = _rpdynParseDurationInput(maxDurVal);
+  const maxTotalDurVal = document.getElementById('rpdyn-max-total-dur').value.trim();
+  const maxTotalDuration = _rpdynParseDurationInput(maxTotalDurVal);
   const autoPlay  = document.getElementById('rpdyn-autoplay').checked;
 
-  const payload = { name, sort, mode, count, recursive, include, exclude, genre, yearFrom, yearTo, minDuration, maxDuration, autoPlay };
+  if (Number.isNaN(minDuration) || Number.isNaN(maxDuration) || Number.isNaN(maxTotalDuration)) {
+    alert('Invalid duration. Use seconds, mm:ss, or hh:mm:ss.');
+    return;
+  }
+
+  const payload = { name, sort, mode, count, recursive, include, exclude, genre, yearFrom, yearTo, minDuration, maxDuration, maxTotalDuration, autoPlay };
 
   try {
     let res;
@@ -4811,7 +5086,12 @@ async function _openDynamicFolder(encodedPath, name) {
       const settRes = await fetch('/api/music/dynamic?path=' + encodeURIComponent(encodedPath));
       if (settRes.ok) {
         const sett = await settRes.json();
-        if (sett.autoPlay && typeof playMusicAll === 'function') playMusicAll();
+        const sort = (sett && typeof sett.sort === 'string') ? sett.sort.toLowerCase() : '';
+        const dynamicWantsShuffle = sort === 'random' || sort === 'shuffle';
+        if (sett.autoPlay && typeof playMusicAll === 'function') {
+          if (dynamicWantsShuffle) await _setMusicShuffleEnabled(true);
+          playMusicAll();
+        }
       }
     } catch { /* best-effort */ }
   } catch (e) {

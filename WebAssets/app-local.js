@@ -85,3 +85,27 @@ function localAudioBeepTest() {
     _postLog(`[LOCAL-BEEP] error: ${err}`);
   }
 }
+
+// ===== BOOTSTRAP: Initialize UI based on current URL route (all modules now loaded) =====
+function _executeBootstrap() {
+  try {
+    console.log('[BOOTSTRAP] Starting initialization (all modules loaded)');
+    _bootstrapFromRoute();
+    refreshLibraryStatus();
+    refreshThumbnailStatus();
+    setInterval(refreshLibraryStatus, 2500);
+    setInterval(refreshThumbnailStatus, 2500);
+    updateVolumeIcon(parseFloat(document.getElementById('video-combined-vol')?.value) || 0);
+    syncSpeedChips(currentPlaybackSpeed);
+    console.log('[BOOTSTRAP] Initialization complete');
+  } catch (err) {
+    console.error('[BOOTSTRAP] Initialization failed:', err);
+  }
+}
+
+// Execute bootstrap when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _executeBootstrap);
+} else {
+  _executeBootstrap();
+}

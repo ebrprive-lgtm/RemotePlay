@@ -635,11 +635,17 @@
             <select id="rpdyn-mode" class="rpdyn-input" onchange="_rpdynModeChange()">
               <option value="sample">Pick N tracks</option>
               <option value="all">Play everything</option>
+              <option value="maxTotalDuration">Max total playlist length</option>
             </select>
 
             <div id="rpdyn-count-row">
               <label class="rpdyn-label" for="rpdyn-count">Number of tracks</label>
               <input id="rpdyn-count" class="rpdyn-input" type="number" min="1" max="9999" value="20" />
+            </div>
+
+            <div id="rpdyn-max-total-row" style="display:none">
+              <label class="rpdyn-label" for="rpdyn-max-total-dur">Maximum total length <span class="rpdyn-hint">(mm:ss or hh:mm:ss)</span></label>
+              <input id="rpdyn-max-total-dur" class="rpdyn-input" type="text" value="1:00:00" placeholder="e.g. 45:00 or 1:30:00" onblur="_rpdynNormalizeDurationField('rpdyn-max-total-dur')" />
             </div>
 
             <label class="rpdyn-label rpdyn-toggle-row" for="rpdyn-recursive">
@@ -669,12 +675,12 @@
 
             <div class="rpdyn-row">
               <div class="rpdyn-col">
-                <label class="rpdyn-label" for="rpdyn-min-dur">Min duration <span class="rpdyn-hint">(seconds)</span></label>
-                <input id="rpdyn-min-dur" class="rpdyn-input rpdyn-year" type="number" min="0" max="99999" placeholder="e.g. 60" />
+                <label class="rpdyn-label" for="rpdyn-min-dur">Min duration <span class="rpdyn-hint">(mm:ss or hh:mm:ss)</span></label>
+                <input id="rpdyn-min-dur" class="rpdyn-input rpdyn-year" type="text" placeholder="e.g. 1:00 or 0:03:30" onblur="_rpdynNormalizeDurationField('rpdyn-min-dur')" />
               </div>
               <div class="rpdyn-col">
-                <label class="rpdyn-label" for="rpdyn-max-dur">Max duration <span class="rpdyn-hint">(seconds)</span></label>
-                <input id="rpdyn-max-dur" class="rpdyn-input rpdyn-year" type="number" min="0" max="99999" placeholder="e.g. 600" />
+                <label class="rpdyn-label" for="rpdyn-max-dur">Max duration <span class="rpdyn-hint">(mm:ss or hh:mm:ss)</span></label>
+                <input id="rpdyn-max-dur" class="rpdyn-input rpdyn-year" type="text" placeholder="e.g. 10:00 or 1:00:00" onblur="_rpdynNormalizeDurationField('rpdyn-max-dur')" />
               </div>
             </div>
 

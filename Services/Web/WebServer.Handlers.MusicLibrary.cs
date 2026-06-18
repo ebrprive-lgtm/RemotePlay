@@ -3,6 +3,7 @@ using System.Net;
 using System.Text.Json;
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace RemotePlay;
 
@@ -10,6 +11,88 @@ namespace RemotePlay;
 
 internal sealed partial class WebServer
 {
+    private static int? ParseOptionalInt(JsonElement value)
+    {
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number => value.GetInt32(),
+            JsonValueKind.String when int.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) => parsed,
+            JsonValueKind.Null => null,
+            _ => null
+        };
+    }
+
+    private static bool TryParseDurationTextToSeconds(string? value, out int seconds)
+    {
+        seconds = 0;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var parts = value.Split(':', StringSplitOptions.TrimEntries);
+        if (parts.Length is < 2 or > 3)
+            return false;
+
+        foreach (var part in parts)
+        {
+            if (!int.TryParse(part, NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+                return false;
+        }
+
+        if (parts.Length == 2)
+        {
+            var minutes = int.Parse(parts[0], CultureInfo.InvariantCulture);
+            var secs = int.Parse(parts[1], CultureInfo.InvariantCulture);
+            if (minutes < 0 || secs is < 0 or >= 60)
+                return false;
+
+            seconds = (minutes * 60) + secs;
+            return true;
+        }
+
+        var hours = int.Parse(parts[0], CultureInfo.InvariantCulture);
+        var mins = int.Parse(parts[1], CultureInfo.InvariantCulture);
+        var sec = int.Parse(parts[2], CultureInfo.InvariantCulture);
+        if (hours < 0 || mins is < 0 or >= 60 || sec is < 0 or >= 60)
+            return false;
+
+        seconds = (hours * 3600) + (mins * 60) + sec;
+        return true;
+    }
+
+    private static int? ParseOptionalDurationSeconds(JsonElement value)
+    {
+        if (value.ValueKind == JsonValueKind.Number)
+            return value.GetInt32();
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            var text = value.GetString();
+            if (string.IsNullOrWhiteSpace(text))
+                return null;
+
+            if (int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var directSeconds))
+                return directSeconds;
+
+            return TryParseDurationTextToSeconds(text, out var parsedSeconds) ? parsedSeconds : null;
+        }
+
+        return null;
+    }
+
+    private static int? ParseOptionalIntProperty(JsonElement root, string propertyName)
+    {
+        return root.TryGetProperty(propertyName, out var value)
+            ? ParseOptionalInt(value)
+            : null;
+    }
+
+    private static int? ParseOptionalDurationProperty(JsonElement root, string propertyName)
+    {
+        return root.TryGetProperty(propertyName, out var value)
+            ? ParseOptionalDurationSeconds(value)
+            : null;
+    }
+
     private void HandleMusicBrowse(HttpListenerContext ctx)
     {
         if (_musicIndex.Length == 0 && !_isMusicIndexing)
@@ -165,6 +248,7 @@ internal sealed partial class WebServer
                         int? yearTo = null;
                         int? minDuration = null;
                         int? maxDuration = null;
+                        int? maxTotalDuration = null;
                         string? lastExpanded = null;
                         try
                         {
@@ -180,20 +264,25 @@ internal sealed partial class WebServer
                             if (doc.RootElement.TryGetProperty("sort", out var sortProp))
                                 sort = sortProp.GetString() ?? sort;
                             if (doc.RootElement.TryGetProperty("name", out var nameProp))
-                                name = nameProp.GetString() ?? name;
+                            {
+                                var storedName = nameProp.GetString();
+                                if (!string.IsNullOrWhiteSpace(storedName))
+                                    name = storedName;
+                            }
                             if (doc.RootElement.TryGetProperty("include", out var incP) && incP.ValueKind == JsonValueKind.Array)
                                 include = [.. incP.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0)];
                             if (doc.RootElement.TryGetProperty("exclude", out var exP) && exP.ValueKind == JsonValueKind.Array)
                                 exclude = [.. exP.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0)];
                             if (doc.RootElement.TryGetProperty("genre", out var gp)) genre = gp.GetString() ?? string.Empty;
-                            if (doc.RootElement.TryGetProperty("yearFrom",    out var yfp)  && yfp.ValueKind  == JsonValueKind.Number) yearFrom    = yfp.GetInt32();
-                            if (doc.RootElement.TryGetProperty("yearTo",      out var ytp)  && ytp.ValueKind  == JsonValueKind.Number) yearTo      = ytp.GetInt32();
-                            if (doc.RootElement.TryGetProperty("minDuration", out var mnp)  && mnp.ValueKind  == JsonValueKind.Number) minDuration = mnp.GetInt32();
-                            if (doc.RootElement.TryGetProperty("maxDuration", out var mxp)  && mxp.ValueKind  == JsonValueKind.Number) maxDuration = mxp.GetInt32();
+                            yearFrom = ParseOptionalIntProperty(doc.RootElement, "yearFrom");
+                            yearTo = ParseOptionalIntProperty(doc.RootElement, "yearTo");
+                            minDuration = ParseOptionalDurationProperty(doc.RootElement, "minDuration");
+                            maxDuration = ParseOptionalDurationProperty(doc.RootElement, "maxDuration");
+                            maxTotalDuration = ParseOptionalDurationProperty(doc.RootElement, "maxTotalDuration");
                             if (doc.RootElement.TryGetProperty("lastExpanded", out var lep)) lastExpanded = lep.GetString();
                         }
                         catch { }
-                        return (object)new { name, folder = WebPathHelpers.EncodePath(f), isDynamic = true, dynamicPath = WebPathHelpers.EncodePath(f), trackCount, mode, sort, include, exclude, genre, yearFrom, yearTo, minDuration, maxDuration, lastExpanded };
+                        return (object)new { name, folder = WebPathHelpers.EncodePath(f), isDynamic = true, dynamicPath = WebPathHelpers.EncodePath(f), trackCount, mode, sort, include, exclude, genre, yearFrom, yearTo, minDuration, maxDuration, maxTotalDuration, lastExpanded };
                     })
                     .ToArray();
 
@@ -225,30 +314,124 @@ internal sealed partial class WebServer
                         string? artist = null;
                         try
                         {
-                            var lines = File.ReadLines(f).Where(l => !string.IsNullOrWhiteSpace(l) && !l.TrimStart().StartsWith('#')).ToList();
-                            trackCount = lines.Count;
-                            // Peek at the first track to extract the artist tag
-                            if (lines.Count > 0)
+                            var allLines = File.ReadLines(f)
+                                .Where(l => !string.IsNullOrWhiteSpace(l))
+                                .ToList();
+                            var trackPaths = allLines
+                                .Where(l => !l.TrimStart().StartsWith('#'))
+                                .ToList();
+                            trackCount = trackPaths.Count;
+
+                            var plName = Path.GetFileNameWithoutExtension(f);
+                            Logger.Detail("CoverDiag", $"Playlist '{plName}': {trackPaths.Count} tracks, {allLines.Count(l => l.TrimStart().StartsWith("#EXTINF", StringComparison.OrdinalIgnoreCase))} #EXTINF lines");
+
+                            // Step 1: Parse #EXTINF metadata — no disk access needed.
+                            // Handles:  #EXTINF:duration,Artist - Title
+                            //       and #EXTINF:... artist="Artist Name" ...
+                            foreach (var extInf in allLines.Where(
+                                l => l.TrimStart().StartsWith("#EXTINF", StringComparison.OrdinalIgnoreCase)))
                             {
-                                var firstEntry = lines[0].Trim();
-                                var firstPath = Path.IsPathRooted(firstEntry)
-                                    ? firstEntry
-                                    : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(f)!, firstEntry));
-                                if (File.Exists(firstPath))
+                                Logger.Detail("CoverDiag", $"Playlist '{plName}': examining EXTINF line: {extInf.Trim()}");
+
+                                // Attribute style: artist="André Hazes"
+                                var attrM = System.Text.RegularExpressions.Regex.Match(
+                                    extInf, @"artist=""([^""]+)""",
+                                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                                if (attrM.Success && !string.IsNullOrWhiteSpace(attrM.Groups[1].Value))
                                 {
-                                    try
+                                    artist = attrM.Groups[1].Value.Trim();
+                                    Logger.Detail("CoverDiag", $"Playlist '{plName}': artist from EXTINF attribute = '{artist}'");
+                                    break;
+                                }
+
+                                // Comma-display style: #EXTINF:duration,Artist - Title
+                                var comma = extInf.IndexOf(',');
+                                if (comma >= 0 && comma + 1 < extInf.Length)
+                                {
+                                    var display = extInf[(comma + 1)..].Trim();
+                                    Logger.Detail("CoverDiag", $"Playlist '{plName}': EXTINF display part = '{display}'");
+                                    var dashM = System.Text.RegularExpressions.Regex.Match(
+                                        display, @"^(.+?)\s+[-\u2013\u2014]\s+.+$");
+                                    if (dashM.Success && !string.IsNullOrWhiteSpace(dashM.Groups[1].Value))
                                     {
-                                        using var tagFile = TagLib.File.Create(firstPath);
-                                        var performers = tagFile.Tag.AlbumArtists.Length > 0
-                                            ? tagFile.Tag.AlbumArtists
-                                            : tagFile.Tag.Performers;
-                                        artist = performers.Length > 0 ? performers[0] : null;
+                                        artist = dashM.Groups[1].Value.Trim();
+                                        Logger.Detail("CoverDiag", $"Playlist '{plName}': artist from EXTINF display = '{artist}'");
+                                        break;
                                     }
-                                    catch { /* tag read failed, leave artist null */ }
+                                    else
+                                    {
+                                        Logger.Detail("CoverDiag", $"Playlist '{plName}': EXTINF display did not match 'Artist - Title' pattern");
+                                    }
                                 }
                             }
+
+                            // Step 2: Fall back to reading embedded file tags.
+                            // Try the first 3 tracks in case early paths don't resolve
+                            // on this machine (e.g. different drive letter or moved files).
+                            if (string.IsNullOrWhiteSpace(artist))
+                            {
+                                Logger.Detail("CoverDiag", $"Playlist '{plName}': no artist from EXTINF, trying file tags");
+                                    foreach (var pathLine in trackPaths.Take(3))
+                                    {
+                                        var entry = pathLine.Trim();
+                                        var filePath = Path.IsPathRooted(entry)
+                                            ? entry
+                                            : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(f)!, entry));
+                                        Logger.Detail("CoverDiag", $"Playlist '{plName}': checking track path '{filePath}' exists={File.Exists(filePath)}");
+                                        if (!File.Exists(filePath)) continue;
+                                        try
+                                        {
+                                            using var tagFile = TagLib.File.Create(filePath);
+                                            var albumArtists = tagFile.Tag.AlbumArtists;
+                                            var performers   = tagFile.Tag.Performers;
+                                            Logger.Detail("CoverDiag", $"Playlist '{plName}': track AlbumArtists=[{string.Join(",", albumArtists)}] Performers=[{string.Join(",", performers)}]");
+                                            var chosen = albumArtists.Length > 0 ? albumArtists : performers;
+                                            if (chosen.Length > 0 && !string.IsNullOrWhiteSpace(chosen[0]))
+                                            {
+                                                artist = chosen[0];
+                                                Logger.Detail("CoverDiag", $"Playlist '{plName}': artist from file tag = '{artist}'");
+                                                break;
+                                            }
+                                        }
+                                        catch (Exception tagEx) { Logger.Detail("CoverDiag", $"Playlist '{plName}': tag read failed for '{filePath}': {tagEx.Message}"); }
+                                    }
+                                }
+
+                                // Step 3: Fall back to the folder hierarchy above the M3U file.
+                                // Walk up the directory tree, skipping generic container folder
+                                // names (Albums, All, CD, Disc, etc.) that are organisational,
+                                // not artist names.  Handles layouts like:
+                                //   \Music\André Hazes\1983 - Voor jou.m3u          (parent = artist)
+                                //   \Music\André Hazes\Albums\1983 - Voor jou.m3u   (grandparent = artist)
+                                if (string.IsNullOrWhiteSpace(artist))
+                                {
+                                    static bool IsGenericFolder(string name) =>
+                                        string.IsNullOrWhiteSpace(name) ||
+                                        name.Equals("albums",    StringComparison.OrdinalIgnoreCase) ||
+                                        name.Equals("all",       StringComparison.OrdinalIgnoreCase) ||
+                                        name.Equals("music",     StringComparison.OrdinalIgnoreCase) ||
+                                        name.Equals("singles",   StringComparison.OrdinalIgnoreCase) ||
+                                        name.StartsWith("cd",    StringComparison.OrdinalIgnoreCase) ||
+                                        name.StartsWith("disc",  StringComparison.OrdinalIgnoreCase) ||
+                                        name.StartsWith("disk",  StringComparison.OrdinalIgnoreCase);
+
+                                    var dir = Path.GetDirectoryName(f);
+                                    while (!string.IsNullOrEmpty(dir))
+                                    {
+                                        var folderName = Path.GetFileName(dir);
+                                        if (!IsGenericFolder(folderName))
+                                        {
+                                            artist = folderName;
+                                            Logger.Detail("CoverDiag", $"Playlist '{plName}': artist from folder '{dir}' = '{artist}'");
+                                            break;
+                                        }
+                                        dir = Path.GetDirectoryName(dir);
+                                    }
+                                }
+
+                            Logger.Detail("CoverDiag", $"Playlist '{plName}': final artist = '{artist ?? "(null)"}'");
                         }
-                        catch { /* ignore unreadable playlists */ }
+                        catch (Exception plEx) { Logger.Warning("CoverDiag", $"Playlist scan exception for '{f}': {plEx.Message}"); }
                         return (object)new { name = Path.GetFileNameWithoutExtension(f), path = WebPathHelpers.EncodePath(f), trackCount, artist };
                     })
                     .ToArray();
@@ -346,6 +529,16 @@ internal sealed partial class WebServer
         var include = root.TryGetProperty("include", out var ip) && ip.ValueKind == JsonValueKind.Array
             ? [.. ip.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0)]
             : (string[])[];
+        var exclude = root.TryGetProperty("exclude", out var ep) && ep.ValueKind == JsonValueKind.Array
+            ? [.. ep.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0)]
+            : (string[])[];
+        var genre = root.TryGetProperty("genre", out var gp) ? gp.GetString() ?? string.Empty : string.Empty;
+        var yearFrom = ParseOptionalIntProperty(root, "yearFrom");
+        var yearTo = ParseOptionalIntProperty(root, "yearTo");
+        var minDuration = ParseOptionalDurationProperty(root, "minDuration");
+        var maxDuration = ParseOptionalDurationProperty(root, "maxDuration");
+        var maxTotalDuration = ParseOptionalDurationProperty(root, "maxTotalDuration");
+        var autoPlay = root.TryGetProperty("autoPlay", out var app) && app.ValueKind == JsonValueKind.True;
 
         if (!Directory.Exists(dir))
         {
@@ -358,7 +551,23 @@ internal sealed partial class WebServer
         if (string.IsNullOrWhiteSpace(name)) name = "My Dynamic Folder";
 
         var filePath = Path.Combine(dir, name + ".rpDynamic");
-        var settings = new { name, count, sort, mode, recursive, include };
+        var settings = new
+        {
+            name,
+            count,
+            sort,
+            mode,
+            recursive,
+            include,
+            exclude,
+            genre,
+            yearFrom,
+            yearTo,
+            minDuration,
+            maxDuration,
+            maxTotalDuration,
+            autoPlay
+        };
         try
         {
             File.WriteAllText(filePath, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }),
@@ -443,11 +652,12 @@ internal sealed partial class WebServer
                 : (string[])[],  (string[])[]);
         var genre        = root.TryGetProperty("genre",       out var gp)  ? gp.GetString()  ?? string.Empty : ExistOr("genre",       e => e.GetString() ?? string.Empty, string.Empty);
         // For nullable number fields: key present + Number = use it; key present + Null = explicit clear (null); key absent = fall back to existing value.
-        var yearFrom    = root.TryGetProperty("yearFrom",    out var yfp) ? (yfp.ValueKind == JsonValueKind.Number ? (int?)yfp.GetInt32() : null) : ExistOr("yearFrom",    e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
-        var yearTo      = root.TryGetProperty("yearTo",      out var ytp) ? (ytp.ValueKind == JsonValueKind.Number ? (int?)ytp.GetInt32() : null) : ExistOr("yearTo",      e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
-        var minDuration = root.TryGetProperty("minDuration", out var mnp) ? (mnp.ValueKind == JsonValueKind.Number ? (int?)mnp.GetInt32() : null) : ExistOr("minDuration", e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
-        var maxDuration = root.TryGetProperty("maxDuration", out var mxp) ? (mxp.ValueKind == JsonValueKind.Number ? (int?)mxp.GetInt32() : null) : ExistOr("maxDuration", e => e.ValueKind == JsonValueKind.Number ? (int?)e.GetInt32() : null, null);
-        var autoPlay     = root.TryGetProperty("autoPlay",    out var app) ? app.GetBoolean() : ExistOr("autoPlay",    e => e.GetBoolean(), false);
+        var yearFrom         = root.TryGetProperty("yearFrom",         out var yfp) ? ParseOptionalInt(yfp) : ExistOr("yearFrom", ParseOptionalInt, null);
+        var yearTo           = root.TryGetProperty("yearTo",           out var ytp) ? ParseOptionalInt(ytp) : ExistOr("yearTo", ParseOptionalInt, null);
+        var minDuration      = root.TryGetProperty("minDuration",      out var mnp) ? ParseOptionalDurationSeconds(mnp) : ExistOr("minDuration", ParseOptionalDurationSeconds, null);
+        var maxDuration      = root.TryGetProperty("maxDuration",      out var mxp) ? ParseOptionalDurationSeconds(mxp) : ExistOr("maxDuration", ParseOptionalDurationSeconds, null);
+        var maxTotalDuration = root.TryGetProperty("maxTotalDuration", out var mtp) ? ParseOptionalDurationSeconds(mtp) : ExistOr("maxTotalDuration", ParseOptionalDurationSeconds, null);
+        var autoPlay         = root.TryGetProperty("autoPlay",         out var app) ? app.GetBoolean() : ExistOr("autoPlay",         e => e.GetBoolean(), false);
 
         // If name changed, rename the file
         var dir = Path.GetDirectoryName(filePath) ?? string.Empty;
@@ -465,7 +675,7 @@ internal sealed partial class WebServer
         var settings = new
         {
             name = effectiveName, count, sort, mode, recursive, include, exclude,
-            genre, yearFrom, yearTo, minDuration, maxDuration, autoPlay,
+            genre, yearFrom, yearTo, minDuration, maxDuration, maxTotalDuration, autoPlay,
             lastExpanded
         };
         try
@@ -518,6 +728,7 @@ internal sealed partial class WebServer
         string artist = string.Empty;
         int? minDuration = null;
         int? maxDuration = null;
+        int? maxTotalDuration = null;
 
         try
         {
@@ -534,10 +745,11 @@ internal sealed partial class WebServer
                 exclude = [.. exP.EnumerateArray().Select(x => x.GetString() ?? string.Empty).Where(s => s.Length > 0)];
             if (root.TryGetProperty("genre",       out var gp))  genre    = gp.GetString()  ?? string.Empty;
             if (root.TryGetProperty("artist",      out var ap))  artist   = ap.GetString()  ?? string.Empty;
-            if (root.TryGetProperty("yearFrom",    out var yfp)  && yfp.ValueKind == JsonValueKind.Number) yearFrom    = yfp.GetInt32();
-            if (root.TryGetProperty("yearTo",      out var ytp)  && ytp.ValueKind == JsonValueKind.Number) yearTo      = ytp.GetInt32();
-            if (root.TryGetProperty("minDuration", out var mnp)  && mnp.ValueKind == JsonValueKind.Number) minDuration = mnp.GetInt32();
-            if (root.TryGetProperty("maxDuration", out var mxp)  && mxp.ValueKind == JsonValueKind.Number) maxDuration = mxp.GetInt32();
+            yearFrom = ParseOptionalIntProperty(root, "yearFrom");
+            yearTo = ParseOptionalIntProperty(root, "yearTo");
+            minDuration = ParseOptionalDurationProperty(root, "minDuration");
+            maxDuration = ParseOptionalDurationProperty(root, "maxDuration");
+            maxTotalDuration = ParseOptionalDurationProperty(root, "maxTotalDuration");
         }
         catch { }
 
@@ -546,7 +758,7 @@ internal sealed partial class WebServer
         bool needsTagFilter = !string.IsNullOrWhiteSpace(genre) || !string.IsNullOrWhiteSpace(artist)
             || yearFrom.HasValue || yearTo.HasValue || minDuration.HasValue || maxDuration.HasValue;
 
-        Logger.Info("DynamicExpand", $"Expanding '{displayName}' | baseDir='{baseDir}' sort={sort} mode={mode} count={count} recursive={recursive} include=[{string.Join(", ", include)}] exclude=[{string.Join(", ", exclude)}] genre='{genre}' artist='{artist}' yearFrom={yearFrom} yearTo={yearTo} minDuration={minDuration} maxDuration={maxDuration}");
+        Logger.Info("DynamicExpand", $"Expanding '{displayName}' | baseDir='{baseDir}' sort={sort} mode={mode} count={count} recursive={recursive} include=[{string.Join(", ", include)}] exclude=[{string.Join(", ", exclude)}] genre='{genre}' artist='{artist}' yearFrom={yearFrom} yearTo={yearTo} minDuration={minDuration} maxDuration={maxDuration} maxTotalDuration={maxTotalDuration}");
 
         // â”€â”€ Phase 1: candidate selection from in-memory index (zero filesystem I/O) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Take a snapshot of the index so we work on a consistent array without holding a lock.
@@ -559,6 +771,8 @@ internal sealed partial class WebServer
 
         // Collect M3U-sourced candidates from the in-memory M3U index (zero filesystem I/O).
         var m3uSnapshot = _m3uIndex;
+        var trackYearHint = _m3uTrackYearHints;
+        var globalTrackAlbumHint = _m3uTrackAlbumHints;
         var trackAlbumHint = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var m3uCandidates = new List<string>();
@@ -579,7 +793,7 @@ internal sealed partial class WebServer
         foreach (var kv in m3uSnapshot)
         {
             var m3uPath = kv.Key;
-            var entry   = kv.Value;
+            var entry = kv.Value;
 
             // Must be under baseDir
             if (!m3uPath.StartsWith(baseDirSlash, StringComparison.OrdinalIgnoreCase))
@@ -609,6 +823,30 @@ internal sealed partial class WebServer
             int added = 0;
             foreach (var track in entry.TrackPaths)
             {
+                // Keep M3U-sourced tracks scoped to this dynamic folder's base directory
+                // so an artist-scoped dynamic folder cannot pull songs from other artists.
+                if (!track.StartsWith(baseDirSlash, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (!recursive && track.IndexOf(Path.DirectorySeparatorChar, baseDirSlash.Length) >= 0)
+                    continue;
+                if (!_musicAudioExtensions.Contains(Path.GetExtension(track), StringComparer.OrdinalIgnoreCase))
+                    continue;
+
+                if (include.Length > 0)
+                {
+                    var trackDir = Path.GetDirectoryName(track) ?? string.Empty;
+                    var dirRel = trackDir.Length > baseDirSlash.Length ? trackDir[baseDirSlash.Length..] : string.Empty;
+                    if (!include.Any(p => dirRel.Contains(p, StringComparison.OrdinalIgnoreCase)))
+                        continue;
+                }
+                if (exclude.Length > 0)
+                {
+                    var trackDir = Path.GetDirectoryName(track) ?? string.Empty;
+                    var dirRel = trackDir.Length > baseDirSlash.Length ? trackDir[baseDirSlash.Length..] : string.Empty;
+                    if (exclude.Any(p => dirRel.Contains(p, StringComparison.OrdinalIgnoreCase)))
+                        continue;
+                }
+
                 if (!seen.Add(track)) continue;
                 m3uCandidates.Add(track);
                 trackAlbumHint[track] = entry.AlbumHint;
@@ -694,12 +932,39 @@ internal sealed partial class WebServer
         foreach (var mf in index)
             indexLookup.TryAdd(mf.FullPath, mf);
 
-        int need = mode == "all" ? int.MaxValue : Math.Max(1, count);
+        static bool TryResolveDurationSeconds(string path, Dictionary<string, MusicFile> lookup, out int durationSeconds)
+        {
+            if (lookup.TryGetValue(path, out var indexed) && indexed.Duration >= 0)
+            {
+                durationSeconds = indexed.Duration;
+                return true;
+            }
+
+            try
+            {
+                using var tf = TagLib.File.Create(path);
+                durationSeconds = (int)Math.Round(tf.Properties.Duration.TotalSeconds);
+                return durationSeconds >= 0;
+            }
+            catch
+            {
+                durationSeconds = -1;
+                return false;
+            }
+        }
+
+        var isAllMode = string.Equals(mode, "all", StringComparison.OrdinalIgnoreCase);
+        var isMaxTotalDurationMode = string.Equals(mode, "maxTotalDuration", StringComparison.OrdinalIgnoreCase);
+        var totalDurationLimitSeconds = isMaxTotalDurationMode ? Math.Max(1, maxTotalDuration ?? 0) : 0;
+        int need = (isAllMode || isMaxTotalDurationMode) ? int.MaxValue : Math.Max(1, count);
         var picked = new List<string>(Math.Min(need, 200));
+        int pickedDurationTotalSeconds = 0;
 
         foreach (var f in orderedCandidates)
         {
             if (picked.Count >= need) break;
+
+            int effectiveDurationSeconds = -1;
 
             // Filter: use cached metadata from the index when available.
             // Sentinel values for Duration:
@@ -713,69 +978,89 @@ internal sealed partial class WebServer
                 int trackDuration = -1;
 
                 bool fromIndex = indexLookup.TryGetValue(f, out var cachedMf);
-
                 if (fromIndex)
                 {
-                    trackGenre    = cachedMf!.Genre;
-                    trackYear     = cachedMf.Year;
+                    trackGenre = cachedMf!.Genre;
+                    trackYear = cachedMf.Year;
                     trackDuration = cachedMf.Duration;
-                    // Duration=-2: tags unreadable — exclude when any filter is active
-                    if (trackDuration == -2) continue;
-                    // Artist is not stored in the index; open the file once only when needed.
-                    if (!string.IsNullOrWhiteSpace(artist))
-                    {
-                        try
-                        {
-                            using var tagForArtist = TagLib.File.Create(f);
-                            var performers = tagForArtist.Tag.AlbumArtists.Length > 0 ? tagForArtist.Tag.AlbumArtists : tagForArtist.Tag.Performers;
-                            var ta = performers.Length > 0 ? performers[0] : null;
-                            if (ta == null || !ta.Contains(artist, StringComparison.OrdinalIgnoreCase)) continue;
-                        }
-                        catch { continue; } // unreadable — exclude
-                    }
                 }
-                else
+
+                var needsArtist = !string.IsNullOrWhiteSpace(artist);
+                var needsTagRead = !fromIndex
+                    || needsArtist
+                    || ((yearFrom.HasValue || yearTo.HasValue) && trackYear == 0)
+                    || ((minDuration.HasValue || maxDuration.HasValue || isMaxTotalDurationMode) && trackDuration < 0)
+                    || (!string.IsNullOrWhiteSpace(genre) && string.IsNullOrWhiteSpace(trackGenre));
+
+                if (needsTagRead)
                 {
-                    // Not in index (e.g. M3U-sourced track). One TagLib read covers all fields.
                     try
                     {
                         using var tagFile = TagLib.File.Create(f);
-                        trackGenre    = tagFile.Tag.FirstGenre;
-                        trackYear     = tagFile.Tag.Year;
-                        trackDuration = (int)Math.Round(tagFile.Properties.Duration.TotalSeconds);
-                        if (!string.IsNullOrWhiteSpace(artist))
+                        if (string.IsNullOrWhiteSpace(trackGenre))
+                            trackGenre = tagFile.Tag.FirstGenre;
+                        if (trackYear == 0)
+                            trackYear = tagFile.Tag.Year;
+                        if (trackDuration < 0)
+                            trackDuration = (int)Math.Round(tagFile.Properties.Duration.TotalSeconds);
+
+                        if (needsArtist)
                         {
                             var performers = tagFile.Tag.AlbumArtists.Length > 0 ? tagFile.Tag.AlbumArtists : tagFile.Tag.Performers;
                             var ta = performers.Length > 0 ? performers[0] : null;
                             if (ta == null || !ta.Contains(artist, StringComparison.OrdinalIgnoreCase)) continue;
                         }
                     }
-                    catch { continue; } // unreadable — exclude
+                    catch
+                    {
+                        if (needsArtist)
+                            continue;
+                    }
                 }
 
-                // --- Genre filter ---
-                if (!string.IsNullOrWhiteSpace(genre) && (trackGenre == null || !trackGenre.Contains(genre, StringComparison.OrdinalIgnoreCase))) continue;
+                effectiveDurationSeconds = trackDuration;
 
-                // --- Year filter ---
+                if (!string.IsNullOrWhiteSpace(genre) && (trackGenre == null || !trackGenre.Contains(genre, StringComparison.OrdinalIgnoreCase)))
+                    continue;
+
                 if (yearFrom.HasValue || yearTo.HasValue)
                 {
-                    // Not enriched or no year tag — cannot satisfy year range filter.
-                    if (trackDuration == -1 || trackYear == 0) continue;
+                    if (trackYear == 0 && trackYearHint.TryGetValue(f, out var hintedYear))
+                        trackYear = (uint)hintedYear;
+
+                    if (trackYear == 0) continue;
                     if (yearFrom.HasValue && trackYear < (uint)yearFrom.Value) continue;
-                    if (yearTo.HasValue   && trackYear > (uint)yearTo.Value)   continue;
+                    if (yearTo.HasValue && trackYear > (uint)yearTo.Value) continue;
                 }
 
-                // --- Duration filter ---
                 if (minDuration.HasValue || maxDuration.HasValue)
                 {
-                    // Not enriched — cannot verify duration; exclude.
-                    if (trackDuration == -1) continue;
-                    // trackDuration >= 0 here (Duration=-2 was already excluded above)
+                    if (trackDuration < 0) continue;
                     if (minDuration.HasValue && trackDuration < minDuration.Value) continue;
                     if (maxDuration.HasValue && trackDuration > maxDuration.Value) continue;
                 }
             }
+
+            if (isMaxTotalDurationMode)
+            {
+                if (totalDurationLimitSeconds <= 0)
+                    continue;
+
+                if (effectiveDurationSeconds < 0 && !TryResolveDurationSeconds(f, indexLookup, out effectiveDurationSeconds))
+                    continue;
+
+                if (pickedDurationTotalSeconds + effectiveDurationSeconds > totalDurationLimitSeconds)
+                    continue;
+            }
+
             picked.Add(f);
+
+            if (isMaxTotalDurationMode)
+            {
+                pickedDurationTotalSeconds += Math.Max(0, effectiveDurationSeconds);
+                if (pickedDurationTotalSeconds >= totalDurationLimitSeconds)
+                    break;
+            }
         }
 
         Logger.Info("DynamicExpand", $"Picked {picked.Count} track(s) (mode={mode}, sort={sort}):");
@@ -784,9 +1069,12 @@ internal sealed partial class WebServer
 
         var tracks = picked.Select(f =>
         {
-            var hint = trackAlbumHint.TryGetValue(f, out var h) ? h : null;
+            var hint = globalTrackAlbumHint.TryGetValue(f, out var gh)
+                ? gh
+                : (trackAlbumHint.TryGetValue(f, out var h) ? h : null);
+            var hintedYear = trackYearHint.TryGetValue(f, out var hy) ? hy : (int?)null;
             var cached = indexLookup.TryGetValue(f, out var cm) ? cm : new MusicFile(Path.GetFileNameWithoutExtension(f), f);
-            return (object)BuildMusicFileObj(cached, hint);
+            return (object)BuildMusicFileObj(cached, hint, hintedYear);
         }).ToArray();
 
         // Write lastExpanded timestamp and lastCount back to the .rpDynamic file (best-effort)
@@ -845,7 +1133,19 @@ internal sealed partial class WebServer
     }
 
 
-    private static object BuildMusicFileObj(MusicFile f, string? albumHint = null)
+    private static bool IsGenericAlbumName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+
+        var normalized = value.Trim();
+        return normalized.Equals("all", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("all songs", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("singles", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("albums", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static object BuildMusicFileObj(MusicFile f, string? albumHint = null, int? yearHint = null)
     {
         var dir    = Path.GetDirectoryName(f.FullPath) ?? string.Empty;
         var ext    = Path.GetExtension(f.FullPath).TrimStart('.').ToLowerInvariant();
@@ -858,7 +1158,7 @@ internal sealed partial class WebServer
         int?   trackNum = null;
         int?   durationSec = f.Duration >= 0 ? f.Duration : (int?)null;
         string genre = f.Genre ?? string.Empty;
-        int?   year  = f.Year > 0 ? (int)f.Year : (int?)null;
+        int?   year  = f.Year > 0 ? (int)f.Year : yearHint;
         bool   hasCover = false;
 
         // Try to read embedded ID3/Vorbis/etc. tags for display fields.
@@ -890,6 +1190,9 @@ internal sealed partial class WebServer
                 trackNum = tn;
             hasCover = FolderHasCoverImage(dir);
         }
+
+        if (!string.IsNullOrWhiteSpace(albumHint) && IsGenericAlbumName(album))
+            album = albumHint;
 
         return new
         {
@@ -1638,6 +1941,8 @@ internal sealed partial class WebServer
         var album  = (ctx.Request.QueryString["album"]  ?? string.Empty).Trim();
         var artist = (ctx.Request.QueryString["artist"] ?? string.Empty).Trim();
 
+        Logger.Detail("CoverDiag", $"AlbumArt request: artist='{artist}' album='{album}'");
+
         if (string.IsNullOrWhiteSpace(album))
         { TrySendResponse(ctx, 400, "text/plain", "missing album"); return; }
 
@@ -1647,6 +1952,7 @@ internal sealed partial class WebServer
 
         var cacheKey  = ComputeAlbumArtCacheKey(artist, album);
         var cacheFile = AlbumArtCacheFile(cacheKey);
+        Logger.Detail("CoverDiag", $"AlbumArt cacheKey='{cacheKey}' cacheFile='{Path.GetFileName(cacheFile)}'");
 
         // 1. Fast path â€” in-memory cache
         await _albumArtLock.WaitAsync(ct).ConfigureAwait(false);
@@ -1676,27 +1982,42 @@ internal sealed partial class WebServer
                 var diskBytes = await File.ReadAllBytesAsync(cacheFile, ct).ConfigureAwait(false);
                 if (diskBytes.Length > 0)
                 {
-                    await _albumArtLock.WaitAsync(ct).ConfigureAwait(false);
-                    _albumArtCache[cacheKey] = diskBytes;
-                    _albumArtLock.Release();
-                    Logger.Detail("AlbumArt", $"Served from disk cache: '{cacheKey}'");
-                    ctx.Response.ContentType = "image/jpeg";
-                    ctx.Response.ContentLength64 = diskBytes.Length;
-                    try
+                    // Validate the cached file is actually a JPEG.  Stale entries may contain
+                    // a JSON body written by an older code path that sent the wrong Accept header
+                    // to Cover Art Archive.  Delete and re-fetch from the network in that case.
+                    if (diskBytes.Length < 3 || diskBytes[0] != 0xFF || diskBytes[1] != 0xD8 || diskBytes[2] != 0xFF)
                     {
-                        await ctx.Response.OutputStream.WriteAsync(diskBytes, ct).ConfigureAwait(false);
-                        ctx.Response.OutputStream.Close();
+                        Logger.Warning("AlbumArt", $"Disk cache '{Path.GetFileName(cacheFile)}' is not a valid JPEG ({diskBytes.Length} bytes), deleting for re-fetch");
+                        try { File.Delete(cacheFile); } catch { }
+                        // Fall through to network fetch below
                     }
-                    catch (OperationCanceledException) { }
-                    catch (System.Net.HttpListenerException) { }  // client disconnected
+                    else
+                    {
+                        await _albumArtLock.WaitAsync(ct).ConfigureAwait(false);
+                        _albumArtCache[cacheKey] = diskBytes;
+                        _albumArtLock.Release();
+                        Logger.Detail("AlbumArt", $"Served from disk cache: '{cacheKey}'");
+                        ctx.Response.ContentType = "image/jpeg";
+                        ctx.Response.ContentLength64 = diskBytes.Length;
+                        try
+                        {
+                            await ctx.Response.OutputStream.WriteAsync(diskBytes, ct).ConfigureAwait(false);
+                            ctx.Response.OutputStream.Close();
+                        }
+                        catch (OperationCanceledException) { }
+                        catch (System.Net.HttpListenerException) { }  // client disconnected
+                        return;
+                    }
+                }
+                else
+                {
+                    // Zero-byte file = persisted miss â€” don't hit network again
+                    await _albumArtLock.WaitAsync(ct).ConfigureAwait(false);
+                    _albumArtCache[cacheKey] = null;
+                    _albumArtLock.Release();
+                    TrySendResponse(ctx, 404, "text/plain", "not found");
                     return;
                 }
-                // Zero-byte file = persisted miss â€” don't hit network again
-                await _albumArtLock.WaitAsync(ct).ConfigureAwait(false);
-                _albumArtCache[cacheKey] = null;
-                _albumArtLock.Release();
-                TrySendResponse(ctx, 404, "text/plain", "not found");
-                return;
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex)
@@ -1780,6 +2101,11 @@ internal sealed partial class WebServer
         catch (AlbumArtTransientException ex)
         {
             Logger.Warning("AlbumArt", $"Fetch failed (transient) for '{artist} - {album}': {ex.Message}");
+            fetchWasTransient = true;
+        }
+        catch (OperationCanceledException ex)
+        {
+            Logger.Warning("AlbumArt", $"Fetch timed out (transient) for '{artist} - {album}': {ex.Message}");
             fetchWasTransient = true;
         }
         catch (Exception ex)
@@ -2038,7 +2364,14 @@ internal sealed partial class WebServer
             System.Net.Http.HttpResponseMessage coverResponse;
             try
             {
-                coverResponse = await _albumArtHttpClient.GetAsync(coverUrl, ct).ConfigureAwait(false);
+                // Use a per-request Accept header so CAA returns the actual JPEG via
+                // its redirect chain instead of a JSON metadata object.  The shared
+                // HttpClient has Accept: application/json as its default (needed for
+                // MusicBrainz API calls), which would make CAA serve JSON here.
+                using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, coverUrl);
+                req.Headers.Accept.Clear();
+                req.Headers.Accept.ParseAdd("image/jpeg, image/*;q=0.8");
+                coverResponse = await _albumArtHttpClient.SendAsync(req, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -2061,26 +2394,57 @@ internal sealed partial class WebServer
                 continue;
             }
 
-            var imageBytes = await coverResponse.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-            if (imageBytes.Length > 0)
+            var imageBytes = await coverResponse.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+            if (imageBytes.Length > 3 && imageBytes[0] == 0xFF && imageBytes[1] == 0xD8 && imageBytes[2] == 0xFF)
             {
                 Logger.Detail("AlbumArt", $"Got {imageBytes.Length} bytes for '{artist} - {album}' via {coverUrl}");
                 return imageBytes;
             }
+
+            if (imageBytes.Length > 0)
+                Logger.Warning("AlbumArt", $"CAA response for {coverUrl} is not a JPEG ({imageBytes.Length} bytes); skipping");
         }
         return null;
     }
 
     /// <summary>
-    /// Normalizes an artist name for fuzzy comparison: trims, lowercases, and strips a
-    /// leading "the " so that "The Beatles" and "Beatles" compare as equal.
+    /// Normalizes an artist name for fuzzy comparison: trims, lowercases, strips a
+    /// leading "the ", and removes diacritics so that "Andre Hazes" matches "André Hazes"
+    /// and "The Beatles" matches "Beatles".
     /// </summary>
     private static string NormalizeArtistName(string? name)
     {
         if (string.IsNullOrWhiteSpace(name)) return string.Empty;
         var n = name.Trim().ToLowerInvariant();
         if (n.StartsWith("the ", StringComparison.Ordinal)) n = n[4..];
-        return n;
+        // Strip diacritics: decompose to base + combining marks, discard the marks,
+        // then recompose.  Mirrors the logic in ComputeAlbumArtCacheKey so the two
+        // are always consistent.
+        var decomposed = n.Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(decomposed.Length);
+        foreach (var ch in decomposed)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(ch) != UnicodeCategory.NonSpacingMark)
+                sb.Append(ch);
+        }
+        return sb.ToString().Normalize(NormalizationForm.FormC);
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> if <paramref name="pattern"/> appears inside
+    /// <paramref name="text"/> as a complete sequence of words — bounded by the
+    /// start/end of the string or a space character on each side.  Both strings
+    /// must already be normalized (lowercased).  An empty pattern always returns
+    /// <see langword="false"/>.
+    /// </summary>
+    private static bool IsContainedAsWholeWords(string text, string pattern)
+    {
+        if (pattern.Length == 0) return false;
+        int idx = text.IndexOf(pattern, StringComparison.Ordinal);
+        if (idx < 0) return false;
+        bool startOk = idx == 0 || text[idx - 1] == ' ';
+        bool endOk   = idx + pattern.Length == text.Length || text[idx + pattern.Length] == ' ';
+        return startOk && endOk;
     }
 
     /// <summary>
@@ -2109,9 +2473,11 @@ internal sealed partial class WebServer
     /// Returns <see langword="true"/> if any artist in the <c>artist-credit</c> array of
     /// <paramref name="element"/> approximately matches <paramref name="requestedArtist"/>.
     /// When <paramref name="requestedArtist"/> is empty the method always returns true
-    /// (no filter applied).  Matching is case-insensitive, strips "the " prefixes, and
-    /// allows one name to contain the other so "George Strait" still matches
-    /// "George Strait &amp; His Band".
+    /// (no filter applied).  Matching is case-insensitive and strips "the " prefixes.
+    /// Containment is only accepted when the shorter name is at least 4 characters and
+    /// appears at a word boundary, so short names like "Air" (3 chars) no longer
+    /// falsely match "Air Supply", while "George Strait" still matches
+    /// "George Strait &amp; The Ace In The Hole Band".
     /// </summary>
     private static bool ReleaseArtistMatchesQuery(JsonElement element, string requestedArtist)
     {
@@ -2120,9 +2486,14 @@ internal sealed partial class WebServer
         foreach (var creditedName in GetArtistNamesFromCredit(element))
         {
             var n = NormalizeArtistName(creditedName);
+            Logger.Detail("CoverDiag", $"ArtistMatch: normalized-requested='{normalized}' normalized-credited='{n}' (raw='{creditedName}')");
             if (n == normalized) return true;
-            if (n.Contains(normalized, StringComparison.Ordinal)) return true;
-            if (normalized.Contains(n, StringComparison.Ordinal)) return true;
+            // Word-boundary containment with a minimum-length guard prevents short names
+            // (e.g. "Air", 3 chars) from falsely matching longer unrelated ones
+            // (e.g. "Air Supply") while still allowing "george strait" to match
+            // "george strait & the ace in the hole band".
+            if (normalized.Length >= 4 && IsContainedAsWholeWords(n, normalized)) return true;
+            if (n.Length >= 4 && IsContainedAsWholeWords(normalized, n)) return true;
         }
         return false;
     }
@@ -2147,8 +2518,12 @@ internal sealed partial class WebServer
 
             foreach (var release in releases.EnumerateArray())
             {
-                // Only include releases whose credited artist matches the requested artist.
-                if (!ReleaseArtistMatchesQuery(release, artist)) continue;
+                var releaseTitle  = release.TryGetProperty("title",  out var tp)  ? tp.GetString()  : "?";
+                var releaseScore  = release.TryGetProperty("score",  out var sp)  ? sp.GetInt32()   : -1;
+                var creditedNames = string.Join(", ", GetArtistNamesFromCredit(release));
+                var passed = ReleaseArtistMatchesQuery(release, artist);
+                Logger.Detail("CoverDiag", $"MB release: score={releaseScore} title='{releaseTitle}' credited='{creditedNames}' requested='{artist}' → {(passed ? "ACCEPTED" : "REJECTED")}");
+                if (!passed) continue;
 
                 if (release.TryGetProperty("id", out var idProp))
                     releaseIds.Add(idProp.GetString() ?? string.Empty);
@@ -2174,6 +2549,40 @@ internal sealed partial class WebServer
     private object GetMusicScanStatus()
     {
         var pb = _callbacks.GetMusicStatus();
+
+        string album = pb.Album;
+        int? year = null;
+
+        if (!string.IsNullOrWhiteSpace(pb.CurrentPath))
+        {
+            string normalizedPath;
+            try
+            {
+                normalizedPath = Path.GetFullPath(pb.CurrentPath);
+            }
+            catch
+            {
+                normalizedPath = pb.CurrentPath;
+            }
+
+            if (IsGenericAlbumName(album) && _m3uTrackAlbumHints.TryGetValue(normalizedPath, out var hintedAlbum)
+                && !string.IsNullOrWhiteSpace(hintedAlbum))
+            {
+                album = hintedAlbum;
+            }
+
+            if (_m3uTrackYearHints.TryGetValue(normalizedPath, out var hintedYear) && hintedYear > 0)
+            {
+                year = hintedYear;
+            }
+            else
+            {
+                var fromIndex = _musicIndex.FirstOrDefault(f => string.Equals(f.FullPath, normalizedPath, StringComparison.OrdinalIgnoreCase));
+                if (fromIndex is not null && fromIndex.Year > 0)
+                    year = (int)fromIndex.Year;
+            }
+        }
+
         return new
         {
             sessionId     = _serverSessionId,
@@ -2189,7 +2598,8 @@ internal sealed partial class WebServer
             currentPath   = pb.CurrentPath is not null ? WebPathHelpers.EncodePath(pb.CurrentPath) : null,
             title         = pb.Title,
             artist        = pb.Artist,
-            album         = pb.Album,
+            album         = album,
+            year          = year,
             position      = pb.Position,
             duration      = pb.Duration,
             playbackError = pb.LastError,
@@ -2323,6 +2733,124 @@ internal sealed partial class WebServer
 
         await SendEvent(JsonSerializer.Serialize(new { type = "done", peers = peers.Length, sent = totalSent, skipped = totalSkipped, failed = totalFailed })).ConfigureAwait(false);
         Logger.Info("Sync", $"All-peers sync complete: peers={peers.Length} sent={totalSent} skipped={totalSkipped} failed={totalFailed}");
+    }
+
+    private async Task HandleSyncFullAsync(HttpListenerContext ctx)
+    {
+        // Read optional offsets payload first, before we touch the response.
+        Dictionary<string, JsonElement>? offsetsMap = null;
+        try
+        {
+            using var sr = new System.IO.StreamReader(ctx.Request.InputStream);
+            var body = await sr.ReadToEndAsync().ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(body))
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("offsets", out var o) && o.ValueKind == JsonValueKind.Object)
+                {
+                    offsetsMap = [];
+                    foreach (var prop in o.EnumerateObject())
+                        offsetsMap[prop.Name] = prop.Value.Clone();
+                }
+            }
+        }
+        catch { /* offsets are best-effort */ }
+
+        var peers = _broadcaster?.GetPeers()
+            .Where(p => !p.IsSelf && !string.IsNullOrWhiteSpace(p.Host) && p.Port > 0)
+            .ToArray() ?? [];
+
+        // SSE headers — SendChunked is required so HttpListener flushes each event immediately
+        // instead of buffering the entire response until the connection closes.
+        ctx.Response.StatusCode = 200;
+        ctx.Response.ContentType = "text/event-stream; charset=utf-8";
+        ctx.Response.SendChunked = true;
+        ctx.Response.AddHeader("Cache-Control", "no-store");
+        ctx.Response.AddHeader("X-Accel-Buffering", "no");
+
+        // bufferSize: 1 defeats the StreamWriter's own 4 KB write buffer so each event goes out immediately.
+        await using var writer = new System.IO.StreamWriter(ctx.Response.OutputStream, System.Text.Encoding.UTF8, bufferSize: 1, leaveOpen: true);
+        writer.AutoFlush = true;
+
+        async Task SendEvent(string data)
+        {
+            try
+            {
+                await writer.WriteAsync($"data: {data}\n\n").ConfigureAwait(false);
+                await writer.FlushAsync().ConfigureAwait(false);
+                await ctx.Response.OutputStream.FlushAsync().ConfigureAwait(false);
+            }
+            catch { /* client may have disconnected */ }
+        }
+
+        if (peers.Length == 0)
+        {
+            await SendEvent(JsonSerializer.Serialize(new { type = "done", message = "No peers discovered on the network yet." })).ConfigureAwait(false);
+            return;
+        }
+
+        using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("RemotePlay/1.0 (sync-full)");
+
+        int totalSent = 0, totalSkipped = 0, totalFailed = 0;
+
+        foreach (var peer in peers)
+        {
+            var peerUrl = peer.Url.TrimEnd('/');
+            await SendEvent(JsonSerializer.Serialize(new { type = "peer", peer = peer.Name, message = $"Full sync to {peer.Name} …" })).ConfigureAwait(false);
+
+            // --- Covers ---
+            await SendEvent(JsonSerializer.Serialize(new { type = "step", peer = peer.Name, step = "covers", message = "Pushing covers …" })).ConfigureAwait(false);
+            try
+            {
+                var (artSent, artSkipped, artFailed) = await SyncAlbumArtToPeerAsync(http, peerUrl).ConfigureAwait(false);
+                totalSent    += artSent;
+                totalSkipped += artSkipped;
+                totalFailed  += artFailed;
+                await SendEvent(JsonSerializer.Serialize(new { type = "step_done", peer = peer.Name, step = "covers", sent = artSent, skipped = artSkipped, failed = artFailed })).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await SendEvent(JsonSerializer.Serialize(new { type = "step_error", peer = peer.Name, step = "covers", message = ex.Message })).ConfigureAwait(false);
+            }
+
+            // --- Lyrics ---
+            await SendEvent(JsonSerializer.Serialize(new { type = "step", peer = peer.Name, step = "lyrics", message = "Pushing lyrics …" })).ConfigureAwait(false);
+            try
+            {
+                var (lyricSent, lyricSkipped, lyricFailed) = await SyncLyricsToPeerAsync(http, peerUrl).ConfigureAwait(false);
+                totalSent    += lyricSent;
+                totalSkipped += lyricSkipped;
+                totalFailed  += lyricFailed;
+                await SendEvent(JsonSerializer.Serialize(new { type = "step_done", peer = peer.Name, step = "lyrics", sent = lyricSent, skipped = lyricSkipped, failed = lyricFailed })).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await SendEvent(JsonSerializer.Serialize(new { type = "step_error", peer = peer.Name, step = "lyrics", message = ex.Message })).ConfigureAwait(false);
+            }
+
+            // --- Offsets ---
+            if (offsetsMap is { Count: > 0 })
+            {
+                await SendEvent(JsonSerializer.Serialize(new { type = "step", peer = peer.Name, step = "offsets", message = "Pushing offsets …" })).ConfigureAwait(false);
+                try
+                {
+                    var pushed = await SyncOffsetsToPeerAsync(http, peerUrl, offsetsMap).ConfigureAwait(false);
+                    await SendEvent(JsonSerializer.Serialize(new { type = "step_done", peer = peer.Name, step = "offsets", sent = pushed, skipped = 0, failed = 0 })).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    await SendEvent(JsonSerializer.Serialize(new { type = "step_error", peer = peer.Name, step = "offsets", message = ex.Message })).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                await SendEvent(JsonSerializer.Serialize(new { type = "step_done", peer = peer.Name, step = "offsets", sent = 0, skipped = 0, failed = 0, note = "no local offsets" })).ConfigureAwait(false);
+            }
+        }
+
+        await SendEvent(JsonSerializer.Serialize(new { type = "done", peers = peers.Length, sent = totalSent, skipped = totalSkipped, failed = totalFailed })).ConfigureAwait(false);
+        Logger.Info("Sync", $"Full-peers sync complete: peers={peers.Length} sent={totalSent} skipped={totalSkipped} failed={totalFailed}");
     }
 
     private static async Task<(int sent, int skipped, int failed)> SyncAlbumArtToPeerAsync(System.Net.Http.HttpClient http, string peerUrl)
@@ -2463,7 +2991,11 @@ internal sealed partial class WebServer
     private void HandleResetM3uCache(HttpListenerContext ctx)
     {
         lock (_musicIndexGate)
+        {
             _m3uIndex = new Dictionary<string, M3uEntry>(StringComparer.OrdinalIgnoreCase);
+            _m3uTrackYearHints = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            _m3uTrackAlbumHints = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
         Logger.Info("M3U cache cleared by user — triggering re-index.");
         StartM3uIndexRefresh();
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");

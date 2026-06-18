@@ -81,7 +81,7 @@ function _sleepTimerTick() {
 }
 
 function _sleepGetActiveVolume() {
-  if (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying) {
+  if (window._radioIsPlaying) {
     const s = document.getElementById('radio-bar-combined');
     return s ? Math.min(1.0, parseFloat(s.value)) : 0.8;
   }
@@ -95,7 +95,7 @@ function _sleepGetActiveVolume() {
 }
 
 function _sleepSetActiveVolume(vol) {
-  if (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying) {
+  if (window._radioIsPlaying) {
     const s = document.getElementById('radio-bar-combined');
     if (s) { s.value = vol; if (typeof radioCombinedSlider === 'function') radioCombinedSlider(vol); }
     return;
@@ -111,7 +111,7 @@ function _sleepSetActiveVolume(vol) {
 }
 
 function _sleepStopActive() {
-  if (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying) {
+  if (window._radioIsPlaying) {
     if (typeof radioDismiss === 'function') radioDismiss();
     return;
   }
@@ -143,6 +143,140 @@ function _decodePath(encoded) {
   }
 }
 
+function _encodePath(rawPath) {
+  if (!rawPath) return null;
+  try {
+    return btoa(unescape(encodeURIComponent(rawPath)));
+  } catch {
+    return null;
+  }
+}
+
+// Build a URL path segment from breadcrumb data (array of {name, dir} objects)
+function _buildFriendlyPathFromBreadcrumbs(breadcrumbs) {
+  if (!breadcrumbs || !breadcrumbs.length) return '';
+
+  // Build a path using ALL breadcrumbs (hierarchy), but extract only the folder name from each
+  const parts = breadcrumbs.map(bc => {
+    let name = (bc.name || '').trim();
+    if (!name) return null;
+
+    // Extract only the last folder name if it contains a path separator
+    const sep = name.includes('\\') ? '\\' : '/';
+    if (name.includes(sep)) {
+      const pathParts = name.split(sep).filter(p => p.trim());
+      name = pathParts[pathParts.length - 1] || name;
+    }
+
+    return encodeURIComponent(name);
+  }).filter(p => p);
+
+  return parts.join('/');
+}
+
+// Convert folder path to base64url for URL encoding (used as URL fragment after friendly name)
+function _folderPathToBase64Url(folderPath) {
+  if (!folderPath) return null;
+  try {
+    const encoded = btoa(unescape(encodeURIComponent(folderPath)));
+    return encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  } catch {
+    return null;
+  }
+}
+
+// Convert base64url back to folder path
+function _base64UrlToFolderPath(encoded) {
+  if (!encoded) return null;
+  try {
+    const normalized = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    return decodeURIComponent(escape(atob(padded)));
+  } catch {
+    return null;
+  }
+}
+
+// Extract last N folder names from a filesystem path for URL-friendly display
+function _extractPathComponents(fsPath, depth = 3) {
+  if (!fsPath) return [];
+  const sep = fsPath.includes('\\') ? '\\' : '/';
+  const parts = fsPath.split(sep).filter(p => p.trim());
+  return parts.slice(-depth).map(p => encodeURIComponent(p));
+}
+
+function _encodeRouteFolder(folderPath) {
+  if (!folderPath) return null;
+  // Extract only the last folder name (basename) for a clean URL
+  const sep = folderPath.includes('\\') ? '\\' : '/';
+  const parts = folderPath.split(sep).filter(p => p.trim());
+  const lastFolder = parts[parts.length - 1];
+  return lastFolder ? encodeURIComponent(lastFolder) : null;
+}
+
+// Reconstruct a filesystem path from breadcrumb data; requires the full encoded path backup
+function _decodeRouteFolder(friendlyPath, breadcrumbs) {
+  if (!breadcrumbs || !breadcrumbs.length) return null;
+  // Return the .dir of the last breadcrumb (the target folder)
+  const last = breadcrumbs[breadcrumbs.length - 1];
+  return last ? last.dir : null;
+}
+
+function _buildUiRoute(mode, folderPath = null) {
+  const routeMode = mode === 'music' || mode === 'radio' ? mode : 'video';
+  let path = '/' + routeMode;
+  if (folderPath && (routeMode === 'video' || routeMode === 'music')) {
+    const token = _encodeRouteFolder(folderPath);
+    if (token) path += '/' + token;
+  }
+  return path;
+}
+
+function _syncUiRoute(mode, folderPath = null) {
+  if (!window.history || typeof window.history.replaceState !== 'function') return;
+  const path = _buildUiRoute(mode, folderPath);
+  if (window.location.pathname === path) return;
+  window.history.replaceState(window.history.state, '', path);
+}
+
+function _parseInitialUiRoute() {
+  const pathname = window.location.pathname || '/';
+  console.log('[ROUTE] _parseInitialUiRoute: pathname =', pathname);
+  const parts = pathname.split('/').filter(Boolean);
+  console.log('[ROUTE] parsed parts:', parts);
+
+  if (!parts.length || parts[0].toLowerCase() === 'index.html') {
+    console.log('[ROUTE] No explicit route; defaulting to video');
+    return { hasExplicitRoute: false, mode: 'video', folderPath: null };
+  }
+
+  const mode = parts[0].toLowerCase();
+  if (mode !== 'video' && mode !== 'music' && mode !== 'radio') {
+    console.log('[ROUTE] Unknown mode:', mode, '- defaulting to video');
+    return { hasExplicitRoute: false, mode: 'video', folderPath: null };
+  }
+
+  console.log('[ROUTE] Explicit route detected: mode =', mode);
+
+  // Extract folder path from URL if present
+  // URL format: /mode/friendly-name/base64url-encoded-path
+  // or just: /mode/base64url-encoded-path
+  let folderPath = null;
+  if (parts.length > 1) {
+    // Last part might be a base64url-encoded folder path (contains only [A-Za-z0-9_-])
+    const lastPart = parts[parts.length - 1];
+    if (/^[A-Za-z0-9_-]+$/.test(lastPart)) {
+      // Looks like base64url encoding, try to decode it
+      folderPath = _base64UrlToFolderPath(lastPart);
+      if (folderPath) {
+        console.log('[ROUTE] Decoded folderPath from URL:', folderPath);
+      }
+    }
+  }
+
+  return { hasExplicitRoute: true, mode, folderPath };
+}
+
 // Return the parent directory of a decoded FS path (works for both / and \ separators).
 function _parentDir(fsPath) {
   if (!fsPath) return null;
@@ -157,11 +291,7 @@ function _encodedParentDir(encodedFilePath) {
   const fsPath = _decodePath(encodedFilePath);
   const folder = _parentDir(fsPath);
   if (!folder) return null;
-  try {
-    return btoa(unescape(encodeURIComponent(folder)));
-  } catch {
-    return null;
-  }
+  return _encodePath(folder);
 }
 
   seekHoldInterval = null,
@@ -244,11 +374,11 @@ function togglePlayLocal() {
   setPlayLocal(turningOn);
   if (turningOn) {
     // If radio is currently playing on the server, hand it off to local immediately
-    if (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying && typeof _radioCurrentUrl !== 'undefined' && _radioCurrentUrl) {
-      const handoffName    = _radioCurrentName;
-      const handoffCountry = typeof _radioCurrentCountry !== 'undefined' ? _radioCurrentCountry : '';
-      const handoffTag     = typeof _radioCurrentTag     !== 'undefined' ? _radioCurrentTag     : '';
-      const handoffStation = typeof _radioCurrentStation !== 'undefined' ? _radioCurrentStation : null;
+    if (window._radioIsPlaying && window._radioCurrentUrl) {
+      const handoffName    = window._radioCurrentName;
+      const handoffCountry = window._radioCurrentCountry || '';
+      const handoffTag     = window._radioCurrentTag || '';
+      const handoffStation = window._radioCurrentStation || null;
       const proxyUrl = '/api/radio/stream-proxy?url=' + encodeURIComponent(_radioCurrentUrl);
       // Update UI state immediately (synchronous, in user-gesture scope)
       _radioIsPlaying = true;
@@ -354,6 +484,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // This means navigating to an instance always lands on the active player, not the default tab.
   (async () => {
     try {
+      const routeState = _parseInitialUiRoute();
+      if (routeState.hasExplicitRoute) return;
+
       const [videoRes, musicRes, radioRes] = await Promise.all([
         fetch('/api/status').then(r => r.ok ? r.json() : null).catch(() => null),
         fetch('/api/music/status').then(r => r.ok ? r.json() : null).catch(() => null),

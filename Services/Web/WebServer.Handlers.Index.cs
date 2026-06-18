@@ -184,9 +184,15 @@ internal sealed partial class WebServer
                     Logger.Info($"M3U index sample [{n}]: '{key}' ({newM3uIndex[key].TrackPaths.Length} track(s))");
                     if (++n >= 5) break;
                 }
+                var yearHints = BuildM3uTrackYearHints(newM3uIndex);
+                var albumHints = BuildM3uTrackAlbumHints(newM3uIndex);
                 lock (_musicIndexGate)
+                {
                     _m3uIndex = newM3uIndex;
-                Logger.Info($"M3U index: indexed {newM3uIndex.Count} playlist(s) total");
+                    _m3uTrackYearHints = yearHints;
+                    _m3uTrackAlbumHints = albumHints;
+                }
+                Logger.Info($"M3U index: indexed {newM3uIndex.Count} playlist(s) total with {yearHints.Count} track-year hint(s) and {albumHints.Count} track-album hint(s)");
                 SaveM3uIndexCache();
             }
             catch (Exception ex)
@@ -279,9 +285,15 @@ internal sealed partial class WebServer
                     var extra = MusicScanner.ScanM3uFiles(additionalRoot, m3uAudioExtSet, _hiddenFolderNames, cts.Token);
                     foreach (var kv in extra) newM3uIndex[kv.Key] = kv.Value;
                 }
+                var yearHints = BuildM3uTrackYearHints(newM3uIndex);
+                var albumHints = BuildM3uTrackAlbumHints(newM3uIndex);
                 lock (_musicIndexGate)
+                {
                     _m3uIndex = newM3uIndex;
-                Logger.Info($"Music scan: indexed {newM3uIndex.Count} playlist(s)");
+                    _m3uTrackYearHints = yearHints;
+                    _m3uTrackAlbumHints = albumHints;
+                }
+                Logger.Info($"Music scan: indexed {newM3uIndex.Count} playlist(s) with {yearHints.Count} track-year hint(s) and {albumHints.Count} track-album hint(s)");
                 SaveM3uIndexCache();
 
                 lock (_musicIndexGate)

@@ -5,6 +5,8 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Globalization;
 using QRCoder;
 using RemotePlay.Models;
 using RemotePlay.Services.Discovery;
@@ -114,6 +116,8 @@ internal sealed partial class WebServer
     private bool _isM3uIndexing;    // true while the lightweight M3U-only background scan is running
     // In-memory M3U index: keyed by absolute M3U file path. Rebuilt alongside _musicIndex.
     private Dictionary<string, M3uEntry> _m3uIndex = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, int> _m3uTrackYearHints = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, string> _m3uTrackAlbumHints = new(StringComparer.OrdinalIgnoreCase);
     private bool _expertMode;             // updated live when settings change without server restart
     private bool _debugMode;              // updated live when settings change without server restart
     private bool _browserLocalPlaying;   // true while browser is playing audio locally
@@ -558,8 +562,111 @@ internal sealed partial class WebServer
                 }
             }
 
-            private void LoadM3uIndexCache()
+            private static int? ParseYearHintFromM3uPath(string m3uPath)
             {
+                var stem = Path.GetFileNameWithoutExtension(m3uPath);
+                if (string.IsNullOrWhiteSpace(stem))
+                    return null;
+
+                var match = Regex.Match(stem, @"(?<!\d)(19\d{2}|20\d{2}|2100)(?!\d)");
+                return match.Success ? int.Parse(match.Value, CultureInfo.InvariantCulture) : null;
+            }
+
+            private static Dictionary<string, int> BuildM3uTrackYearHints(Dictionary<string, M3uEntry> m3uIndex)
+            {
+                var hints = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var kv in m3uIndex)
+                {
+                    var yearHint = ParseYearHintFromM3uPath(kv.Key);
+                    if (!yearHint.HasValue)
+                        continue;
+
+                    foreach (var trackPath in kv.Value.TrackPaths)
+                    {
+                        if (!hints.ContainsKey(trackPath))
+                            hints[trackPath] = yearHint.Value;
+                    }
+                }
+
+                return hints;
+            }
+
+            private static bool IsGenericAlbumHintName(string? value)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                    return true;
+
+                var normalized = value.Trim();
+                return normalized.Equals("all", StringComparison.OrdinalIgnoreCase)
+                    || normalized.Equals("all songs", StringComparison.OrdinalIgnoreCase)
+                    || normalized.Equals("albums", StringComparison.OrdinalIgnoreCase)
+                    || normalized.Equals("singles", StringComparison.OrdinalIgnoreCase);
+            }
+
+            private static int GetAlbumHintPriority(string m3uPath)
+            {
+                var dir = Path.GetDirectoryName(m3uPath) ?? string.Empty;
+                var parts = dir.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Any(p => p.Equals("albums", StringComparison.OrdinalIgnoreCase)))
+                    return 2;
+                if (parts.Any(p => p.Equals("singles", StringComparison.OrdinalIgnoreCase)))
+                    return 1;
+                return 0;
+            }
+
+            private static string? ResolveAlbumHintFromM3u(string m3uPath, string? albumHint)
+            {
+                var resolved = albumHint?.Trim();
+                if (!IsGenericAlbumHintName(resolved))
+                    return resolved;
+
+                var parentDir = Path.GetDirectoryName(m3uPath);
+                var parentName = Path.GetFileName(parentDir);
+                if (!IsGenericAlbumHintName(parentName))
+                    return parentName;
+
+                var grandParentDir = Path.GetDirectoryName(parentDir ?? string.Empty);
+                var grandParentName = Path.GetFileName(grandParentDir);
+                if (!IsGenericAlbumHintName(grandParentName))
+                    return grandParentName;
+
+                return null;
+            }
+
+            private static Dictionary<string, string> BuildM3uTrackAlbumHints(Dictionary<string, M3uEntry> m3uIndex)
+            {
+                var albumHints = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var priorities = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var kv in m3uIndex)
+                {
+                    var albumHint = ResolveAlbumHintFromM3u(kv.Key, kv.Value.AlbumHint);
+                    if (string.IsNullOrWhiteSpace(albumHint))
+                        continue;
+
+                    var priority = GetAlbumHintPriority(kv.Key);
+                    foreach (var trackPath in kv.Value.TrackPaths)
+                    {
+                        if (!albumHints.TryGetValue(trackPath, out _))
+                        {
+                            albumHints[trackPath] = albumHint;
+                            priorities[trackPath] = priority;
+                            continue;
+                        }
+
+                        if (priority > priorities[trackPath])
+                        {
+                            albumHints[trackPath] = albumHint;
+                            priorities[trackPath] = priority;
+                        }
+                    }
+                }
+
+                return albumHints;
+            }
+
+                    private void LoadM3uIndexCache()
+                    {
                 try
                 {
                     if (!File.Exists(M3uIndexCacheFile))
@@ -583,10 +690,16 @@ internal sealed partial class WebServer
                     foreach (var e in cache.Entries)
                         dict[e.M3uPath] = e;
 
+                    var yearHints = BuildM3uTrackYearHints(dict);
+                    var albumHints = BuildM3uTrackAlbumHints(dict);
                     lock (_musicIndexGate)
+                    {
                         _m3uIndex = dict;
+                        _m3uTrackYearHints = yearHints;
+                        _m3uTrackAlbumHints = albumHints;
+                    }
 
-                    Logger.Info($"Loaded persistent M3U index: {dict.Count} playlist(s)");
+                    Logger.Info($"Loaded persistent M3U index: {dict.Count} playlist(s), {yearHints.Count} track-year hint(s), {albumHints.Count} track-album hint(s)");
                 }
                 catch (Exception ex)
                 {

@@ -716,7 +716,7 @@ function _syncEqWrapVisibility() {
   renderEqPresets(_lastEqPreset);
   _populateReverbSelect('music-reverb-select');
   _populateReverbSelect('radio-reverb-select');
-  const radioPlaying = typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying;
+  const radioPlaying = window._radioIsPlaying && true;
   const musicPlaying = typeof musicIsPlaying !== 'undefined' && musicIsPlaying;
   const radioWrap = document.getElementById('radio-eq-select-wrap');
   if (radioWrap) radioWrap.style.display = radioPlaying ? '' : 'none';
@@ -799,6 +799,7 @@ async function loadFavorites() {
 }
 let currentIsLinkedDir = false;
 async function browse(d, offset = 0, append = false, pushHistory = true, isLinked = false) {
+  console.log('[VIDEO] browse called: d =', d, ', append =', append);
   // Push the current location onto the back-stack before navigating (not for pagination)
   if (!append && pushHistory && currentDir !== d && currentDir !== null)
     browseHistory.push(currentDir);
@@ -807,6 +808,7 @@ async function browse(d, offset = 0, append = false, pushHistory = true, isLinke
   if (!append) _hideSearchFilterBar();
   setStatus('Loading...');
   currentDir = d;
+  console.log('[VIDEO] currentDir set to:', currentDir);
   document.getElementById('search').value = '';
   if (!append) {
     clearPendingThumbnails();
@@ -816,6 +818,7 @@ async function browse(d, offset = 0, append = false, pushHistory = true, isLinke
     const url =
       (d ? '/api/browse?dir=' + encodeURIComponent(d) : '/api/browse') +
       (offset ? '&offset=' + encodeURIComponent(offset) : '');
+    console.log('[VIDEO] Fetching URL:', url);
     const res = await fetch(url);
     if (!res.ok) {
       setBrowseLoading(false);
@@ -830,6 +833,43 @@ async function browse(d, offset = 0, append = false, pushHistory = true, isLinke
       currentData.totalFiles = nextData.totalFiles;
       currentData.hasMoreFiles = nextData.hasMoreFiles;
     } else currentData = nextData;
+
+    if (!append) {
+      const folderPath = d ? _decodePath(d) : null;
+      let friendlyPath = null;
+      if (nextData.breadcrumbs && nextData.breadcrumbs.length) {
+        console.log('[VIDEO] Breadcrumbs from server:', nextData.breadcrumbs);
+        friendlyPath = _buildFriendlyPathFromBreadcrumbs(nextData.breadcrumbs);
+        console.log('[VIDEO] Friendly path from breadcrumbs:', friendlyPath);
+      } else if (folderPath) {
+        friendlyPath = _encodeRouteFolder(folderPath);
+        console.log('[VIDEO] Friendly path from folder:', friendlyPath);
+      }
+
+      if (friendlyPath || folderPath) {
+        // Build URL with friendly names + base64url-encoded path at the end
+        let path = '/video/';
+        if (friendlyPath) {
+          path += friendlyPath;
+        }
+        if (folderPath) {
+          const encoded = _folderPathToBase64Url(folderPath);
+          if (encoded) {
+            if (friendlyPath) path += '/';
+            path += encoded;
+          }
+        }
+        console.log('[VIDEO] Setting URL to:', path);
+        if (window.history && typeof window.history.replaceState === 'function') {
+          window.history.replaceState(window.history.state, '', path);
+        }
+      } else {
+        if (window.history && typeof window.history.replaceState === 'function') {
+          window.history.replaceState(window.history.state, '', '/video');
+        }
+      }
+    }
+
     render(currentData);
     setBrowseLoading(false); // dismiss overlay as soon as content is rendered
     if (typeof renderPinnedStrip === 'function') renderPinnedStrip();

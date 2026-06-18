@@ -1288,9 +1288,10 @@ internal sealed partial class WebServer
                 <div class="hint">Requires a restart. A self-signed certificate is created automatically on first use.</div>
                 <div class="row">
                   <label>HTTPS certificate</label>
-                  <a href="/cert.cer" class="secondary" style="font-size:.83rem;padding:.3rem .7rem;border:1px solid #30363d;border-radius:7px;text-decoration:none;color:#c9d1d9;display:inline-block" download>&#128196; Download .cer</a>
+                  <a href="/certificate.cer" class="secondary" style="font-size:.83rem;padding:.3rem .7rem;border:1px solid #30363d;border-radius:7px;text-decoration:none;color:#c9d1d9;display:inline-block" download>&#128196; Download .cer</a>
+                  <a href="/certificate-help" class="secondary" style="font-size:.83rem;padding:.3rem .7rem;border:1px solid #30363d;border-radius:7px;text-decoration:none;color:#c9d1d9;display:inline-block;margin-left:.5rem" target="_blank">&#10067; Trust Certificate</a>
                 </div>
-                <div class="hint">Install this certificate as a Trusted Root on client devices to eliminate browser HTTPS warnings.</div>
+                <div class="hint">Install this certificate as a Trusted Root on client devices to eliminate browser HTTPS warnings. Click "Trust Certificate" for step-by-step instructions.</div>
               </div>
               <div class="card">
                 <h2>&#128274; Security</h2>
@@ -1395,6 +1396,7 @@ internal sealed partial class WebServer
                 <div class="hint">Trigger a full sync automatically each time the application starts.</div>
                 <div class="actions" style="align-items:center;gap:.75rem">
                   <button class="primary" id="sync-btn" onclick="startSyncAll()">&#8679; Sync now</button>
+                  <button class="secondary" id="full-sync-btn" onclick="startFullSyncAll()" title="Delete all sync data on peers, then push from this server">&#8679; Full Sync</button>
                   <span class="sync-status-pill" id="sync-status-pill">&#8679; Syncing&#8230;</span>
                 </div>
                 <div class="sync-bar-wrap" id="sync-bar-wrap"><div class="sync-bar-fill" id="sync-bar-fill"></div></div>
@@ -1740,6 +1742,30 @@ internal sealed partial class WebServer
           }catch(e){_log('Sync failed: '+e,'warn');}
           finally{btn.disabled=false;setTimeout(()=>{barWrap.style.display='none';log.style.display='none';fill.style.width='0%';if(pill)pill.style.display='none';},5000);}
         }
+        async function startFullSyncAll(){
+          const btn=document.getElementById('full-sync-btn'),barWrap=document.getElementById('sync-bar-wrap'),fill=document.getElementById('sync-bar-fill'),log=document.getElementById('sync-log');
+          if(!confirm('Full Sync will delete all sync data (covers, lyrics, offsets) on all peers and replace with data from this server. Continue?'))return;
+          btn.disabled=true;log.innerHTML='';log.style.display='block';barWrap.style.display='block';fill.style.width='5%';
+          const pill=document.getElementById('sync-status-pill');if(pill)pill.style.display='inline-block';
+          _log('Clearing sync data on all peers...','dim');
+          let offsets={};try{const raw=localStorage.getItem('remotePlayLyricOffsets');if(raw)offsets=JSON.parse(raw);}catch(_){}
+          try{
+            const resp=await fetch('/api/sync/full',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offsets,fullSync:true})});
+            if(!resp.ok||!resp.body){_log('Server error: '+resp.status,'warn');btn.disabled=false;return;}
+            const reader=resp.body.getReader();const decoder=new TextDecoder();let buf='';let peerCount=0;
+            while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});
+              const parts=buf.split('\n\n');buf=parts.pop();
+              for(const part of parts){const line=part.trim();if(!line.startsWith('data:'))continue;
+                let ev;try{ev=JSON.parse(line.slice(5).trim());}catch{continue;}
+                if(ev.type==='peer'){peerCount++;fill.style.width=Math.min(10+peerCount*15,85)+'%';_log('→ '+ev.message,'info');}
+                else if(ev.type==='step'){_log('  '+ev.message,'dim');}
+                else if(ev.type==='step_done'){_log('  ✓ '+ev.step+': sent '+ev.sent+', skipped '+ev.skipped+(ev.failed>0?' failed '+ev.failed:''),'ok');}
+                else if(ev.type==='step_error'){_log('  ! '+ev.step+': '+ev.message,'warn');}
+                else if(ev.type==='done'){fill.style.width='100%';if(ev.peers===0){_log(ev.message||'No peers found.','warn');}else{_log('✓ Done—peers: '+ev.peers+' | sent: '+ev.sent+' | skipped: '+ev.skipped+(ev.failed>0?' | failed: '+ev.failed:''),'ok');}}}
+            }
+          }catch(e){_log('Full sync failed: '+e,'warn');}
+          finally{btn.disabled=false;setTimeout(()=>{barWrap.style.display='none';log.style.display='none';fill.style.width='0%';if(pill)pill.style.display='none';},5000);}
+        }
         function escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
         async function loadAudioDevices(selectedId){
           const sel=document.getElementById('MusicAudioDeviceId'); if(!sel)return;
@@ -1977,6 +2003,202 @@ internal sealed partial class WebServer
 
         ctx.Response.AddHeader("Content-Disposition", "attachment; filename=RemotePlay-Local-HTTPS.cer");
         TrySendBytes(ctx, 200, "application/x-x509-ca-cert", certificate.Export(X509ContentType.Cert));
+    }
+
+    private static void HandleCertificateHelp(HttpListenerContext ctx)
+    {
+        var html = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RemotePlay HTTPS Certificate Trust</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 900px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 40px; }
+        h1 { color: #333; margin-bottom: 10px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 16px; }
+        .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; border-radius: 4px; }
+        .success { background: #d4edda; border-left: 4px solid #28a745; padding: 15px; margin: 20px 0; border-radius: 4px; }
+        .download-section { background: #e7f3ff; border-left: 4px solid #2196F3; padding: 20px; margin: 20px 0; border-radius: 4px; }
+        .download-btn { display: inline-block; background: #2196F3; color: white; padding: 10px 20px; border-radius: 4px; text-decoration: none; margin: 10px 0; }
+        .download-btn:hover { background: #1976D2; }
+        .os-section { margin: 30px 0; padding: 20px; background: #f9f9f9; border-radius: 4px; }
+        .os-section h3 { color: #333; margin-bottom: 15px; display: flex; align-items: center; }
+        .os-icon { width: 24px; height: 24px; margin-right: 10px; }
+        .steps { list-style: none; margin: 15px 0; }
+        .steps li { padding: 8px 0; padding-left: 25px; position: relative; }
+        .steps li:before { content: "▶"; position: absolute; left: 0; font-size: 12px; }
+        .code { background: #f0f0f0; padding: 10px; border-radius: 4px; font-family: monospace; margin: 10px 0; }
+        .faq { margin-top: 40px; }
+        .faq-item { margin: 20px 0; }
+        .faq-question { font-weight: bold; color: #333; cursor: pointer; padding: 10px; background: #f0f0f0; border-radius: 4px; }
+        .faq-answer { padding: 15px; margin-top: 8px; display: none; background: #fafafa; border-left: 3px solid #2196F3; }
+        footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; font-size: 14px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔐 RemotePlay HTTPS Certificate Trust</h1>
+        <p class="subtitle">Your browser doesn't recognize the RemotePlay HTTPS certificate because it's self-signed. Learn how to trust it.</p>
+
+        <div class="warning" style="background: #e3f2fd; border-left: 4px solid #1976D2;">
+            <strong>✓ You reached this page through the browser security warning!</strong><br>
+            This is normal and expected. Your connection is encrypted and secure. Now follow the steps below to install the certificate so you don't see this warning again.
+        </div>
+
+        <div class="download-section">
+            <h2>Step 1: Download the Certificate</h2>
+            <p>Click the button below to download the RemotePlay certificate file:</p>
+            <a href="/certificate.cer" class="download-btn">📥 Download Certificate (RemotePlay-Local-HTTPS.cer)</a>
+        </div>
+
+        <div class="warning">
+            <strong>⚠ Security Notice:</strong> This is a self-signed certificate generated by your RemotePlay server. It is only valid for your local network and expires in 5 years. Trusting it only affects connections to your RemotePlay server.
+        </div>
+
+        <h2 style="margin-top: 30px; margin-bottom: 20px;">Step 2: Import the Certificate to Your Device</h2>
+
+        <div class="os-section">
+            <h3>💻 Windows</h3>
+            <ol class="steps">
+                <li>Download the certificate above</li>
+                <li>Right-click the downloaded <code>.cer</code> file → <strong>Install Certificate</strong></li>
+                <li>Select <strong>"Local Machine"</strong> → <strong>Next</strong></li>
+                <li>Choose <strong>"Place all certificates in the following store"</strong></li>
+                <li>Click <strong>Browse</strong> and select <strong>"Trusted Root Certification Authorities"</strong></li>
+                <li>Click <strong>OK</strong> → <strong>Finish</strong></li>
+                <li>Restart your browser</li>
+            </ol>
+            <p><strong>Tip:</strong> You may need administrator privileges to install certificates. If prompted, click "Yes".</p>
+        </div>
+
+        <div class="os-section">
+            <h3>🍎 macOS</h3>
+            <ol class="steps">
+                <li>Download the certificate above</li>
+                <li>Double-click the <code>.cer</code> file to open Keychain Access</li>
+                <li>When prompted "What keychain do you want to add to?", select <strong>System</strong></li>
+                <li>Locate the certificate named <strong>"RemotePlay Local HTTPS"</strong></li>
+                <li>Double-click it to open its details</li>
+                <li>Expand the <strong>Trust</strong> section</li>
+                <li>Change <strong>"When using this certificate"</strong> to <strong>"Always Trust"</strong></li>
+                <li>Close the window and enter your password when prompted</li>
+                <li>Restart your browser</li>
+            </ol>
+        </div>
+
+        <div class="os-section">
+            <h3>🐧 Linux</h3>
+            <p><strong>Method 1: System-wide (Recommended)</strong></p>
+            <ol class="steps">
+                <li>Download the certificate above</li>
+                <li>Open Terminal and run these commands (requires sudo):</li>
+            </ol>
+            <div class="code">
+sudo mkdir -p /usr/share/ca-certificates/extra<br>
+sudo cp ~/Downloads/RemotePlay-Local-HTTPS.cer /usr/share/ca-certificates/extra/<br>
+sudo update-ca-certificates
+            </div>
+            <p style="margin-top: 15px;"><strong>Method 2: Browser-specific (Firefox)</strong></p>
+            <ol class="steps">
+                <li>Open Firefox → Settings → Privacy &amp; Security</li>
+                <li>Scroll to "Security" → "Certificates" → Click <strong>"View Certificates"</strong></li>
+                <li>Go to the <strong>"Authorities"</strong> tab</li>
+                <li>Click <strong>"Import"</strong> and select the downloaded certificate</li>
+                <li>Check <strong>"Trust this CA to identify websites"</strong> → <strong>OK</strong></li>
+            </ol>
+        </div>
+
+        <div class="os-section">
+            <h3>📱 iOS / Android (Mobile Browsers)</h3>
+            <p>Mobile devices have limited ability to install CA certificates. Consider these options:</p>
+            <ul class="steps">
+                <li><strong>iOS:</strong> Install via MDM profile or access RemotePlay over HTTP only (less secure)</li>
+                <li><strong>Android:</strong> Install certificate via Settings → Security → Advanced → Encryption &amp; credentials → Install from file</li>
+                <li><strong>Alternative:</strong> Access RemotePlay via the local IP with HTTP (if HTTP is enabled)</li>
+            </ul>
+        </div>
+
+        <div class="success">
+            <strong>✓ After importing the certificate:</strong> Reload this page. If the security warning is gone and the padlock is green, you can now access RemotePlay over HTTPS without warnings!
+        </div>
+
+        <div class="faq">
+            <h2>❓ Frequently Asked Questions</h2>
+
+            <div class="faq-item">
+                <div class="faq-question" onclick="toggleAnswer(this)">What is a self-signed certificate?</div>
+                <div class="faq-answer">
+                    A self-signed certificate is created by the server itself rather than by a trusted Certificate Authority (CA).
+                    It provides encryption but doesn't prove the server's identity to external parties. For your private RemotePlay network,
+                    this is perfectly safe as long as you trust the device running RemotePlay.
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question" onclick="toggleAnswer(this)">Is it safe to trust this certificate?</div>
+                <div class="faq-answer">
+                    Yes, it's safe if you trust the device running RemotePlay. This certificate only affects connections to your RemotePlay server
+                    and doesn't impact your other browsing or credentials. However, only trust it on devices you own or control.
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question" onclick="toggleAnswer(this)">Can I just click "Advanced" → "Proceed" every time?</div>
+                <div class="faq-answer">
+                    Technically yes, but importing the certificate is better because:<br>
+                    ✓ No warnings on every access<br>
+                    ✓ More secure (harder to fall victim to MITM attacks)<br>
+                    ✓ Cleaner user experience
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question" onclick="toggleAnswer(this)">When does the certificate expire?</div>
+                <div class="faq-answer">
+                    The RemotePlay certificate is valid for 5 years from creation. When it expires, RemotePlay will automatically generate a new one.
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question" onclick="toggleAnswer(this)">What if certificate import fails?</div>
+                <div class="faq-answer">
+                    Certificate import often requires administrator/root privileges. Try:<br>
+                    • Run your browser as administrator<br>
+                    • Use the command-line method (especially on Linux)<br>
+                    • Check your OS firewall/antivirus isn't blocking certificate installation<br>
+                    • Consult your IT administrator if on a managed device
+                </div>
+            </div>
+
+            <div class="faq-item">
+                <div class="faq-question" onclick="toggleAnswer(this)">Why does RemotePlay use HTTPS?</div>
+                <div class="faq-answer">
+                    HTTPS encrypts your connection to RemotePlay, protecting sensitive data like library metadata and playback status from being intercepted on your local network.
+                    It's especially important if you access RemotePlay over public Wi-Fi or untrusted networks.
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>Need more help? Check your browser's documentation on certificate installation, or contact RemotePlay support.</p>
+            <p>Certificate Info: <strong>CN=RemotePlay Local HTTPS</strong> | Valid for localhost, 127.0.0.1, and local network addresses</p>
+        </footer>
+    </div>
+
+    <script>
+        function toggleAnswer(element) {
+            const answer = element.nextElementSibling;
+            answer.style.display = answer.style.display === "none" ? "block" : "none";
+        }
+    </script>
+</body>
+</html>
+""";
+        TrySendResponse(ctx, 200, "text/html", html);
     }
 
     private void HandleQrCode(HttpListenerContext ctx)
