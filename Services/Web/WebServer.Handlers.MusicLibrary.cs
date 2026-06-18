@@ -1851,16 +1851,12 @@ internal sealed partial class WebServer
     private static async Task<byte[]?> FetchAlbumArtFromMusicBrainzAsync(string artist, string album,
         CancellationToken ct = default)
     {
-        // Require artist so we never return a cover for a different artist who happens to share
-        // the same album/track title.  No artist → prefer no cover over a wrong one.
-        if (string.IsNullOrWhiteSpace(artist))
-        {
-            Logger.Detail("AlbumArt", $"Skipping MB search for '{album}' — no artist provided");
-            return null;
-        }
-
         // Step 1: Search MusicBrainz for matching releases (up to 5), including release-group ids
-        var searchTerms = Uri.EscapeDataString($"release:\"{album}\" AND artist:\"{artist}\"");
+        var searchTerms = string.IsNullOrWhiteSpace(artist)
+            ? Uri.EscapeDataString($"release:\"{album}\"")
+            : Uri.EscapeDataString($"release:\"{album}\" AND artist:\"{artist}\"");
+        if (string.IsNullOrWhiteSpace(artist))
+            Logger.Detail("AlbumArt", $"Artist missing for '{album}', searching MB by release title only");
 
         var searchUrl = $"https://musicbrainz.org/ws/2/release/?query={searchTerms}&limit=5&fmt=json&inc=release-groups";
         Logger.Detail("AlbumArt", $"MusicBrainz search: {searchUrl}");
