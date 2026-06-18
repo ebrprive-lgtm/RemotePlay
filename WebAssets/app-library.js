@@ -405,6 +405,7 @@ function updateMusicBar(s) {
     const plArt = window._playlistArtUrl || null;
     const artist = s.artist || '';
     const album  = s.album  || '';
+    const title  = s.title  || '';
     if (cp) {
       // Always try local cover; fall back to online album art; fall back to empty
       const existing = artEl.querySelector('.music-bar-art-img');
@@ -415,9 +416,11 @@ function updateMusicBar(s) {
         img.setAttribute('data-cp', cp);
         img.className = 'music-bar-art-img';
         img.onerror = () => {
-          // Stage 2: try online album art
-          if (album) {
-            const onlineUrl = '/api/music/album-art?album=' + encodeURIComponent(album)
+          // Stage 2: try online album art — use album if available, fall back to track title
+          // (artist required for title fallback to avoid wrong-artist art)
+          const searchTerm = album || (artist ? title : '');
+          if (searchTerm) {
+            const onlineUrl = '/api/music/album-art?album=' + encodeURIComponent(searchTerm)
               + (artist ? '&artist=' + encodeURIComponent(artist) : '');
             img.onerror = () => { artEl.classList.add('music-bar-art-empty'); img.remove(); };
             img.src = onlineUrl;
@@ -2728,13 +2731,13 @@ function renderMusicCards(data, searching) {
       if (!isList) {
         // Grid mode: always try local cover art; post-render pass adds online-art fallback
         card += `<span class="mtc-play-indicator mtc-thumb-wrap">`
-          + `<img class="mtc-thumb" src="${gridCoverUrl}" loading="lazy" data-artist="${esc(artist)}" data-album="${esc(album)}"${hasCover ? '' : ' data-no-cover="1"'} />`
+          + `<img class="mtc-thumb" src="${gridCoverUrl}" loading="lazy" data-artist="${esc(artist)}" data-album="${esc(album)}" data-title="${esc(title)}"${hasCover ? '' : ' data-no-cover="1"'} />`
           + `<span class="mtc-bars mtc-bars-overlay"><span></span><span></span><span></span></span>`
           + `</span>`;
       } else {
         // List mode: always try local cover art; post-render pass adds online-art fallback
         card += `<span class="mtc-play-indicator mtc-thumb-wrap">`
-          + `<img class="mtc-thumb" src="/api/music/cover?path=${encodeURIComponent(f.path)}" loading="lazy" data-artist="${esc(artist)}" data-album="${esc(album)}"${hasCover ? '' : ' data-no-cover="1"'} />`
+          + `<img class="mtc-thumb" src="/api/music/cover?path=${encodeURIComponent(f.path)}" loading="lazy" data-artist="${esc(artist)}" data-album="${esc(album)}" data-title="${esc(title)}"${hasCover ? '' : ' data-no-cover="1"'} />`
           + (trackNum != null ? `<span class="mtc-tracknum mtc-tracknum-default">${trackNum}</span>` : '')
           + `<span class="mtc-bars mtc-bars-overlay"><span></span><span></span><span></span></span>`
           + `</span>`;
@@ -2812,17 +2815,19 @@ function renderMusicCards(data, searching) {
 
   // Grid cover art: wire up two-stage fallback (local → online album art → no-cover placeholder)
   // data-no-cover="1" means the index confirmed no embedded/folder art exists — skip straight to
-  // the online fallback only if there is an album name; otherwise show placeholder immediately.
+  // the online fallback if there is an album name or artist+title to search; otherwise show placeholder.
   mb.querySelectorAll('.music-track-card .mtc-thumb[data-album]').forEach(img => {
-    if (img.dataset.noCover && !img.dataset.album) { _mtcNoCover(img); return; }
+    if (img.dataset.noCover && !img.dataset.album && !img.dataset.title) { _mtcNoCover(img); return; }
     img.addEventListener('error', function onLocalError() {
       img.removeEventListener('error', onLocalError);
       const artist = img.dataset.artist || '';
       const album  = img.dataset.album  || '';
-      // If we already know there's no local cover AND there's no album to look up online, show placeholder
-      if (img.dataset.noCover && !album) { _mtcNoCover(img); return; }
-      if (!album) { _mtcNoCover(img); return; }
-      const onlineUrl = '/api/music/album-art?album=' + encodeURIComponent(album)
+      const title  = img.dataset.title  || '';
+      // Use album if available; fall back to track title — but only when artist is known
+      // (artist is required to avoid showing art for a different artist with the same title)
+      const searchTerm = album || (artist ? title : '');
+      if (!searchTerm) { _mtcNoCover(img); return; }
+      const onlineUrl = '/api/music/album-art?album=' + encodeURIComponent(searchTerm)
         + (artist ? '&artist=' + encodeURIComponent(artist) : '');
       img.addEventListener('error', () => _mtcNoCover(img), { once: true });
       img.src = onlineUrl;
