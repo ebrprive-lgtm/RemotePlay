@@ -84,6 +84,9 @@ internal sealed partial class WebServer
             UpdateSourcePath            = dto.UpdateSourcePath?.Trim()                  ?? _config.UpdateSourcePath,
             AutoUpdateIntervalMinutes   = dto.AutoUpdateIntervalMinutes   ?? _config.AutoUpdateIntervalMinutes,
             MusicAudioDeviceId          = dto.MusicAudioDeviceId?.Trim()               ?? _config.MusicAudioDeviceId,
+            EnableMusicBrainzAlbumArtLookup = dto.EnableMusicBrainzAlbumArtLookup ?? _config.EnableMusicBrainzAlbumArtLookup,
+            EnableDiscogsAlbumArtLookup = dto.EnableDiscogsAlbumArtLookup ?? _config.EnableDiscogsAlbumArtLookup,
+            DiscogsToken                = dto.DiscogsToken?.Trim() ?? _config.DiscogsToken,
             PreferredAudioLanguage      = dto.PreferredAudioLanguage?.Trim()            ?? _config.PreferredAudioLanguage,
             PreferredSubtitleLanguage   = dto.PreferredSubtitleLanguage?.Trim()         ?? _config.PreferredSubtitleLanguage,
             SecondarySubtitleLanguage   = dto.SecondarySubtitleLanguage?.Trim()         ?? _config.SecondarySubtitleLanguage,
@@ -262,6 +265,9 @@ internal sealed partial class WebServer
         UpdateSourcePath            = c.UpdateSourcePath,
         AutoUpdateIntervalMinutes   = c.AutoUpdateIntervalMinutes,
         MusicAudioDeviceId          = c.MusicAudioDeviceId,
+        EnableMusicBrainzAlbumArtLookup = c.EnableMusicBrainzAlbumArtLookup,
+        EnableDiscogsAlbumArtLookup = c.EnableDiscogsAlbumArtLookup,
+        DiscogsToken                = c.DiscogsToken,
         PreferredAudioLanguage      = c.PreferredAudioLanguage,
         PreferredSubtitleLanguage   = c.PreferredSubtitleLanguage,
         SecondarySubtitleLanguage   = c.SecondarySubtitleLanguage,
@@ -309,6 +315,9 @@ internal sealed partial class WebServer
         public string?  UpdateSourcePath            { get; set; }
         public int?     AutoUpdateIntervalMinutes   { get; set; }
         public string?  MusicAudioDeviceId          { get; set; }
+        public bool?    EnableMusicBrainzAlbumArtLookup { get; set; }
+        public bool?    EnableDiscogsAlbumArtLookup { get; set; }
+        public string?  DiscogsToken                { get; set; }
         public string?  PreferredAudioLanguage      { get; set; }
         public string?  PreferredSubtitleLanguage   { get; set; }
         public string?  SecondarySubtitleLanguage   { get; set; }

@@ -552,6 +552,22 @@ internal sealed partial class WebServer
                 await HandleMusicAlbumArtImportAsync(ctx).ConfigureAwait(false);
                 break;
 
+            case "/api/music/album-art/scan/status":
+                HandleMusicAlbumArtScanStatus(ctx);
+                break;
+
+            case "/api/music/album-art/scan/start":
+                HandleMusicAlbumArtScanStart(ctx);
+                break;
+
+            case "/api/music/album-art/discogs-import/status":
+                HandleDiscogsImportStatus(ctx);
+                break;
+
+            case "/api/music/album-art/discogs-import/start":
+                HandleDiscogsImportStart(ctx);
+                break;
+
             case "/api/music/lyrics":
                 await HandleMusicLyricsAsync(ctx).ConfigureAwait(false);
                 break;
@@ -611,6 +627,10 @@ internal sealed partial class WebServer
 
             case "/api/music/reverb-preset":
                 HandleMusicReverbPreset(ctx);
+                break;
+
+            case "/api/music/vocal-removal":
+                HandleMusicVocalRemoval(ctx);
                 break;
 
             case "/api/music/eq-preset":

@@ -2296,6 +2296,9 @@ public partial class MainWindow : Window
 
         control.ItemsSource = crumbs;
     }
+    // Optimization: Move this to a class field if it doesn't change during runtime 
+    // to avoid re-allocating the HashSet on every navigation.
+    private HashSet<string> _videoExtensions;
 
     private void PopulateLeftBrowser(string dir)
     {
@@ -2303,56 +2306,7 @@ public partial class MainWindow : Window
         UpdateBreadcrumbs(LeftBreadcrumbs, dir);
         SaveBrowserDirs();
 
-        if (!Directory.Exists(dir))
-        {
-            LeftBrowser.ItemsSource = Array.Empty<BrowserEntry>();
-            return;
-        }
-
-        var root = _config.ResolvedMoviesPath;
-        var exts = _config.EffectiveVideoFileExtensions
-            .Select(e => e.ToLowerInvariant()).ToHashSet();
-
-        var entries = new List<BrowserEntry>();
-
-        // ".." entry — always shown unless we are at root
-        if (!string.Equals(dir, root, StringComparison.OrdinalIgnoreCase))
-            entries.Add(new BrowserEntry("..", Path.GetDirectoryName(dir) ?? root,
-                IsGoUp: true, IsDirectory: true, IsLink: false, TargetFolder: "", IsBroken: false));
-
-        // Sub-folders
-        foreach (var d in Directory.EnumerateDirectories(dir).OrderBy(x => x))
-            entries.Add(new BrowserEntry(Path.GetFileName(d), d,
-                IsGoUp: false, IsDirectory: true, IsLink: false, TargetFolder: "", IsBroken: false));
-
-        // .rplink files — resolve target to get folder and broken status
-        foreach (var f in Directory.EnumerateFiles(dir, "*" + RplinkHelper.Extension)
-            .OrderBy(x => x))
-        {
-            var target        = RplinkHelper.TryReadTarget(f);
-            var rawTarget     = RplinkHelper.TryReadTargetRaw(f) ?? string.Empty;
-            var isFolderLink  = RplinkHelper.IsTargetFolder(f);
-            var isBroken      = target is null;
-            var targetFolder  = target is not null
-                ? (isFolderLink ? target : Path.GetDirectoryName(target) ?? string.Empty)
-                : string.Empty;
-
-            entries.Add(new BrowserEntry(Path.GetFileNameWithoutExtension(f), f,
-                IsGoUp: false, IsDirectory: isFolderLink, IsLink: true,
-                TargetFolder: targetFolder, IsBroken: isBroken, IsFolderLink: isFolderLink,
-                FullTargetPath: rawTarget));
-        }
-
-        // Video files
-        foreach (var f in Directory.EnumerateFiles(dir)
-            .Where(f => exts.Contains(Path.GetExtension(f).ToLowerInvariant()))
-            .OrderBy(x => x))
-        {
-            entries.Add(new BrowserEntry(Path.GetFileName(f), f,
-                IsGoUp: false, IsDirectory: false, IsLink: false, TargetFolder: "", IsBroken: false));
-        }
-
-        LeftBrowser.ItemsSource = entries;
+        LeftBrowser.ItemsSource = PopulateDirectoryEntries(dir);
     }
 
     private void PopulateRightBrowser(string dir)
@@ -2361,56 +2315,74 @@ public partial class MainWindow : Window
         UpdateBreadcrumbs(RightBreadcrumbs, dir);
         SaveBrowserDirs();
 
+        RightBrowser.ItemsSource = PopulateDirectoryEntries(dir);
+    }
+
+    private IEnumerable<BrowserEntry> PopulateDirectoryEntries(string dir)
+    {
         if (!Directory.Exists(dir))
         {
-            RightBrowser.ItemsSource = Array.Empty<BrowserEntry>();
-            return;
+            return Array.Empty<BrowserEntry>();
         }
 
         var root = _config.ResolvedMoviesPath;
-        var exts = _config.EffectiveVideoFileExtensions
-            .Select(e => e.ToLowerInvariant()).ToHashSet();
+
+        // Optimization: Logic simplified and shared
+        if (_videoExtensions == null)
+        {
+            _videoExtensions = _config.EffectiveVideoFileExtensions
+                .Select(e => e.ToLowerInvariant())
+                .ToHashSet();
+        }
 
         var entries = new List<BrowserEntry>();
 
-        // ".." entry
+        // 1. ".." entry
         if (!string.Equals(dir, root, StringComparison.OrdinalIgnoreCase))
+        {
             entries.Add(new BrowserEntry("..", Path.GetDirectoryName(dir) ?? root,
                 IsGoUp: true, IsDirectory: true, IsLink: false, TargetFolder: "", IsBroken: false));
+        }
 
-        // Sub-folders
+        // 2. Sub-folders
         foreach (var d in Directory.EnumerateDirectories(dir).OrderBy(x => x))
+        {
             entries.Add(new BrowserEntry(Path.GetFileName(d), d,
                 IsGoUp: false, IsDirectory: true, IsLink: false, TargetFolder: "", IsBroken: false));
+        }
 
-        // .rplink files — resolve target to get folder and broken status
-        foreach (var f in Directory.EnumerateFiles(dir, "*" + RplinkHelper.Extension)
-            .OrderBy(x => x))
+        // 3. .rplink files
+        var rplinkFiles = Directory.EnumerateFiles(dir, "*" + RplinkHelper.Extension).OrderBy(x => x);
+        foreach (var f in rplinkFiles)
         {
-            var target        = RplinkHelper.TryReadTarget(f);
-            var rawTarget     = RplinkHelper.TryReadTargetRaw(f) ?? string.Empty;
-            var isFolderLink  = RplinkHelper.IsTargetFolder(f);
-            var isBroken      = target is null;
-            var targetFolder  = target is not null
-                ? (isFolderLink ? target : Path.GetDirectoryName(target) ?? string.Empty)
-                : string.Empty;
+            var target = RplinkHelper.TryReadTarget(f);
+            var rawTarget = RplinkHelper.TryReadTargetRaw(f) ?? string.Empty;
+            var isFolderLink = RplinkHelper.IsTargetFolder(f);
 
-            entries.Add(new BrowserEntry(Path.GetFileNameWithoutExtension(f), f,
-                IsGoUp: false, IsDirectory: isFolderLink, IsLink: true,
-                TargetFolder: targetFolder, IsBroken: isBroken, IsFolderLink: isFolderLink,
+            entries.Add(new BrowserEntry(
+                Path.GetFileNameWithoutExtension(f),
+                f,
+                IsGoUp: false,
+                IsDirectory: isFolderLink,
+                IsLink: true,
+                TargetFolder: target is not null ? (isFolderLink ? target : Path.GetDirectoryName(target) ?? string.Empty) : string.Empty,
+                IsBroken: target is null,
+                IsFolderLink: isFolderLink,
                 FullTargetPath: rawTarget));
         }
 
-        // Video files (same as left browser)
-        foreach (var f in Directory.EnumerateFiles(dir)
-            .Where(f => exts.Contains(Path.GetExtension(f).ToLowerInvariant()))
-            .OrderBy(x => x))
+        // 4. Video files
+        var videoFiles = Directory.EnumerateFiles(dir)
+            .Where(f => _videoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+            .OrderBy(x => x);
+
+        foreach (var f in videoFiles)
         {
             entries.Add(new BrowserEntry(Path.GetFileName(f), f,
                 IsGoUp: false, IsDirectory: false, IsLink: false, TargetFolder: "", IsBroken: false));
         }
 
-        RightBrowser.ItemsSource = entries;
+        return entries;
     }
 
     // ── Sync left → right ────────────────────────────────────────────
@@ -2534,12 +2506,14 @@ public partial class MainWindow : Window
         bool showFiles   = onlyFiles   || (!hasAny && !anyLinks && !anyFolders);
         bool showLinks   = onlyLinks;
         bool showFolders = onlyFolders;
+        
 
         if (!showFiles && !showLinks && !showFolders)
             showFiles = showLinks = showFolders = true;
 
         int fileCount = selected.Count(x => !x.IsDirectory && !x.IsLink);
         int linkCount = selected.Count(x => x.IsLink);
+        int folderCount = selected.Count(x => x.IsDirectory && !x.IsLink);
 
         foreach (var item in cm.Items)
         {
@@ -2597,6 +2571,13 @@ public partial class MainWindow : Window
                     mi2.IsEnabled  = onlyFiles && oppDirExists && dirsAreDifferent;
                     break;
 
+                case "MoveMovieToMasterLibrary":
+                    mi2.Visibility = showFiles ? Visibility.Visible : Visibility.Collapsed;
+                    mi2.Header = fileCount > 1 ? $"📦  Move {fileCount} files to @Master.Movie" : $"📦  Move file  to @Master.Movie";
+                    mi2.IsEnabled = onlyFiles;
+                    break;
+
+
                 // ── Link group ──────────────────────────────────────────
                 case "RenameLink":
                     mi2.Visibility = showLinks ? Visibility.Visible : Visibility.Collapsed;
@@ -2619,7 +2600,7 @@ public partial class MainWindow : Window
                 case "AutoHeal":
                     mi2.Visibility = showLinks ? Visibility.Visible : Visibility.Collapsed;
                     mi2.Header     = "🩹  Auto-heal broken link";
-                    mi2.IsEnabled  = singleLink && selected[0].IsBroken;
+                    mi2.IsEnabled  = onlyLinks && selected.Any(x => x.IsLink && x.IsBroken);
                     break;
 
                 case "DeleteLinks":
@@ -2653,11 +2634,20 @@ public partial class MainWindow : Window
                     mi2.IsEnabled  = singleFolder;
                     break;
 
+                case "MoveSeriesToMasterLibrary":
+                    mi2.Visibility = showFolders ? Visibility.Visible : Visibility.Collapsed;
+                    mi2.Header =  folderCount > 1 ? $"📦  Move {folderCount} folders to @Master.Series" : $"📦  Move Series to @Master.Series";
+                    mi2.IsEnabled = onlyFolders;
+                    break;
+
+
                 case "DeleteFolder":
                     mi2.Visibility = showFolders ? Visibility.Visible : Visibility.Collapsed;
                     mi2.Header     = "🗑️  Delete folder";
                     mi2.IsEnabled  = singleFolder;
                     break;
+
+
 
                 case "CheckIndex":
                     mi2.Header    = "🔍  Check Index";
@@ -2880,6 +2870,20 @@ public partial class MainWindow : Window
 
         if (!DarkMessageBox.Confirm(msg, "Confirm Delete Folder", this)) return;
 
+        int failed = 0;
+        string lastError = string.Empty;
+
+        _webServer?.SuppressWatcher(TimeSpan.FromSeconds(10));
+        foreach (var file in Directory.EnumerateFiles(folderPath, "*" + RplinkHelper.Extension))
+        {
+            try
+            {
+                File.Delete(file);
+                _webServer?.IndexRemoveUnderPath(file);
+            }
+            catch (Exception ex) { failed++; lastError = ex.Message; }
+        }
+
         try
         {
             Directory.Delete(folderPath, recursive: true);
@@ -2917,10 +2921,9 @@ public partial class MainWindow : Window
             if (File.Exists(dest))
             {
                 failed++;
-                lastError = $"A link named '{Path.GetFileName(link.FullPath)}' already exists at the destination.";
+                lastError = $"A file named \"{Path.GetFileName(link.FullPath)}\" already exists at the destination.";
                 continue;
             }
-
             try
             {
                 // Rewrite the stored target so it stays valid from the new location, then move.
@@ -2948,8 +2951,7 @@ public partial class MainWindow : Window
         }
 
         RefreshBrowser(isLeft);
-        if (isLeft) PopulateRightBrowser(_rightDir);
-        else        PopulateLeftBrowser(_leftDir);
+        RefreshBrowser(!isLeft);
 
         if (failed > 0)
         {
@@ -3021,61 +3023,80 @@ public partial class MainWindow : Window
     private void OnBrowserAutoHeal(object sender, RoutedEventArgs e)
     {
         var (browser, _, _, isLeft) = GetBrowserContext(sender);
-        if (browser.SelectedItem is not BrowserEntry entry || !entry.IsLink || !entry.IsBroken) return;
+
+        var links = browser.SelectedItems
+            .OfType<BrowserEntry>()
+            .Where(x => x.IsLink && x.IsBroken)
+            .ToList();
+
+        if (links.Count == 0) return;
 
         var root = _config.ResolvedMoviesPath;
         if (!Directory.Exists(root)) return;
 
-        var targetRaw  = RplinkHelper.TryReadTargetRaw(entry.FullPath) ?? string.Empty;
-        var searchName = Path.GetFileName(targetRaw);
+        var failed = 0;
+        var rewrote = 0;
 
-        if (string.IsNullOrEmpty(searchName))
-        {
-            DarkMessageBox.Show(
-                "Cannot auto-heal: the stored target has no file name to search for.",
-                "Auto-Heal", this);
-            return;
-        }
+        var lastError = string.Empty;
 
-        // Find the first file anywhere under the library root that matches the name.
-        string? found = null;
-        try
+        foreach (var link in links)
         {
-            found = Directory
-                .EnumerateFiles(root, searchName, SearchOption.AllDirectories)
-                .FirstOrDefault(f => !RplinkHelper.IsRplinkFile(f));
-        }
-        catch (Exception ex)
-        {
-            DarkMessageBox.Show(
-                $"Search failed: {ex.Message}", "Auto-Heal", this);
-            return;
-        }
+            try
+            {
 
-        if (found is null)
-        {
-            DarkMessageBox.Show(
-                $"No file named \"{searchName}\" was found anywhere under:\n{root}",
-                "Auto-Heal", this);
-            return;
-        }
+                var targetRaw = RplinkHelper.TryReadTargetRaw(link.FullPath) ?? string.Empty;
+                var searchName = Path.GetFileName(targetRaw);
 
-        var stored = RplinkHelper.MakeRelativeIfPossible(entry.FullPath, found);
-        try
-        {
-            RplinkHelper.Create(entry.FullPath, stored);
-            _webServer?.SuppressWatcher(TimeSpan.FromSeconds(10));
-            _webServer?.IndexAddOrUpdateFile(entry.FullPath);
-            RefreshBrowser(isLeft);
-            DarkMessageBox.Show(
-                $"✅  Link retargeted to:\n{found}",
-                "Auto-Heal", this);
+                if (string.IsNullOrEmpty(searchName))
+                {
+                    failed++;
+                    continue;
+                }
+
+                string? found = null;
+                try
+                {
+                    found = Directory
+                        .EnumerateFiles(root, searchName, SearchOption.AllDirectories)
+                        .FirstOrDefault(f => !RplinkHelper.IsRplinkFile(f));
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    continue;
+                }
+
+                if (found is null)
+                {
+                    failed++;
+                    continue;
+                }
+
+                var stored = RplinkHelper.MakeRelativeIfPossible(link.FullPath, found);
+                RplinkHelper.Create(link.FullPath, stored);
+                _webServer?.IndexAddOrUpdateFile(link.FullPath);
+                rewrote++;
+                
+            }
+            catch (Exception ex) 
+            { 
+                failed++; 
+                lastError = ex.Message; 
+            }
+
+
         }
-        catch (Exception ex)
-        {
-            DarkMessageBox.Show(
-                $"Could not rewrite link: {ex.Message}", "Auto-Heal", this);
-        }
+        RefreshBrowser(isLeft);
+
+        var msg = rewrote > 0
+            ? $"Retargeted {rewrote} link(s)"
+            : string.Empty;
+        if (failed > 0)
+            msg += $"\n{failed} link(s) could not be rewritten.\nLast error: {lastError}";
+
+        if (!string.IsNullOrEmpty(msg))
+            DarkMessageBox.Show(msg.Trim(), "Heal", this);
+
     }
 
     // ── Delete link(s) ────────────────────────────────────────────────
@@ -3221,6 +3242,128 @@ public partial class MainWindow : Window
 
     // ── Check Index
 
+    private void OnBrowserMovieToMasterLibrary(object sender, RoutedEventArgs e)
+    {
+        if (_webServer is null) return;
+
+        var (lv, _, _, isLeft) = GetBrowserContext(sender);
+
+        var items = lv.SelectedItems
+                    .OfType<BrowserEntry>()
+                    .Where(x => !x.IsDirectory && !x.IsLink && !x.IsGoUp)
+                    .ToList();
+
+        if (items.Count == 0) return;
+
+        var rootFolder = "@Master.Movies";
+
+        var masterLibrary = Path.Combine( _config.ResolvedMoviesPath, rootFolder);
+
+        // Create directory structure as needed
+        if (!Directory.Exists(masterLibrary))
+        {
+            Directory.CreateDirectory(masterLibrary);
+        }
+
+        foreach (var item in items)
+        {
+            var itemPath = item.FullPath;
+            if (!File.Exists(itemPath)) continue; // Skip if file doesn't exist
+
+            var fileName = Path.GetFileName(itemPath);
+            var targetPath = Path.Combine(masterLibrary, fileName);
+
+            // Check if a file with the same name already exists
+            if (File.Exists(targetPath))
+            {
+                // Use a different naming strategy - append timestamp or increment count
+                var fileNameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
+                var fileExt = Path.GetExtension(fileName);
+                var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+                targetPath = Path.Combine(masterLibrary, $"{fileNameWithoutExt}_{timestamp}{fileExt}");
+            }
+
+            // Move the file to master library
+            File.Move(itemPath, targetPath);
+
+            // Create .rplink file in the original location that points to the new file in master library
+            var linkPath = Path.ChangeExtension(itemPath, ".rplink");
+
+            //var relativePath = RplinkHelper.MakeRelativeIfPossible(itemPath, targetPath);
+
+            File.WriteAllText(linkPath, $"@\\{rootFolder}\\{fileName}");
+            _webServer.IndexRenameFile(itemPath, targetPath);
+        }
+
+        RefreshBrowser(isLeft);
+        RefreshBrowser(!isLeft);
+    }
+
+    private void OnBrowserSeriesToMasterLibrary(object sender, RoutedEventArgs e)
+    {
+        if (_webServer is null) return;
+
+        var (lv, _, _, isLeft) = GetBrowserContext(sender);
+
+        var items = lv.SelectedItems
+             .OfType<BrowserEntry>()
+             .Where(x => x.IsDirectory && !x.IsLink && !x.IsGoUp)
+             .ToList();
+
+
+        if (items.Count == 0) return;
+
+        var rootFolder = "@Master.Series";
+
+        var masterLibrary = Path.Combine(_config.ResolvedMoviesPath, rootFolder);
+
+
+        // Create directory structure as needed
+        if (!Directory.Exists(masterLibrary))
+        {
+            Directory.CreateDirectory(masterLibrary);
+        }
+
+        foreach (var item in items)
+        {
+            var itemPath = item.FullPath;
+            if (!Path.Exists(itemPath)) continue; // Skip if folder doesn't exist
+
+
+            var folderName = Path.GetFileName(itemPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+            var targetPath = Path.Combine(masterLibrary, folderName);
+
+            // Check if a folder with the same name already exists
+
+            if (Directory.Exists(targetPath))
+            {
+                // Use a different naming strategy - append timestamp or increment count
+                var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+                targetPath = Path.Combine(masterLibrary, $"{folderName}_{timestamp}");
+            }
+
+            // Move the folder to master library
+
+            Directory.Move(itemPath, targetPath);
+
+            // Create .rplink file in the original location that points to the new folder in master library
+
+            var linkPath = Path.Combine(Path.GetDirectoryName(itemPath)!, folderName + ".rplink");
+
+            if (File.Exists(linkPath))
+            {
+
+                var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+                linkPath = Path.Combine(Path.GetDirectoryName(itemPath)!, $"{folderName}_{timestamp}.rplink");
+            }
+
+            File.WriteAllText(linkPath, $"@\\{rootFolder}\\{folderName}\\");
+        }
+        RefreshBrowser(isLeft);
+        RefreshBrowser(!isLeft);
+    }
+
     private void OnBrowserCheckIndex(object sender, RoutedEventArgs e)
     {
         if (_webServer is null) return;
@@ -3355,55 +3498,80 @@ public partial class MainWindow : Window
         RenameEntry(entry, isLink: entry.IsLink, onDone: () => RefreshBrowser(isLeft));
     }
 
-    /// <summary>Shows a rename dialog and renames the file/folder/link on disk.
-    /// When renaming a video file, any .rplink files pointing to the old path are retargeted automatically.</summary>
+    /// <summary>
+    /// Shows a rename dialog and reloads/renames the file/folder/link on disk.
+    /// When renaming a video file, any .rplink files pointing to the old path are retargeted automatically.
+    /// </summary>
     private void RenameEntry(BrowserEntry entry, bool isLink, Action onDone)
     {
-        // For files and links we show the name without extension so the user
-        // doesn't accidentally double the extension (e.g. "movie.mp4" -> "movie.mp4.mp4").
-        var currentName = (isLink || (!entry.IsDirectory))
+        // 1. Determine what name to show in the dialog.
+        // For links and standard files (not directories), we strip the extension so users don't double it.
+        string currentName = (isLink || !entry.IsDirectory)
             ? Path.GetFileNameWithoutExtension(entry.FullPath)
             : Path.GetFileName(entry.FullPath);
 
-        var dlg = new RenameDialog(currentName) { Owner = this };
-        if (dlg.ShowDialog() != true) return;
+        using var dlg = new RenameDialog(currentName) { Owner = this };
+        if (dlg.ShowDialog() != true)
+            return;
 
         var newBaseName = dlg.NewName.Trim();
-        if (string.IsNullOrWhiteSpace(newBaseName) || newBaseName == currentName) return;
+
+        // Guard: If nothing changed or name is empty, abort.
+        if (string.IsNullOrWhiteSpace(newBaseName) || newBaseName == currentName)
+            return;
 
         try
         {
-            string dir  = Path.GetDirectoryName(entry.FullPath)!;
-            string dest = isLink
-                ? Path.Combine(dir, newBaseName + RplinkHelper.Extension)
-                : entry.IsDirectory
-                    ? Path.Combine(dir, newBaseName)
-                    : Path.Combine(dir, newBaseName + Path.GetExtension(entry.FullPath));
+            string directory = Path.GetDirectoryName(entry.FullPath) ?? "";
+            string destination = CalculateDestination(entry, isLink, newBaseName, directory);
 
+            // Perform File System Operations
             if (entry.IsDirectory)
-                Directory.Move(entry.FullPath, dest);
+                Directory.Move(entry.FullPath, destination);
             else
-                File.Move(entry.FullPath, dest);
+                File.Move(entry.FullPath, destination);
 
-            // When a video file is renamed, retarget any .rplink files that pointed to the old path.
+            // 2. Handle Post-Rename Logic
+            // Retarget .rplink files based on the type of entity moved
             if (!isLink && !entry.IsDirectory)
-                RetargetLinksAfterFileRename(entry.FullPath, dest);
+            {
+                RetargetLinksAfterFileRename(entry.FullPath, destination);
+            }
+            else if (entry.IsDirectory)
+            {
+                RetargetLinksAfterFolderRename(entry.FullPath, destination);
+            }
 
-            // When a folder is renamed, retarget any .rplink files whose targets live inside it.
-            if (entry.IsDirectory)
-                RetargetLinksAfterFolderRename(entry.FullPath, dest);
-
+            // 3. Notify System Services
             _webServer?.SuppressWatcher(TimeSpan.FromSeconds(10));
+
             if (entry.IsDirectory)
-                _webServer?.IndexRenamePrefix(entry.FullPath, dest);
+                _webServer?.IndexRenamePrefix(entry.FullPath, destination);
             else
-                _webServer?.IndexRenameFile(entry.FullPath, dest);
-            onDone();
+                _webServer?.IndexRenameFile(entry.FullPath, destination);
+
+            onDone?.Invoke();
         }
         catch (Exception ex)
         {
-            DarkMessageBox.Show("Rename failed: " + ex.Message, "Error", this);
+            DarkMessageBox.Show($"Rename failed: {ex.Message}", "Error", this);
         }
+    }
+
+    /// <summary>
+    /// Helper to determine the final system path based on entry type and new name.
+    /// </summary>
+    private static string CalculateDestination(BrowserEntry entry, bool isLink, string newBaseName, string directory)
+    {
+        if (isLink)
+            return Path.Combine(directory, newBaseName + RplinkHelper.Extension);
+
+        if (entry.IsDirectory)
+            return Path.Combine(directory, newBaseName);
+
+        // Logic for standard files: maintain the original extension
+        var extension = Path.GetExtension(entry.FullPath);
+        return Path.Combine(directory, newBaseName + extension);
     }
 
     /// <summary>Scans the library root for .rplink files pointing to <paramref name="oldPath"/> and
@@ -3603,7 +3771,6 @@ public partial class MainWindow : Window
         dlg.ShowDialog();
     }
 }
-
 /// <summary>Item model for the music audio output device ComboBox.</summary>
 internal sealed record MusicAudioDevice(int DeviceNumber, string Name)
 {

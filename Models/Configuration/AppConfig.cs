@@ -56,6 +56,19 @@ internal sealed record AppConfig
     /// Empty string means use the Windows default output device.
     /// </summary>
     public string MusicAudioDeviceId { get; init; } = string.Empty;
+
+    /// <summary>When true, MusicBrainz + Cover Art Archive are used for online music album-art lookup.</summary>
+    public bool EnableMusicBrainzAlbumArtLookup { get; init; } = true;
+
+    /// <summary>When true, Discogs is used as fallback when MusicBrainz/CAA misses.</summary>
+    public bool EnableDiscogsAlbumArtLookup { get; init; } = true;
+
+    /// <summary>
+    /// Optional Discogs personal access token used by album-art fallback requests.
+    /// Leave empty to use anonymous Discogs requests.
+    /// </summary>
+    public string DiscogsToken { get; init; } = string.Empty;
+
     public int LibraryPageSize { get; init; } = 200;
 
     /// <summary>

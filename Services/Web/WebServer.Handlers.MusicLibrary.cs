@@ -1,9 +1,12 @@
 ﻿using System.IO;
+using System.IO.Compression;
 using System.Net;
 using System.Text.Json;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Xml;
+using Microsoft.Data.Sqlite;
 
 namespace RemotePlay;
 
@@ -312,6 +315,9 @@ internal sealed partial class WebServer
                     {
                         int trackCount = 0;
                         string? artist = null;
+                        string albumForArt = Path.GetFileNameWithoutExtension(f);
+                        string? albumArtUrl = null;
+                        var plName = Path.GetFileNameWithoutExtension(f);
                         try
                         {
                             var allLines = File.ReadLines(f)
@@ -322,7 +328,6 @@ internal sealed partial class WebServer
                                 .ToList();
                             trackCount = trackPaths.Count;
 
-                            var plName = Path.GetFileNameWithoutExtension(f);
                             Logger.Detail("CoverDiag", $"Playlist '{plName}': {trackPaths.Count} tracks, {allLines.Count(l => l.TrimStart().StartsWith("#EXTINF", StringComparison.OrdinalIgnoreCase))} #EXTINF lines");
 
                             // Step 1: Parse #EXTINF metadata — no disk access needed.
@@ -430,9 +435,23 @@ internal sealed partial class WebServer
                                 }
 
                             Logger.Detail("CoverDiag", $"Playlist '{plName}': final artist = '{artist ?? "(null)"}'");
+
+                            if (TryInferPlaylistArtistAlbum(f, out var inferredArtist, out var inferredAlbum))
+                            {
+                                if (string.IsNullOrWhiteSpace(artist))
+                                    artist = inferredArtist;
+
+                                albumForArt = inferredAlbum;
+                                var normalizedAlbum = BuildAlbumLookupCandidates(artist ?? string.Empty, albumForArt).FirstOrDefault() ?? albumForArt;
+                                if (!string.IsNullOrWhiteSpace(normalizedAlbum))
+                                {
+                                    albumArtUrl = "/api/music/album-art?album=" + Uri.EscapeDataString(normalizedAlbum)
+                                        + (string.IsNullOrWhiteSpace(artist) ? string.Empty : "&artist=" + Uri.EscapeDataString(artist));
+                                }
+                            }
                         }
                         catch (Exception plEx) { Logger.Warning("CoverDiag", $"Playlist scan exception for '{f}': {plEx.Message}"); }
-                        return (object)new { name = Path.GetFileNameWithoutExtension(f), path = WebPathHelpers.EncodePath(f), trackCount, artist };
+                        return (object)new { name = Path.GetFileNameWithoutExtension(f), path = WebPathHelpers.EncodePath(f), trackCount, artist, albumForArt, albumArtUrl };
                     })
                     .ToArray();
             }
@@ -1332,6 +1351,9 @@ internal sealed partial class WebServer
     // MusicBrainz rate-limit: max 1 request per second
     private static readonly SemaphoreSlim _mbRateLimit = new(1, 1);
     private static long _mbLastRequestTick = 0;
+    // Discogs fallback: keep a conservative 1 request/sec cadence.
+    private static readonly SemaphoreSlim _discogsRateLimit = new(1, 1);
+    private static long _discogsLastRequestTick = 0;
     private static readonly System.Net.Http.HttpClient _albumArtHttpClient = CreateAlbumArtHttpClient();
 
     private static string AlbumArtCacheDir =>
@@ -1386,6 +1408,628 @@ internal sealed partial class WebServer
         if (string.IsNullOrEmpty(a)) a = "__noartist__";
         if (string.IsNullOrEmpty(al)) al = "__noalbum__";
         return $"{a}|{al}";
+    }
+
+    private sealed class M3uAlbumArtScanProgress
+    {
+        public bool IsRunning { get; set; }
+        public int PlaylistsTotal { get; set; }
+        public int PlaylistsScanned { get; set; }
+        public int UniqueAlbumsTotal { get; set; }
+        public int ProcessedAlbums { get; set; }
+        public int Downloaded { get; set; }
+        public int AlreadyCached { get; set; }
+        public int Misses { get; set; }
+        public int Errors { get; set; }
+        public string CurrentPlaylist { get; set; } = string.Empty;
+        public string CurrentAlbum { get; set; } = string.Empty;
+        public string LastMessage { get; set; } = string.Empty;
+        public DateTime? StartedUtc { get; set; }
+        public DateTime? FinishedUtc { get; set; }
+    }
+
+    private sealed class DiscogsImportProgress
+    {
+        public bool IsRunning { get; set; }
+        public int RecordsRead { get; set; }
+        public int RecordsIndexed { get; set; }
+        public int Errors { get; set; }
+        public string SourcePath { get; set; } = string.Empty;
+        public string LastMessage { get; set; } = string.Empty;
+        public DateTime? StartedUtc { get; set; }
+        public DateTime? FinishedUtc { get; set; }
+    }
+
+    private sealed record M3uAlbumArtWorkItem(string PlaylistPath, string Artist, string Album, string CacheKey, string CacheFile);
+
+    private readonly object _m3uAlbumArtScanGate = new();
+    private readonly M3uAlbumArtScanProgress _m3uAlbumArtScan = new();
+    private Task? _m3uAlbumArtScanTask;
+
+    private readonly object _discogsImportGate = new();
+    private readonly DiscogsImportProgress _discogsImport = new();
+    private Task? _discogsImportTask;
+
+    private object GetM3uAlbumArtScanStatus()
+    {
+        lock (_m3uAlbumArtScanGate)
+        {
+            var started = _m3uAlbumArtScan.StartedUtc;
+            var finished = _m3uAlbumArtScan.FinishedUtc;
+            var end = finished ?? DateTime.UtcNow;
+            var elapsedSec = started.HasValue ? Math.Max(0, (int)(end - started.Value).TotalSeconds) : 0;
+            return new
+            {
+                isRunning = _m3uAlbumArtScan.IsRunning,
+                playlistsTotal = _m3uAlbumArtScan.PlaylistsTotal,
+                playlistsScanned = _m3uAlbumArtScan.PlaylistsScanned,
+                uniqueAlbumsTotal = _m3uAlbumArtScan.UniqueAlbumsTotal,
+                processedAlbums = _m3uAlbumArtScan.ProcessedAlbums,
+                downloaded = _m3uAlbumArtScan.Downloaded,
+                alreadyCached = _m3uAlbumArtScan.AlreadyCached,
+                misses = _m3uAlbumArtScan.Misses,
+                errors = _m3uAlbumArtScan.Errors,
+                currentPlaylist = _m3uAlbumArtScan.CurrentPlaylist,
+                currentAlbum = _m3uAlbumArtScan.CurrentAlbum,
+                lastMessage = _m3uAlbumArtScan.LastMessage,
+                startedUtc = _m3uAlbumArtScan.StartedUtc,
+                finishedUtc = _m3uAlbumArtScan.FinishedUtc,
+                elapsedSeconds = elapsedSec,
+            };
+        }
+    }
+
+    private static string DiscogsIndexDbPath => Path.Combine(AppPaths.UserDataDirectory, "DiscogsIndex.sqlite3");
+
+    private object GetDiscogsImportStatus()
+    {
+        lock (_discogsImportGate)
+        {
+            var started = _discogsImport.StartedUtc;
+            var finished = _discogsImport.FinishedUtc;
+            var end = finished ?? DateTime.UtcNow;
+            var elapsedSec = started.HasValue ? Math.Max(0, (int)(end - started.Value).TotalSeconds) : 0;
+            return new
+            {
+                isRunning = _discogsImport.IsRunning,
+                recordsRead = _discogsImport.RecordsRead,
+                recordsIndexed = _discogsImport.RecordsIndexed,
+                errors = _discogsImport.Errors,
+                sourcePath = _discogsImport.SourcePath,
+                lastMessage = _discogsImport.LastMessage,
+                startedUtc = _discogsImport.StartedUtc,
+                finishedUtc = _discogsImport.FinishedUtc,
+                elapsedSeconds = elapsedSec,
+                indexDbPath = DiscogsIndexDbPath,
+                hasIndex = File.Exists(DiscogsIndexDbPath),
+            };
+        }
+    }
+
+    private bool TryStartDiscogsImport(string sourcePath)
+    {
+        lock (_discogsImportGate)
+        {
+            if (_discogsImport.IsRunning)
+                return false;
+
+            _discogsImport.IsRunning = true;
+            _discogsImport.RecordsRead = 0;
+            _discogsImport.RecordsIndexed = 0;
+            _discogsImport.Errors = 0;
+            _discogsImport.SourcePath = sourcePath;
+            _discogsImport.LastMessage = "Starting Discogs masters import…";
+            _discogsImport.StartedUtc = DateTime.UtcNow;
+            _discogsImport.FinishedUtc = null;
+
+            _discogsImportTask = Task.Run(() => RunDiscogsImportAsync(sourcePath));
+            return true;
+        }
+    }
+
+    private bool TryStartM3uAlbumArtScan()
+    {
+        lock (_m3uAlbumArtScanGate)
+        {
+            if (_m3uAlbumArtScan.IsRunning)
+                return false;
+
+            _m3uAlbumArtScan.IsRunning = true;
+            _m3uAlbumArtScan.PlaylistsTotal = 0;
+            _m3uAlbumArtScan.UniqueAlbumsTotal = 0;
+            _m3uAlbumArtScan.PlaylistsScanned = 0;
+            _m3uAlbumArtScan.ProcessedAlbums = 0;
+            _m3uAlbumArtScan.Downloaded = 0;
+            _m3uAlbumArtScan.AlreadyCached = 0;
+            _m3uAlbumArtScan.Misses = 0;
+            _m3uAlbumArtScan.Errors = 0;
+            _m3uAlbumArtScan.CurrentPlaylist = string.Empty;
+            _m3uAlbumArtScan.CurrentAlbum = string.Empty;
+            _m3uAlbumArtScan.LastMessage = "Starting playlist scan…";
+            _m3uAlbumArtScan.StartedUtc = DateTime.UtcNow;
+            _m3uAlbumArtScan.FinishedUtc = null;
+
+            _m3uAlbumArtScanTask = Task.Run(RunM3uAlbumArtScanAsync);
+            return true;
+        }
+    }
+
+    private async Task RunM3uAlbumArtScanAsync()
+    {
+        try
+        {
+            KeyValuePair<string, M3uEntry>[] m3uSnapshot;
+            lock (_musicIndexGate)
+            {
+                m3uSnapshot = _m3uIndex
+                    .Where(kv => !string.Equals(Path.GetFileName(kv.Key), "all.m3u", StringComparison.OrdinalIgnoreCase)
+                              && !string.Equals(Path.GetFileName(kv.Key), "all.m3u8", StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+            }
+
+            if (m3uSnapshot.Length == 0)
+            {
+                lock (_m3uAlbumArtScanGate)
+                {
+                    _m3uAlbumArtScan.LastMessage = "No eligible album/single playlists found in M3U index (all.m3u is excluded).";
+                }
+                return;
+            }
+
+            lock (_m3uAlbumArtScanGate)
+            {
+                _m3uAlbumArtScan.PlaylistsTotal = m3uSnapshot.Length;
+                _m3uAlbumArtScan.LastMessage = $"Using indexed playlists: {m3uSnapshot.Length}.";
+            }
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var work = new List<M3uAlbumArtWorkItem>();
+
+            for (var i = 0; i < m3uSnapshot.Length; i++)
+            {
+                var pair = m3uSnapshot[i];
+                var playlist = pair.Key;
+                lock (_m3uAlbumArtScanGate)
+                {
+                    _m3uAlbumArtScan.PlaylistsScanned = i + 1;
+                    _m3uAlbumArtScan.CurrentPlaylist = playlist;
+                    _m3uAlbumArtScan.LastMessage = $"Analyzing playlist {i + 1}/{m3uSnapshot.Length}…";
+                }
+
+                if (!TryInferPlaylistArtistAlbum(playlist, out var artist, out var album))
+                    continue;
+
+                var normalizedAlbum = BuildAlbumLookupCandidates(artist, album).FirstOrDefault() ?? album;
+                if (string.IsNullOrWhiteSpace(normalizedAlbum))
+                    continue;
+
+                var cacheKey = ComputeAlbumArtCacheKey(artist, normalizedAlbum);
+                if (!seen.Add(cacheKey))
+                    continue;
+
+                work.Add(new M3uAlbumArtWorkItem(playlist, artist, normalizedAlbum, cacheKey, AlbumArtCacheFile(cacheKey)));
+            }
+
+            lock (_m3uAlbumArtScanGate)
+            {
+                _m3uAlbumArtScan.PlaylistsTotal = m3uSnapshot.Length;
+                _m3uAlbumArtScan.UniqueAlbumsTotal = work.Count;
+                _m3uAlbumArtScan.LastMessage = work.Count == 0
+                    ? "Indexed playlists found, but no artist+album candidates could be inferred."
+                    : $"Found {m3uSnapshot.Length} indexed playlists and {work.Count} unique artist+album keys.";
+            }
+
+            if (work.Count == 0)
+            {
+                Logger.Info("AlbumArt", "M3U album-art scan complete: no album candidates inferred from indexed playlists");
+                return;
+            }
+
+            Logger.Info("AlbumArt", $"M3U album-art scan started from index: playlists={m3uSnapshot.Length} albums={work.Count}");
+
+            for (var i = 0; i < work.Count; i++)
+            {
+                var item = work[i];
+                lock (_m3uAlbumArtScanGate)
+                {
+                    _m3uAlbumArtScan.CurrentPlaylist = item.PlaylistPath;
+                    _m3uAlbumArtScan.CurrentAlbum = string.IsNullOrWhiteSpace(item.Artist)
+                        ? item.Album
+                        : $"{item.Artist} - {item.Album}";
+                    _m3uAlbumArtScan.LastMessage = $"Processing album {i + 1}/{work.Count}…";
+                }
+
+                try
+                {
+                    if (IsAlbumArtCached(item.CacheKey, item.CacheFile))
+                    {
+                        lock (_m3uAlbumArtScanGate)
+                        {
+                            _m3uAlbumArtScan.ProcessedAlbums++;
+                            _m3uAlbumArtScan.AlreadyCached++;
+                        }
+                        continue;
+                    }
+
+                    var imageBytes = await FetchAndCacheAlbumArtAsync(
+                        item.Artist,
+                        item.Album,
+                        item.CacheKey,
+                        item.CacheFile,
+                        _config.EnableMusicBrainzAlbumArtLookup,
+                        _config.EnableDiscogsAlbumArtLookup,
+                        _config.DiscogsToken,
+                        allowDiscogsApiFallback: false).ConfigureAwait(false);
+
+                    lock (_m3uAlbumArtScanGate)
+                    {
+                        _m3uAlbumArtScan.ProcessedAlbums++;
+                        if (imageBytes is not null) _m3uAlbumArtScan.Downloaded++;
+                        else _m3uAlbumArtScan.Misses++;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning("AlbumArt", $"M3U scan item failed for '{item.Artist} - {item.Album}': {ex.Message}");
+                    lock (_m3uAlbumArtScanGate)
+                    {
+                        _m3uAlbumArtScan.ProcessedAlbums++;
+                        _m3uAlbumArtScan.Errors++;
+                    }
+                }
+            }
+
+            lock (_m3uAlbumArtScanGate)
+            {
+                _m3uAlbumArtScan.LastMessage =
+                    $"Completed: downloaded={_m3uAlbumArtScan.Downloaded}, cached={_m3uAlbumArtScan.AlreadyCached}, misses={_m3uAlbumArtScan.Misses}, errors={_m3uAlbumArtScan.Errors}";
+            }
+
+            Logger.Info("AlbumArt", "M3U album-art scan complete");
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("AlbumArt", $"M3U album-art scan failed: {ex.Message}");
+            lock (_m3uAlbumArtScanGate)
+            {
+                _m3uAlbumArtScan.Errors++;
+                _m3uAlbumArtScan.LastMessage = $"Scan failed: {ex.Message}";
+            }
+        }
+        finally
+        {
+            lock (_m3uAlbumArtScanGate)
+            {
+                _m3uAlbumArtScan.IsRunning = false;
+                _m3uAlbumArtScan.FinishedUtc = DateTime.UtcNow;
+                _m3uAlbumArtScan.CurrentPlaylist = string.Empty;
+                _m3uAlbumArtScan.CurrentAlbum = string.Empty;
+            }
+        }
+    }
+
+    private static bool TryInferPlaylistArtistAlbum(string playlistPath, out string artist, out string album)
+    {
+        artist = string.Empty;
+        album = string.Empty;
+
+        var parsedName = Path.GetFileNameWithoutExtension(playlistPath) ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(parsedName)) return false;
+
+        var m = Regex.Match(parsedName, "^\\(?\\d{4}\\)?\\s*[-–—:]\\s*(.+)$", RegexOptions.CultureInvariant);
+        var noYear = m.Success ? m.Groups[1].Value.Trim() : parsedName.Trim();
+        var split = Regex.Match(noYear, "^(.+?)\\s+[-–—]\\s+(.+)$");
+        if (split.Success)
+        {
+            artist = split.Groups[1].Value.Trim();
+            album = split.Groups[2].Value.Trim();
+        }
+        else
+        {
+            album = noYear;
+        }
+
+        if (string.IsNullOrWhiteSpace(artist))
+        {
+            try
+            {
+                static bool IsContainerFolder(string name) =>
+                    string.IsNullOrWhiteSpace(name) ||
+                    name.Equals("all", StringComparison.OrdinalIgnoreCase) ||
+                    name.Equals("albums", StringComparison.OrdinalIgnoreCase) ||
+                    name.Equals("singles", StringComparison.OrdinalIgnoreCase) ||
+                    name.Equals("music", StringComparison.OrdinalIgnoreCase) ||
+                    name.StartsWith("cd", StringComparison.OrdinalIgnoreCase) ||
+                    name.StartsWith("disc", StringComparison.OrdinalIgnoreCase) ||
+                    name.StartsWith("disk", StringComparison.OrdinalIgnoreCase);
+
+                // Path-first inference for layouts like:
+                // <Library>/All/<Artist>/Albums/<Year> - <Album>.m3u
+                // <Library>/All/<Artist>/Singles/<Year> - <Single>.m3u
+                var dir = Path.GetDirectoryName(playlistPath);
+                while (!string.IsNullOrWhiteSpace(dir))
+                {
+                    var folderName = Path.GetFileName(dir) ?? string.Empty;
+                    if (!IsContainerFolder(folderName))
+                    {
+                        artist = folderName.Trim();
+                        break;
+                    }
+                    dir = Path.GetDirectoryName(dir);
+                }
+
+                if (string.IsNullOrWhiteSpace(artist))
+                {
+                    foreach (var rawLine in File.ReadLines(playlistPath).Take(60))
+                    {
+                        var line = (rawLine ?? string.Empty).Trim();
+                        if (string.IsNullOrWhiteSpace(line) || line.StartsWith('#')) continue;
+
+                        var path = Path.IsPathRooted(line)
+                            ? line
+                            : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(playlistPath) ?? string.Empty, line));
+                        if (!File.Exists(path)) continue;
+
+                        using var tf = TagLib.File.Create(path);
+                        var tag = tf.Tag;
+                        var albumArtists = tag?.AlbumArtists ?? Array.Empty<string>();
+                        var performers = albumArtists.Length > 0 ? albumArtists : (tag?.Performers ?? Array.Empty<string>());
+                        if (performers.Length > 0 && !string.IsNullOrWhiteSpace(performers[0]))
+                        {
+                            artist = performers[0].Trim();
+                        }
+
+                        var tagAlbum = tag?.Album;
+                        if (string.IsNullOrWhiteSpace(album) && !string.IsNullOrWhiteSpace(tagAlbum))
+                            album = tagAlbum.Trim();
+
+                        if (!string.IsNullOrWhiteSpace(artist)) break;
+                    }
+                }
+            }
+            catch
+            {
+                // best effort only
+            }
+        }
+
+        album = (album ?? string.Empty).Trim();
+        artist = (artist ?? string.Empty).Trim();
+        return !string.IsNullOrWhiteSpace(album);
+    }
+
+    private static bool IsAlbumArtCached(string cacheKey, string cacheFile)
+    {
+        lock (_albumArtCache)
+        {
+            if (_albumArtCache.TryGetValue(cacheKey, out var mem) && mem is not null)
+                return true;
+        }
+
+        if (!File.Exists(cacheFile)) return false;
+
+        try
+        {
+            var bytes = File.ReadAllBytes(cacheFile);
+            return IsJpeg(bytes);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsJpeg(ReadOnlySpan<byte> bytes) =>
+        bytes.Length > 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF;
+
+    private async Task RunDiscogsImportAsync(string sourcePath)
+    {
+        try
+        {
+            lock (_discogsImportGate)
+            {
+                _discogsImport.LastMessage = "Preparing Discogs import…";
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(DiscogsIndexDbPath) ?? AppPaths.UserDataDirectory);
+            var tempDbPath = DiscogsIndexDbPath + ".tmp";
+            if (File.Exists(tempDbPath)) File.Delete(tempDbPath);
+
+            await using (var conn = new SqliteConnection($"Data Source={tempDbPath};Mode=ReadWriteCreate;Cache=Shared;Pooling=False"))
+            {
+                await conn.OpenAsync().ConfigureAwait(false);
+                await using (var pragma = conn.CreateCommand())
+                {
+                    pragma.CommandText = "PRAGMA journal_mode=DELETE; PRAGMA synchronous=NORMAL;";
+                    await pragma.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
+
+                await using (var create = conn.CreateCommand())
+                {
+                    create.CommandText = @"
+CREATE TABLE IF NOT EXISTS discogs_master_art (
+  master_id INTEGER NOT NULL,
+  artist_norm TEXT NOT NULL,
+  album_norm TEXT NOT NULL,
+  year INTEGER NULL,
+  image_url TEXT NOT NULL,
+  PRIMARY KEY(master_id, artist_norm, album_norm)
+);
+CREATE INDEX IF NOT EXISTS ix_discogs_master_art_artist_album ON discogs_master_art(artist_norm, album_norm);
+CREATE INDEX IF NOT EXISTS ix_discogs_master_art_album ON discogs_master_art(album_norm);
+";
+                    await create.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
+
+                await using SqliteTransaction tx = (SqliteTransaction)await conn.BeginTransactionAsync().ConfigureAwait(false);
+                await using var insert = conn.CreateCommand();
+                insert.Transaction = tx;
+                insert.CommandText = "INSERT OR REPLACE INTO discogs_master_art(master_id,artist_norm,album_norm,year,image_url) VALUES($id,$artist,$album,$year,$url);";
+                var pId = insert.CreateParameter(); pId.ParameterName = "$id"; insert.Parameters.Add(pId);
+                var pArtist = insert.CreateParameter(); pArtist.ParameterName = "$artist"; insert.Parameters.Add(pArtist);
+                var pAlbum = insert.CreateParameter(); pAlbum.ParameterName = "$album"; insert.Parameters.Add(pAlbum);
+                var pYear = insert.CreateParameter(); pYear.ParameterName = "$year"; insert.Parameters.Add(pYear);
+                var pUrl = insert.CreateParameter(); pUrl.ParameterName = "$url"; insert.Parameters.Add(pUrl);
+
+                await using var fs = File.OpenRead(sourcePath);
+                await using var gz = new GZipStream(fs, CompressionMode.Decompress, leaveOpen: false);
+                var xrSettings = new XmlReaderSettings { IgnoreWhitespace = true, DtdProcessing = DtdProcessing.Ignore, Async = false };
+                using var xr = XmlReader.Create(gz, xrSettings);
+
+                while (xr.Read())
+                {
+                    if (xr.NodeType != XmlNodeType.Element || !string.Equals(xr.Name, "master", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var masterIdText = xr.GetAttribute("id") ?? string.Empty;
+                    if (!long.TryParse(masterIdText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var masterId))
+                    {
+                        lock (_discogsImportGate) _discogsImport.Errors++;
+                        continue;
+                    }
+
+                    using var node = xr.ReadSubtree();
+                    node.Read();
+
+                    string title = string.Empty;
+                    string mainReleaseUrl = string.Empty;
+                    string primaryImageUrl = string.Empty;
+                    string fallbackImageUrl = string.Empty;
+                    int? year = null;
+                    var artists = new List<string>();
+
+                    while (node.Read())
+                    {
+                        if (node.NodeType != XmlNodeType.Element) continue;
+
+                        if (string.Equals(node.Name, "title", StringComparison.OrdinalIgnoreCase))
+                        {
+                            title = (node.ReadElementContentAsString() ?? string.Empty).Trim();
+                            continue;
+                        }
+
+                        if (string.Equals(node.Name, "year", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var y = (node.ReadElementContentAsString() ?? string.Empty).Trim();
+                            if (int.TryParse(y, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedYear)) year = parsedYear;
+                            continue;
+                        }
+
+                        if (string.Equals(node.Name, "main_release_url", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var u = (node.ReadElementContentAsString() ?? string.Empty).Trim();
+                            if (!string.IsNullOrWhiteSpace(u)) mainReleaseUrl = u;
+                            continue;
+                        }
+
+                        if (string.Equals(node.Name, "image", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var uri = (node.GetAttribute("uri") ?? string.Empty).Trim();
+                            var type = (node.GetAttribute("type") ?? string.Empty).Trim();
+                            if (!string.IsNullOrWhiteSpace(uri))
+                            {
+                                if (string.IsNullOrWhiteSpace(fallbackImageUrl)) fallbackImageUrl = uri;
+                                if (string.Equals(type, "primary", StringComparison.OrdinalIgnoreCase)) primaryImageUrl = uri;
+                            }
+
+                            continue;
+                        }
+
+                        if (string.Equals(node.Name, "name", StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(node.Prefix, string.Empty, StringComparison.Ordinal))
+                        {
+                            var an = (node.ReadElementContentAsString() ?? string.Empty).Trim();
+                            if (!string.IsNullOrWhiteSpace(an) && artists.Count < 4) artists.Add(an);
+                            continue;
+                        }
+                    }
+
+                    var albumNorm = NormalizeArtistName(title);
+                    if (string.IsNullOrWhiteSpace(albumNorm))
+                    {
+                        lock (_discogsImportGate) _discogsImport.RecordsRead++;
+                        continue;
+                    }
+
+                    var imageUrl = !string.IsNullOrWhiteSpace(primaryImageUrl)
+                        ? primaryImageUrl
+                        : (!string.IsNullOrWhiteSpace(fallbackImageUrl) ? fallbackImageUrl : mainReleaseUrl);
+
+                    if (string.IsNullOrWhiteSpace(imageUrl))
+                        imageUrl = $"https://api.discogs.com/masters/{masterId}";
+
+                    if (artists.Count == 0)
+                        artists.Add(string.Empty);
+
+                    foreach (var rawArtist in artists)
+                    {
+                        var artistNorm = NormalizeArtistName(rawArtist);
+                        pId.Value = masterId;
+                        pArtist.Value = artistNorm;
+                        pAlbum.Value = albumNorm;
+                        pYear.Value = (object?)year ?? DBNull.Value;
+                        pUrl.Value = imageUrl;
+                        await insert.ExecuteNonQueryAsync().ConfigureAwait(false);
+                    }
+
+                    lock (_discogsImportGate)
+                    {
+                        _discogsImport.RecordsRead++;
+                        _discogsImport.RecordsIndexed += Math.Max(1, artists.Count);
+                        if (_discogsImport.RecordsRead % 500 == 0)
+                            _discogsImport.LastMessage = $"Imported {_discogsImport.RecordsRead} masters…";
+                    }
+                }
+
+                await tx.CommitAsync().ConfigureAwait(false);
+            }
+
+            var swapped = false;
+            Exception? lastSwapError = null;
+            for (var attempt = 1; attempt <= 20; attempt++)
+            {
+                try
+                {
+                    if (File.Exists(DiscogsIndexDbPath))
+                        File.Delete(DiscogsIndexDbPath);
+
+                    File.Move(tempDbPath, DiscogsIndexDbPath, overwrite: true);
+                    swapped = true;
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    lastSwapError = ex;
+                    await Task.Delay(250).ConfigureAwait(false);
+                }
+            }
+
+            if (!swapped)
+            {
+                throw new IOException($"Failed to finalize Discogs index swap: {lastSwapError?.Message}", lastSwapError);
+            }
+
+            lock (_discogsImportGate)
+            {
+                _discogsImport.LastMessage = $"Discogs import complete. Indexed {_discogsImport.RecordsIndexed} rows.";
+            }
+        }
+        catch (Exception ex)
+        {
+            lock (_discogsImportGate)
+            {
+                _discogsImport.Errors++;
+                _discogsImport.LastMessage = $"Discogs import failed: {ex.Message}";
+            }
+        }
+        finally
+        {
+            lock (_discogsImportGate)
+            {
+                _discogsImport.IsRunning = false;
+                _discogsImport.FinishedUtc = DateTime.UtcNow;
+            }
+        }
     }
 
     // â”€â”€ Album art export / import â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1683,6 +2327,59 @@ internal sealed partial class WebServer
     /// </summary>
     private static async Task HandleMusicLyricsImportAsync(HttpListenerContext ctx)
     {
+        // DELETE /api/music/lyrics/import?clear=1 — delete all lyrics
+        if (ctx.Request.HttpMethod.Equals("DELETE", StringComparison.OrdinalIgnoreCase))
+        {
+            if (ctx.Request.QueryString["clear"] == "1")
+            {
+                try
+                {
+                    var cacheDir = AppPaths.LyricsCacheDirectory;
+                    if (Directory.Exists(cacheDir))
+                    {
+                        foreach (var f in Directory.EnumerateFiles(cacheDir, "*.json"))
+                            File.Delete(f);
+
+                        Logger.Detail("Lyrics", "Clear: deleted all lyrics from cache");
+                    }
+
+                    TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning("Lyrics", $"Clear failed: {ex.Message}");
+                    TrySendResponse(ctx, 500, "application/json", "{\"error\":\"clear failed\"}");
+                }
+
+                return;
+            }
+
+            // DELETE /api/music/lyrics/import?key=... — delete single file
+            var deleteKey = (ctx.Request.QueryString["key"] ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(deleteKey))
+            {
+                TrySendResponse(ctx, 400, "application/json", "{\"error\":\"missing key\"}");
+                return;
+            }
+
+            try
+            {
+                var file = Path.Combine(AppPaths.LyricsCacheDirectory, deleteKey + ".json");
+                if (File.Exists(file))
+                    File.Delete(file);
+
+                Logger.Detail("Lyrics", $"Delete: removed '{deleteKey}'");
+                TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("Lyrics", $"Delete failed for key '{deleteKey}': {ex.Message}");
+                TrySendResponse(ctx, 500, "application/json", "{\"error\":\"delete failed\"}");
+            }
+
+            return;
+        }
+
         // Index request: return a map of filename â†’ file size so exporter can skip identical items.
         if (ctx.Request.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase)
             && ctx.Request.QueryString["index"] == "1")
@@ -1740,8 +2437,57 @@ internal sealed partial class WebServer
         }
     }
 
-    private static async Task HandleMusicAlbumArtImportAsync(HttpListenerContext ctx)
+     private static async Task HandleMusicAlbumArtImportAsync(HttpListenerContext ctx)
     {
+        // DELETE /api/music/album-art/import?clear=1 — delete all album art
+        if (ctx.Request.HttpMethod.Equals("DELETE", StringComparison.OrdinalIgnoreCase))
+        {
+            if (ctx.Request.QueryString["clear"] == "1")
+            {
+                try
+                {
+                    if (Directory.Exists(AlbumArtCacheDir))
+                    {
+                        foreach (var f in Directory.EnumerateFiles(AlbumArtCacheDir, "*.jpg"))
+                            File.Delete(f);
+                        Logger.Detail("AlbumArt", $"Clear: deleted all album art from cache");
+                    }
+                    lock (_albumArtCache) _albumArtCache.Clear();
+                    TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning("AlbumArt", $"Clear failed: {ex.Message}");
+                    TrySendResponse(ctx, 500, "application/json", "{\"error\":\"clear failed\"}");
+                }
+                return;
+            }
+
+            // DELETE /api/music/album-art/import?key=... — delete single file
+            var deleteKey = (ctx.Request.QueryString["key"] ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(deleteKey))
+            {
+                TrySendResponse(ctx, 400, "application/json", "{\"error\":\"missing key\"}");
+                return;
+            }
+
+            try
+            {
+                var file = AlbumArtCacheFile(deleteKey);
+                if (File.Exists(file))
+                    File.Delete(file);
+                lock (_albumArtCache) _albumArtCache.Remove(deleteKey);
+                Logger.Detail("AlbumArt", $"Delete: removed '{deleteKey}'");
+                TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning("AlbumArt", $"Delete failed for key '{deleteKey}': {ex.Message}");
+                TrySendResponse(ctx, 500, "application/json", "{\"error\":\"delete failed\"}");
+            }
+            return;
+        }
+
         // Index request: return a map of key → file size so exporter can skip identical items.
         if (ctx.Request.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase)
             && ctx.Request.QueryString["index"] == "1")
@@ -1941,8 +2687,6 @@ internal sealed partial class WebServer
         var album  = (ctx.Request.QueryString["album"]  ?? string.Empty).Trim();
         var artist = (ctx.Request.QueryString["artist"] ?? string.Empty).Trim();
 
-        Logger.Detail("CoverDiag", $"AlbumArt request: artist='{artist}' album='{album}'");
-
         if (string.IsNullOrWhiteSpace(album))
         { TrySendResponse(ctx, 400, "text/plain", "missing album"); return; }
 
@@ -1952,7 +2696,9 @@ internal sealed partial class WebServer
 
         var cacheKey  = ComputeAlbumArtCacheKey(artist, album);
         var cacheFile = AlbumArtCacheFile(cacheKey);
-        Logger.Detail("CoverDiag", $"AlbumArt cacheKey='{cacheKey}' cacheFile='{Path.GetFileName(cacheFile)}'");
+        var enableMusicBrainz = _config.EnableMusicBrainzAlbumArtLookup;
+        var enableDiscogs = _config.EnableDiscogsAlbumArtLookup;
+        var discogsToken = _config.DiscogsToken;
 
         // 1. Fast path â€” in-memory cache
         await _albumArtLock.WaitAsync(ct).ConfigureAwait(false);
@@ -1961,18 +2707,34 @@ internal sealed partial class WebServer
 
         if (hasCached)
         {
-            if (cached is null) { TrySendResponse(ctx, 404, "text/plain", "not found"); return; }
-            ctx.Response.ContentType = "image/jpeg";
-            ctx.Response.ContentLength64 = cached.Length;
-            try
+            if (cached is null)
             {
-                await ctx.Response.OutputStream.WriteAsync(cached, ct).ConfigureAwait(false);
-                ctx.Response.OutputStream.Close();
+                // If album normalization now yields alternate candidates (e.g. "2016 - Klein geluk" → "Klein geluk"),
+                // bypass old miss sentinels so the improved lookup logic can retry.
+                var candidates = BuildAlbumLookupCandidates(artist, album);
+                if (candidates.Count <= 1)
+                {
+                    TrySendResponse(ctx, 404, "text/plain", "not found");
+                    return;
+                }
+                Logger.Detail("AlbumArt", $"Bypassing stale miss cache for '{artist} - {album}' due to normalized candidates");
             }
-            catch (OperationCanceledException) { }
-            catch (System.Net.HttpListenerException) { }  // client disconnected
-            return;
+            else
+            {
+                ctx.Response.ContentType = "image/jpeg";
+                ctx.Response.ContentLength64 = cached.Length;
+                try
+                {
+                    await ctx.Response.OutputStream.WriteAsync(cached, ct).ConfigureAwait(false);
+                    ctx.Response.OutputStream.Close();
+                }
+                catch (OperationCanceledException) { }
+                catch (System.Net.HttpListenerException) { }  // client disconnected
+                return;
+            }
         }
+
+        Logger.Detail("CoverDiag", $"AlbumArt lookup miss-cache: artist='{artist}' album='{album}' cacheKey='{cacheKey}' providers=MB:{enableMusicBrainz} Discogs:{enableDiscogs}");
 
         // 2. Disk cache â€” load without going to the network
         if (File.Exists(cacheFile))
@@ -2011,12 +2773,19 @@ internal sealed partial class WebServer
                 }
                 else
                 {
-                    // Zero-byte file = persisted miss â€” don't hit network again
-                    await _albumArtLock.WaitAsync(ct).ConfigureAwait(false);
-                    _albumArtCache[cacheKey] = null;
-                    _albumArtLock.Release();
-                    TrySendResponse(ctx, 404, "text/plain", "not found");
-                    return;
+                    // Zero-byte file = persisted miss. If normalization now yields alternate titles,
+                    // invalidate sentinel and allow a retry with normalized candidates.
+                    var candidates = BuildAlbumLookupCandidates(artist, album);
+                    if (candidates.Count <= 1)
+                    {
+                        await _albumArtLock.WaitAsync(ct).ConfigureAwait(false);
+                        _albumArtCache[cacheKey] = null;
+                        _albumArtLock.Release();
+                        TrySendResponse(ctx, 404, "text/plain", "not found");
+                        return;
+                    }
+
+                    try { File.Delete(cacheFile); } catch { }
                 }
             }
             catch (OperationCanceledException) { return; }
@@ -2041,7 +2810,7 @@ internal sealed partial class WebServer
             }
             else
             {
-                fetchTask = FetchAndCacheAlbumArtAsync(artist, album, cacheKey, cacheFile);
+                fetchTask = FetchAndCacheAlbumArtAsync(artist, album, cacheKey, cacheFile, enableMusicBrainz, enableDiscogs, discogsToken);
                 _albumArtInflight[cacheKey] = fetchTask;
                 isOwner = true;
             }
@@ -2084,19 +2853,118 @@ internal sealed partial class WebServer
         catch (System.Net.HttpListenerException) { }  // client disconnected
     }
 
+    private void HandleMusicAlbumArtScanStatus(HttpListenerContext ctx)
+    {
+        var json = JsonSerializer.Serialize(GetM3uAlbumArtScanStatus());
+        TrySendResponse(ctx, 200, "application/json; charset=utf-8", json);
+    }
+
+    private void HandleMusicAlbumArtScanStart(HttpListenerContext ctx)
+    {
+        var started = TryStartM3uAlbumArtScan();
+        var payload = new
+        {
+            ok = true,
+            started,
+            status = GetM3uAlbumArtScanStatus(),
+            message = started ? "M3U album-art scan started." : "M3U album-art scan is already running.",
+        };
+        var json = JsonSerializer.Serialize(payload);
+        TrySendResponse(ctx, 200, "application/json; charset=utf-8", json);
+    }
+
+    private void HandleDiscogsImportStatus(HttpListenerContext ctx)
+    {
+        var json = JsonSerializer.Serialize(GetDiscogsImportStatus());
+        TrySendResponse(ctx, 200, "application/json; charset=utf-8", json);
+    }
+
+    private void HandleDiscogsImportStart(HttpListenerContext ctx)
+    {
+        var sourcePath = (ctx.Request.QueryString["path"] ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(sourcePath))
+        {
+            TrySendResponse(ctx, 400, "application/json; charset=utf-8", JsonSerializer.Serialize(new { ok = false, error = "Missing 'path' query parameter." }));
+            return;
+        }
+
+        if (!File.Exists(sourcePath))
+        {
+            TrySendResponse(ctx, 404, "application/json; charset=utf-8", JsonSerializer.Serialize(new { ok = false, error = "Source file does not exist." }));
+            return;
+        }
+
+        var started = TryStartDiscogsImport(sourcePath);
+        var payload = new
+        {
+            ok = true,
+            started,
+            status = GetDiscogsImportStatus(),
+            message = started ? "Discogs import started." : "Discogs import is already running.",
+        };
+        TrySendResponse(ctx, 200, "application/json; charset=utf-8", JsonSerializer.Serialize(payload));
+    }
+
     /// <summary>
     /// Performs the actual MusicBrainz/CAA network fetch and persists the result to disk and
     /// in-memory cache.  Extracted so multiple concurrent requests for the same key can share
     /// a single Task via <c>_albumArtInflight</c>.
     /// </summary>
     private static async Task<byte[]?> FetchAndCacheAlbumArtAsync(
-        string artist, string album, string cacheKey, string cacheFile)
+        string artist, string album, string cacheKey, string cacheFile,
+        bool enableMusicBrainz, bool enableDiscogs, string? discogsToken,
+        bool allowDiscogsApiFallback = true)
     {
         byte[]? imageBytes = null;
         bool fetchWasTransient = false;
         try
         {
-            imageBytes = await FetchAlbumArtFromMusicBrainzAsync(artist, album).ConfigureAwait(false);
+            var albumCandidates = BuildAlbumLookupCandidates(artist, album);
+
+            if (enableMusicBrainz)
+            {
+                foreach (var candidate in albumCandidates)
+                {
+                    imageBytes = await FetchAlbumArtFromMusicBrainzAsync(artist, candidate).ConfigureAwait(false);
+                    if (imageBytes is not null) break;
+                }
+            }
+
+            if (imageBytes is null && enableDiscogs)
+            {
+                var localDiscogsCandidates = LookupDiscogsCoverCandidatesFromLocalIndex(artist, albumCandidates);
+                foreach (var coverUrl in localDiscogsCandidates)
+                {
+                    var resolvedCover = coverUrl;
+                    if (resolvedCover.Contains("api.discogs.com/masters/", StringComparison.OrdinalIgnoreCase)
+                        || resolvedCover.Contains("api.discogs.com/releases/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var resolved = await ResolveDiscogsCoverUrlFromResourceAsync(resolvedCover, discogsToken, default).ConfigureAwait(false);
+                        if (!string.IsNullOrWhiteSpace(resolved)) resolvedCover = resolved;
+                    }
+
+                    imageBytes = await TryFetchDiscogsCoverAsync(resolvedCover, artist, album, default).ConfigureAwait(false);
+                    if (imageBytes is not null) break;
+                }
+
+                if (imageBytes is null && allowDiscogsApiFallback)
+                {
+                    foreach (var candidate in albumCandidates)
+                    {
+                        imageBytes = await FetchAlbumArtFromDiscogsAsync(artist, candidate, discogsToken, default).ConfigureAwait(false);
+                        if (imageBytes is not null) break;
+                    }
+                }
+                else if (imageBytes is null && !allowDiscogsApiFallback)
+                {
+                    Logger.Detail("AlbumArt", $"Discogs API fallback disabled for '{artist} - {album}' (scan mode). Using local index only.");
+                }
+            }
+
+            if (imageBytes is null && !enableMusicBrainz && !enableDiscogs)
+            {
+                Logger.Detail("AlbumArt", "All online album-art providers are disabled by settings.");
+            }
         }
         catch (AlbumArtTransientException ex)
         {
@@ -2171,6 +3039,23 @@ internal sealed partial class WebServer
         finally
         {
             _mbRateLimit.Release();
+        }
+    }
+
+    private static async Task ThrottleDiscogsAsync(CancellationToken ct = default)
+    {
+        await _discogsRateLimit.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var now = Environment.TickCount64;
+            var delta = now - Interlocked.Read(ref _discogsLastRequestTick);
+            if (delta >= 0 && delta < 1100)
+                await Task.Delay((int)(1100 - delta), ct).ConfigureAwait(false);
+            Interlocked.Exchange(ref _discogsLastRequestTick, Environment.TickCount64);
+        }
+        finally
+        {
+            _discogsRateLimit.Release();
         }
     }
 
@@ -2407,6 +3292,380 @@ internal sealed partial class WebServer
         return null;
     }
 
+    private static List<string> LookupDiscogsCoverCandidatesFromLocalIndex(string artist, IEnumerable<string> albumCandidates)
+    {
+        var covers = new List<string>();
+        if (!File.Exists(DiscogsIndexDbPath)) return covers;
+
+        var artistNorm = NormalizeArtistName(artist);
+        var albums = albumCandidates
+            .Select(NormalizeArtistName)
+            .Where(a => !string.IsNullOrWhiteSpace(a))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (albums.Length == 0) return covers;
+
+        try
+        {
+            using var conn = new SqliteConnection($"Data Source={DiscogsIndexDbPath};Mode=ReadOnly;Cache=Shared;Pooling=False");
+            conn.Open();
+
+            foreach (var albumNorm in albums)
+            {
+                using var cmd = conn.CreateCommand();
+                if (string.IsNullOrWhiteSpace(artistNorm))
+                {
+                    cmd.CommandText = @"SELECT image_url FROM discogs_master_art WHERE album_norm=$album ORDER BY year DESC LIMIT 6;";
+                    cmd.Parameters.AddWithValue("$album", albumNorm);
+                }
+                else
+                {
+                    cmd.CommandText = @"
+SELECT image_url FROM discogs_master_art
+WHERE album_norm=$album AND (artist_norm=$artist OR artist_norm='')
+ORDER BY CASE WHEN artist_norm=$artist THEN 0 ELSE 1 END, year DESC
+LIMIT 6;";
+                    cmd.Parameters.AddWithValue("$artist", artistNorm);
+                    cmd.Parameters.AddWithValue("$album", albumNorm);
+                }
+
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    var u = (reader.GetString(0) ?? string.Empty).Trim();
+                    if (string.IsNullOrWhiteSpace(u)) continue;
+                    if (!covers.Contains(u, StringComparer.OrdinalIgnoreCase)) covers.Add(u);
+                }
+
+                // Fallback to album-only candidates when artist-normalized match misses
+                // (e.g., punctuation differences like "ACDC" vs "AC/DC" in imported data).
+                if (covers.Count == 0 && !string.IsNullOrWhiteSpace(artistNorm))
+                {
+                    using var cmdAlbumOnly = conn.CreateCommand();
+                    cmdAlbumOnly.CommandText = @"SELECT image_url FROM discogs_master_art WHERE album_norm=$album ORDER BY year DESC LIMIT 4;";
+                    cmdAlbumOnly.Parameters.AddWithValue("$album", albumNorm);
+                    using var readerAlbumOnly = cmdAlbumOnly.ExecuteReader();
+                    while (readerAlbumOnly.Read())
+                    {
+                        var u = (readerAlbumOnly.GetString(0) ?? string.Empty).Trim();
+                        if (string.IsNullOrWhiteSpace(u)) continue;
+                        if (!covers.Contains(u, StringComparer.OrdinalIgnoreCase)) covers.Add(u);
+                    }
+                }
+
+                if (covers.Count >= 12) break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("AlbumArt", $"Discogs local index lookup failed: {ex.Message}");
+        }
+
+        return covers;
+    }
+
+    private static async Task<byte[]?> FetchAlbumArtFromDiscogsAsync(string artist, string album, string? discogsToken, CancellationToken ct = default)
+    {
+        var query = string.IsNullOrWhiteSpace(artist) ? album : $"{artist} - {album}";
+        if (string.IsNullOrWhiteSpace(query)) return null;
+
+        var token = (discogsToken ?? string.Empty).Trim();
+        var searchUrl = "https://api.discogs.com/database/search?per_page=25&q="
+            + Uri.EscapeDataString(query)
+            + (string.IsNullOrWhiteSpace(token) ? string.Empty : "&token=" + Uri.EscapeDataString(token));
+
+        Logger.Detail("AlbumArt", $"Discogs search for '{artist} - {album}'" + (string.IsNullOrWhiteSpace(token) ? " (anonymous)" : " (token)"));
+
+        await ThrottleDiscogsAsync(ct).ConfigureAwait(false);
+
+        System.Net.Http.HttpResponseMessage searchResponse;
+        try
+        {
+            searchResponse = await _albumArtHttpClient.GetAsync(searchUrl, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            throw new AlbumArtTransientException($"Discogs search request failed: {ex.Message}");
+        }
+
+        if ((int)searchResponse.StatusCode == 503 || (int)searchResponse.StatusCode == 429)
+            throw new AlbumArtTransientException($"Discogs search returned {(int)searchResponse.StatusCode}");
+
+        if (!searchResponse.IsSuccessStatusCode)
+        {
+            Logger.Detail("AlbumArt", $"Discogs search non-success {(int)searchResponse.StatusCode} for '{artist} - {album}'");
+            return null;
+        }
+
+        var searchJson = await searchResponse.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var candidates = ExtractDiscogsCoverCandidates(searchJson, artist, album);
+        if (candidates.Count > 0)
+        {
+            foreach (var candidate in candidates)
+            {
+                var imageBytes = await TryFetchDiscogsCoverAsync(candidate, artist, album, ct).ConfigureAwait(false);
+                if (imageBytes is not null) return imageBytes;
+            }
+        }
+
+        // Some Discogs search hits have metadata but no direct cover_image/thumb on the result.
+        // Fall back to resource details (release/master endpoint) and read images[] there.
+        var resourceCandidates = ExtractDiscogsResourceCandidates(searchJson);
+        foreach (var resourceUrl in resourceCandidates)
+        {
+            var resolvedCover = await ResolveDiscogsCoverUrlFromResourceAsync(resourceUrl, token, ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(resolvedCover)) continue;
+            var imageBytes = await TryFetchDiscogsCoverAsync(resolvedCover, artist, album, ct).ConfigureAwait(false);
+            if (imageBytes is not null) return imageBytes;
+        }
+
+        Logger.Detail("AlbumArt", $"Discogs found no usable cover candidates for '{artist} - {album}' (query='{query}')");
+        Logger.Detail("AlbumArt", $"Discogs debug: {BuildDiscogsSearchDebugSummary(searchJson)}");
+        return null;
+    }
+
+    private static string BuildDiscogsSearchDebugSummary(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("results", out var results) || results.ValueKind != JsonValueKind.Array)
+                return "results=0";
+
+            var total = results.GetArrayLength();
+            var samples = results.EnumerateArray().Take(5).Select(item =>
+            {
+                var type = item.TryGetProperty("type", out var tp) ? (tp.GetString() ?? "") : "";
+                var title = item.TryGetProperty("title", out var tt) ? (tt.GetString() ?? "") : "";
+                var hasCover = item.TryGetProperty("cover_image", out var cp) && !string.IsNullOrWhiteSpace(cp.GetString());
+                var hasThumb = item.TryGetProperty("thumb", out var th) && !string.IsNullOrWhiteSpace(th.GetString());
+                return $"[{type}] {title} (cover:{hasCover} thumb:{hasThumb})";
+            }).ToArray();
+
+            return $"results={total}; sample={string.Join(" | ", samples)}";
+        }
+        catch (Exception ex)
+        {
+            return $"debug-parse-failed: {ex.Message}";
+        }
+    }
+
+    private static List<string> ExtractDiscogsResourceCandidates(string json)
+    {
+        var urls = new List<string>();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("results", out var results) || results.ValueKind != JsonValueKind.Array)
+                return urls;
+
+            foreach (var item in results.EnumerateArray())
+            {
+                if (!item.TryGetProperty("resource_url", out var rp)) continue;
+                var u = (rp.GetString() ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(u)) continue;
+                if (!urls.Contains(u, StringComparer.OrdinalIgnoreCase)) urls.Add(u);
+            }
+        }
+        catch { }
+        return urls;
+    }
+
+    private static async Task<string?> ResolveDiscogsCoverUrlFromResourceAsync(string resourceUrl, string? discogsToken, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(resourceUrl)) return null;
+
+        string url = resourceUrl;
+        var token = (discogsToken ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(token)
+            && resourceUrl.StartsWith("https://api.discogs.com/", StringComparison.OrdinalIgnoreCase)
+            && !resourceUrl.Contains("token=", StringComparison.OrdinalIgnoreCase))
+        {
+            url += (resourceUrl.Contains('?') ? "&" : "?") + "token=" + Uri.EscapeDataString(token);
+        }
+
+        await ThrottleDiscogsAsync(ct).ConfigureAwait(false);
+
+        System.Net.Http.HttpResponseMessage resp;
+        try
+        {
+            resp = await _albumArtHttpClient.GetAsync(url, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { return null; }
+
+        if (!resp.IsSuccessStatusCode) return null;
+
+        try
+        {
+            var json = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("images", out var images) || images.ValueKind != JsonValueKind.Array)
+                return null;
+
+            string? fallback = null;
+            foreach (var img in images.EnumerateArray())
+            {
+                var uri = img.TryGetProperty("uri", out var up) ? (up.GetString() ?? string.Empty).Trim() : string.Empty;
+                var uri150 = img.TryGetProperty("uri150", out var u150) ? (u150.GetString() ?? string.Empty).Trim() : string.Empty;
+                var chosen = !string.IsNullOrWhiteSpace(uri) ? uri : uri150;
+                if (string.IsNullOrWhiteSpace(chosen)) continue;
+
+                var type = img.TryGetProperty("type", out var tp) ? (tp.GetString() ?? string.Empty) : string.Empty;
+                if (string.Equals(type, "primary", StringComparison.OrdinalIgnoreCase)) return chosen;
+                fallback ??= chosen;
+            }
+
+            return fallback;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static List<string> ExtractDiscogsCoverCandidates(string json, string artist, string album)
+    {
+        static string NormalizeAlbumText(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+            var normalized = value.Trim().ToLowerInvariant();
+            normalized = Regex.Replace(normalized, "\\s+", " ");
+            return normalized;
+        }
+
+        var artistKey = NormalizeArtistName(artist);
+        var albumKey = NormalizeAlbumText(album);
+        var ranked = new List<(string url, int score)>();
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("results", out var results)) return [];
+
+            foreach (var item in results.EnumerateArray())
+            {
+                var coverUrl = item.TryGetProperty("cover_image", out var coverProp)
+                    ? coverProp.GetString() ?? string.Empty
+                    : string.Empty;
+                if (string.IsNullOrWhiteSpace(coverUrl) && item.TryGetProperty("thumb", out var thumbProp))
+                    coverUrl = thumbProp.GetString() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(coverUrl)) continue;
+
+                var title = item.TryGetProperty("title", out var titleProp)
+                    ? titleProp.GetString() ?? string.Empty
+                    : string.Empty;
+                var type = item.TryGetProperty("type", out var typeProp)
+                    ? typeProp.GetString() ?? string.Empty
+                    : string.Empty;
+
+                var titleKey = NormalizeAlbumText(title);
+                var score = 0;
+                if (!string.IsNullOrWhiteSpace(albumKey) && titleKey.Contains(albumKey, StringComparison.Ordinal)) score += 3;
+                if (!string.IsNullOrWhiteSpace(artistKey) && NormalizeArtistName(title).Contains(artistKey, StringComparison.Ordinal)) score += 3;
+                if (string.Equals(type, "release", StringComparison.OrdinalIgnoreCase)) score += 2;
+                else if (string.Equals(type, "master", StringComparison.OrdinalIgnoreCase)) score += 1;
+
+                ranked.Add((coverUrl, score));
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("AlbumArt", $"Failed to parse Discogs search JSON: {ex.Message}");
+        }
+
+        return ranked
+            .OrderByDescending(x => x.score)
+            .Select(x => x.url)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static async Task<byte[]?> TryFetchDiscogsCoverAsync(string coverUrl, string artist, string album, CancellationToken ct = default)
+    {
+        await ThrottleDiscogsAsync(ct).ConfigureAwait(false);
+
+        System.Net.Http.HttpResponseMessage coverResponse;
+        try
+        {
+            using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, coverUrl);
+            req.Headers.Accept.Clear();
+            req.Headers.Accept.ParseAdd("image/jpeg, image/*;q=0.8");
+            coverResponse = await _albumArtHttpClient.SendAsync(req, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            throw new AlbumArtTransientException($"Discogs cover request failed: {ex.Message}");
+        }
+
+        if ((int)coverResponse.StatusCode == 503 || (int)coverResponse.StatusCode == 429)
+            throw new AlbumArtTransientException($"Discogs cover returned {(int)coverResponse.StatusCode}");
+
+        if (!coverResponse.IsSuccessStatusCode) return null;
+
+        var imageBytes = await coverResponse.Content.ReadAsByteArrayAsync(ct).ConfigureAwait(false);
+        if (imageBytes.Length > 3 && imageBytes[0] == 0xFF && imageBytes[1] == 0xD8 && imageBytes[2] == 0xFF)
+        {
+            Logger.Detail("AlbumArt", $"Got {imageBytes.Length} bytes for '{artist} - {album}' via Discogs");
+            return imageBytes;
+        }
+
+        if (imageBytes.Length > 0)
+            Logger.Warning("AlbumArt", $"Discogs cover response is not a JPEG ({imageBytes.Length} bytes); skipping");
+
+        return null;
+    }
+
+    private static List<string> BuildAlbumLookupCandidates(string artist, string album)
+    {
+        var candidates = new List<string>();
+
+        static string Clean(string? value)
+        {
+            var v = (value ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(v)) return string.Empty;
+            // Trim leading bullets/separators often present in UI display strings.
+            v = Regex.Replace(v, "^[-•·▪◦–—:|]+\\s*", string.Empty, RegexOptions.CultureInvariant);
+            v = Regex.Replace(v, "\\s+", " ", RegexOptions.CultureInvariant).Trim();
+            return v;
+        }
+
+        static void Add(List<string> list, string? value)
+        {
+            var v = Clean(value);
+            if (string.IsNullOrWhiteSpace(v)) return;
+            if (!list.Any(x => string.Equals(x, v, StringComparison.OrdinalIgnoreCase)))
+                list.Add(v);
+        }
+
+        var trimmed = Clean(album);
+        Add(candidates, trimmed);
+
+        // Drop leading "YYYY - " style prefixes.
+        var noLeadingYear = Regex.Replace(trimmed, "^\\(?\\d{4}\\)?\\s*[-–—:]\\s*", string.Empty, RegexOptions.CultureInvariant);
+        Add(candidates, noLeadingYear);
+
+        // Drop trailing "(YYYY)" suffixes.
+        var noTrailingYear = Regex.Replace(trimmed, "\\s*\\(\\d{4}\\)\\s*$", string.Empty, RegexOptions.CultureInvariant);
+        Add(candidates, noTrailingYear);
+
+        // Apply both year normalizations.
+        var normalized = Regex.Replace(noLeadingYear, "\\s*\\(\\d{4}\\)\\s*$", string.Empty, RegexOptions.CultureInvariant);
+        Add(candidates, normalized);
+
+        // If album text already contains "Artist - Album", strip artist prefix.
+        var artistNorm = NormalizeArtistName(artist);
+        var albumNorm = NormalizeArtistName(trimmed);
+        if (!string.IsNullOrWhiteSpace(artistNorm) && albumNorm.StartsWith(artistNorm + " - ", StringComparison.Ordinal))
+        {
+            Add(candidates, trimmed[(artistNorm.Length + 3)..]);
+        }
+
+        return candidates;
+    }
+
     /// <summary>
     /// Normalizes an artist name for fuzzy comparison: trims, lowercases, strips a
     /// leading "the ", and removes diacritics so that "Andre Hazes" matches "André Hazes"
@@ -2604,7 +3863,9 @@ internal sealed partial class WebServer
             duration      = pb.Duration,
             playbackError = pb.LastError,
             eqPreset      = pb.EqPreset,
-            reverbPreset  = pb.ReverbPreset
+            reverbPreset  = pb.ReverbPreset,
+            vocalRemoval  = pb.VocalRemovalEnabled,
+            vocalMode     = pb.VocalMode
         };
     }
 
@@ -2798,6 +4059,27 @@ internal sealed partial class WebServer
         {
             var peerUrl = peer.Url.TrimEnd('/');
             await SendEvent(JsonSerializer.Serialize(new { type = "peer", peer = peer.Name, message = $"Full sync to {peer.Name} …" })).ConfigureAwait(false);
+
+            // --- Clear peer caches first (full sync semantics) ---
+            await SendEvent(JsonSerializer.Serialize(new { type = "step", peer = peer.Name, step = "clear", message = "Clearing sync data on peer …" })).ConfigureAwait(false);
+            try
+            {
+                using var clearCoversReq = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Delete, $"{peerUrl}/api/music/album-art/import?clear=1");
+                using var clearCoversResp = await http.SendAsync(clearCoversReq).ConfigureAwait(false);
+                if (!clearCoversResp.IsSuccessStatusCode)
+                    throw new InvalidOperationException($"Failed to clear covers (HTTP {(int)clearCoversResp.StatusCode})");
+
+                using var clearLyricsReq = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Delete, $"{peerUrl}/api/music/lyrics/import?clear=1");
+                using var clearLyricsResp = await http.SendAsync(clearLyricsReq).ConfigureAwait(false);
+                if (!clearLyricsResp.IsSuccessStatusCode)
+                    throw new InvalidOperationException($"Failed to clear lyrics (HTTP {(int)clearLyricsResp.StatusCode})");
+
+                await SendEvent(JsonSerializer.Serialize(new { type = "step_done", peer = peer.Name, step = "clear", sent = 0, skipped = 0, failed = 0 })).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await SendEvent(JsonSerializer.Serialize(new { type = "step_error", peer = peer.Name, step = "clear", message = ex.Message })).ConfigureAwait(false);
+            }
 
             // --- Covers ---
             await SendEvent(JsonSerializer.Serialize(new { type = "step", peer = peer.Name, step = "covers", message = "Pushing covers …" })).ConfigureAwait(false);

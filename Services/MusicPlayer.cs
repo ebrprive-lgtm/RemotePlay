@@ -24,8 +24,10 @@ internal sealed class MusicPlayer : IDisposable
     private string _tagAlbum  = string.Empty;
     private ReverbSampleProvider? _reverb;
     private EqualizerSampleProvider? _eq;
+    private VocalRemovalSampleProvider? _vocalRemoval;
     private int _reverbPreset = 0;
     private int _eqPreset = -1;
+    private int _vocalMode;
 
     /// <summary>Fired (outside the lock) when the player auto-advances to the next track.</summary>
     public event Action<string>? TrackAdvanced;
@@ -103,7 +105,8 @@ internal sealed class MusicPlayer : IDisposable
                 _eq.ApplyPreset(_eqPreset);
                 _reverb = new ReverbSampleProvider(_eq);
                 _reverb.ApplyPreset(_reverbPreset);
-                _output.Init(_reverb);
+                _vocalRemoval = new VocalRemovalSampleProvider(_reverb) { Mode = (VocalFilterMode)Math.Clamp(_vocalMode, 0, 3) };
+                _output.Init(_vocalRemoval);
                 _output.PlaybackStopped += OnPlaybackStopped;
                 _output.Play();
                 _isPlaying = true;
@@ -146,7 +149,7 @@ internal sealed class MusicPlayer : IDisposable
                 displayArtist = Path.GetFileName(Path.GetDirectoryName(dir)) ?? string.Empty;
             }
             return new MusicStatus(_isPlaying && !_isPaused, _isPaused, _currentPath,
-                displayTitle, displayArtist, displayAlbum, pos, dur, _lastError, _eqPreset, _reverbPreset);
+                displayTitle, displayArtist, displayAlbum, pos, dur, _lastError, _eqPreset, _reverbPreset, _vocalMode != 0, _vocalMode);
         }
     }
 
@@ -186,6 +189,21 @@ internal sealed class MusicPlayer : IDisposable
             _eqPreset = Math.Clamp(preset, -1, EqualizerSampleProvider.PresetCount - 1);
             _eq?.ApplyPreset(_eqPreset);
         }
+    }
+
+    public void SetVocalMode(int mode)
+    {
+        lock (_lock)
+        {
+            _vocalMode = Math.Clamp(mode, 0, 3);
+            if (_vocalRemoval is not null)
+                _vocalRemoval.Mode = (VocalFilterMode)_vocalMode;
+        }
+    }
+
+    public void SetVocalRemovalEnabled(bool enabled)
+    {
+        SetVocalMode(enabled ? (int)VocalFilterMode.Strong : (int)VocalFilterMode.Off);
     }
 
     public void SetNextTrack(string? path)
@@ -243,6 +261,7 @@ internal sealed class MusicPlayer : IDisposable
         if (_output is not null) { _output.PlaybackStopped -= OnPlaybackStopped; _output.Stop(); _output.Dispose(); _output = null; }
         _reverb = null;
         _eq = null;
+        _vocalRemoval = null;
         if (_volumeChannel is not null) { _volumeChannel.Dispose(); _volumeChannel = null; }
         if (_reader is not null) { _reader.Dispose(); _reader = null; }
     }
@@ -250,4 +269,4 @@ internal sealed class MusicPlayer : IDisposable
     public void Dispose() { lock (_lock) { DisposePlayback(); } }
 }
 
-internal sealed record MusicStatus(bool IsPlaying, bool IsPaused, string CurrentPath, string Title, string Artist, string Album, double Position, double Duration, string LastError, int EqPreset, int ReverbPreset);
+internal sealed record MusicStatus(bool IsPlaying, bool IsPaused, string CurrentPath, string Title, string Artist, string Album, double Position, double Duration, string LastError, int EqPreset, int ReverbPreset, bool VocalRemovalEnabled, int VocalMode = 0);

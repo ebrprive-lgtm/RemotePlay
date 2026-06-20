@@ -47,6 +47,7 @@ internal sealed class WebServerCallbacks
     public required Action<string?>       SetMusicNextTrack { get; init; }
     public required Action<int>           SetMusicReverbPreset { get; init; }
     public required Action<int>           SetMusicEqPreset     { get; init; }
+    public required Action<int>           SetMusicVocalRemovalMode { get; init; }
 
     // ── Radio ─────────────────────────────────────────────────────────────────
     public required Func<string, string, string, int, int, Task<List<RadioStation>>> RadioSearch        { get; init; }

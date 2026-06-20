@@ -524,8 +524,12 @@ function setQueuedCard(p, isQueued) {
       badge.remove();
     }
 
+    if (typeof syncVideoStateBadges === 'function') syncVideoStateBadges(card);
+    if (typeof syncVideoActionButtons === 'function') syncVideoActionButtons(card);
+
     const queueButton = findQueueButton(card);
-    if (queueButton) queueButton.textContent = isQueued ? 'Unqueue' : 'Queue';
+    if (queueButton && typeof syncVideoActionButtons !== 'function')
+      queueButton.textContent = isQueued ? 'Unqueue' : 'Queue';
   }
 }
 function findQueueButton(card) {
@@ -572,11 +576,12 @@ async function setEqPreset(id) {
 }
 
 // Room reverb preset names (index matches ReverbSampleProvider.PresetNames)
-const _reverbPresetNames = ['Off', 'Booth', 'Small Room', 'Medium Room', 'Large Room', 'Hall', 'Cathedral',
-  'Arena', 'Cavern', 'Cave', 'Underwater', 'Pipe'];
+const _reverbPresetNames = ['Off', 'Studio', 'Small Room', 'Medium Room', 'Large Room', 'Hall', 'Cathedral',
+  'Arena', 'Cavern', 'Cave', 'Underwater', 'Pipe Chamber'];
 let _lastReverbPreset = 0;       // video
 let _lastMusicReverbPreset = 0;  // music
 let _lastRadioReverbPreset = 0;  // radio
+let _lastMusicVocalMode = 0;
 
 function _populateReverbSelect(id) {
   const sel = document.getElementById(id);
@@ -594,11 +599,17 @@ function renderReverbPresets(currentPreset) {
 }
 
 function _renderMusicReverbPreset(preset) {
-  if (preset == null || preset === _lastMusicReverbPreset) { _populateReverbSelect('music-reverb-select'); return; }
+  if (preset == null || preset === _lastMusicReverbPreset) {
+    _populateReverbSelect('music-reverb-select');
+    _updateMusicEffectsChips();
+    return;
+  }
+
   _lastMusicReverbPreset = preset;
   _populateReverbSelect('music-reverb-select');
   const sel = document.getElementById('music-reverb-select');
   if (sel && sel.value !== String(preset)) sel.value = String(preset);
+  _updateMusicEffectsChips();
 }
 
 function _renderRadioReverbPreset(preset) {
@@ -624,10 +635,38 @@ async function setReverbPreset(id, domain) {
   }
 }
 
+function _vocalModeLabel(mode) {
+  const m = Number(mode);
+  return m === 1 ? 'Mild' : m === 2 ? 'Strong' : m === 3 ? 'Karaoke' : 'Off';
+}
+
+function _normalizeVocalMode(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (raw === '1' || raw === 'mild') return 1;
+  if (raw === '2' || raw === 'strong' || raw === 'true' || raw === 'on') return 2;
+  if (raw === '3' || raw === 'karaoke') return 3;
+  return 0;
+}
+
+function _renderMusicVocalRemoval(value) {
+  const mode = _normalizeVocalMode(value);
+  _lastMusicVocalMode = mode;
+  const sel = document.getElementById('music-vocal-remove');
+  if (sel && sel.value !== String(mode)) sel.value = String(mode);
+  _updateMusicEffectsChips();
+}
+
+async function setMusicVocalRemoval(value) {
+  haptic(8);
+  const mode = _normalizeVocalMode(value);
+  await api('/api/music/vocal-removal?value=' + encodeURIComponent(String(mode)));
+  _renderMusicVocalRemoval(mode);
+}
+
 // VLC built-in equalizer preset names (order matches VLC preset index 0-17)
 const _eqPresetNames = [
-  'Flat (EQ on)', 'Classical', 'Club', 'Dance', 'Full Bass', 'Full Bass & Treble',
-  'Full Treble', 'Headphones', 'Large Hall', 'Live', 'Party', 'Pop',
+  'Flat', 'Classical', 'Club', 'Dance', 'Bass Boost', 'Bass + Treble Boost',
+  'Treble Boost', 'Headphones', 'Large Hall', 'Live', 'Party', 'Pop',
   'Reggae', 'Rock', 'Ska', 'Soft', 'Soft Rock', 'Techno'
 ];
 // VLC built-in preset gain values (dB, 10 bands: 60Hz 170Hz 310Hz 600Hz 1kHz 3kHz 6kHz 12kHz 14kHz 16kHz)
@@ -692,6 +731,91 @@ function _drawEqSparkline(canvasId, presetIndex) {
 
 let _lastEqPreset = -1;
 
+function _eqPresetLabel(preset) {
+  const p = Number(preset);
+  if (!Number.isFinite(p) || p < 0) return 'Off';
+
+  return _eqPresetNames[p] || 'Custom';
+}
+
+function _reverbPresetLabel(preset) {
+  const p = Number(preset);
+  if (!Number.isFinite(p) || p < 0) return 'Off';
+
+  return _reverbPresetNames[p] || 'Off';
+}
+
+function _isNarrowViewport() {
+  return window.matchMedia('(max-width: 900px)').matches;
+}
+
+function _updateMusicEffectsChipsVisibility() {
+  const wrap = document.getElementById('music-effects-status');
+  if (!wrap) return;
+
+  const playing = typeof musicIsPlaying !== 'undefined' && !!musicIsPlaying;
+  wrap.style.display = (_isNarrowViewport() && playing) ? 'flex' : 'none';
+}
+
+function _updateMusicEffectsChips() {
+  const eqChip = document.getElementById('music-effect-chip-eq');
+  const roomChip = document.getElementById('music-effect-chip-room');
+  const vocalChip = document.getElementById('music-effect-chip-vocal');
+  if (!eqChip || !roomChip || !vocalChip) return;
+
+  const eqLabel = _eqPresetLabel(_lastEqPreset);
+  const roomLabel = _reverbPresetLabel(_lastMusicReverbPreset);
+  const vocalLabel = _vocalModeLabel(_lastMusicVocalMode);
+
+  eqChip.textContent = 'EQ: ' + eqLabel;
+  roomChip.textContent = 'Room: ' + roomLabel;
+  vocalChip.textContent = 'Vocal: ' + vocalLabel;
+
+  eqChip.classList.toggle('inactive', _lastEqPreset < 0);
+  roomChip.classList.toggle('inactive', !_lastMusicReverbPreset);
+  vocalChip.classList.toggle('inactive', _lastMusicVocalMode === 0);
+
+  _updateMusicEffectsChipsVisibility();
+}
+
+async function resetMusicEffects() {
+  haptic(8);
+  await setEqPreset(-1);
+  await setReverbPreset(0, 'music');
+  await setMusicVocalRemoval(0);
+  _updateMusicEffectsChips();
+}
+
+function saveMusicEffectsDefaults() {
+  try {
+    const defaults = {
+      eqPreset: _lastEqPreset,
+      reverbPreset: _lastMusicReverbPreset,
+      vocalMode: _lastMusicVocalMode
+    };
+
+    localStorage.setItem('musicEffectsDefaults', JSON.stringify(defaults));
+    setStatus('Saved music effect defaults for this device.');
+  } catch (_) {
+    setStatus('Could not save defaults on this device.');
+  }
+}
+
+async function applySavedMusicEffectsDefaults() {
+  try {
+    const raw = localStorage.getItem('musicEffectsDefaults');
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (!saved || typeof saved !== 'object') return;
+
+    if (typeof saved.eqPreset === 'number') await setEqPreset(saved.eqPreset);
+    if (typeof saved.reverbPreset === 'number') await setReverbPreset(saved.reverbPreset, 'music');
+    if (typeof saved.vocalMode === 'number') await setMusicVocalRemoval(saved.vocalMode);
+  } catch (_) {
+    // ignore malformed local defaults
+  }
+}
+
 function renderEqPresets(currentPreset) {
   _lastEqPreset = currentPreset;
   const ids = ['eq-select', 'radio-eq-select', 'music-eq-select'];
@@ -700,7 +824,7 @@ function renderEqPresets(currentPreset) {
     const sel = document.getElementById(id);
     if (!sel) return;
     if (!sel.options.length) {
-      const opts = [{ id: -1, name: 'Off (Flat)' }].concat(
+      const opts = [{ id: -1, name: 'Off' }].concat(
         _eqPresetNames.map((name, i) => ({ id: i, name }))
       );
       sel.innerHTML = opts
@@ -710,6 +834,7 @@ function renderEqPresets(currentPreset) {
     sel.value = String(currentPreset);
     _drawEqSparkline(sparkIds[idx], currentPreset);
   });
+  _updateMusicEffectsChips();
 }
 function _syncEqWrapVisibility() {
   // Ensure all selects are populated (no-op if already done)
@@ -726,9 +851,12 @@ function _syncEqWrapVisibility() {
   if (radioReverbWrap) radioReverbWrap.style.display = radioPlaying ? '' : 'none';
   const musicReverbWrap = document.getElementById('music-reverb-select-wrap');
   if (musicReverbWrap) musicReverbWrap.style.display = musicPlaying ? '' : 'none';
+  const musicVocalWrap = document.getElementById('music-vocal-remove-wrap');
+  if (musicVocalWrap) musicVocalWrap.style.display = musicPlaying ? '' : 'none';
   // Sparklines must be redrawn after the canvas becomes visible
   if (radioPlaying) _drawEqSparkline('radio-eq-sparkline', _lastEqPreset);
   if (musicPlaying) _drawEqSparkline('music-eq-sparkline', _lastEqPreset);
+  _updateMusicEffectsChipsVisibility();
 }
 async function playAdjacent(direction) {
   haptic(10);

@@ -5,8 +5,10 @@ using System.Diagnostics.CodeAnalysis;
 namespace RemotePlay;
 
 [ExcludeFromCodeCoverage]
-public partial class RenameDialog : Window
+public partial class RenameDialog : Window, IDisposable
 {
+    private bool disposedValue;
+
     public string NewName => NameBox.Text;
 
     public RenameDialog(string currentName)
@@ -26,5 +28,9 @@ public partial class RenameDialog : Window
     {
         if (e.Key == System.Windows.Input.Key.Enter)
             DialogResult = true;
+    }
+
+    public void Dispose()
+    {
     }
 }

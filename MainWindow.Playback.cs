@@ -1174,6 +1174,7 @@ public partial class MainWindow
             SetMusicNextTrack = _musicPlayer.SetNextTrack,
             SetMusicReverbPreset = _musicPlayer.SetReverbPreset,
             SetMusicEqPreset     = _musicPlayer.SetEqPreset,
+            SetMusicVocalRemovalMode = _musicPlayer.SetVocalMode,
             // Radio � backed by RadioPlayer + RadioBrowserClient
             RadioSearch         = (q, c, t, l, o) => _radioBrowser.SearchAsync(q, c, t, l, o),
             RadioTopStations    = (l, o) => _radioBrowser.TopStationsAsync(l, o),

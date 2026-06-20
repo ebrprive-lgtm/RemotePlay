@@ -153,8 +153,15 @@
         } else if (ctx.type === 'music-file' || ctx.type === 'music-recent') {
           if (!window._musicQueue) window._musicQueue = [];
           const existing = window._musicQueue.findIndex((q) => q.path === ctx.path);
+          if (existing >= 0 && typeof _musicQueueRemove === 'function') {
+            _musicQueueRemove(existing);
+            return;
+          }
           if (existing >= 0) window._musicQueue.splice(existing, 1);
           else window._musicQueue.push({ path: ctx.path, name: ctx.name });
+          window._musicNextShuffleQueuePick = null;
+          const cur = window._musicQueuePos;
+          window._musicQueueVisited = (cur >= 0 && cur < window._musicQueue.length) ? new Set([cur]) : new Set();
           if (typeof currentMusicData !== 'undefined' && currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
           if (typeof _refreshMusicNavLabels === 'function') _refreshMusicNavLabels();
           if (typeof _renderMusicQueuePeek === 'function') _renderMusicQueuePeek();

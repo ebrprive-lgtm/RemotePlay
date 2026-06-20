@@ -7,9 +7,9 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\RemotePlay.ico</ApplicationIcon>
-    <Version>2.8.0</Version>
-    <AssemblyVersion>2.8.0.0</AssemblyVersion>
-    <FileVersion>2.8.0.0</FileVersion>
+    <Version>2.9.0</Version>
+    <AssemblyVersion>2.9.0.0</AssemblyVersion>
+    <FileVersion>2.9.0.0</FileVersion>
   </PropertyGroup>
 
   <Target Name="WriteVersionTxt" AfterTargets="Build">
@@ -49,6 +49,7 @@
     <PackageReference Include="NAudio" Version="2.*" />
     <PackageReference Include="TagLibSharp" Version="2.*" />
     <PackageReference Include="QRCoder" Version="1.8.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.7" />
     <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.23.1" />
     <None Include=".github\copilot-instructions.md" />
   </ItemGroup>

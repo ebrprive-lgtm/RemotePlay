@@ -263,4 +263,48 @@ public sealed class PlaybackHistoryTests
         var recent = history.GetRecent(10);
         Assert.Single(recent);
     }
+
+    [Fact]
+    public void SaveEntries_MergesDiskEntriesFromAnotherInstance()
+    {
+        var historyFile = GetHistoryFile();
+        var instanceA = new PlaybackHistory(historyFile);
+        var instanceB = new PlaybackHistory(historyFile);
+
+        var movieA = CreateExistingMoviePath("instance-a.mkv");
+        var movieB = CreateExistingMoviePath("instance-b.mkv");
+
+        instanceA.SavePosition(movieA, TimeSpan.FromMinutes(5), TimeSpan.FromHours(1));
+        instanceB.MarkWatched(movieB, watched: true);
+
+        // Instance A does not know about movieB in memory; saving again should still preserve it.
+        instanceA.SavePosition(movieA, TimeSpan.FromMinutes(6), TimeSpan.FromHours(1));
+
+        var reloaded = new PlaybackHistory(historyFile);
+        var watched = reloaded.GetWatchedSet();
+
+        Assert.Contains(movieB, watched);
+    }
+
+    [Fact]
+    public void SaveEntries_PreservesNewerEntryForSameFileFromAnotherInstance()
+    {
+        var historyFile = GetHistoryFile();
+        var instanceA = new PlaybackHistory(historyFile);
+        var instanceB = new PlaybackHistory(historyFile);
+
+        var movie = CreateExistingMoviePath("shared-file.mkv");
+        var sideMovie = CreateExistingMoviePath("side-file.mkv");
+
+        instanceA.SavePosition(movie, TimeSpan.FromMinutes(5), TimeSpan.FromHours(1));
+        instanceB.SavePosition(movie, TimeSpan.FromMinutes(20), TimeSpan.FromHours(1));
+
+        // Instance A saves unrelated state; merge should keep instance B's newer position.
+        instanceA.SavePosition(sideMovie, TimeSpan.FromMinutes(3), TimeSpan.FromHours(1));
+
+        var reloaded = new PlaybackHistory(historyFile);
+        var resume = reloaded.GetResumePosition(movie, TimeSpan.FromHours(1));
+
+        Assert.Equal(TimeSpan.FromMinutes(20), resume);
+    }
 }

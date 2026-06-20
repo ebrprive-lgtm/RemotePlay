@@ -236,10 +236,13 @@ internal sealed partial class WebServer
     {
         lock (_favoritesGate)
         {
+            var latest = LoadFavoritesFromDisk();
             if (favorite)
-                _favorites.Add(filePath);
+                latest.Add(filePath);
             else
-                _favorites.Remove(filePath);
+                latest.Remove(filePath);
+
+            _favorites = latest;
 
             SaveFavorites();
         }
@@ -746,11 +749,7 @@ internal sealed partial class WebServer
     {
         try
         {
-            if (!File.Exists(FavoritesFile))
-                return;
-
-            var favorites = JsonSerializer.Deserialize<string[]>(File.ReadAllText(FavoritesFile), CaseInsensitiveOptions) ?? [];
-            _favorites = new HashSet<string>(favorites, StringComparer.OrdinalIgnoreCase);
+            _favorites = LoadFavoritesFromDisk();
             Logger.Info($"Loaded favorites: {_favorites.Count}");
         }
         catch (Exception ex)
@@ -768,7 +767,8 @@ internal sealed partial class WebServer
     {
         try
         {
-            File.WriteAllText(FavoritesFile, JsonSerializer.Serialize(_favorites.Order(StringComparer.OrdinalIgnoreCase), IndentedOptions));
+            var payload = JsonSerializer.Serialize(_favorites.Order(StringComparer.OrdinalIgnoreCase), IndentedOptions);
+            WriteAllTextAtomic(FavoritesFile, payload);
         }
         catch (Exception ex)
         {
@@ -776,8 +776,33 @@ internal sealed partial class WebServer
         }
     }
 
-    private static string NormalizePath(string path) =>
-        Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    private static HashSet<string> LoadFavoritesFromDisk()
+    {
+        if (!File.Exists(FavoritesFile))
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var favorites = JsonSerializer.Deserialize<string[]>(File.ReadAllText(FavoritesFile), CaseInsensitiveOptions) ?? [];
+        return new HashSet<string>(favorites, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static void WriteAllTextAtomic(string filePath, string content)
+    {
+        var temporaryPath = filePath + ".tmp";
+        File.WriteAllText(temporaryPath, content);
+
+        if (File.Exists(filePath))
+            File.Replace(temporaryPath, filePath, destinationBackupFileName: null);
+        else
+            File.Move(temporaryPath, filePath);
+    }
+
+    private static string NormalizePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return string.Empty;
+
+        return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
 
     private void ValidateStartupConfiguration()
     {

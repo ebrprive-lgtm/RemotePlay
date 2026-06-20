@@ -501,6 +501,14 @@ document.addEventListener('DOMContentLoaded', () => {
         // Ensure currentMode is 'video' regardless of what localStorage had,
         // so render() correctly shows the video command bar.
         if (typeof switchMode === 'function') switchMode('video', true);
+
+        // If the app was initially restored into a non-video mode (e.g. music)
+        // and then forced back to video here, ensure the video root browse runs.
+        // Without this, the tab can show only header chrome until a manual refresh.
+        if ((typeof currentData === 'undefined' || !currentData) && typeof browse === 'function') {
+          browse(null);
+        }
+
         return;
       }
 

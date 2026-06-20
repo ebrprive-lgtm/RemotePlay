@@ -855,7 +855,10 @@
                                        <MenuItem Tag="MoveFiles"
                                                  Style="{StaticResource BrowserMenuItem}"
                                                  Click="OnBrowserMoveFiles"/>
-                                       <MenuItem Tag="DeleteFiles"
+                                        <MenuItem Tag="MoveMovieToMasterLibrary"
+                                                 Style="{StaticResource BrowserMenuItem}"
+                                                 Click="OnBrowserMovieToMasterLibrary"/>
+                                        <MenuItem Tag="DeleteFiles"
                                                  Style="{StaticResource BrowserMenuItemDestructive}"
                                                  Click="OnBrowserDeleteFiles"/>
 
@@ -893,6 +896,12 @@
                                         <MenuItem Tag="RenameFolder"
                                                   Style="{StaticResource BrowserMenuItem}"
                                                   Click="OnBrowserRename"/>
+                                        <MenuItem Tag="MoveSeriesToMasterLibrary"
+                                              Style="{StaticResource BrowserMenuItem}"
+                                              Click="OnBrowserSeriesToMasterLibrary"/>
+
+                                        <Separator Tag="SepDeleteFolder" Style="{StaticResource BrowserMenuSeparator}"/>
+
                                         <MenuItem Tag="DeleteFolder"
                                                   Style="{StaticResource BrowserMenuItemDestructive}"
                                                   Click="OnBrowserDeleteFolder"/>
@@ -1053,7 +1062,11 @@
                                        <MenuItem Tag="MoveFiles"
                                                  Style="{StaticResource BrowserMenuItem}"
                                                  Click="OnBrowserMoveFiles"/>
-                                       <MenuItem Tag="DeleteFiles"
+                                        <MenuItem Tag="MoveMovieToMasterLibrary"
+                                                Style="{StaticResource BrowserMenuItem}"
+                                                Click="OnBrowserMovieToMasterLibrary"/>
+
+                                        <MenuItem Tag="DeleteFiles"
                                                  Style="{StaticResource BrowserMenuItemDestructive}"
                                                  Click="OnBrowserDeleteFiles"/>
 
@@ -1091,6 +1104,13 @@
                                         <MenuItem Tag="RenameFolder"
                                                   Style="{StaticResource BrowserMenuItem}"
                                                   Click="OnBrowserRename"/>
+
+                                        <MenuItem Tag="MoveSeriesToMasterLibrary"
+                                               Style="{StaticResource BrowserMenuItem}"
+                                               Click="OnBrowserSeriesToMasterLibrary"/>
+
+                                        <Separator Tag="SepDeleteFolder" Style="{StaticResource BrowserMenuSeparator}"/>
+
                                         <MenuItem Tag="DeleteFolder"
                                                   Style="{StaticResource BrowserMenuItemDestructive}"
                                                   Click="OnBrowserDeleteFolder"/>

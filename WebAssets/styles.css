@@ -242,7 +242,8 @@
         /* cols shifted: fmt=3, artist=4, year=5, album=6, time=7, cb=8 */
         .music-grid.list-view .mtc-badge-group{grid-column:3;grid-row:1;flex-direction:row;align-items:center;gap:.3rem;align-self:center;margin-top:0}
         .music-grid.list-view .mtc-badge-dur{display:none}
-        .music-grid.list-view .mtc-artist{grid-column:4;grid-row:1;font-size:.75rem;opacity:.85;align-self:center}
+        .music-grid.list-view .mtc-badge-group{min-width:0;overflow:hidden;white-space:nowrap}
+        .music-grid.list-view .mtc-artist{grid-column:4;grid-row:1;font-size:.75rem;opacity:.85;align-self:center;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         .music-grid.list-view .mtc-year{grid-column:5;grid-row:1;font-size:.73rem;opacity:.82;align-self:center;font-variant-numeric:tabular-nums}
         .music-grid.list-view .mtc-album{grid-column:6;grid-row:1;font-size:.75rem;font-style:italic;opacity:.65;align-self:center}
         .music-grid.list-view .mtc-duration{grid-column:7;grid-row:1;text-align:right;font-size:.72rem;align-self:center}
@@ -253,9 +254,28 @@
         .music-grid.list-view .music-track-card.queued{border-left-color:#ffaa00}
         .mtc-queued-badge{display:none;font-size:.6rem;font-weight:700;color:#ffaa00;border:1px solid rgba(255,170,0,.4);border-radius:3px;padding:.02rem .28rem;letter-spacing:.03em;white-space:nowrap;line-height:1.4;flex-shrink:0}
         .music-grid.list-view .music-track-card.queued .mtc-queued-badge{display:inline-block}
-        /* Video list: amber left border already set (.movie-card.queued); add badge */
-        .vlc-queued-badge{display:none;font-size:.6rem;font-weight:700;color:#ffaa00;border:1px solid rgba(255,170,0,.4);border-radius:3px;padding:.02rem .28rem;letter-spacing:.03em;white-space:nowrap;line-height:1.4;flex-shrink:0;margin-left:.2rem}
-        .movie-grid.list-view .movie-card.queued .vlc-queued-badge{display:inline-block}
+        .music-grid.list-view .music-track-card.music-folder-row{cursor:pointer;border-left-color:color-mix(in srgb,var(--accent,#3b82f6) 35%,#f6c90e);background:rgba(255,255,255,.01)!important}
+        .music-grid.list-view .music-track-card.music-folder-row:hover{background:rgba(255,255,255,.06)!important}
+        .music-grid.list-view .music-track-card.music-folder-row.music-folder-row-link{border-left-color:color-mix(in srgb,var(--accent,#3b82f6) 45%,#4da3ff)}
+        .music-grid.list-view .music-track-card.music-folder-row.music-folder-row-dynamic{border-left-color:rgba(0,210,160,.75);background:linear-gradient(90deg,rgba(0,210,160,.08),rgba(139,92,246,.10))!important}
+        .music-grid.list-view .music-track-card.music-folder-row .music-folder-row-icon{display:flex;align-items:center;justify-content:center;font-size:1rem;opacity:.95}
+        .music-grid.list-view .music-track-card.music-folder-row .mtc-title{font-weight:600}
+        .music-grid.list-view .music-track-card.music-folder-row .mtc-year,
+        .music-grid.list-view .music-track-card.music-folder-row .mtc-duration{opacity:.45}
+        .music-grid.list-view .music-track-card.music-folder-row .music-folder-row-cb{opacity:.35;pointer-events:none;border:1px solid rgba(255,255,255,.2);border-radius:3px}
+        .music-grid.list-view .music-track-card.music-playlist-row{cursor:pointer;border-left-color:color-mix(in srgb,var(--accent2,#8b5cf6) 55%,transparent);background:color-mix(in srgb,var(--accent2,#8b5cf6) 6%,transparent)!important}
+        .music-grid.list-view .music-track-card.music-playlist-row:hover{background:color-mix(in srgb,var(--accent2,#8b5cf6) 16%,transparent)!important}
+        .music-grid.list-view .music-track-card.music-playlist-row .mtc-title{font-weight:600}
+        .music-grid.list-view .music-track-card.music-playlist-row .music-playlist-row-icon{display:flex;align-items:center;justify-content:center}
+        .music-grid.list-view .music-track-card.music-playlist-row .mpl-list-thumb{width:1.7rem;height:1.7rem;border-radius:4px}
+        .music-grid.list-view .music-track-card.music-playlist-row .mtc-duration{font-size:.75rem;opacity:.88}
+        .music-grid.list-view .music-track-card.music-playlist-row .music-playlist-row-cb{opacity:.35;pointer-events:none;border:1px solid rgba(255,255,255,.2);border-radius:3px}
+        .music-folder-link-pill{font-size:.72rem;opacity:.8;margin-left:.25rem}
+        .vlc-state-badges{display:flex;align-items:center;gap:.22rem;flex-shrink:0;margin-left:.2rem}
+        .vlc-state-badge{display:inline-flex;align-items:center;justify-content:center;font-size:.58rem;font-weight:700;border-radius:999px;padding:.04rem .38rem;letter-spacing:.05em;line-height:1.35;white-space:nowrap;border:1px solid transparent;text-transform:uppercase}
+        .vlc-state-badge.watched{color:#2d8cff;border-color:rgba(45,140,255,.45);background:rgba(45,140,255,.14)}
+        .vlc-state-badge.favorite{color:var(--fav-color,#ffcc40);border-color:color-mix(in srgb,var(--fav-color,#ffcc40) 55%,transparent);background:color-mix(in srgb,var(--fav-color,#ffcc40) 22%,transparent)}
+        .vlc-state-badge.queued{color:#ffaa00;border-color:rgba(255,170,0,.5);background:rgba(255,170,0,.16)}
         @keyframes ctxFadeIn{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
         #radio-placeholder{display:flex;align-items:center;justify-content:center;height:200px;color:var(--muted,#9aa8c2);font-size:1.1rem}
         /* Music player bar – shares video bar layout classes */
@@ -503,7 +523,9 @@
         .vlc-h-title{padding-left:.1rem}
         /* cards as CSS grid rows */
         .movie-grid.list-view .movie-card{display:grid;grid-template-columns:var(--vlc-cols);align-items:center;column-gap:var(--vlc-gap);min-height:unset;height:2.4rem;border-radius:0;border:none;border-left:5px solid transparent;border-bottom:1px solid rgba(255,255,255,.04);background:#0000;background-image:none!important;transform:none!important;box-shadow:none!important;cursor:pointer;transition:background .1s;position:relative;padding:0}
-        .movie-grid.list-view .movie-card::before,.movie-grid.list-view .movie-card::after{display:none}
+        .movie-grid.list-view .movie-card::before,.movie-grid.list-view .movie-card::after{content:'';position:absolute;left:0;right:0;height:2px;opacity:0;pointer-events:none;transition:opacity .12s}
+        .movie-grid.list-view .movie-card::before{top:0;background:var(--fav-color,#ffcc40)}
+        .movie-grid.list-view .movie-card::after{bottom:0;background:#2d8cff}
         .vlc-cb{display:flex;align-items:center;justify-content:center;justify-self:stretch;align-self:stretch}
         .vlc-cb input[type=checkbox]{width:1rem;height:1rem;accent-color:var(--accent,#e94560);cursor:pointer;margin:0}
         .movie-grid:not(.list-view) .vlc-cb{display:none}
@@ -511,19 +533,31 @@
         .movie-grid.list-view .movie-card.alt-row{background:rgba(255,255,255,.02)!important}
         .movie-grid.list-view .movie-card.alt-row:hover{background:var(--folder-hover,#1d1d32)!important}
         .movie-grid.list-view .movie-card.playing{background:rgba(0,212,106,.06)!important;border-left-color:#00d46a}
-        .movie-grid.list-view .movie-card.queued{border-left-color:#ffaa00}
-        .movie-grid.list-view .movie-card.played{border-left-color:#2d8cff}
-        .movie-grid.list-view .movie-card.favorite{border-left-color:var(--fav-color,#ffcc40);box-shadow:none!important}
+        .movie-grid.list-view .movie-card.queued{border-left-color:#ffaa00;background:rgba(255,170,0,.05)!important}
+        .movie-grid.list-view .movie-card.played{background:rgba(45,140,255,.06)!important}
+        .movie-grid.list-view .movie-card.favorite{background:color-mix(in srgb,var(--fav-color,#ffcc40) 11%,transparent)!important;box-shadow:none!important}
+        .movie-grid.list-view .movie-card.favorite::before{opacity:1}
+        .movie-grid.list-view .movie-card.played::after{opacity:1}
         .movie-grid.list-view .movie-card.selected{background:rgba(233,69,96,.08)!important;outline:2px solid var(--accent,#e94560);outline-offset:-2px}
         /* watched pip column — hidden; watched state shown by left border only */
         .vlc-watched-pip{display:none!important}
         /* text columns */
         .vlc-title,.vlc-folder,.vlc-ext,.vlc-duration,.vlc-size{font-size:.82rem;padding:0 .3rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
         .vlc-title{font-weight:500;display:flex;align-items:center;gap:.35rem;overflow:hidden}
-        .vlc-title-text{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .vlc-title-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
         .vlc-fav-heart{font-size:.8rem;color:#e05;line-height:1;flex-shrink:0;vertical-align:middle}
         .vlc-folder{display:none!important}
         .vlc-year,.vlc-ext,.vlc-duration,.vlc-size{color:var(--muted,#9aa8c2);font-size:.75rem;padding:0 .3rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .movie-grid.list-view .movie-card.video-folder-row{border-left-color:color-mix(in srgb,var(--accent,#e94560) 45%,#f6c90e);background:rgba(255,255,255,.01)!important}
+        .movie-grid.list-view .movie-card.video-folder-row:hover{background:rgba(255,255,255,.06)!important}
+        .movie-grid.list-view .movie-card.video-folder-row-link{border-left-color:color-mix(in srgb,var(--accent,#e94560) 55%,#4da3ff)}
+        .movie-grid.list-view .movie-card.video-folder-row .vlc-folder-emoji{margin-right:.35rem;opacity:.95}
+        .movie-grid.list-view .movie-card.video-folder-row .vlc-title{font-weight:600}
+        .movie-grid.list-view .movie-card.video-folder-row .vlc-progress,
+        .movie-grid.list-view .movie-card.video-folder-row .vlc-ext,
+        .movie-grid.list-view .movie-card.video-folder-row .vlc-duration,
+        .movie-grid.list-view .movie-card.video-folder-row .vlc-cb{opacity:.4}
+        .movie-grid.list-view .movie-card.video-folder-row .vlc-cb{pointer-events:none}
         .vlc-cb{display:flex;align-items:center;justify-content:center;justify-self:stretch;align-self:stretch;padding:0}
         .vlc-cb input[type=checkbox]{width:1rem;height:1rem;cursor:pointer;accent-color:var(--accent,#e94560);flex-shrink:0;margin:0}
         .vlc-ext-badge{display:inline-block;background:color-mix(in srgb,var(--accent,#e94560) 18%,transparent);border:1px solid color-mix(in srgb,var(--accent,#e94560) 40%,transparent);border-radius:3px;padding:.05rem .32rem;font-size:.65rem;font-weight:700;letter-spacing:.04em;color:var(--accent,#e94560);line-height:1.4}
@@ -958,6 +992,19 @@
         .eq-reverb-row .eq-select-wrap{flex:1;min-width:0;margin-top:0}
         .eq-reverb-row .eq-select-label{font-size:.65rem}
         .eq-reverb-row .track-select{font-size:.72rem}
+        #music-media-controls .eq-reverb-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.55rem .65rem;margin-top:.5rem}
+        #music-media-controls .eq-reverb-row .eq-select-wrap{display:flex;flex-direction:column;align-items:stretch;gap:.22rem}
+        #music-media-controls .eq-reverb-row .eq-select-label{font-size:.68rem}
+        #music-media-controls .eq-reverb-row .track-select{font-size:.78rem}
+        #music-media-controls .eq-reverb-row .eq-select-inner{gap:.35rem}
+        #music-media-controls .audio-filters-grid{grid-template-columns:repeat(3,minmax(0,1fr));align-items:start}
+        #music-media-controls .audio-filter-control{padding:.35rem .4rem;border:1px solid color-mix(in srgb,var(--player-card-border,#2b2b45) 70%, transparent);border-radius:8px;background:color-mix(in srgb,var(--player-card-bg,#17172a) 55%, transparent)}
+        #music-media-controls .audio-filter-subtitle{font-size:.62rem;line-height:1.15;color:var(--player-sub,#9ea2b8);opacity:.9;margin-top:-.05rem}
+        #music-media-controls .audio-filter-hint{font-size:.61rem;line-height:1.2;color:var(--player-sub,#9ea2b8);opacity:.8;margin-top:.2rem}
+        #music-media-controls .music-effects-status{display:none;flex-wrap:wrap;gap:.35rem;margin-top:.55rem}
+        #music-media-controls .music-effect-chip{display:inline-flex;align-items:center;padding:.2rem .5rem;border-radius:999px;border:1px solid var(--player-chip-border,#3a3a57);background:var(--player-chip-bg,#22263b);color:var(--player-text,#eee);font-size:.68rem;line-height:1.2}
+        #music-media-controls .music-effect-chip.inactive{opacity:.72;color:var(--player-sub,#9ea2b8)}
+        #music-media-controls .music-effects-actions{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.45rem}
         .eq-sparkline{display:block;flex-shrink:0;border-radius:3px;background:rgba(0,0,0,0.18);border:1px solid rgba(255,255,255,0.07);align-self:center;pointer-events:none}
         /* EQ select + sparkline side by side inside the label row */
         .eq-select-inner{display:flex;align-items:center;gap:4px;flex:1;min-width:0}
@@ -1026,7 +1073,7 @@
         #volume,#brightness,#saturation,#audio-boost{width:100%;accent-color:var(--player-accent,#e94560);cursor:pointer;min-height:24px}
         #zoom{width:100%;accent-color:var(--player-accent,#3b82f6);cursor:pointer;min-height:24px}
         #volume-label,#brightness-label,#saturation-label,#zoom-label,#audio-boost-label{font-size:.9rem;color:var(--player-text,#ddd);min-width:42px;text-align:right;font-weight:600}
-        @media (max-width:900px){header{grid-template-columns:1fr;gap:.5rem}#brand{align-items:flex-start}#nav-info{padding-top:0}.player-top{grid-template-columns:1fr}.transport-controls{justify-content:flex-start}#media-controls{grid-template-columns:1fr}.btn{padding:.62rem .85rem;font-size:.9rem}#now-playing-bar{max-height:70dvh;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#333355 transparent}}
+        @media (max-width:900px){header{grid-template-columns:1fr;gap:.5rem}#brand{align-items:flex-start}#nav-info{padding-top:0}.player-top{grid-template-columns:1fr}.transport-controls{justify-content:flex-start}#media-controls{grid-template-columns:1fr}.btn{padding:.62rem .85rem;font-size:.9rem}#now-playing-bar{max-height:70dvh;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:#333355 transparent}#music-media-controls .audio-filters-grid{grid-template-columns:1fr}#music-media-controls .audio-filter-control{padding:.4rem .45rem}}
         @media (min-width:761px) and (max-width:1280px) and (pointer:coarse){
           header{padding:.75rem .9rem;gap:.75rem}
           #video-command-bar,#music-command-bar,#radio-command-bar{margin-left:-.9rem;margin-right:-.9rem;margin-bottom:-.75rem}

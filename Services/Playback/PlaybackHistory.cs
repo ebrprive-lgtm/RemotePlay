@@ -5,9 +5,13 @@ namespace RemotePlay;
 
 internal sealed class PlaybackHistory
 {
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+
     private readonly string _historyFile;
     private readonly object _gate = new();
     private Dictionary<string, PlaybackHistoryEntry> _entries;
+    private readonly HashSet<string> _deletedEntries = new(StringComparer.OrdinalIgnoreCase);
+    private bool _replaceDiskStateOnNextSave;
 
     public PlaybackHistory()
         : this(AppPaths.HistoryFile)
@@ -185,7 +189,10 @@ internal sealed class PlaybackHistory
         lock (_gate)
         {
             if (_entries.Remove(filePath))
+            {
+                _deletedEntries.Add(filePath);
                 SaveEntries();
+            }
         }
     }
 
@@ -194,6 +201,8 @@ internal sealed class PlaybackHistory
         lock (_gate)
         {
             _entries.Clear();
+            _deletedEntries.Clear();
+            _replaceDiskStateOnNextSave = true;
             SaveEntries();
         }
     }
@@ -215,7 +224,10 @@ internal sealed class PlaybackHistory
             if (toRemove.Length == 0)
                 return;
             foreach (var key in toRemove)
+            {
                 _entries.Remove(key);
+                _deletedEntries.Add(key);
+            }
             SaveEntries();
         }
     }
@@ -236,7 +248,10 @@ internal sealed class PlaybackHistory
                 .ToArray();
 
             foreach (var key in toRemove)
+            {
                 _entries.Remove(key);
+                _deletedEntries.Add(key);
+            }
 
             SaveEntries();
         }
@@ -253,6 +268,7 @@ internal sealed class PlaybackHistory
     {
         _entries.TryGetValue(filePath, out var existing);
         _entries[filePath] = patch(existing ?? new PlaybackHistoryEntry());
+        _deletedEntries.Remove(filePath);
         SaveEntries();
     }
 
@@ -300,13 +316,66 @@ internal sealed class PlaybackHistory
             if (!string.IsNullOrWhiteSpace(directory))
                 Directory.CreateDirectory(directory);
 
-            File.WriteAllText(_historyFile,
-                JsonSerializer.Serialize(_entries, new JsonSerializerOptions { WriteIndented = true }));
+            var merged = _replaceDiskStateOnNextSave
+                ? new Dictionary<string, PlaybackHistoryEntry>(_entries, StringComparer.OrdinalIgnoreCase)
+                : MergeEntries(LoadEntries(_historyFile), _entries);
+
+            foreach (var filePath in _deletedEntries)
+                merged.Remove(filePath);
+
+            _entries = merged;
+
+            var json = JsonSerializer.Serialize(merged, JsonOptions);
+            WriteAllTextAtomic(_historyFile, json);
+
+            _deletedEntries.Clear();
+            _replaceDiskStateOnNextSave = false;
         }
         catch (Exception ex)
         {
             Logger.Error("Failed to save playback history", ex);
         }
+    }
+
+    private static Dictionary<string, PlaybackHistoryEntry> MergeEntries(
+        Dictionary<string, PlaybackHistoryEntry> diskEntries,
+        Dictionary<string, PlaybackHistoryEntry> memoryEntries)
+    {
+        var merged = new Dictionary<string, PlaybackHistoryEntry>(diskEntries, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (filePath, memoryEntry) in memoryEntries)
+        {
+            if (merged.TryGetValue(filePath, out var diskEntry))
+                merged[filePath] = MergeEntry(diskEntry, memoryEntry);
+            else
+                merged[filePath] = memoryEntry;
+        }
+
+        return merged;
+    }
+
+    private static PlaybackHistoryEntry MergeEntry(PlaybackHistoryEntry diskEntry, PlaybackHistoryEntry memoryEntry)
+    {
+        var newer = memoryEntry.UpdatedUtc >= diskEntry.UpdatedUtc ? memoryEntry : diskEntry;
+        var older = ReferenceEquals(newer, memoryEntry) ? diskEntry : memoryEntry;
+
+        return newer with
+        {
+            PositionSeconds = newer.PositionSeconds > 0 ? newer.PositionSeconds : older.PositionSeconds,
+            DurationSeconds = newer.DurationSeconds > 0 ? newer.DurationSeconds : older.DurationSeconds,
+            Preferences = newer.Preferences ?? older.Preferences
+        };
+    }
+
+    private static void WriteAllTextAtomic(string filePath, string content)
+    {
+        var temporaryPath = filePath + ".tmp";
+        File.WriteAllText(temporaryPath, content);
+
+        if (File.Exists(filePath))
+            File.Replace(temporaryPath, filePath, destinationBackupFileName: null);
+        else
+            File.Move(temporaryPath, filePath);
     }
 
     // ── Data model ───────────────────────────────────────────────────────────

@@ -419,6 +419,41 @@ internal sealed partial class WebServer
         }
     }
 
+    private void HandleMusicVocalRemoval(HttpListenerContext ctx)
+    {
+        var value = (ctx.Request.QueryString["value"] ?? string.Empty).Trim();
+
+        int mode;
+        if (MediaControlValueParser.TryParseInteger(value, out var parsed))
+        {
+            mode = Math.Clamp(parsed, 0, 3);
+        }
+        else if (string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(value, "on", StringComparison.OrdinalIgnoreCase))
+        {
+            mode = 2; // Strong
+        }
+        else if (string.Equals(value, "mild", StringComparison.OrdinalIgnoreCase))
+        {
+            mode = 1;
+        }
+        else if (string.Equals(value, "strong", StringComparison.OrdinalIgnoreCase))
+        {
+            mode = 2;
+        }
+        else if (string.Equals(value, "karaoke", StringComparison.OrdinalIgnoreCase))
+        {
+            mode = 3;
+        }
+        else
+        {
+            mode = 0;
+        }
+
+        _callbacks.SetMusicVocalRemovalMode(mode);
+        TrySendResponse(ctx, 200, "text/plain", "OK");
+    }
+
     private void HandleRadioReverbPreset(HttpListenerContext ctx)
     {
         var idParam = ctx.Request.QueryString["id"];
@@ -1169,6 +1204,18 @@ internal sealed partial class WebServer
                 <div class="hint">Creates a JPEG preview for each video file on first access. Disable on slow storage.</div>
               </div>
               <div class="card">
+                <h2>&#127911; Music album-art retrieval</h2>
+                <div class="row"><label>Use MusicBrainz / CAA</label><input type="checkbox" id="EnableMusicBrainzAlbumArtLookup"/></div>
+                <div class="hint">Primary online provider for album artwork.</div>
+                <div class="row"><label>Use Discogs fallback</label><input type="checkbox" id="EnableDiscogsAlbumArtLookup"/></div>
+                <div class="hint">When enabled, Discogs is queried if MusicBrainz/CAA has no art.</div>
+                <div class="row">
+                  <label>Discogs token (optional)</label>
+                  <input type="password" id="DiscogsToken" placeholder="Discogs personal access token" autocomplete="new-password"/>
+                </div>
+                <div class="hint">Optional. Improves Discogs request limits and is sent only to Discogs API calls.</div>
+              </div>
+              <div class="card">
                 <h2>&#128193; File filters</h2>
                 <div class="row">
                   <label>Ignored folder names</label>
@@ -1403,6 +1450,25 @@ internal sealed partial class WebServer
                 <div class="sync-log" id="sync-log"></div>
               </div>
               <div class="card">
+                <h2>&#127911; M3U album art scan</h2>
+                <p class="muted" style="margin-bottom:.7rem">Scans all M3U/M3U8 playlists under your music library paths and downloads missing album art.</p>
+                <div class="actions" style="align-items:center;gap:.75rem">
+                  <button class="primary" id="m3u-art-scan-btn" onclick="startM3uAlbumArtScan()">&#128269; Scan playlist album art</button>
+                  <span class="sync-status-pill" id="m3u-art-scan-pill">Running&#8230;</span>
+                </div>
+                <div id="m3u-art-scan-status" class="sync-log" style="display:block;max-height:190px;white-space:pre-wrap"></div>
+              </div>
+              <div class="card">
+                <h2>&#128190; Discogs offline import</h2>
+                <p class="muted" style="margin-bottom:.7rem">Import a Discogs masters XML.GZ dump into a local index to reduce Discogs API usage and rate-limit issues.</p>
+                <div class="row"><label>Masters dump (.xml.gz)</label><input id="discogs-import-path" type="text" placeholder="F:\\Data\\discogs_YYYYMMDD_masters.xml.gz"/></div>
+                <div class="actions" style="align-items:center;gap:.75rem">
+                  <button class="primary" id="discogs-import-btn" onclick="startDiscogsImport()">&#11015; Import Discogs dump</button>
+                  <span class="sync-status-pill" id="discogs-import-pill">Running&#8230;</span>
+                </div>
+                <div id="discogs-import-status" class="sync-log" style="display:block;max-height:190px;white-space:pre-wrap"></div>
+              </div>
+              <div class="card">
                 <h2>&#9881; Maintenance</h2>
                 <p class="muted" style="margin-bottom:.7rem">One-time actions that affect the running application state.</p>
                 <div class="actions">
@@ -1461,6 +1527,9 @@ internal sealed partial class WebServer
           history.replaceState(null,'','?cat='+name);
           if(name==='overview') startOverviewPoll();
           if(name==='log') loadLog();
+          if(name==='tools'){loadM3uAlbumArtStatus();loadDiscogsImportStatus();}
+          if(name!=='tools'&&_m3uArtScanTimer){clearInterval(_m3uArtScanTimer);_m3uArtScanTimer=null;}
+          if(name!=='tools'&&_discogsImportTimer){clearInterval(_discogsImportTimer);_discogsImportTimer=null;}
           if(name==='desktop'){
             const sel=document.getElementById('PreferredDisplayIndex');
             const cur=sel?Number(sel.value):-1;
@@ -1522,6 +1591,9 @@ internal sealed partial class WebServer
           set('LibraryRescanDelayMinutes',cfg.libraryRescanDelayMinutes);
           set('LibraryPageSize',cfg.libraryPageSize);
           set('EnableThumbnailGeneration',cfg.enableThumbnailGeneration);
+          set('EnableMusicBrainzAlbumArtLookup',cfg.enableMusicBrainzAlbumArtLookup);
+          set('EnableDiscogsAlbumArtLookup',cfg.enableDiscogsAlbumArtLookup);
+          set('DiscogsToken',cfg.discogsToken);
           set('IgnoredLibraryFolders',cfg.ignoredLibraryFolders);
           set('VideoFileExtensions',cfg.videoFileExtensions);
           set('MusicFileExtensions',cfg.musicFileExtensions);
@@ -1581,7 +1653,7 @@ internal sealed partial class WebServer
         }
         const CAT_FIELDS={
           library:[],   // handled entirely by list/cred collectors in collectCategory
-          scanning:['LibraryRescanDelayMinutes','LibraryPageSize','EnableThumbnailGeneration','IgnoredLibraryFolders','VideoFileExtensions','MusicFileExtensions'],
+          scanning:['LibraryRescanDelayMinutes','LibraryPageSize','EnableThumbnailGeneration','EnableMusicBrainzAlbumArtLookup','EnableDiscogsAlbumArtLookup','DiscogsToken','IgnoredLibraryFolders','VideoFileExtensions','MusicFileExtensions'],
           playback:['PreferredAudioLanguage','PreferredSubtitleLanguage','SecondarySubtitleLanguage','PreferForcedSubtitles','PlaybackEndBehavior','PlaybackHistoryLimit'],
           audio:['MusicAudioDeviceId'],
           server:[],    // ServerInstanceName, MaxRequestsPerIpPerWindow, RateLimitWindowSeconds handled in collectCategory
@@ -1706,6 +1778,107 @@ internal sealed partial class WebServer
             await Promise.all([fetch('/api/rescan'),fetch('/api/rescan-music')]);
             result.textContent='Library rescan started (video + music).';
           }catch(e){result.textContent='Rescan failed: '+e;}
+        }
+        let _m3uArtScanTimer=null;
+        let _discogsImportTimer=null;
+        function formatM3uAlbumArtStatus(s){
+          if(!s)return 'No scan status yet.';
+          const lines=[];
+          lines.push((s.isRunning?'Running':'Idle')+' | elapsed '+(s.elapsedSeconds??0)+'s');
+          lines.push('Playlists: '+(s.playlistsTotal??0)+' | Analyzed: '+(s.playlistsScanned??0)+' | Unique albums: '+(s.uniqueAlbumsTotal??0));
+          lines.push('Processed: '+(s.processedAlbums??0)+' | Downloaded: '+(s.downloaded??0)+' | Cached: '+(s.alreadyCached??0)+' | Misses: '+(s.misses??0)+' | Errors: '+(s.errors??0));
+          if(s.currentAlbum)lines.push('Current album: '+s.currentAlbum);
+          if(s.currentPlaylist)lines.push('Current playlist: '+s.currentPlaylist);
+          if(s.lastMessage)lines.push(s.lastMessage);
+          return lines.join('\n');
+        }
+        function renderM3uAlbumArtStatus(s){
+          const box=document.getElementById('m3u-art-scan-status');
+          const btn=document.getElementById('m3u-art-scan-btn');
+          const pill=document.getElementById('m3u-art-scan-pill');
+          if(box)box.textContent=formatM3uAlbumArtStatus(s);
+          const running=!!(s&&s.isRunning);
+          if(btn)btn.disabled=running;
+          if(pill)pill.style.display=running?'inline-block':'none';
+          const toolsActive=!!document.getElementById('panel-tools')?.classList.contains('active');
+          if(running&&toolsActive){
+            if(!_m3uArtScanTimer)_m3uArtScanTimer=setInterval(loadM3uAlbumArtStatus,4000);
+          }else if(_m3uArtScanTimer){
+            clearInterval(_m3uArtScanTimer);
+            _m3uArtScanTimer=null;
+          }
+        }
+        async function loadM3uAlbumArtStatus(){
+          const toolsActive=!!document.getElementById('panel-tools')?.classList.contains('active');
+          if(!toolsActive&&_m3uArtScanTimer){clearInterval(_m3uArtScanTimer);_m3uArtScanTimer=null;return;}
+          try{
+            const r=await fetch('/api/music/album-art/scan/status');
+            if(!r.ok)return;
+            const s=await r.json();
+            renderM3uAlbumArtStatus(s);
+          }catch(_){ }
+        }
+        async function startM3uAlbumArtScan(){
+          const box=document.getElementById('m3u-art-scan-status');
+          if(box)box.textContent='Starting M3U album art scan\u2026';
+          try{
+            const r=await fetch('/api/music/album-art/scan/start',{method:'POST'});
+            if(!r.ok){if(box)box.textContent='Scan start failed: HTTP '+r.status;return;}
+            const d=await r.json();
+            renderM3uAlbumArtStatus(d.status||null);
+            if(box&&d.message)box.textContent=formatM3uAlbumArtStatus(d.status||null)+'\n'+d.message;
+          }catch(e){if(box)box.textContent='Scan start failed: '+e;}
+          await loadM3uAlbumArtStatus();
+        }
+        function formatDiscogsImportStatus(s){
+          if(!s)return 'No Discogs import status yet.';
+          const lines=[];
+          lines.push((s.isRunning?'Running':'Idle')+' | elapsed '+(s.elapsedSeconds??0)+'s');
+          lines.push('Records read: '+(s.recordsRead??0)+' | indexed: '+(s.recordsIndexed??0)+' | errors: '+(s.errors??0));
+          if(s.sourcePath)lines.push('Source: '+s.sourcePath);
+          if(s.indexDbPath)lines.push('Index DB: '+s.indexDbPath+(s.hasIndex?' (present)':' (missing)'));
+          if(s.lastMessage)lines.push(s.lastMessage);
+          return lines.join('\n');
+        }
+        function renderDiscogsImportStatus(s){
+          const box=document.getElementById('discogs-import-status');
+          const btn=document.getElementById('discogs-import-btn');
+          const pill=document.getElementById('discogs-import-pill');
+          if(box)box.textContent=formatDiscogsImportStatus(s);
+          const running=!!(s&&s.isRunning);
+          if(btn)btn.disabled=running;
+          if(pill)pill.style.display=running?'inline-block':'none';
+          const toolsActive=!!document.getElementById('panel-tools')?.classList.contains('active');
+          if(running&&toolsActive){
+            if(!_discogsImportTimer)_discogsImportTimer=setInterval(loadDiscogsImportStatus,4000);
+          }else if(_discogsImportTimer){
+            clearInterval(_discogsImportTimer);
+            _discogsImportTimer=null;
+          }
+        }
+        async function loadDiscogsImportStatus(){
+          const toolsActive=!!document.getElementById('panel-tools')?.classList.contains('active');
+          if(!toolsActive&&_discogsImportTimer){clearInterval(_discogsImportTimer);_discogsImportTimer=null;return;}
+          try{
+            const r=await fetch('/api/music/album-art/discogs-import/status');
+            if(!r.ok)return;
+            const s=await r.json();
+            renderDiscogsImportStatus(s);
+          }catch(_){ }
+        }
+        async function startDiscogsImport(){
+          const box=document.getElementById('discogs-import-status');
+          const path=(document.getElementById('discogs-import-path')?.value||'').trim();
+          if(!path){if(box)box.textContent='Please provide a local .xml.gz path.';return;}
+          if(box)box.textContent='Starting Discogs import…';
+          try{
+            const r=await fetch('/api/music/album-art/discogs-import/start?path='+encodeURIComponent(path),{method:'POST'});
+            const d=await r.json();
+            if(!r.ok||d.ok===false){if(box)box.textContent='Import start failed: '+(d.error||('HTTP '+r.status));return;}
+            renderDiscogsImportStatus(d.status||null);
+            if(box&&d.message)box.textContent=formatDiscogsImportStatus(d.status||null)+'\n'+d.message;
+          }catch(e){if(box)box.textContent='Import start failed: '+e;}
+          await loadDiscogsImportStatus();
         }
         function _log(msg,cls){const box=document.getElementById('sync-log');box.style.display='block';const line=document.createElement('div');if(cls)line.className=cls;line.textContent=msg;box.appendChild(line);box.scrollTop=box.scrollHeight;}
         async function ovReindex(type){

@@ -391,7 +391,7 @@ internal sealed partial class WebServer
 
         // Regular sub-folders
         var regularFolders = Directory.EnumerateDirectories(targetDir)
-            .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)))
+            .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)) && !Path.GetFileName(d).StartsWith('@'))
             .Select(d => (name: Path.GetFileName(d), dir: WebPathHelpers.EncodePath(d), isLink: false));
 
         // Folder-link .rplink entries (target is a directory)

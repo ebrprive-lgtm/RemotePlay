@@ -22,6 +22,17 @@ internal static class RplinkHelper
             if (string.IsNullOrWhiteSpace(raw))
                 return null;
 
+            // Handle absolute paths with "@" prefix - replace "@" with the drive root of the link file
+            if (raw.StartsWith("@\\") || raw.StartsWith("@/"))
+            {
+                var linkRoot = Path.GetPathRoot(Path.GetFullPath(rplinkPath));
+                if (string.IsNullOrEmpty(linkRoot))
+                    return null;
+
+                // Replace the "@" prefix with the drive root
+                raw = linkRoot.TrimEnd('\\', '/') + raw.Substring(1);
+            }
+
             return Path.IsPathRooted(raw)
                 ? raw
                 : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(rplinkPath) ?? string.Empty, raw));
@@ -56,6 +67,16 @@ internal static class RplinkHelper
             if (string.IsNullOrWhiteSpace(raw))
                 return null;
 
+            // Handle absolute paths with "@" prefix - replace "@" with the drive root of the link file
+            if (raw.StartsWith("@\\") || raw.StartsWith("@/"))
+            {
+                var linkRoot = Path.GetPathRoot(Path.GetFullPath(rplinkPath));
+                if (string.IsNullOrEmpty(linkRoot))
+                    return null;
+
+                // Replace the "@" prefix with the drive root
+                raw = linkRoot.TrimEnd('\\', '/') + raw.Substring(1);
+            }
             // Support paths relative to the .rplink file's own directory.
             var target = Path.IsPathRooted(raw)
                 ? raw
