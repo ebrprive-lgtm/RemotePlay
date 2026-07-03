@@ -80,6 +80,9 @@ internal static class ThumbnailHelper
     {
         try
         {
+            if (IsRemoteHttpMedia(filePath))
+                return null;
+
             var cached = TryReadCachedThumbnail(filePath, size);
             if (cached is not null)
                 return cached;
@@ -152,9 +155,31 @@ internal static class ThumbnailHelper
 
     private static string GetCachePath(string filePath, int size)
     {
-        var fileInfo = new FileInfo(filePath);
-        var key = $"{Path.GetFullPath(filePath)}|{fileInfo.Length}|{fileInfo.LastWriteTimeUtc.Ticks}|{size}";
+        string key;
+
+        if (IsRemoteHttpMedia(filePath))
+        {
+            key = $"remote|{filePath.Trim()}|{size}";
+        }
+        else
+        {
+            var fullPath = Path.GetFullPath(filePath);
+            if (!File.Exists(fullPath))
+            {
+                key = $"missing|{fullPath}|{size}";
+            }
+            else
+            {
+                var fileInfo = new FileInfo(fullPath);
+                key = $"{fullPath}|{fileInfo.Length}|{fileInfo.LastWriteTimeUtc.Ticks}|{size}";
+            }
+        }
+
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
         return Path.Combine(ThumbnailCacheDirectory, hash + ".jpg");
     }
+
+    private static bool IsRemoteHttpMedia(string path) =>
+        Uri.TryCreate(path, UriKind.Absolute, out var uri)
+        && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 }

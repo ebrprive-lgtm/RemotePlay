@@ -419,6 +419,20 @@ internal sealed partial class WebServer
         }
     }
 
+    private void HandleMusicReverbStrength(HttpListenerContext ctx)
+    {
+        var valueParam = ctx.Request.QueryString["value"];
+        if (MediaControlValueParser.TryParseClampedDouble(valueParam, 0, 1, out var strength))
+        {
+            _callbacks.SetMusicReverbStrength(strength);
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+        }
+        else
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad reverb strength");
+        }
+    }
+
     private void HandleMusicVocalRemoval(HttpListenerContext ctx)
     {
         var value = (ctx.Request.QueryString["value"] ?? string.Empty).Trim();
@@ -595,6 +609,51 @@ internal sealed partial class WebServer
         var musicStatus = _callbacks.GetMusicStatus();
         var radioStatus = _callbacks.RadioGetStatus();
         var radioFavorites = _callbacks.RadioGetFavorites();
+        int? radioChannelCount = null;
+        try
+        {
+            radioChannelCount = _callbacks.RadioStationCount().GetAwaiter().GetResult();
+        }
+        catch
+        {
+            radioChannelCount = null;
+        }
+        var liveTvDiagnostics = JsonSerializer.SerializeToElement(GetLiveTvCatalogDiagnosticsSnapshot());
+        var liveTvChannelCount =
+            liveTvDiagnostics.TryGetProperty("channelCount", out var liveTvChannelCountProperty)
+                ? liveTvChannelCountProperty.GetInt32()
+                : 0;
+        var liveTvChannelsStatusCode =
+            liveTvDiagnostics.TryGetProperty("channelsStatusCode", out var liveTvChannelsStatusCodeProperty)
+                ? liveTvChannelsStatusCodeProperty.GetInt32()
+                : 0;
+        var liveTvStreamsStatusCode =
+            liveTvDiagnostics.TryGetProperty("streamsStatusCode", out var liveTvStreamsStatusCodeProperty)
+                ? liveTvStreamsStatusCodeProperty.GetInt32()
+                : 0;
+        var liveTvFetchDurationMs =
+            liveTvDiagnostics.TryGetProperty("fetchDurationMs", out var liveTvFetchDurationMsProperty)
+                ? liveTvFetchDurationMsProperty.GetInt64()
+                : 0;
+        var liveTvLastAttemptUtc =
+            liveTvDiagnostics.TryGetProperty("lastAttemptUtc", out var liveTvLastAttemptUtcProperty) &&
+            liveTvLastAttemptUtcProperty.ValueKind is not JsonValueKind.Null
+                ? liveTvLastAttemptUtcProperty.GetDateTimeOffset()
+                : (DateTimeOffset?)null;
+        var liveTvLastSuccessUtc =
+            liveTvDiagnostics.TryGetProperty("lastSuccessUtc", out var liveTvLastSuccessUtcProperty) &&
+            liveTvLastSuccessUtcProperty.ValueKind is not JsonValueKind.Null
+                ? liveTvLastSuccessUtcProperty.GetDateTimeOffset()
+                : (DateTimeOffset?)null;
+        var liveTvLastSavedAtUtc =
+            liveTvDiagnostics.TryGetProperty("lastSavedAtUtc", out var liveTvLastSavedAtUtcProperty) &&
+            liveTvLastSavedAtUtcProperty.ValueKind is not JsonValueKind.Null
+                ? liveTvLastSavedAtUtcProperty.GetDateTimeOffset()
+                : (DateTimeOffset?)null;
+        var liveTvLastError =
+            liveTvDiagnostics.TryGetProperty("lastError", out var liveTvLastErrorProperty)
+                ? liveTvLastErrorProperty.GetString() ?? string.Empty
+                : string.Empty;
 
         var startupWarning  = string.IsNullOrWhiteSpace(_startupWarning) ? "None" : _startupWarning;
         var playbackError   = string.IsNullOrWhiteSpace(status.LastError) ? "None" : status.LastError;
@@ -606,6 +665,7 @@ internal sealed partial class WebServer
         var certificateState = certificate is not null ? "ok" : "warn";
         var musicState      = string.IsNullOrWhiteSpace(musicStatus.LastError) ? "ok" : "warn";
         var radioState      = radioStatus.IsStalled || !string.IsNullOrWhiteSpace(radioStatus.Error) ? "warn" : "ok";
+        var liveTvState     = liveTvChannelCount > 0 && string.IsNullOrWhiteSpace(liveTvLastError) ? "ok" : "warn";
 
         var playbackLabel   = status.IsPlaying ? "Playing" : "Idle";
         var libraryLabel    = _isIndexing ? "Indexing" : "Ready";
@@ -613,10 +673,18 @@ internal sealed partial class WebServer
         var certificateLabel = certificate is not null ? "Available" : "Missing";
         var musicLabel      = musicStatus.IsPlaying ? "Playing" : (musicStatus.IsPaused ? "Paused" : "Idle");
         var radioLabel      = radioStatus.IsPlaying ? (radioStatus.IsStalled ? "Stalled" : "Streaming") : "Idle";
+        var liveTvLabel     = liveTvChannelCount > 0 ? $"{liveTvChannelCount} channels" : "Not indexed";
+        var liveTvSubLabel  = liveTvLastSavedAtUtc.HasValue
+            ? $"Cached {liveTvLastSavedAtUtc.Value.ToLocalTime():yyyy-MM-dd HH:mm}"
+            : "Catalog not cached yet";
+        var liveTvError     = string.IsNullOrWhiteSpace(liveTvLastError) ? "None" : liveTvLastError;
+        var radioChannelCountLabel = radioChannelCount.HasValue && radioChannelCount.Value > 0
+            ? radioChannelCount.Value.ToString("N0")
+            : "N/A";
 
         // Music active card
         var musicActiveCard = (musicStatus.IsPlaying || musicStatus.IsPaused) ? $"""
-              <section class="card accent-card accent-music"><div class="accent-bar"></div><h2>&#127925; Now playing &mdash; Music <span class="pill ok">ACTIVE</span></h2><dl class="grid">
+              <section class="card accent-card accent-music health-card" data-health-domain="music"><div class="accent-bar"></div><h2>&#127925; Now playing &mdash; Music <span class="pill ok">ACTIVE</span></h2><dl class="grid">
                 <div class="metric wide"><dt>Track</dt><dd><strong>{HtmlEncode(string.IsNullOrWhiteSpace(musicStatus.Title) ? Path.GetFileName(musicStatus.CurrentPath) : musicStatus.Title)}</strong>{(string.IsNullOrWhiteSpace(musicStatus.Artist) ? "" : $" <span style='color:var(--muted)'>by {HtmlEncode(musicStatus.Artist)}</span>")}</dd></div>
                 <div class="metric wide"><dt>File</dt><dd class="mono">{HtmlEncode(musicStatus.CurrentPath)}</dd></div>
                 <div class="metric"><dt>Format</dt><dd>{HtmlEncode(Path.GetExtension(musicStatus.CurrentPath).TrimStart('.').ToUpperInvariant())}</dd></div>
@@ -629,10 +697,11 @@ internal sealed partial class WebServer
 
         // Radio active card
         var radioActiveCard = radioStatus.IsPlaying ? $"""
-              <section class="card accent-card accent-radio"><div class="accent-bar"></div><h2>&#128251; Now playing &mdash; Radio <span class="pill {(radioStatus.IsStalled ? "warn" : "ok")}">{(radioStatus.IsStalled ? "STALLED" : "LIVE")}</span></h2><dl class="grid">
+              <section class="card accent-card accent-radio health-card" data-health-domain="radio"><div class="accent-bar"></div><h2>&#128251; Now playing &mdash; Radio <span class="pill {(radioStatus.IsStalled ? "warn" : "ok")}">{(radioStatus.IsStalled ? "STALLED" : "LIVE")}</span></h2><dl class="grid radio-health-grid">
                 <div class="metric wide"><dt>Station</dt><dd><strong>{HtmlEncode(radioStatus.StationName)}</strong></dd></div>
                 {(string.IsNullOrWhiteSpace(radioStatus.StreamTitle) ? "" : $"<div class=\"metric wide\"><dt>&#127925; Now on air</dt><dd>{HtmlEncode(radioStatus.StreamTitle)}</dd></div>")}
                 <div class="metric wide"><dt>Stream URL</dt><dd class="mono">{HtmlEncode(radioStatus.StationUrl)}</dd></div>
+                <div class="metric"><dt>Channels</dt><dd>{radioChannelCountLabel}</dd></div>
                 <div class="metric"><dt>Elapsed</dt><dd>{TimeSpan.FromSeconds(radioStatus.ElapsedSeconds).ToString(@"hh\:mm\:ss")}</dd></div>
                 <div class="metric"><dt>Stalled</dt><dd class="{(radioStatus.IsStalled ? "warn-text" : "ok-text")}">{radioStatus.IsStalled}</dd></div>
                 <div class="metric"><dt>Volume</dt><dd>{Math.Round(radioStatus.Volume * 100)}%</dd></div>
@@ -645,7 +714,7 @@ internal sealed partial class WebServer
         var radioFavRows = radioFavorites.Count == 0
             ? "<p style=\"color:var(--muted);font-size:.88rem;margin:.4rem 0 0\">No radio favorites saved yet.</p>"
             : string.Join("", radioFavorites.Select(f =>
-                $"<div class=\"fav-row\"><span class=\"fav-flag\">{HtmlEncode(string.IsNullOrWhiteSpace(f.CountryCode) ? "ðŸŒ" : f.CountryCode)}</span><span class=\"fav-name\">{HtmlEncode(f.Name)}</span><span class=\"fav-meta\">{HtmlEncode(f.Country)}{(f.Bitrate > 0 ? $" &middot; {f.Bitrate} kbps" : "")}{(string.IsNullOrWhiteSpace(f.Codec) ? "" : $" &middot; {HtmlEncode(f.Codec.ToUpperInvariant())}")}</span></div>"));
+                $"<div class=\"fav-row\"><span class=\"fav-flag\">{(string.IsNullOrWhiteSpace(f.CountryCode) ? "&#127760;" : HtmlEncode(f.CountryCode))}</span><span class=\"fav-name\">{HtmlEncode(f.Name)}</span><span class=\"fav-meta\">{HtmlEncode(f.Country)}{(f.Bitrate > 0 ? $" &middot; {f.Bitrate} kbps" : "")}{(string.IsNullOrWhiteSpace(f.Codec) ? "" : $" &middot; {HtmlEncode(f.Codec.ToUpperInvariant())}")}</span></div>"));
 
         var html = $$$$"""
             <!DOCTYPE html>
@@ -677,6 +746,15 @@ internal sealed partial class WebServer
             .tile-label{color:var(--muted);font-size:.68rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}
             .tile-value{font-size:1.05rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#fff}
             .tile-sub{color:var(--dim);font-size:.72rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+            .radio-health-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:.45rem .55rem}
+            .radio-health-grid .metric{padding:.45rem .55rem}
+            .radio-health-grid .metric dt{font-size:.62rem;margin:0 0 .15rem}
+            .radio-health-grid .metric dd{font-size:.84rem;line-height:1.2}
+            .health-tabs{display:flex;flex-wrap:wrap;gap:.45rem;margin:.25rem 0 .75rem}
+            .health-tab-btn{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:999px;color:var(--muted);padding:.36rem .72rem;font-size:.78rem;font-weight:700;cursor:pointer;transition:background .13s,color .13s,border-color .13s}
+            .health-tab-btn:hover{color:#e8f0ff;border-color:rgba(255,255,255,.26)}
+            .health-tab-btn.active{background:rgba(0,212,170,.14);border-color:rgba(0,212,170,.5);color:#baffef}
+            .health-card.is-hidden{display:none!important}
             /* â”€â”€ Pills â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
             .pill{display:inline-flex;align-items:center;gap:.3rem;border-radius:999px;padding:.22rem .5rem;font-size:.7rem;font-weight:900;background:rgba(148,163,184,.1);color:var(--muted)}
             .pill::before{content:'';width:.48rem;height:.48rem;border-radius:50%;background:var(--dim)}
@@ -716,7 +794,7 @@ internal sealed partial class WebServer
             .footer-note{color:var(--dim);font-size:.75rem;text-align:center;padding:1rem}
             .divider{height:1px;background:var(--line);margin:.75rem 0}
             .ok-text{color:var(--cyan)}.warn-text{color:var(--warn)}
-            @media(max-width:1180px){.overview{grid-template-columns:repeat(4,minmax(0,1fr))}.dashboard{grid-template-columns:1fr}.runtime-card{grid-column:auto}}
+            @media(max-width:1180px){.overview{grid-template-columns:repeat(4,minmax(0,1fr))}.dashboard{grid-template-columns:1fr}.runtime-card{grid-column:auto}.radio-health-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
             @media(max-width:700px){.overview{grid-template-columns:repeat(2,minmax(0,1fr))}.page{padding:.7rem}.hero{position:static;grid-template-columns:1fr}.actions{display:grid;grid-template-columns:1fr 1fr}}
             </style>
             </head>
@@ -738,17 +816,27 @@ internal sealed partial class WebServer
               <article class="tile"><div class="tile-icon">&#127902;</div><div class="tile-label">Video</div><div class="tile-value">{{{{HtmlEncode(playbackLabel)}}}}</div><span class="pill {{{{playbackState}}}}">{{{{playbackState.ToUpperInvariant()}}}}</span></article>
               <article class="tile"><div class="tile-icon">&#127925;</div><div class="tile-label">Music</div><div class="tile-value">{{{{HtmlEncode(musicLabel)}}}}</div><div class="tile-sub">{{{{_musicIndex.Length}}}} tracks indexed</div><span class="pill {{{{musicState}}}}">{{{{musicState.ToUpperInvariant()}}}}</span></article>
               <article class="tile"><div class="tile-icon">&#128251;</div><div class="tile-label">Radio</div><div class="tile-value">{{{{HtmlEncode(radioLabel)}}}}</div><div class="tile-sub">{{{{radioFavorites.Count}}}} favorites saved</div><span class="pill {{{{(radioStatus.IsPlaying ? (radioStatus.IsStalled ? "warn" : "live") : radioState)}}}}}">{{{{(radioStatus.IsPlaying ? (radioStatus.IsStalled ? "STALLED" : "LIVE") : radioState.ToUpperInvariant())}}}}</span></article>
+              <article class="tile"><div class="tile-icon">&#128250;</div><div class="tile-label">Live TV</div><div class="tile-value">{{{{HtmlEncode(liveTvLabel)}}}}</div><div class="tile-sub">{{{{HtmlEncode(liveTvSubLabel)}}}}</div><span class="pill {{{{liveTvState}}}}">{{{{liveTvState.ToUpperInvariant()}}}}</span></article>
               <article class="tile"><div class="tile-icon">&#128250;</div><div class="tile-label">Video lib</div><div class="tile-value">{{{{_libraryIndex.Length}}}}</div><div class="tile-sub">{{{{HtmlEncode(libraryLabel)}}}}</div><span class="pill {{{{libraryState}}}}">{{{{libraryState.ToUpperInvariant()}}}}</span></article>
               <article class="tile"><div class="tile-icon">&#127926;</div><div class="tile-label">Music lib</div><div class="tile-value">{{{{_musicIndex.Length}}}}</div><div class="tile-sub">{{{{(_isMusicIndexing ? "Indexingâ€¦" : "Ready")}}}}}</div><span class="pill {{{{(_isMusicIndexing ? "warn" : "ok")}}}}">{{{{(_isMusicIndexing ? "SCANNING" : "OK")}}}}</span></article>
               <article class="tile"><div class="tile-icon">&#128444;</div><div class="tile-label">Display</div><div class="tile-value">{{{{HtmlEncode(displayLabel)}}}}</div><span class="pill {{{{displayState}}}}">{{{{displayState.ToUpperInvariant()}}}}</span></article>
               <article class="tile"><div class="tile-icon">&#128274;</div><div class="tile-label">HTTPS cert</div><div class="tile-value">{{{{HtmlEncode(certificateLabel)}}}}</div><span class="pill {{{{certificateState}}}}">{{{{certificateState.ToUpperInvariant()}}}}</span></article>
             </section>
 
+            <nav class="health-tabs" aria-label="Health domains">
+              <button type="button" class="health-tab-btn active" data-health-tab="all">All</button>
+              <button type="button" class="health-tab-btn" data-health-tab="video">Video</button>
+              <button type="button" class="health-tab-btn" data-health-tab="music">Music</button>
+              <button type="button" class="health-tab-btn" data-health-tab="radio">Radio</button>
+              <button type="button" class="health-tab-btn" data-health-tab="live-tv">Live TV</button>
+              <button type="button" class="health-tab-btn" data-health-tab="system">System</button>
+            </nav>
+
             <section class="dashboard">
               <div class="stack">
                 {{{{musicActiveCard}}}}
                 {{{{radioActiveCard}}}}
-                <section class="card"><h2>&#127902; Video playback <span class="pill {{{{playbackState}}}}">{{{{HtmlEncode(playbackLabel)}}}}</span></h2><dl class="grid">
+                <section class="card health-card" data-health-domain="video"><h2>&#127902; Video playback <span class="pill {{{{playbackState}}}}">{{{{HtmlEncode(playbackLabel)}}}}</span></h2><dl class="grid">
                   <div class="metric"><dt>Playing</dt><dd>{{{{status.IsPlaying}}}}</dd></div>
                   <div class="metric"><dt>Paused</dt><dd>{{{{status.IsPaused}}}}</dd></div>
                   <div class="metric"><dt>Previous</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(status.PreviousTitle) ? "N/A" : status.PreviousTitle)}}}}</dd></div>
@@ -760,7 +848,7 @@ internal sealed partial class WebServer
                   <div class="metric wide"><dt>Last error</dt><dd class="{{{{(playbackState == "ok" ? "ok-text" : "warn-text")}}}}">{{{{HtmlEncode(playbackError)}}}}</dd></div>
                 </dl></section>
 
-                <section class="card"><h2>&#127925; Music library <span class="pill {{{{(_isMusicIndexing ? "warn" : "ok")}}}}">{{{{(_isMusicIndexing ? "SCANNING" : "READY")}}}}</span></h2><dl class="grid">
+                <section class="card health-card" data-health-domain="music"><h2>&#127925; Music library <span class="pill {{{{(_isMusicIndexing ? "warn" : "ok")}}}}">{{{{(_isMusicIndexing ? "SCANNING" : "READY")}}}}</span></h2><dl class="grid">
                   <div class="metric"><dt>Indexed tracks</dt><dd>{{{{_musicIndex.Length}}}}</dd></div>
                   <div class="metric"><dt>Indexing now</dt><dd>{{{{_isMusicIndexing}}}}</dd></div>
                   <div class="metric"><dt>Scan progress</dt><dd>{{{{(_isMusicIndexing ? $"{_musicScanProgress} files scanned" : "Idle")}}}}</dd></div>
@@ -769,11 +857,12 @@ internal sealed partial class WebServer
                   {{{{(string.IsNullOrWhiteSpace(musicStatus.LastError) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(musicStatus.LastError)}</dd></div>")}}}}
                 </dl></section>
 
-                <section class="card"><h2>&#128251; Radio <span class="pill {{{{radioState}}}}">{{{{radioState.ToUpperInvariant()}}}}</span></h2><dl class="grid">
+                <section class="card health-card" data-health-domain="radio"><h2>&#128251; Radio <span class="pill {{{{radioState}}}}">{{{{radioState.ToUpperInvariant()}}}}</span></h2><dl class="grid radio-health-grid">
                   <div class="metric"><dt>Playing</dt><dd>{{{{radioStatus.IsPlaying}}}}</dd></div>
                   <div class="metric"><dt>Stalled</dt><dd class="{{{{(radioStatus.IsStalled ? "warn-text" : "ok-text")}}}}">{{{{radioStatus.IsStalled}}}}</dd></div>
-                  <div class="metric"><dt>Volume</dt><dd>{{{{(radioStatus.IsPlaying ? $"{Math.Round(radioStatus.Volume * 100)}%" : "â€”")}}}}</dd></div>
-                  <div class="metric"><dt>Boost</dt><dd>{{{{(radioStatus.IsPlaying ? $"{radioStatus.Boost:F1}Ã—" : "â€”")}}}}</dd></div>
+                  <div class="metric"><dt>Channels</dt><dd>{{{{radioChannelCountLabel}}}}</dd></div>
+                  <div class="metric"><dt>Volume</dt><dd>{{{{(radioStatus.IsPlaying ? $"{Math.Round(radioStatus.Volume * 100)}%" : "&mdash;")}}}}</dd></div>
+                  <div class="metric"><dt>Boost</dt><dd>{{{{(radioStatus.IsPlaying ? $"{radioStatus.Boost:F1}&times;" : "&mdash;")}}}}</dd></div>
                   <div class="metric wide"><dt>Current station</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(radioStatus.StationName) ? "None" : radioStatus.StationName)}}}}</dd></div>
                   {{{{(string.IsNullOrWhiteSpace(radioStatus.Error) ? "" : $"<div class=\"metric wide\"><dt>Last error</dt><dd class=\"warn-text\">{HtmlEncode(radioStatus.Error)}</dd></div>")}}}}
                 </dl>
@@ -783,7 +872,18 @@ internal sealed partial class WebServer
                 </div>
                 <div class="fav-list">{{{{radioFavRows}}}}</div></section>
 
-                <section class="card"><h2>&#128250; Video library <span class="pill {{{{libraryState}}}}">{{{{HtmlEncode(libraryLabel)}}}}</span></h2><dl class="grid">
+                <section class="card health-card" data-health-domain="live-tv"><h2>&#128250; Live TV catalog <span class="pill {{{{liveTvState}}}}">{{{{liveTvState.ToUpperInvariant()}}}}</span></h2><dl class="grid">
+                  <div class="metric"><dt>Catalog channels</dt><dd>{{{{liveTvChannelCount}}}}</dd></div>
+                  <div class="metric"><dt>Channels API</dt><dd>{{{{(liveTvChannelsStatusCode > 0 ? liveTvChannelsStatusCode.ToString() : "N/A")}}}}</dd></div>
+                  <div class="metric"><dt>Streams API</dt><dd>{{{{(liveTvStreamsStatusCode > 0 ? liveTvStreamsStatusCode.ToString() : "N/A")}}}}</dd></div>
+                  <div class="metric"><dt>Fetch duration</dt><dd>{{{{(liveTvFetchDurationMs > 0 ? $"{liveTvFetchDurationMs} ms" : "N/A")}}}}</dd></div>
+                  <div class="metric"><dt>Last attempt UTC</dt><dd>{{{{liveTvLastAttemptUtc?.ToString("u") ?? "Never"}}}}</dd></div>
+                  <div class="metric"><dt>Last success UTC</dt><dd>{{{{liveTvLastSuccessUtc?.ToString("u") ?? "Never"}}}}</dd></div>
+                  <div class="metric wide"><dt>Catalog saved UTC</dt><dd>{{{{liveTvLastSavedAtUtc?.ToString("u") ?? "Never"}}}}</dd></div>
+                  <div class="metric wide"><dt>Last error</dt><dd class="{{{{(liveTvError == "None" ? "ok-text" : "warn-text")}}}}">{{{{HtmlEncode(liveTvError)}}}}</dd></div>
+                </dl><div class="divider"></div><a href="/api/live-tv/diagnostics" target="_blank" rel="noopener">Open Live TV diagnostics JSON &#8599;</a></section>
+
+                <section class="card health-card" data-health-domain="system"><h2>&#128250; Video library <span class="pill {{{{libraryState}}}}">{{{{HtmlEncode(libraryLabel)}}}}</span></h2><dl class="grid">
                   <div class="metric"><dt>Indexed videos</dt><dd>{{{{_libraryIndex.Length}}}}</dd></div>
                   <div class="metric"><dt>Indexing now</dt><dd>{{{{_isIndexing}}}}</dd></div>
                   <div class="metric"><dt>Scanned files</dt><dd>{{{{scanStatus.ScannedFiles}}}}</dd></div>
@@ -796,14 +896,14 @@ internal sealed partial class WebServer
               </div>
 
               <div class="stack">
-                <section class="card"><h2>&#128421; Server <span class="pill {{{{serverState}}}}">{{{{serverState.ToUpperInvariant()}}}}</span></h2><dl class="grid">
+                <section class="card health-card" data-health-domain="system"><h2>&#128421; Server <span class="pill {{{{serverState}}}}">{{{{serverState.ToUpperInvariant()}}}}</span></h2><dl class="grid">
                   <div class="metric"><dt>Requested mode</dt><dd>{{{{HtmlEncode(_config.Scheme.ToUpperInvariant())}}}}</dd></div>
                   <div class="metric"><dt>Active mode</dt><dd>{{{{HtmlEncode(_activeScheme.ToUpperInvariant())}}}}</dd></div>
                   <div class="metric"><dt>Port</dt><dd>{{{{_config.Port}}}}</dd></div>
                   <div class="metric"><dt>Startup warning</dt><dd class="{{{{(serverState == "ok" ? "ok-text" : "warn-text")}}}}">{{{{HtmlEncode(startupWarning)}}}}</dd></div>
                 </dl></section>
 
-                <section class="card"><h2>&#128444; Display diagnostics <span class="pill {{{{displayState}}}}">{{{{HtmlEncode(displayLabel)}}}}</span></h2><dl class="grid">
+                <section class="card health-card" data-health-domain="video"><h2>&#128444; Display diagnostics <span class="pill {{{{displayState}}}}">{{{{HtmlEncode(displayLabel)}}}}</span></h2><dl class="grid">
                   <div class="metric"><dt>Preferred display</dt><dd>{{{{displayDiagnostics.PreferredDisplayIndex}}}}</dd></div>
                   <div class="metric"><dt>Target display</dt><dd>{{{{displayDiagnostics.TargetDisplayIndex}}}} &mdash; {{{{HtmlEncode(displayDiagnostics.TargetDisplayName)}}}}</dd></div>
                   <div class="metric"><dt>Target bounds</dt><dd>{{{{displayDiagnostics.TargetLeft}}}}, {{{{displayDiagnostics.TargetTop}}}}, {{{{displayDiagnostics.TargetWidth}}}}&times;{{{{displayDiagnostics.TargetHeight}}}}</dd></div>
@@ -817,7 +917,7 @@ internal sealed partial class WebServer
                   <div class="metric"><dt>Video surface</dt><dd>{{{{displayDiagnostics.VideoSurfaceWidth}}}}&times;{{{{displayDiagnostics.VideoSurfaceHeight}}}}</dd></div>
                 </dl><div class="divider"></div><a href="/api/display-diagnostics" target="_blank" rel="noopener">Open display diagnostics JSON &#8599;</a></section>
 
-                <section class="card"><h2>&#127502; Media codec info <span class="pill {{{{(displayDiagnostics.CodecInfo is not null ? "ok" : "warn")}}}}">{{{{(displayDiagnostics.CodecInfo is not null ? "CAPTURED" : "NO DATA")}}}}</span></h2>
+                <section class="card health-card" data-health-domain="video"><h2>&#127502; Media codec info <span class="pill {{{{(displayDiagnostics.CodecInfo is not null ? "ok" : "warn")}}}}">{{{{(displayDiagnostics.CodecInfo is not null ? "CAPTURED" : "NO DATA")}}}}</span></h2>
                   {{{{(displayDiagnostics.CodecInfo is null
                     ? "<p style=\"color:var(--muted);font-size:.88rem\">Codec info is captured when a video starts playing. Start a movie and refresh.</p>"
                     : $"""
@@ -860,17 +960,35 @@ internal sealed partial class WebServer
                       """
                   )}}}}</section>
 
-                <section class="card"><h2>&#128274; HTTPS certificate <span class="pill {{{{certificateState}}}}">{{{{HtmlEncode(certificateLabel)}}}}</span></h2><dl class="grid">
+                <section class="card health-card" data-health-domain="system"><h2>&#128274; HTTPS certificate <span class="pill {{{{certificateState}}}}">{{{{HtmlEncode(certificateLabel)}}}}</span></h2><dl class="grid">
                   <div class="metric"><dt>Present</dt><dd>{{{{certificate is not null}}}}</dd></div>
                   <div class="metric"><dt>Expires</dt><dd>{{{{certificate?.NotAfter.ToString("u") ?? "N/A"}}}}</dd></div>
                   <div class="metric wide"><dt>Thumbprint</dt><dd class="mono">{{{{HtmlEncode(certificate?.Thumbprint ?? "N/A")}}}}</dd></div>
                 </dl><div class="divider"></div><a href="/certificate.cer">Download certificate &#8599;</a></section>
 
-                <section class="card runtime-card"><h2>&#128296; Runtime diagnostics</h2><pre id="runtime-json">{{{{HtmlEncode(runtime)}}}}</pre></section>
+                <section class="card runtime-card health-card" data-health-domain="system"><h2>&#128296; Runtime diagnostics</h2><pre id="runtime-json">{{{{HtmlEncode(runtime)}}}}</pre></section>
 
             <div class="footer-note">RemotePlay health page &mdash; generated locally by this media computer &middot; <a href="/api/health" target="_blank">API JSON</a></div>
             </main>
             <script>
+            (()=>{
+              const tabButtons = Array.from(document.querySelectorAll('.health-tab-btn'));
+              const cards = Array.from(document.querySelectorAll('.health-card[data-health-domain]'));
+              function applyHealthTab(tab){
+                const target = tab || 'all';
+                for(const btn of tabButtons){
+                  btn.classList.toggle('active', btn.dataset.healthTab === target);
+                }
+                for(const card of cards){
+                  const domain = card.dataset.healthDomain || '';
+                  card.classList.toggle('is-hidden', target !== 'all' && domain !== target);
+                }
+              }
+              for(const btn of tabButtons){
+                btn.addEventListener('click', ()=>applyHealthTab(btn.dataset.healthTab || 'all'));
+              }
+              applyHealthTab('all');
+            })();
             (async()=>{
               try{
                 const h=await fetch('/api/health');
@@ -1473,6 +1591,7 @@ internal sealed partial class WebServer
                 <p class="muted" style="margin-bottom:.7rem">One-time actions that affect the running application state.</p>
                 <div class="actions">
                   <button class="primary" onclick="rescanLibrary()">&#8635; Rescan library</button>
+                  <button class="secondary" onclick="reindexLiveTv()">&#128250; Reindex Live TV channels</button>
                   <button class="secondary" onclick="refreshRuntime()">&#8635; Refresh runtime</button>
                 </div>
                 <p id="admin-result" class="admin-result"></p>

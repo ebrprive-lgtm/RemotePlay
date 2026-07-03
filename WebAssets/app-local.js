@@ -27,9 +27,9 @@ function localPlay(url, name, type) {
   setTimeout(() => fetch('/api/local-playing', { method: 'POST', body: 'true' }).catch(() => {}), 0);
   const nm = document.getElementById('local-player-name');
   if (nm) nm.textContent = name;
-  // Only show the local-player-bar for non-Music types;
-  // music already has its own music-player-bar with full controls.
-  if (_localMediaType !== 'Music') {
+  // Only show the generic local-player-bar when no domain-specific player bar exists.
+  // Music and Radio already have dedicated player bars with their own controls.
+  if (_localMediaType !== 'Music' && _localMediaType !== 'Radio') {
     document.body.classList.add('local-player-docked');
   } else {
     document.body.classList.remove('local-player-docked');

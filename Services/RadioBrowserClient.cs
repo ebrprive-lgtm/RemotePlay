@@ -1,4 +1,5 @@
 using System.IO;
+using System.Collections.Concurrent;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -35,6 +36,11 @@ internal sealed class RadioStation
 /// </summary>
 internal sealed class RadioBrowserClient : IDisposable
 {
+    private sealed class RadioBrowserStats
+    {
+        [JsonPropertyName("stations")] public int Stations { get; set; }
+    }
+
     private static readonly string[] FallbackHosts =
     [
         "de1.api.radio-browser.info",
@@ -51,14 +57,29 @@ internal sealed class RadioBrowserClient : IDisposable
     private bool _favLoaded;
 
     // Simple in-memory cache: query key → (timestamp, results)
-    private readonly Dictionary<string, (DateTime At, List<RadioStation> Results)> _cache = new();
+    private readonly ConcurrentDictionary<string, (DateTime At, List<RadioStation> Results)> _cache = new(StringComparer.Ordinal);
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(10);
+    private const int CacheEntryLimit = 256;
 
     public RadioBrowserClient(string favoritesFile)
     {
         _favoritesFile = favoritesFile;
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("RemotePlay/1.0");
+    }
+
+    public async Task<int?> GetStationCountAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            var stats = await _http.GetFromJsonAsync<RadioBrowserStats>($"{Base}/json/stats", ct).ConfigureAwait(false);
+            if (stats is null || stats.Stations <= 0) return null;
+            return stats.Stations;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     // ── Server resolution ────────────────────────────────────────────────────
@@ -111,8 +132,8 @@ internal sealed class RadioBrowserClient : IDisposable
         int limit = 40, int offset = 0, CancellationToken ct = default)
     {
         var key = $"q:{query}|c:{country}|t:{tag}|l:{limit}|o:{offset}";
-        if (_cache.TryGetValue(key, out var cached) && DateTime.UtcNow - cached.At < CacheTtl)
-            return cached.Results;
+        if (TryGetCachedStations(key, out var cachedStations))
+            return cachedStations;
 
         var ub = new System.Text.StringBuilder(Base);
         ub.Append("/json/stations/search?hidebroken=true&order=votes&reverse=true");
@@ -126,17 +147,48 @@ internal sealed class RadioBrowserClient : IDisposable
         {
             var results = await _http.GetFromJsonAsync<List<RadioStation>>(
                 ub.ToString(), ct).ConfigureAwait(false) ?? [];
-            _cache[key] = (DateTime.UtcNow, results);
+            StoreCachedStations(key, results);
             return results;
         }
         catch { return []; }
     }
 
+    private bool TryGetCachedStations(string key, out List<RadioStation> stations)
+    {
+        if (_cache.TryGetValue(key, out var cached) && DateTime.UtcNow - cached.At < CacheTtl)
+        {
+            stations = cached.Results;
+            return true;
+        }
+
+        stations = [];
+        return false;
+    }
+
+    private void StoreCachedStations(string key, List<RadioStation> stations)
+    {
+        _cache[key] = (DateTime.UtcNow, stations);
+
+        if (_cache.Count <= CacheEntryLimit)
+            return;
+
+        var entriesToRemove = _cache
+            .OrderBy(kv => kv.Value.At)
+            .Take(Math.Max(1, _cache.Count - CacheEntryLimit))
+            .Select(kv => kv.Key)
+            .ToArray();
+
+        foreach (var cacheKey in entriesToRemove)
+        {
+            _cache.TryRemove(cacheKey, out _);
+        }
+    }
+
     public async Task<List<RadioStation>> TopStationsAsync(int limit = 40, int offset = 0, CancellationToken ct = default)
     {
         var key = $"top:{limit}:{offset}";
-        if (_cache.TryGetValue(key, out var cached) && DateTime.UtcNow - cached.At < CacheTtl)
-            return cached.Results;
+        if (TryGetCachedStations(key, out var cachedStations))
+            return cachedStations;
 
         try
         {
@@ -145,7 +197,7 @@ internal sealed class RadioBrowserClient : IDisposable
                 : $"{Base}/json/stations/topvote/{limit}";
             var results = await _http.GetFromJsonAsync<List<RadioStation>>(
                 url, ct).ConfigureAwait(false) ?? [];
-            _cache[key] = (DateTime.UtcNow, results);
+            StoreCachedStations(key, results);
             return results;
         }
         catch { return []; }

@@ -8,6 +8,7 @@ namespace RemotePlay;
 internal sealed class WebServerCallbacks
 {
     public required Action<string> Play { get; init; }
+    public Action<string, string> PlayNamed { get; init; } = (_, _) => { };
     public required Action Stop { get; init; }
     public required Action Pause { get; init; }
     public required Func<PlaybackStatus> GetStatus { get; init; }
@@ -46,12 +47,14 @@ internal sealed class WebServerCallbacks
     public required Action<double>        SetMusicBoost  { get; init; }
     public required Action<string?>       SetMusicNextTrack { get; init; }
     public required Action<int>           SetMusicReverbPreset { get; init; }
+    public required Action<double>        SetMusicReverbStrength { get; init; }
     public required Action<int>           SetMusicEqPreset     { get; init; }
     public required Action<int>           SetMusicVocalRemovalMode { get; init; }
 
     // ── Radio ─────────────────────────────────────────────────────────────────
     public required Func<string, string, string, int, int, Task<List<RadioStation>>> RadioSearch        { get; init; }
     public required Func<int, int, Task<List<RadioStation>>>                          RadioTopStations   { get; init; }
+    public Func<Task<int?>>                                                     RadioStationCount { get; init; } = () => Task.FromResult<int?>(null);
     public required Func<string, Task<List<string>>>                           RadioGetTags       { get; init; }
     public required Func<Task<List<(string Code, string Name)>>>                RadioGetCountries  { get; init; }
     public required Action<string, string>                                      RadioPlay          { get; init; }

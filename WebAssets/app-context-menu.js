@@ -192,10 +192,15 @@
         else if (typeof togglePinFolder === 'function') togglePinFolder(ctx.dir);
       } else if (action === 'search') {
         const decoded = ctx.isSearch ? (ctx.name || decodePath(ctx.dir)) : decodePath(ctx.dir);
-        const search = document.getElementById('search');
-        if (search) {
+        const targetId = currentMode === 'music' ? 'mcb-search' : 'vcb-search';
+        const search = document.getElementById(targetId);
+        if (search && (currentMode === 'music' || currentMode === 'video')) {
           search.value = decoded;
           search.dispatchEvent(new Event('input'));
+        } else if (currentMode === 'music' && typeof searchMusicLibrary === 'function') {
+          searchMusicLibrary(decoded);
+        } else if (typeof searchLibrary === 'function') {
+          searchLibrary(decoded);
         }
       } else if (action === 'copy') {
         let raw = ctx.path ? decodePath(ctx.path) : ctx.dir ? decodePath(ctx.dir) : ctx.name || '';

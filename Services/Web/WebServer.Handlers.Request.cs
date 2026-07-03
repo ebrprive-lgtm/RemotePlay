@@ -271,6 +271,28 @@ internal sealed partial class WebServer
                 HandlePlay(ctx);
                 break;
 
+            case "/api/live-tv/play":
+                await HandleLiveTvPlayAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/live-tv/catalog":
+                await HandleLiveTvCatalogAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/live-tv/reindex":
+                if (!req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+                {
+                    TrySendResponse(ctx, 405, "text/plain", "Method Not Allowed");
+                    break;
+                }
+
+                await HandleLiveTvReindexAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/live-tv/diagnostics":
+                HandleLiveTvDiagnostics(ctx);
+                break;
+
             case "/api/log":
                 HandleClientLog(ctx);
                 break;
@@ -629,6 +651,10 @@ internal sealed partial class WebServer
                 HandleMusicReverbPreset(ctx);
                 break;
 
+            case "/api/music/reverb-strength":
+                HandleMusicReverbStrength(ctx);
+                break;
+
             case "/api/music/vocal-removal":
                 HandleMusicVocalRemoval(ctx);
                 break;
@@ -659,10 +685,22 @@ internal sealed partial class WebServer
                 break;
 
             case "/api/radio/play":
+                if (!req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+                {
+                    TrySendResponse(ctx, 405, "text/plain", "Method Not Allowed");
+                    break;
+                }
+
                 HandleRadioPlay(ctx);
                 break;
 
             case "/api/radio/stop":
+                if (!req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+                {
+                    TrySendResponse(ctx, 405, "text/plain", "Method Not Allowed");
+                    break;
+                }
+
                 _callbacks.RadioStop();
                 Logger.Info("Playback", "Stopping Radio on Server");
                 TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
@@ -670,10 +708,22 @@ internal sealed partial class WebServer
                 break;
 
             case "/api/radio/volume":
+                if (!req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+                {
+                    TrySendResponse(ctx, 405, "text/plain", "Method Not Allowed");
+                    break;
+                }
+
                 HandleRadioVolume(ctx);
                 break;
 
             case "/api/radio/boost":
+                if (!req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+                {
+                    TrySendResponse(ctx, 405, "text/plain", "Method Not Allowed");
+                    break;
+                }
+
                 HandleRadioBoost(ctx);
                 break;
 
@@ -695,7 +745,13 @@ internal sealed partial class WebServer
                 break;
 
             case "/api/radio/favorite":
-                HandleRadioFavoriteToggle(ctx);
+                if (!req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+                {
+                    TrySendResponse(ctx, 405, "text/plain", "Method Not Allowed");
+                    break;
+                }
+
+                await HandleRadioFavoriteToggleAsync(ctx).ConfigureAwait(false);
                 break;
 
             case "/api/radio/notify-alive":

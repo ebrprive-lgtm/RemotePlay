@@ -294,7 +294,8 @@ async function radioStatusTick() {
         if (_radioIsPlaying && _radioCurrentUrl && !isPlayLocal()) {
           await fetch(
             '/api/radio/play?' +
-              new URLSearchParams({ url: _radioCurrentUrl, name: _radioCurrentName })
+              new URLSearchParams({ url: _radioCurrentUrl, name: _radioCurrentName }),
+            { method: 'POST' }
           );
           _radioRetryCount = 0;
         }

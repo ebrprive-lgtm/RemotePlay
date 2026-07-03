@@ -581,7 +581,9 @@ const _reverbPresetNames = ['Off', 'Studio', 'Small Room', 'Medium Room', 'Large
 let _lastReverbPreset = 0;       // video
 let _lastMusicReverbPreset = 0;  // music
 let _lastRadioReverbPreset = 0;  // radio
+let _lastMusicReverbStrength = 1;
 let _lastMusicVocalMode = 0;
+let _musicReverbStrengthDebounceHandle = 0;
 
 function _populateReverbSelect(id) {
   const sel = document.getElementById(id);
@@ -610,6 +612,50 @@ function _renderMusicReverbPreset(preset) {
   const sel = document.getElementById('music-reverb-select');
   if (sel && sel.value !== String(preset)) sel.value = String(preset);
   _updateMusicEffectsChips();
+}
+
+function _normalizeMusicReverbStrength(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 1;
+
+  return Math.max(0, Math.min(1, n));
+}
+
+function _renderMusicReverbStrength(value) {
+  const strength = _normalizeMusicReverbStrength(value);
+  _lastMusicReverbStrength = strength;
+
+  const slider = document.getElementById('music-reverb-strength');
+  if (slider && slider.value !== String(strength)) {
+    slider.value = String(strength);
+  }
+
+  const label = document.getElementById('music-reverb-strength-label');
+  if (label) {
+    label.textContent = Math.round(strength * 100) + '%';
+  }
+}
+
+async function _setMusicReverbStrengthImmediate(value) {
+  const strength = _normalizeMusicReverbStrength(value);
+  await api('/api/music/reverb-strength?value=' + encodeURIComponent(strength.toFixed(2)));
+  _renderMusicReverbStrength(strength);
+  _updateMusicEffectsChips();
+}
+
+function setMusicReverbStrength(value) {
+  const strength = _normalizeMusicReverbStrength(value);
+  _renderMusicReverbStrength(strength);
+  _updateMusicEffectsChips();
+
+  if (_musicReverbStrengthDebounceHandle) {
+    clearTimeout(_musicReverbStrengthDebounceHandle);
+  }
+
+  _musicReverbStrengthDebounceHandle = setTimeout(() => {
+    _musicReverbStrengthDebounceHandle = 0;
+    _setMusicReverbStrengthImmediate(strength).catch(() => {});
+  }, 120);
 }
 
 function _renderRadioReverbPreset(preset) {
@@ -694,9 +740,23 @@ const _eqPresetGains = [
 function _drawEqSparkline(canvasId, presetIndex) {
   const cv = document.getElementById(canvasId);
   if (!cv) return;
+
+  const rect = cv.getBoundingClientRect();
+  const cssWidth = Math.max(16, Math.round(rect.width || cv.clientWidth || cv.width));
+  const cssHeight = Math.max(16, Math.round(rect.height || cv.clientHeight || cv.height));
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const targetWidth = Math.max(1, Math.round(cssWidth * dpr));
+  const targetHeight = Math.max(1, Math.round(cssHeight * dpr));
+  if (cv.width !== targetWidth || cv.height !== targetHeight) {
+    cv.width = targetWidth;
+    cv.height = targetHeight;
+  }
+
   const ctx = cv.getContext('2d');
-  const w = cv.width, h = cv.height;
-  ctx.clearRect(0, 0, w, h);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const w = cssWidth, h = cssHeight;
   // Resolve CSS variable now (Canvas 2D does not support CSS custom properties in strokeStyle)
   const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--player-accent').trim() || '#e94560';
   if (presetIndex < 0 || presetIndex >= _eqPresetGains.length) {
@@ -765,14 +825,17 @@ function _updateMusicEffectsChips() {
 
   const eqLabel = _eqPresetLabel(_lastEqPreset);
   const roomLabel = _reverbPresetLabel(_lastMusicReverbPreset);
+  const roomStrength = Math.round(_lastMusicReverbStrength * 100);
   const vocalLabel = _vocalModeLabel(_lastMusicVocalMode);
 
   eqChip.textContent = 'EQ: ' + eqLabel;
-  roomChip.textContent = 'Room: ' + roomLabel;
+  roomChip.textContent = _lastMusicReverbPreset > 0
+    ? 'Room: ' + roomLabel + ' ' + roomStrength + '%'
+    : 'Room: Off';
   vocalChip.textContent = 'Vocal: ' + vocalLabel;
 
   eqChip.classList.toggle('inactive', _lastEqPreset < 0);
-  roomChip.classList.toggle('inactive', !_lastMusicReverbPreset);
+  roomChip.classList.toggle('inactive', !_lastMusicReverbPreset || _lastMusicReverbStrength <= 0.001);
   vocalChip.classList.toggle('inactive', _lastMusicVocalMode === 0);
 
   _updateMusicEffectsChipsVisibility();
@@ -782,6 +845,7 @@ async function resetMusicEffects() {
   haptic(8);
   await setEqPreset(-1);
   await setReverbPreset(0, 'music');
+  await _setMusicReverbStrengthImmediate(1);
   await setMusicVocalRemoval(0);
   _updateMusicEffectsChips();
 }
@@ -791,6 +855,7 @@ function saveMusicEffectsDefaults() {
     const defaults = {
       eqPreset: _lastEqPreset,
       reverbPreset: _lastMusicReverbPreset,
+      reverbStrength: _lastMusicReverbStrength,
       vocalMode: _lastMusicVocalMode
     };
 
@@ -810,6 +875,7 @@ async function applySavedMusicEffectsDefaults() {
 
     if (typeof saved.eqPreset === 'number') await setEqPreset(saved.eqPreset);
     if (typeof saved.reverbPreset === 'number') await setReverbPreset(saved.reverbPreset, 'music');
+    if (typeof saved.reverbStrength === 'number') await _setMusicReverbStrengthImmediate(saved.reverbStrength);
     if (typeof saved.vocalMode === 'number') await setMusicVocalRemoval(saved.vocalMode);
   } catch (_) {
     // ignore malformed local defaults
@@ -851,6 +917,7 @@ function _syncEqWrapVisibility() {
   if (radioReverbWrap) radioReverbWrap.style.display = radioPlaying ? '' : 'none';
   const musicReverbWrap = document.getElementById('music-reverb-select-wrap');
   if (musicReverbWrap) musicReverbWrap.style.display = musicPlaying ? '' : 'none';
+  if (musicPlaying) _renderMusicReverbStrength(_lastMusicReverbStrength);
   const musicVocalWrap = document.getElementById('music-vocal-remove-wrap');
   if (musicVocalWrap) musicVocalWrap.style.display = musicPlaying ? '' : 'none';
   // Sparklines must be redrawn after the canvas becomes visible
@@ -937,7 +1004,8 @@ async function browse(d, offset = 0, append = false, pushHistory = true, isLinke
   setStatus('Loading...');
   currentDir = d;
   console.log('[VIDEO] currentDir set to:', currentDir);
-  document.getElementById('search').value = '';
+  const videoSearch = document.getElementById('vcb-search');
+  if (videoSearch) videoSearch.value = '';
   if (!append) {
     clearPendingThumbnails();
     setBrowseLoading(true);
@@ -1016,11 +1084,16 @@ async function browse(d, offset = 0, append = false, pushHistory = true, isLinke
 function setBrowseLoading(on) {
   document.getElementById('browse-loading').classList.toggle('visible', on);
 }
-function setSearchBusy(on) {
-  const inp = document.getElementById('search');
-  const sp = document.getElementById('search-spinner');
+function _getDomainSearchInput(domain) {
+  if (domain === 'music') return document.getElementById('mcb-search');
+  if (domain === 'video') return document.getElementById('vcb-search');
+  return null;
+}
+
+function setSearchBusy(on, domain = currentMode) {
+  const inp = _getDomainSearchInput(domain);
+  if (!inp) return;
   inp.classList.toggle('searching', on);
-  sp.classList.toggle('visible', on);
 }
 
 // ── Search filter bar ─────────────────────────────────────────────────────
@@ -1106,30 +1179,46 @@ function _applySearchFilter() {
   }
   _updateSearchCountText(visible, _totalSearchResults);
 }
-function onSearch() {
-  const q = document.getElementById('search').value.toLowerCase().trim();
+function onDomainSearch(domain) {
+  if (domain !== 'music' && domain !== 'video') return;
+
+  const inp = _getDomainSearchInput(domain);
+  const q = (inp?.value || '').toLowerCase().trim();
   clearTimeout(searchTimer);
-  if (currentMode === 'music') {
+
+  if (domain === 'music') {
     if (!q) {
       _hideSearchFilterBar();
+      setSearchBusy(false, 'music');
       browseMusic(null);
       return;
     }
-    setSearchBusy(true);
+
+    setSearchBusy(true, 'music');
     searchTimer = setTimeout(() => searchMusicLibrary(q), 300);
     return;
   }
-  if (currentMode === 'radio') return;
+
   if (!q) {
-    setSearchBusy(false);
+    setSearchBusy(false, 'video');
     _hideSearchFilterBar();
-    if (pendingSearchAbort) { pendingSearchAbort.abort(); pendingSearchAbort = null; }
+    if (pendingSearchAbort) {
+      pendingSearchAbort.abort();
+      pendingSearchAbort = null;
+    }
     browse(null);
     return;
   }
+
   clearPendingThumbnails();
-  setSearchBusy(true);
+  setSearchBusy(true, 'video');
   searchTimer = setTimeout(() => searchLibrary(q), 300);
+}
+
+function onSearch() {
+  if (currentMode === 'music' || currentMode === 'video') {
+    onDomainSearch(currentMode);
+  }
 }
 function clearPendingThumbnails() {
   if (pendingSearchAbort) {

@@ -23,6 +23,7 @@ internal sealed partial class WebServer
     private static readonly string LibraryIndexCacheFile = AppPaths.LibraryIndexCacheFile;
     private static readonly string MusicIndexCacheFile   = AppPaths.MusicIndexCacheFile;
     private static readonly string M3uIndexCacheFile      = AppPaths.M3uIndexCacheFile;
+    private static readonly string LiveTvCatalogCacheFile = AppPaths.LiveTvCatalogCacheFile;
     private static readonly string FavoritesFile = AppPaths.FavoritesFile;
 
     private static readonly HashSet<string> VideoExtensions =
@@ -36,6 +37,7 @@ internal sealed partial class WebServer
         new() { PropertyNameCaseInsensitive = true };
     private static readonly JsonSerializerOptions IndentedOptions =
         new() { WriteIndented = true };
+    private static readonly System.Net.Http.HttpClient _liveTvCatalogHttpClient = CreateLiveTvCatalogHttpClient();
 
     private static readonly Lazy<string> _cachedHtmlPage =
         new(() => LoadWebAsset("index.html"));
@@ -49,6 +51,7 @@ internal sealed partial class WebServer
         "app-playback.js",
         "app-context-menu.js",
         "app-library.js",
+        "app-live-tv.js",
         "app-radio.js",
         "app-globe.js",
         "app-radio-status.js",
@@ -94,6 +97,10 @@ internal sealed partial class WebServer
     private readonly object _libraryIndexCacheSaveLock = new();
     private readonly object _musicIndexCacheSaveLock = new();
     private readonly object _m3uIndexCacheSaveLock   = new();
+    private readonly object _liveTvCatalogGate = new();
+    private readonly object _liveTvCatalogCacheSaveLock = new();
+    private readonly object _liveTvCatalogDiagGate = new();
+    private readonly object _liveTvCatalogRefreshGate = new();
     // Lazily populated by background probes so the browse path stays fast.
     private readonly ConcurrentDictionary<string, double> _videoDurationCache = new(StringComparer.OrdinalIgnoreCase);
     private FileSystemWatcher? _libraryWatcher;
@@ -114,6 +121,17 @@ internal sealed partial class WebServer
     private bool _isMusicIndexing;
     private bool _isMusicEnriching;
     private bool _isM3uIndexing;    // true while the lightweight M3U-only background scan is running
+    private static readonly TimeSpan LiveTvCatalogCacheTtl = TimeSpan.FromDays(7);
+    private static readonly TimeSpan LiveTvCatalogRefreshTimeout = TimeSpan.FromSeconds(45);
+    private DateTimeOffset? _liveTvCatalogSavedAtUtc;
+    private LiveTvCatalogEntry[] _liveTvCatalog = [];
+    private DateTimeOffset? _liveTvCatalogLastAttemptUtc;
+    private DateTimeOffset? _liveTvCatalogLastSuccessUtc;
+    private int _liveTvCatalogLastChannelsStatusCode;
+    private int _liveTvCatalogLastStreamsStatusCode;
+    private long _liveTvCatalogLastFetchDurationMs;
+    private string _liveTvCatalogLastError = string.Empty;
+    private Task<(LiveTvCatalogEntry[] channels, DateTimeOffset savedAtUtc)>? _liveTvCatalogRefreshTask;
     // In-memory M3U index: keyed by absolute M3U file path. Rebuilt alongside _musicIndex.
     private Dictionary<string, M3uEntry> _m3uIndex = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, int> _m3uTrackYearHints = new(StringComparer.OrdinalIgnoreCase);
@@ -171,6 +189,7 @@ internal sealed partial class WebServer
         _activeScheme = config.Scheme;
         _appUpdater = appUpdater;
         LoadFavorites();
+        LoadLiveTvCatalogCache();
         _libraryIndexTimer = new Timer(_ => RefreshLibraryIndexIfIdle(), null,
             TimeSpan.FromHours(24), TimeSpan.FromHours(24));
         _libraryWatcherDebounceTimer = new Timer(_ => RunDelayedLibraryRescan(), null,
@@ -822,6 +841,459 @@ internal sealed partial class WebServer
     private static HashSet<string> BuildNameSet(IEnumerable<string>? values, IEnumerable<string> fallback) =>
         WebServerConfigHelpers.BuildNameSet(values, fallback);
 
+    private static System.Net.Http.HttpClient CreateLiveTvCatalogHttpClient()
+    {
+        var client = new System.Net.Http.HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(35)
+        };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("RemotePlay/LiveTV");
+        client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+        return client;
+    }
+
+    private static string GetLiveTvCountryName(string countryCode)
+    {
+        if (string.IsNullOrWhiteSpace(countryCode))
+            return string.Empty;
+
+        try
+        {
+            return new RegionInfo(countryCode.ToUpperInvariant()).EnglishName;
+        }
+        catch
+        {
+            return countryCode.ToUpperInvariant();
+        }
+    }
+
+    private static Dictionary<string, string> BuildGuideLanguageMap(JsonElement guidesRoot)
+    {
+        var counts = new Dictionary<string, Dictionary<string, int>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var g in guidesRoot.EnumerateArray())
+        {
+            if (!g.TryGetProperty("channel", out var chEl) || chEl.ValueKind != JsonValueKind.String)
+                continue;
+            var channelId = (chEl.GetString() ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(channelId))
+                continue;
+
+            if (!g.TryGetProperty("lang", out var langEl) || langEl.ValueKind != JsonValueKind.String)
+                continue;
+            var lang = (langEl.GetString() ?? string.Empty).Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(lang))
+                continue;
+
+            if (!counts.TryGetValue(channelId, out var map))
+            {
+                map = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                counts[channelId] = map;
+            }
+
+            map[lang] = map.TryGetValue(lang, out var c) ? c + 1 : 1;
+        }
+
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in counts)
+        {
+            var best = kv.Value.OrderByDescending(x => x.Value).ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(best.Key))
+                result[kv.Key] = best.Key;
+        }
+
+        return result;
+    }
+
+    private static int GetLiveTvStreamScore(string url, bool hasChannelRef)
+    {
+        var score = hasChannelRef ? 2 : 0;
+        var u = (url ?? string.Empty).ToLowerInvariant();
+        if (u.Contains(".m3u8", StringComparison.Ordinal))
+            score += 3;
+        if (u.Contains("master", StringComparison.Ordinal))
+            score += 2;
+        if (u.Contains("720", StringComparison.Ordinal) || u.Contains("1080", StringComparison.Ordinal))
+            score += 1;
+        return score;
+    }
+
+    private static string GetLiveTvCatalogDedupKey(string name, string countryCode, string sourceHost)
+    {
+        var normalizedName = (name ?? string.Empty).Trim();
+        var normalizedCountryCode = (countryCode ?? string.Empty).Trim().ToUpperInvariant();
+        if (normalizedCountryCode == "UK")
+            normalizedCountryCode = "GB";
+
+        var normalizedSourceHost = (sourceHost ?? string.Empty).Trim().ToLowerInvariant();
+        return $"{normalizedName}|{normalizedCountryCode}|{normalizedSourceHost}";
+    }
+
+    private static LiveTvCatalogEntry[] BuildLiveTvCatalog(JsonElement channelsRoot, JsonElement streamsRoot, Dictionary<string, string>? guideLangByChannel)
+    {
+        var channelsById = new Dictionary<string, (string Name, string CountryCode, string Category, string Language)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in channelsRoot.EnumerateArray())
+        {
+            if (!c.TryGetProperty("id", out var idEl) || idEl.ValueKind != JsonValueKind.String)
+                continue;
+            var id = (idEl.GetString() ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(id))
+                continue;
+
+            var name = c.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String
+                ? (nameEl.GetString() ?? string.Empty).Trim()
+                : string.Empty;
+            if (string.IsNullOrWhiteSpace(name))
+                name = id;
+
+            var cc = c.TryGetProperty("country", out var ccEl) && ccEl.ValueKind == JsonValueKind.String
+                ? (ccEl.GetString() ?? string.Empty).Trim().ToUpperInvariant()
+                : string.Empty;
+            if (cc == "UK")
+                cc = "GB";
+
+            string category = string.Empty;
+            if (c.TryGetProperty("categories", out var catsEl) && catsEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in catsEl.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.String)
+                        continue;
+
+                    var candidate = (item.GetString() ?? string.Empty).Trim();
+                    if (!string.IsNullOrWhiteSpace(candidate))
+                    {
+                        category = candidate;
+                        break;
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(category)
+                && c.TryGetProperty("category", out var catEl)
+                && catEl.ValueKind == JsonValueKind.String)
+            {
+                category = (catEl.GetString() ?? string.Empty).Trim();
+            }
+            var language = string.Empty;
+            if (guideLangByChannel is not null && guideLangByChannel.TryGetValue(id, out var guideLang))
+                language = guideLang;
+
+            channelsById[id] = (name, cc, category, language);
+        }
+
+        var bestBySignature = new Dictionary<string, (LiveTvCatalogEntry Entry, int Score)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in streamsRoot.EnumerateArray())
+        {
+            if (!s.TryGetProperty("url", out var urlEl) || urlEl.ValueKind != JsonValueKind.String)
+                continue;
+            var url = (urlEl.GetString() ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(url))
+                continue;
+
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                continue;
+            if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+                continue;
+
+            var channelId = s.TryGetProperty("channel", out var chEl) && chEl.ValueKind == JsonValueKind.String
+                ? (chEl.GetString() ?? string.Empty).Trim()
+                : string.Empty;
+
+            string name;
+            string countryCode;
+            string category;
+            string language;
+            if (!string.IsNullOrWhiteSpace(channelId) && channelsById.TryGetValue(channelId, out var meta))
+            {
+                name = meta.Name;
+                countryCode = meta.CountryCode;
+                category = meta.Category;
+                language = meta.Language;
+            }
+            else
+            {
+                name = s.TryGetProperty("name", out var snEl) && snEl.ValueKind == JsonValueKind.String
+                    ? (snEl.GetString() ?? string.Empty).Trim()
+                    : string.Empty;
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+                countryCode = string.Empty;
+                category = string.Empty;
+                language = string.Empty;
+            }
+
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            var entry = new LiveTvCatalogEntry
+            {
+                Name = name,
+                CountryCode = countryCode,
+                CountryName = GetLiveTvCountryName(countryCode),
+                Category = category,
+                Language = language,
+                SourceHost = uri.Host,
+                Url = uri.ToString(),
+            };
+            var score = GetLiveTvStreamScore(entry.Url, !string.IsNullOrWhiteSpace(channelId));
+            var dedupeKey = GetLiveTvCatalogDedupKey(entry.Name, entry.CountryCode, entry.SourceHost);
+
+            if (!bestBySignature.TryGetValue(dedupeKey, out var current) || score > current.Score)
+                bestBySignature[dedupeKey] = (entry, score);
+        }
+
+        return bestBySignature.Values
+            .Select(v => v.Entry)
+            .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private void LoadLiveTvCatalogCache()
+    {
+        try
+        {
+            if (!File.Exists(LiveTvCatalogCacheFile))
+                return;
+
+            var json = File.ReadAllText(LiveTvCatalogCacheFile);
+            var cache = JsonSerializer.Deserialize<LiveTvCatalogCache>(json, CaseInsensitiveOptions);
+            if (cache is null)
+                return;
+
+            lock (_liveTvCatalogGate)
+            {
+                _liveTvCatalog = cache.Channels ?? [];
+                _liveTvCatalogSavedAtUtc = cache.SavedAtUtc;
+            }
+
+            Logger.Info($"Loaded Live TV catalog cache: {cache.Channels.Length} channels");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to load Live TV catalog cache", ex);
+        }
+    }
+
+    private void SaveLiveTvCatalogCache()
+    {
+        if (!Monitor.TryEnter(_liveTvCatalogCacheSaveLock))
+            return;
+
+        try
+        {
+            LiveTvCatalogEntry[] snapshot;
+            DateTimeOffset savedAt;
+            lock (_liveTvCatalogGate)
+            {
+                snapshot = _liveTvCatalog;
+                savedAt = _liveTvCatalogSavedAtUtc ?? DateTimeOffset.UtcNow;
+            }
+
+            var cache = new LiveTvCatalogCache
+            {
+                SavedAtUtc = savedAt,
+                Channels = snapshot,
+            };
+            var json = JsonSerializer.Serialize(cache, IndentedOptions);
+            WriteAllTextAtomic(LiveTvCatalogCacheFile, json);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to save Live TV catalog cache", ex);
+        }
+        finally
+        {
+            Monitor.Exit(_liveTvCatalogCacheSaveLock);
+        }
+    }
+
+    private bool TryGetLiveTvCatalogFromCache(out LiveTvCatalogEntry[] channels, out DateTimeOffset savedAtUtc)
+    {
+        lock (_liveTvCatalogGate)
+        {
+            channels = _liveTvCatalog;
+            savedAtUtc = _liveTvCatalogSavedAtUtc ?? DateTimeOffset.MinValue;
+            if (channels.Length == 0 || savedAtUtc == DateTimeOffset.MinValue)
+                return false;
+
+            // Older cache schema had empty category/language for nearly all channels.
+            // Force one refresh attempt so command-bar filters can populate properly.
+            var hasCategory = channels.Any(c => !string.IsNullOrWhiteSpace(c.Category));
+            var hasLanguage = channels.Any(c => !string.IsNullOrWhiteSpace(c.Language));
+            if (!hasCategory && !hasLanguage)
+                return false;
+
+            return DateTimeOffset.UtcNow - savedAtUtc < LiveTvCatalogCacheTtl;
+        }
+    }
+
+    private async Task<(LiveTvCatalogEntry[] channels, DateTimeOffset savedAtUtc)> FetchAndCacheLiveTvCatalogAsync(CancellationToken ct)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var attemptUtc = DateTimeOffset.UtcNow;
+        var channelsStatusCode = 0;
+        var streamsStatusCode = 0;
+        var lastError = string.Empty;
+        try
+        {
+            using var channelsResp = await _liveTvCatalogHttpClient.GetAsync("https://iptv-org.github.io/api/channels.json", ct).ConfigureAwait(false);
+            channelsStatusCode = (int)channelsResp.StatusCode;
+            channelsResp.EnsureSuccessStatusCode();
+
+            using var streamsResp = await _liveTvCatalogHttpClient.GetAsync("https://iptv-org.github.io/api/streams.json", ct).ConfigureAwait(false);
+            streamsStatusCode = (int)streamsResp.StatusCode;
+            streamsResp.EnsureSuccessStatusCode();
+
+            JsonDocument? guidesDoc = null;
+            Dictionary<string, string>? guideLangByChannel = null;
+            try
+            {
+                using var guidesResp = await _liveTvCatalogHttpClient.GetAsync("https://iptv-org.github.io/api/guides.json", ct).ConfigureAwait(false);
+                if (guidesResp.IsSuccessStatusCode)
+                {
+                    await using var guidesStream = await guidesResp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                    guidesDoc = await JsonDocument.ParseAsync(guidesStream, cancellationToken: ct).ConfigureAwait(false);
+                    if (guidesDoc.RootElement.ValueKind == JsonValueKind.Array)
+                        guideLangByChannel = BuildGuideLanguageMap(guidesDoc.RootElement);
+                }
+            }
+            catch
+            {
+                // Guides are best-effort; catalog should still load without them.
+            }
+
+            await using var channelsStream = await channelsResp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            await using var streamsStream = await streamsResp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            using var channelsDoc = await JsonDocument.ParseAsync(channelsStream, cancellationToken: ct).ConfigureAwait(false);
+            using var streamsDoc = await JsonDocument.ParseAsync(streamsStream, cancellationToken: ct).ConfigureAwait(false);
+
+            if (channelsDoc.RootElement.ValueKind != JsonValueKind.Array || streamsDoc.RootElement.ValueKind != JsonValueKind.Array)
+                throw new InvalidOperationException("Live TV source payload is not in expected array format.");
+
+            var merged = BuildLiveTvCatalog(channelsDoc.RootElement, streamsDoc.RootElement, guideLangByChannel);
+            guidesDoc?.Dispose();
+            var savedAt = DateTimeOffset.UtcNow;
+            lock (_liveTvCatalogGate)
+            {
+                _liveTvCatalog = merged;
+                _liveTvCatalogSavedAtUtc = savedAt;
+            }
+            SaveLiveTvCatalogCache();
+
+            lock (_liveTvCatalogDiagGate)
+            {
+                _liveTvCatalogLastSuccessUtc = savedAt;
+                _liveTvCatalogLastError = string.Empty;
+            }
+
+            return (merged, savedAt);
+        }
+        catch (Exception ex)
+        {
+            lastError = ex.Message;
+            throw;
+        }
+        finally
+        {
+            sw.Stop();
+            lock (_liveTvCatalogDiagGate)
+            {
+                _liveTvCatalogLastAttemptUtc = attemptUtc;
+                _liveTvCatalogLastFetchDurationMs = sw.ElapsedMilliseconds;
+                _liveTvCatalogLastChannelsStatusCode = channelsStatusCode;
+                _liveTvCatalogLastStreamsStatusCode = streamsStatusCode;
+                if (!string.IsNullOrWhiteSpace(lastError))
+                    _liveTvCatalogLastError = lastError;
+            }
+        }
+    }
+
+    private object GetLiveTvCatalogDiagnosticsSnapshot()
+    {
+        DateTimeOffset? savedAtUtc;
+        var channelCount = 0;
+        lock (_liveTvCatalogGate)
+        {
+            savedAtUtc = _liveTvCatalogSavedAtUtc;
+            channelCount = _liveTvCatalog.Length;
+        }
+
+        lock (_liveTvCatalogDiagGate)
+        {
+            return new
+            {
+                lastAttemptUtc = _liveTvCatalogLastAttemptUtc,
+                lastSuccessUtc = _liveTvCatalogLastSuccessUtc,
+                lastSavedAtUtc = savedAtUtc,
+                channelCount,
+                channelsStatusCode = _liveTvCatalogLastChannelsStatusCode,
+                streamsStatusCode = _liveTvCatalogLastStreamsStatusCode,
+                fetchDurationMs = _liveTvCatalogLastFetchDurationMs,
+                lastError = _liveTvCatalogLastError,
+            };
+        }
+    }
+
+    private async Task<(LiveTvCatalogEntry[] channels, DateTimeOffset savedAtUtc)> GetLiveTvCatalogAsync(bool forceRefresh, CancellationToken ct)
+    {
+        if (!forceRefresh)
+        {
+            if (TryGetLiveTvCatalogFromCache(out var cached, out var savedAtUtc))
+                return (cached, savedAtUtc);
+
+            // First-request safety: if startup background load has not populated memory yet,
+            // load from disk synchronously before attempting remote refresh.
+            LoadLiveTvCatalogCache();
+            if (TryGetLiveTvCatalogFromCache(out cached, out savedAtUtc))
+                return (cached, savedAtUtc);
+        }
+
+        Task<(LiveTvCatalogEntry[] channels, DateTimeOffset savedAtUtc)> refreshTask;
+        lock (_liveTvCatalogRefreshGate)
+        {
+            if (_liveTvCatalogRefreshTask is null || _liveTvCatalogRefreshTask.IsCompleted)
+            {
+                _liveTvCatalogRefreshTask = FetchLiveTvCatalogSingleFlightAsync();
+            }
+
+            refreshTask = _liveTvCatalogRefreshTask;
+        }
+
+        try
+        {
+            var refreshed = await refreshTask.WaitAsync(ct).ConfigureAwait(false);
+            Logger.Info($"Live TV catalog refreshed: {refreshed.channels.Length} channels");
+            return refreshed;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to refresh Live TV catalog", ex);
+
+            // If refresh fails, retry loading persisted disk cache in case memory cache
+            // was not yet hydrated during startup race conditions.
+            LoadLiveTvCatalogCache();
+
+            lock (_liveTvCatalogGate)
+            {
+                if (_liveTvCatalog.Length > 0)
+                    return (_liveTvCatalog, _liveTvCatalogSavedAtUtc ?? DateTimeOffset.UtcNow);
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<(LiveTvCatalogEntry[] channels, DateTimeOffset savedAtUtc)> FetchLiveTvCatalogSingleFlightAsync()
+    {
+        using var refreshCts = CancellationTokenSource.CreateLinkedTokenSource(_listenerCts.Token);
+        refreshCts.CancelAfter(LiveTvCatalogRefreshTimeout);
+        return await FetchAndCacheLiveTvCatalogAsync(refreshCts.Token).ConfigureAwait(false);
+    }
+
     /// <summary>
     /// Returns <c>true</c> when <paramref name="clientIp"/> has exceeded the configured
     /// request quota for the current sliding window. Always returns <c>false</c> when
@@ -829,6 +1301,9 @@ internal sealed partial class WebServer
     /// </summary>
     private static bool IsLocalAddress(string clientIp)
     {
+        if (string.Equals(clientIp, "localhost", StringComparison.OrdinalIgnoreCase))
+            return true;
+
         if (!IPAddress.TryParse(clientIp, out var addr))
             return false;
         if (IPAddress.IsLoopback(addr))
@@ -836,7 +1311,37 @@ internal sealed partial class WebServer
         var bytes = addr.MapToIPv4().GetAddressBytes();
         return bytes[0] == 10
             || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
-            || (bytes[0] == 192 && bytes[1] == 168);
+            || (bytes[0] == 192 && bytes[1] == 168)
+            || (bytes[0] == 169 && bytes[1] == 254);
+    }
+
+    private static bool IsPrivateOrLoopbackHost(string host)
+    {
+        var normalizedHost = (host ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedHost))
+            return true;
+
+        if (string.Equals(normalizedHost, "localhost", StringComparison.OrdinalIgnoreCase)
+            || normalizedHost.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!IPAddress.TryParse(normalizedHost, out var address))
+            return false;
+
+        if (IPAddress.IsLoopback(address))
+            return true;
+
+        if (address.IsIPv6LinkLocal || address.IsIPv6SiteLocal)
+            return true;
+
+        var mappedAddress = address.MapToIPv4();
+        var bytes = mappedAddress.GetAddressBytes();
+        return bytes[0] == 10
+            || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+            || (bytes[0] == 192 && bytes[1] == 168)
+            || (bytes[0] == 169 && bytes[1] == 254);
     }
 
     private bool IsRateLimited(string clientIp)
@@ -877,6 +1382,7 @@ internal sealed partial class WebServer
             StartLibraryIndexRefresh(force: false);
             LoadMusicIndexCache();
             LoadM3uIndexCache();
+            LoadLiveTvCatalogCache();
             // If no cache exists yet (first run), do a full scan to populate the index.
             // Otherwise, treat the loaded cache as authoritative until the user triggers /api/music/rescan.
             // Either way, always run a lightweight M3U-only scan so _m3uIndex is populated

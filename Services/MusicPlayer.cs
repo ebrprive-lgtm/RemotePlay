@@ -26,8 +26,31 @@ internal sealed class MusicPlayer : IDisposable
     private EqualizerSampleProvider? _eq;
     private VocalRemovalSampleProvider? _vocalRemoval;
     private int _reverbPreset = 0;
+    private double _reverbStrength = 1.0;
     private int _eqPreset = -1;
     private int _vocalMode;
+
+    private static bool IsOpusOggFile(string filePath)
+    {
+        try
+        {
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (fs.Length < 64)
+                return false;
+
+            var buffer = new byte[64];
+            var read = fs.Read(buffer, 0, buffer.Length);
+            if (read <= 32)
+                return false;
+
+            return buffer.AsSpan(0, 4).SequenceEqual("OggS"u8)
+                && buffer.AsSpan(28, read - 28).IndexOf("OpusHead"u8) >= 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 
     /// <summary>Fired (outside the lock) when the player auto-advances to the next track.</summary>
     public event Action<string>? TrackAdvanced;
@@ -72,7 +95,8 @@ internal sealed class MusicPlayer : IDisposable
             {
                 var ext = Path.GetExtension(filePath);
                 IWaveProvider provider;
-                if (ext.Equals(".opus", StringComparison.OrdinalIgnoreCase))
+                if (ext.Equals(".opus", StringComparison.OrdinalIgnoreCase)
+                    || (ext.Equals(".ogg", StringComparison.OrdinalIgnoreCase) && IsOpusOggFile(filePath)))
                 {
                     var opusReader = new OpusFileReader(filePath);
                     _reader = opusReader;
@@ -105,6 +129,7 @@ internal sealed class MusicPlayer : IDisposable
                 _eq.ApplyPreset(_eqPreset);
                 _reverb = new ReverbSampleProvider(_eq);
                 _reverb.ApplyPreset(_reverbPreset);
+                _reverb.SetStrength(_reverbStrength);
                 _vocalRemoval = new VocalRemovalSampleProvider(_reverb) { Mode = (VocalFilterMode)Math.Clamp(_vocalMode, 0, 3) };
                 _output.Init(_vocalRemoval);
                 _output.PlaybackStopped += OnPlaybackStopped;
@@ -149,7 +174,7 @@ internal sealed class MusicPlayer : IDisposable
                 displayArtist = Path.GetFileName(Path.GetDirectoryName(dir)) ?? string.Empty;
             }
             return new MusicStatus(_isPlaying && !_isPaused, _isPaused, _currentPath,
-                displayTitle, displayArtist, displayAlbum, pos, dur, _lastError, _eqPreset, _reverbPreset, _vocalMode != 0, _vocalMode);
+                displayTitle, displayArtist, displayAlbum, pos, dur, _lastError, _eqPreset, _reverbPreset, _reverbStrength, _vocalMode != 0, _vocalMode);
         }
     }
 
@@ -179,6 +204,16 @@ internal sealed class MusicPlayer : IDisposable
         {
             _reverbPreset = Math.Clamp(preset, 0, ReverbSampleProvider.PresetNames.Length - 1);
             _reverb?.ApplyPreset(_reverbPreset);
+            _reverb?.SetStrength(_reverbStrength);
+        }
+    }
+
+    public void SetReverbStrength(double strength)
+    {
+        lock (_lock)
+        {
+            _reverbStrength = Math.Clamp(strength, 0, 1);
+            _reverb?.SetStrength(_reverbStrength);
         }
     }
 
@@ -269,4 +304,4 @@ internal sealed class MusicPlayer : IDisposable
     public void Dispose() { lock (_lock) { DisposePlayback(); } }
 }
 
-internal sealed record MusicStatus(bool IsPlaying, bool IsPaused, string CurrentPath, string Title, string Artist, string Album, double Position, double Duration, string LastError, int EqPreset, int ReverbPreset, bool VocalRemovalEnabled, int VocalMode = 0);
+internal sealed record MusicStatus(bool IsPlaying, bool IsPaused, string CurrentPath, string Title, string Artist, string Album, double Position, double Duration, string LastError, int EqPreset, int ReverbPreset, double ReverbStrength, bool VocalRemovalEnabled, int VocalMode = 0);

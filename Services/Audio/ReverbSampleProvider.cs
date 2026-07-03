@@ -41,6 +41,8 @@ internal sealed class ReverbSampleProvider : ISampleProvider
     private float _width;
     private float _damping;
     private float _cross;
+    private float _strength = 1f;
+    private float _presetWet;
     private float _filterL;
     private float _filterR;
 
@@ -67,7 +69,8 @@ internal sealed class ReverbSampleProvider : ISampleProvider
     public void ApplyPreset(int index)
     {
         RoomPreset preset = Presets[Math.Clamp(index, 0, Presets.Length - 1)];
-        _wet = preset.Wet;
+        _presetWet = preset.Wet;
+        _wet = _presetWet * _strength;
         _feedback = preset.Feedback;
         _width = preset.Width;
         _damping = preset.Damping;
@@ -78,6 +81,13 @@ internal sealed class ReverbSampleProvider : ISampleProvider
         _tap2 = MsToSamples(79f + 110f * room);
         _tap3 = MsToSamples(143f + 210f * room);
         _tap4 = MsToSamples(221f + 430f * room);
+    }
+
+    /// <summary>Sets wet blend strength in range [0..1], preserving the selected preset shape.</summary>
+    public void SetStrength(double strength)
+    {
+        _strength = (float)Math.Clamp(strength, 0d, 1d);
+        _wet = _presetWet * _strength;
     }
 
     public int Read(float[] buffer, int offset, int count)

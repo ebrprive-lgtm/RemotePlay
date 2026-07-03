@@ -677,7 +677,10 @@ public partial class MainWindow
 
             // Get the text with play/pause indicator
             var icon = _isPaused ? "⏸" : "🎬";
-            var text = icon + "  " + Path.GetFileNameWithoutExtension(_currentFilePath ?? "");
+            var displayName = string.IsNullOrWhiteSpace(_currentPlaybackDisplayName)
+                ? Path.GetFileNameWithoutExtension(_currentFilePath ?? "")
+                : _currentPlaybackDisplayName;
+            var text = icon + "  " + displayName;
             _videoOverlay.UpdatePosition(this);
             _videoOverlay.ShowText(text);
         }
@@ -1130,7 +1133,16 @@ public partial class MainWindow
 
         return new WebServer(config, new WebServerCallbacks
         {
-            Play = PlayMovie,
+            Play = path =>
+            {
+                _currentPlaybackDisplayName = null;
+                PlayMovie(path);
+            },
+            PlayNamed = (path, displayName) =>
+            {
+                _currentPlaybackDisplayName = string.IsNullOrWhiteSpace(displayName) ? null : displayName.Trim();
+                PlayMovie(path);
+            },
             Stop = StopMovie,
             Pause = TogglePause,
             GetStatus = GetPlaybackStatus,
@@ -1173,11 +1185,13 @@ public partial class MainWindow
             SetMusicBoost  = _musicPlayer.SetBoost,
             SetMusicNextTrack = _musicPlayer.SetNextTrack,
             SetMusicReverbPreset = _musicPlayer.SetReverbPreset,
+            SetMusicReverbStrength = _musicPlayer.SetReverbStrength,
             SetMusicEqPreset     = _musicPlayer.SetEqPreset,
             SetMusicVocalRemovalMode = _musicPlayer.SetVocalMode,
             // Radio � backed by RadioPlayer + RadioBrowserClient
             RadioSearch         = (q, c, t, l, o) => _radioBrowser.SearchAsync(q, c, t, l, o),
             RadioTopStations    = (l, o) => _radioBrowser.TopStationsAsync(l, o),
+            RadioStationCount   = () => _radioBrowser.GetStationCountAsync(),
             RadioGetTags        = (cc) => _radioBrowser.GetTagsAsync(cc),
             RadioGetCountries   = () => _radioBrowser.GetCountriesAsync(),
             RadioPlay           = _radioPlayer.Play,
@@ -1592,9 +1606,15 @@ public partial class MainWindow
 
     private static string? FindSubtitlePath(string filePath)
     {
+        if (Uri.TryCreate(filePath, UriKind.Absolute, out var mediaUri)
+            && (mediaUri.Scheme == Uri.UriSchemeHttp || mediaUri.Scheme == Uri.UriSchemeHttps))
+            return null;
+
         var directory = Path.GetDirectoryName(filePath);
         var fileName = Path.GetFileNameWithoutExtension(filePath);
         if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName))
+            return null;
+        if (!Path.IsPathFullyQualified(directory) || !Directory.Exists(directory))
             return null;
 
         // Prefer exact name match (e.g. Movie.srt), then any file with the same stem (e.g. Movie.en.srt).

@@ -27,6 +27,15 @@ let _musicLastSelectedIdx = -1;
 // ── Video multi-select state ──────────────────────────────────────────────
 let _videoSelected = new Set(); // selected video paths
 
+function _countWord(n, singular, plural) {
+  return n === 1 ? `1 ${singular}` : `${n} ${plural}`;
+}
+
+function _countWordNoZero(n, singular, plural) {
+  if (n <= 0) return `no ${plural}`;
+  return _countWord(n, singular, plural);
+}
+
 function _videoSelectionToggle(path) {
   if (_videoSelected.has(path)) _videoSelected.delete(path);
   else _videoSelected.add(path);
@@ -461,21 +470,22 @@ function updateMusicBar(s) {
   const albumEl = document.getElementById('music-bar-album');
   if (albumEl) albumEl.textContent = s.album || '';
 
-  // Genre · year muted line
+  // Genre muted line
   const gyEl = document.getElementById('music-bar-genreyear');
   if (gyEl) {
-    const parts = [s.genre, s.year].filter(Boolean);
-    gyEl.textContent = parts.join(' · ');
-    gyEl.style.display = parts.length ? '' : 'none';
+    gyEl.textContent = s.genre || '';
+    gyEl.style.display = s.genre ? '' : 'none';
   }
 
-  // Format + duration badges
+  // Format + length + year badges
   const badgeEl = document.getElementById('music-bar-badge');
   if (badgeEl) {
     const fmt = s.ext ? s.ext.toUpperCase() : '';
     const dur = s.durationSec != null && s.durationSec > 0 ? fmtSec(s.durationSec) : '';
+    const year = s.year ? String(s.year) : '';
     badgeEl.innerHTML = (fmt ? `<span class="music-bar-fmt-badge">${fmt}</span>` : '')
-      + (dur ? `<span class="music-bar-dur">${dur}</span>` : '');
+      + (dur ? `<span class="music-bar-dur">Length: ${dur}</span>` : '')
+      + (year ? `<span class="music-bar-year">Year: ${esc(year)}</span>` : '');
   }
 
   // Track position (#N of M)
@@ -685,6 +695,8 @@ function updateMusicBar(s) {
   }
   if (typeof _renderMusicReverbPreset === 'function')
     _renderMusicReverbPreset(s.reverbPreset ?? s.ReverbPreset);
+  if (typeof _renderMusicReverbStrength === 'function')
+    _renderMusicReverbStrength(s.reverbStrength ?? s.ReverbStrength ?? 1);
   if (typeof _renderMusicVocalRemoval === 'function')
     _renderMusicVocalRemoval(s.vocalMode ?? s.VocalMode ?? (s.vocalRemoval ?? s.VocalRemoval ?? false));
 }
@@ -1899,24 +1911,23 @@ function switchMode(mode, skipInitialBrowse = false) {
   currentMode = mode;
   console.log('[BOOTSTRAP] currentMode updated to:', currentMode);
   localStorage.setItem('remotePlayMode', mode);
+  if (typeof _syncUiRoute === 'function') _syncUiRoute(mode);
   // Remove music dock when leaving music mode
   if (mode !== 'music') document.body.classList.remove('music-player-docked');
   if (mode !== 'radio' && !window._radioIsPlaying) document.body.classList.remove('radio-player-docked');
   document.body.classList.toggle('radio-mode', mode === 'radio');
-  ['video', 'music', 'radio'].forEach((m) => {
+  ['video', 'music', 'radio', 'live-tv'].forEach((m) => {
     const tab = document.getElementById('tab-' + m);
     const browser = document.getElementById(m === 'video' ? 'browser' : m + '-browser');
     const active = m === mode;
     if (tab) tab.classList.toggle('active', active);
     if (browser) browser.style.display = active ? '' : 'none';
   });
-  // Show/hide the radio sub-tab bar and count in the header
+  // Radio secondary tab header is managed within radio rendering
   const radioTabHdr = document.getElementById('radio-tab-bar-header');
-  const radioCountHdr = document.getElementById('radio-station-count');
-  if (radioTabHdr) radioTabHdr.style.display = mode === 'radio' ? 'flex' : 'none';
-  if (radioCountHdr) radioCountHdr.style.display = mode === 'radio' ? '' : 'none';
-  const searchEl = document.getElementById('search');
-  const searchRow = document.getElementById('search-row');
+  if (radioTabHdr) radioTabHdr.style.display = 'none';
+  const videoSearch = document.getElementById('vcb-search');
+  const musicSearch = document.getElementById('mcb-search');
   // Always show the nav row; just switch which recent strip is active
   const navRow = document.getElementById('browse-nav-row');
   const vStrip = document.getElementById('video-recent-strip');
@@ -1926,10 +1937,13 @@ function switchMode(mode, skipInitialBrowse = false) {
   const mClear = document.getElementById('music-recent-clear');
   const mPinned = document.getElementById('music-pinned-strip');
   const rStrip = document.getElementById('radio-recent-strip');
+  const rClear = document.getElementById('radio-recent-clear');
+  const ltStrip = document.getElementById('live-tv-recent-strip');
+  const ltClear = document.getElementById('live-tv-recent-clear');
   // navRow and video/music strips are managed by the status poll (_applyVideoLibraryAvailable /
   // _applyMusicLibraryAvailable) to avoid showing chrome when paths are invalid.
   // Hide them now; the status poll will restore them if paths are valid.
-  if (navRow) navRow.style.display = mode === 'radio' ? '' : 'none';
+  if (navRow) navRow.style.display = mode === 'radio' || mode === 'live-tv' ? '' : 'none';
   if (vStrip) vStrip.style.display = 'none';
   if (vClear) vClear.style.display = 'none';
   if (vPinned) vPinned.style.display = 'none';
@@ -1937,9 +1951,11 @@ function switchMode(mode, skipInitialBrowse = false) {
   if (mClear) mClear.style.display = 'none';
   if (mPinned) mPinned.style.display = 'none';
   if (rStrip) rStrip.style.display = mode === 'radio' ? '' : 'none';
+  if (rClear) rClear.style.display = 'none';
+  if (ltStrip) ltStrip.style.display = mode === 'live-tv' ? '' : 'none';
+  if (ltClear) ltClear.style.display = 'none';
   if (mode === 'video') {
-    if (searchRow) searchRow.style.display = '';
-    searchEl.placeholder = 'Search entire library...';
+    if (musicSearch) musicSearch.value = '';
     stopMusicStatusPoll();
     stopRadioStatusPoll();
     const back = document.getElementById('back-button');
@@ -1950,6 +1966,8 @@ function switchMode(mode, skipInitialBrowse = false) {
     if (mcb) mcb.style.display = 'none';
     const rcb = document.getElementById('radio-command-bar');
     if (rcb) rcb.style.display = 'none';
+    const ltcb = document.getElementById('live-tv-command-bar');
+    if (ltcb) ltcb.style.display = 'none';
     refreshLibraryStatus();
     if (currentData) render(currentData);
     else if (skipInitialBrowse) setMusicHeaderForMode('video');
@@ -1960,11 +1978,12 @@ function switchMode(mode, skipInitialBrowse = false) {
     if (typeof setPlayerBarVisible === 'function') setPlayerBarVisible(false);
     const rcb = document.getElementById('radio-command-bar');
     if (rcb) rcb.style.display = 'none';
+    const ltcb = document.getElementById('live-tv-command-bar');
+    if (ltcb) ltcb.style.display = 'none';
     const mcb = document.getElementById('music-command-bar');
     // Hide up-front; refreshMusicLibraryStatus will reveal it only when paths are valid.
     if (mcb) { mcb.style.display = 'none'; _syncMusicCommandBar(); }
-    if (searchRow) searchRow.style.display = '';
-    searchEl.placeholder = 'Search music library...';
+    if (videoSearch) videoSearch.value = '';
     stopRadioStatusPoll();
     document.body.classList.remove('radio-player-docked');
     // clear any video scan-status left-overs
@@ -1975,8 +1994,9 @@ function switchMode(mode, skipInitialBrowse = false) {
     }
     const badge = document.getElementById('indexing-badge');
     if (badge) badge.style.display = 'none';
-    // restore music bar if already playing
-    if (musicIsPlaying) startMusicPlaybackPoll();
+    // Always poll once when entering music mode so page refresh can recover
+    // currently playing/paused server state and restore the player bar.
+    startMusicPlaybackPoll();
     _ensureMusicKeyboardNav();
     // Check whether music paths are valid; hides command bar / strips if not.
     if (typeof refreshMusicLibraryStatus === 'function') refreshMusicLibraryStatus();
@@ -2003,23 +2023,46 @@ function switchMode(mode, skipInitialBrowse = false) {
     if (mcb) mcb.style.display = 'none';
     const rcb = document.getElementById('radio-command-bar');
     if (rcb) rcb.style.display = 'flex';
-    if (searchRow) searchRow.style.display = 'none';
+    const ltcb = document.getElementById('live-tv-command-bar');
+    if (ltcb) ltcb.style.display = 'none';
+    if (videoSearch) videoSearch.value = '';
+    if (musicSearch) musicSearch.value = '';
     const badge = document.getElementById('indexing-badge');
     if (badge) badge.style.display = 'none';
     stopMusicStatusPoll();
     setMusicHeaderForMode('radio');
     radioInit();
+  } else if (mode === 'live-tv') {
+    if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
+    const mcb = document.getElementById('music-command-bar');
+    if (mcb) mcb.style.display = 'none';
+    const rcb = document.getElementById('radio-command-bar');
+    if (rcb) rcb.style.display = 'none';
+    const ltcb = document.getElementById('live-tv-command-bar');
+    if (ltcb) {
+      ltcb.style.display = 'flex';
+      if (typeof _syncLiveTvCommandBar === 'function') _syncLiveTvCommandBar();
+    }
+    if (videoSearch) videoSearch.value = '';
+    if (musicSearch) musicSearch.value = '';
+    const badge = document.getElementById('indexing-badge');
+    if (badge) badge.style.display = 'none';
+    stopMusicStatusPoll();
+    stopRadioStatusPoll();
+    document.body.classList.remove('radio-player-docked');
+    setMusicHeaderForMode('live-tv');
+    if (typeof liveTvInit === 'function') liveTvInit();
   }
 }
 
 function setMusicHeaderForMode(mode) {
   const bc = document.getElementById('breadcrumb');
-  const countLine = document.getElementById('count-line');
+  const countText = document.getElementById('count-text');
   const scanStatus = document.getElementById('scan-status');
   const back = document.getElementById('back-button');
   if (back) back.style.display = 'none';
   if (bc) bc.innerHTML = '';
-  if (countLine) countLine.textContent = '';
+  if (countText) countText.textContent = '';
   if (scanStatus) {
     scanStatus.textContent = '';
     scanStatus.className = '';
@@ -2037,7 +2080,7 @@ function renderMusicHeader(data, searching) {
     bc.innerHTML = '';
     if (searching) {
       bc.innerHTML =
-        '<a onclick="browseMusic(null)">&#128193; Music Root</a><span> &rsaquo; </span><span class="crumb-current">Search results</span>';
+        '<a onclick="browseMusic(null)">&#8962; Music Root</a><span> &rsaquo; </span><span class="crumb-current">Search results</span>';
     } else {
       const root = data.musicRoot || '';
       const folder = data.folder || root;
@@ -2047,7 +2090,7 @@ function renderMusicHeader(data, searching) {
       const displayFolder = _musicLinkBase && folder && folder.toLowerCase().startsWith(_musicLinkBase.real.toLowerCase())
         ? _musicLinkBase.virtual + folder.slice(_musicLinkBase.real.length)
         : folder;
-      let html = '<a onclick="browseMusic(null)">&#128193; Music Root</a>';
+      let html = '<a onclick="browseMusic(null)">&#8962; Music Root</a>';
       if (displayFolder && root && displayFolder.toLowerCase() !== root.toLowerCase()) {
         // Build segments relative to music root
         const rel = displayFolder.startsWith(root) ? displayFolder.slice(root.length) : '';
@@ -2131,16 +2174,22 @@ function renderMusicHeader(data, searching) {
     if (searching) {
       const fc = data.folders?.length || 0;
       const tc = data.files?.length || 0;
-      countText = fc + ' folder(s) and ' + tc + ' result(s)';
+      countText = `${_countWord(fc, 'folder', 'folders')} and ${_countWordNoZero(tc, 'result', 'results')}`;
     } else {
       const fc = data.folders?.length || 0;
       const loaded = data.files?.length || 0;
       const total = data.totalInFolder || loaded;
       countText = total > loaded
-        ? fc + ' folder(s), ' + loaded + ' of ' + total + ' track(s) loaded'
-        : fc + ' folder(s), ' + total + ' track(s)';
+        ? `${_countWord(fc, 'folder', 'folders')}, ${_countWordNoZero(loaded, 'track', 'tracks')} of ${_countWord(total, 'track', 'tracks')} loaded`
+        : `${_countWord(fc, 'folder', 'folders')}, ${_countWordNoZero(total, 'track', 'tracks')}`;
     }
-    if (txt) txt.textContent = countText;
+    if (txt) {
+      if (data.hasMore) {
+        txt.innerHTML = countText + ', <a href="#" class="count-load-more" onclick="event.preventDefault();loadMoreMusic()">Load more</a>';
+      } else {
+        txt.textContent = countText;
+      }
+    }
     const mcbCount = document.getElementById('mcb-count');
     if (mcbCount) mcbCount.textContent = countText;
     _setCbRightVisible('mcb-right', (data.files?.length || 0) > 0 && _viewMode.music !== 'list');
@@ -2183,7 +2232,7 @@ function _syncMusicCommandBar(playAllVisible) {
   const viewBtn = document.getElementById('mcb-view-btn');
   const isList = _viewMode.music === 'list';
   if (viewBtn) {
-    viewBtn.textContent = isList ? '\u2261 List' : '\u25a6 Grid';
+    viewBtn.textContent = isList ? '\u25a6 Grid' : '\u2630 List';
     viewBtn.title = isList ? 'Switch to grid view' : 'Switch to list view';
   }
   // Sync sort select
@@ -2639,7 +2688,7 @@ async function searchMusicLibrary(q, offset = 0, append = false) {
         (offset ? '&offset=' + encodeURIComponent(offset) : '')
     );
     if (!res.ok) {
-      setSearchBusy(false);
+      setSearchBusy(false, 'music');
       return;
     }
     const data = await res.json();
@@ -2647,14 +2696,14 @@ async function searchMusicLibrary(q, offset = 0, append = false) {
       currentMusicData.files = [...(currentMusicData.files || []), ...(data.files || [])];
       currentMusicData.hasMore = data.hasMore;
     } else currentMusicData = { ...data, folders: [], query: q };
-    setSearchBusy(false);
+    setSearchBusy(false, 'music');
     if (currentMode === 'music') renderMusicHeader(currentMusicData, true);
     renderMusicCards(currentMusicData, true);
     if (typeof _lastSearchQuery !== 'undefined') _lastSearchQuery = q;
     if (typeof _showSearchFilterBar === 'function') _showSearchFilterBar(true);
     if (typeof _applySearchFilter === 'function') _applySearchFilter();
   } catch (e) {
-    setSearchBusy(false);
+    setSearchBusy(false, 'music');
   }
 }
 
@@ -3383,12 +3432,12 @@ async function searchLibrary(q, offset = 0, append = false) {
       { signal: pendingSearchAbort.signal }
     );
     if (!res.ok) {
-      setSearchBusy(false);
+      setSearchBusy(false, 'video');
       setStatus('Search error ' + res.status);
       return;
     }
     const data = await res.json();
-    setSearchBusy(false);
+    setSearchBusy(false, 'video');
     const rendered = {
       folders: data.folders || [],
       files: data.files,
@@ -3426,7 +3475,7 @@ async function searchLibrary(q, offset = 0, append = false) {
     );
     pendingSearchAbort = null;
   } catch (e) {
-    setSearchBusy(false);
+    setSearchBusy(false, 'video');
     if (e.name !== 'AbortError') setStatus('Search failed: ' + e);
     pendingSearchAbort = null;
   }
@@ -3505,6 +3554,7 @@ function setVideoFilter(f) {
   _videoFilter = f;
   document.querySelectorAll('#vcb-filters .vcb-pill').forEach(b => b.classList.toggle('active', b.dataset.vf === f));
   _rerenderVideoFiles();
+  _videoRenderBreadcrumbTokens(Boolean(currentData?.query), currentData);
 }
 function setVideoSort(s) {
   if (_videoSort === s) {
@@ -3516,6 +3566,74 @@ function setVideoSort(s) {
   const sel = document.getElementById('vcb-sort');
   if (sel && sel.value !== _videoSort) sel.value = _videoSort;
   _rerenderVideoFiles();
+  _videoRenderBreadcrumbTokens(Boolean(currentData?.query), currentData);
+}
+function _videoFilterLabel(filter) {
+  return {
+    all: 'All',
+    unwatched: 'Unwatched',
+    watched: 'Watched',
+    fav: 'Favorites',
+    progress: 'In Progress',
+  }[filter] || filter;
+}
+function _videoSortLabel(sort, dir) {
+  const name = {
+    name: 'Name',
+    folder: 'Folder',
+    duration: 'Duration',
+    year: 'Year',
+    progress: 'Progress',
+  }[sort] || sort;
+  return `${name} ${dir === 'desc' ? '↓' : '↑'}`;
+}
+function _videoRenderBreadcrumbTokens(searching, data) {
+  if (currentMode !== 'video') return;
+  const bc = document.getElementById('breadcrumb');
+  if (!bc || !data) return;
+
+  const tokens = [];
+  const q = (data.query || '').trim();
+  if (q) tokens.push({ key: 'search', label: 'Search', value: q });
+  if (_videoFilter !== 'all') tokens.push({ key: 'filter', label: 'Filter', value: _videoFilterLabel(_videoFilter) });
+  if (_videoSort !== 'name' || _videoSortDir !== 'asc') {
+    tokens.push({ key: 'sort', label: 'Sort', value: _videoSortLabel(_videoSort, _videoSortDir) });
+  }
+
+  if (!tokens.length) return;
+
+  const details = tokens
+    .map((token) => `${token.label}: <button class="radio-crumb-value" type="button" onclick="videoClearBreadcrumbToken('${token.key}')" title="Reset ${token.label}">${esc(token.value)}</button>`)
+    .join('<span class="radio-crumb-sep">, </span>');
+
+  bc.innerHTML += `<span> &rsaquo; </span>${details}`;
+}
+
+function videoClearBreadcrumbToken(key) {
+  if (key === 'search') {
+    const search = document.getElementById('vcb-search');
+    if (search) search.value = '';
+    if (pendingSearchAbort) {
+      pendingSearchAbort.abort();
+      pendingSearchAbort = null;
+    }
+    browse(null);
+    return;
+  }
+
+  if (key === 'filter') {
+    setVideoFilter('all');
+    return;
+  }
+
+  if (key === 'sort') {
+    _videoSort = 'name';
+    _videoSortDir = 'asc';
+    const sel = document.getElementById('vcb-sort');
+    if (sel) sel.value = _videoSort;
+    _rerenderVideoFiles();
+    _videoRenderBreadcrumbTokens(Boolean(currentData?.query), currentData);
+  }
 }
 function _applyVideoCommandBar(show) {
   const bar = document.getElementById('video-command-bar');
@@ -3614,12 +3732,12 @@ function render(data, searching) {
   bc.innerHTML = '';
   if (searching) {
     bc.innerHTML +=
-      '<a onclick="browse(null)">&#8962; Root</a><span> &rsaquo; </span><span class="crumb-current">Search results</span>';
+      '<a onclick="browse(null)">&#8962; Video Root</a><span> &rsaquo; </span><span class="crumb-current">Search results</span>';
   } else if (data.breadcrumbs && data.breadcrumbs.length) {
     bc.innerHTML += data.breadcrumbs
       .map((c, i) => {
         const sep = i > 0 ? '<span> &rsaquo; </span>' : '';
-        const label = i === 0 ? '&#8962; Root' : esc(c.name);
+        const label = i === 0 ? '&#8962; Video Root' : esc(c.name);
         const isLast = i === data.breadcrumbs.length - 1;
         const cls = isLast ? ' class="crumb-current"' : '';
         const linkBadge =
@@ -3639,15 +3757,30 @@ function render(data, searching) {
       })
       .join('');
   }
+  _videoRenderBreadcrumbTokens(searching, data);
+  const videoFolderCount = data.folders?.length || 0;
+  const videoFileCount = data.files?.length || 0;
+  const videoCountText = searching
+    ? `${_countWord(videoFolderCount, 'folder', 'folders')} and ${_countWordNoZero(videoFileCount, 'result', 'results')}`
+    : `${_countWord(videoFolderCount, 'folder', 'folders')}, ${_countWordNoZero(videoFileCount, 'video', 'videos')}`;
   if (searching) {
     const txt = document.getElementById('count-text');
-    if (txt)
-      txt.textContent =
-        (data.folders?.length || 0) + ' folder(s) and ' + data.files.length + ' result(s)';
+    if (txt) {
+      if (data.hasMoreFiles) {
+        txt.innerHTML = videoCountText + ', <a href="#" class="count-load-more" onclick="event.preventDefault();loadMoreFiles()">Load more</a>';
+      } else {
+        txt.textContent = videoCountText;
+      }
+    }
   } else {
     const txt = document.getElementById('count-text');
-    if (txt)
-      txt.textContent = data.folders.length + ' folder(s), ' + data.files.length + ' video(s)';
+    if (txt) {
+      if (data.hasMoreFiles) {
+        txt.innerHTML = videoCountText + ', <a href="#" class="count-load-more" onclick="event.preventDefault();loadMoreFiles()">Load more</a>';
+      } else {
+        txt.textContent = videoCountText;
+      }
+    }
   }
   document.getElementById('view-toggle-music') &&
     (document.getElementById('view-toggle-music').style.display = 'none');
@@ -4728,6 +4861,11 @@ function _bootstrapFromRoute() {
       switchMode('radio', true);
       return;
     }
+    if (savedMode === 'live-tv') {
+      console.log('[BOOTSTRAP] Switching to live-tv mode');
+      switchMode('live-tv', true);
+      return;
+    }
     // Default to video
     console.log('[BOOTSTRAP] Defaulting to video mode');
     browse(null);
@@ -4740,6 +4878,15 @@ function _bootstrapFromRoute() {
   if (route.mode === 'radio') {
     console.log('[BOOTSTRAP] Switching to radio mode (from URL)');
     switchMode('radio', true);
+    return;
+  }
+
+  if (route.mode === 'live-tv') {
+    console.log('[BOOTSTRAP] Switching to live-tv mode (from URL)');
+    switchMode('live-tv', true);
+    if (route.routeToken && typeof liveTvApplyRouteToken === 'function') {
+      liveTvApplyRouteToken(route.routeToken);
+    }
     return;
   }
 

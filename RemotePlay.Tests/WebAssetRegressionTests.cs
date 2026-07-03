@@ -227,6 +227,7 @@ public sealed class WebAssetRegressionTests
         "app-playback.js",
         "app-context-menu.js",
         "app-library.js",
+        "app-live-tv.js",
         "app-radio.js",
         "app-globe.js",
         "app-radio-status.js",

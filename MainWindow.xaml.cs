@@ -59,6 +59,7 @@ public partial class MainWindow : Window
     private int _currentReverbPreset = 0; // 0 = Off
     private bool _isVideoMode;
     private string? _currentFilePath;
+    private string? _currentPlaybackDisplayName;
     private TimeSpan? _pendingResumePosition;
     private bool _smartResumeApplied;
     private string _lastPlaybackError = string.Empty;

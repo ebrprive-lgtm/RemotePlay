@@ -174,6 +174,22 @@ public sealed class WebServerApiTests : IDisposable
         openServer.Stop();
     }
 
+    [Fact]
+    public async Task LiveTvReindex_Get_ReturnsMethodNotAllowed()
+    {
+        var response = await _client.GetAsync("/api/live-tv/reindex");
+
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task LiveTvPlay_WhenTargetIsLocalhost_ReturnsBadRequest()
+    {
+        var response = await _client.GetAsync("/api/live-tv/play?url=http%3A%2F%2Flocalhost%2Flive.m3u8&name=Test");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     // -- /api/dlna/renderers ---------------------------------------------------
@@ -255,6 +271,32 @@ public sealed class WebServerApiTests : IDisposable
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
+
+    [Fact]
+    public async Task RadioPlay_Get_ReturnsMethodNotAllowed()
+    {
+        var response = await _client.GetAsync("/api/radio/play?url=https%3A%2F%2Fexample.com%2Fstream&name=Test");
+
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task RadioPlay_PostLocalhost_ReturnsBadRequest()
+    {
+        using var content = new StringContent(string.Empty);
+        var response = await _client.PostAsync("/api/radio/play?url=http%3A%2F%2Flocalhost%2Fstream&name=Test", content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task RadioStop_Get_ReturnsMethodNotAllowed()
+    {
+        var response = await _client.GetAsync("/api/radio/stop");
+
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
+    }
+
     private static int FindFreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -286,6 +328,7 @@ public sealed class WebServerApiTests : IDisposable
         SetEqPreset           = _ => { },
         SetReverbPreset       = _ => { },
         SetMusicReverbPreset  = _ => { },
+        SetMusicReverbStrength = _ => { },
         SetMusicVocalRemovalMode = _ => { },
         PlayAdjacent          = _ => { },
         Enqueue               = _ => { },
@@ -299,7 +342,7 @@ public sealed class WebServerApiTests : IDisposable
         PlayMusic             = (_, _) => { },
         PauseMusic            = () => { },
         StopMusic             = () => { },
-        GetMusicStatus        = () => new MusicStatus(false, false, string.Empty, string.Empty, string.Empty, string.Empty, 0, 0, string.Empty, -1, 0, false),
+        GetMusicStatus        = () => new MusicStatus(false, false, string.Empty, string.Empty, string.Empty, string.Empty, 0, 0, string.Empty, -1, 0, 1.0, false),
         SeekMusic             = _ => { },
         SetMusicVolume        = _ => { },
         SetMusicBoost         = _ => { },

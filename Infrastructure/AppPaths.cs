@@ -45,6 +45,7 @@ internal static class AppPaths
     public static string LibraryIndexCacheFile => Path.Combine(UserDataDirectory, "library-index.json");
     public static string MusicIndexCacheFile    => Path.Combine(UserDataDirectory, "music-index.json");
     public static string M3uIndexCacheFile      => Path.Combine(UserDataDirectory, "m3u-index.json");
+    public static string LiveTvCatalogCacheFile => Path.Combine(UserDataDirectory, "live-tv-catalog.json");
     public static string RadioFavoritesFile     => Path.Combine(UserDataDirectory, "radio-favorites.json");
     public static string FavoritesFile => Path.Combine(UserDataDirectory, "favorites.json");
     public static string LogFile => Path.Combine(UserDataDirectory, "remoteplay.log");

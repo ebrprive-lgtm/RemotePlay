@@ -115,6 +115,25 @@ internal sealed record M3uIndexCache
 }
 
 [ExcludeFromCodeCoverage]
+internal sealed record LiveTvCatalogEntry
+{
+    public string Name { get; init; } = string.Empty;
+    public string CountryCode { get; init; } = string.Empty;
+    public string CountryName { get; init; } = string.Empty;
+    public string Category { get; init; } = string.Empty;
+    public string Language { get; init; } = string.Empty;
+    public string SourceHost { get; init; } = string.Empty;
+    public string Url { get; init; } = string.Empty;
+}
+
+[ExcludeFromCodeCoverage]
+internal sealed record LiveTvCatalogCache
+{
+    public DateTimeOffset SavedAtUtc { get; init; }
+    public LiveTvCatalogEntry[] Channels { get; init; } = [];
+}
+
+[ExcludeFromCodeCoverage]
 internal sealed record LibraryFile(
     string Name,
     string FilePath,

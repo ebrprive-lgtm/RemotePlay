@@ -10,6 +10,18 @@ namespace RemotePlay;
 
 internal sealed partial class WebServer
 {
+    private static readonly System.Net.Http.HttpClient _radioStreamProxyHttpClient = CreateRadioStreamProxyHttpClient();
+
+    private static System.Net.Http.HttpClient CreateRadioStreamProxyHttpClient()
+    {
+        var client = new System.Net.Http.HttpClient
+        {
+            Timeout = System.Threading.Timeout.InfiniteTimeSpan
+        };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 RemotePlay/1.0");
+        return client;
+    }
+
 
     private async Task HandleRadioSearchAsync(HttpListenerContext ctx)
     {
@@ -22,7 +34,8 @@ internal sealed partial class WebServer
         offset = Math.Max(offset, 0);
 
         var stations = await _callbacks.RadioSearch(q, country, tag, limit, offset).ConfigureAwait(false);
-        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(stations));
+        var total = await _callbacks.RadioStationCount().ConfigureAwait(false);
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { stations, total }));
     }
 
     private async Task HandleRadioTopAsync(HttpListenerContext ctx)
@@ -32,7 +45,8 @@ internal sealed partial class WebServer
         limit = Math.Clamp(limit, 1, 100);
         offset = Math.Max(offset, 0);
         var stations = await _callbacks.RadioTopStations(limit, offset).ConfigureAwait(false);
-        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(stations));
+        var total = await _callbacks.RadioStationCount().ConfigureAwait(false);
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { stations, total }));
     }
 
     private async Task HandleRadioTagsAsync(HttpListenerContext ctx)
@@ -58,9 +72,23 @@ internal sealed partial class WebServer
             TrySendResponse(ctx, 400, "application/json", "{\"error\":\"missing url\"}");
             return;
         }
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var playUri)
+            || (playUri.Scheme != Uri.UriSchemeHttp && playUri.Scheme != Uri.UriSchemeHttps))
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid url\"}");
+            return;
+        }
+
+        if (IsPrivateOrLoopbackHost(playUri.Host))
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"private/local url is not allowed\"}");
+            return;
+        }
+
         _callbacks.Stop();
         _callbacks.StopMusic();
-        _callbacks.RadioPlay(url, name);
+        _callbacks.RadioPlay(playUri.ToString(), name);
         Logger.Info("Playback", $"Playing Radio: '{name}' on Server");
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
         ScheduleSsePush(delayMs: 300);
@@ -92,12 +120,25 @@ internal sealed partial class WebServer
         TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(favs));
     }
 
-    private void HandleRadioFavoriteToggle(HttpListenerContext ctx)
+    private async Task HandleRadioFavoriteToggleAsync(HttpListenerContext ctx)
     {
+        const int maxFavoriteRequestBytes = 32 * 1024;
+        if (ctx.Request.ContentLength64 > maxFavoriteRequestBytes)
+        {
+            TrySendResponse(ctx, 413, "application/json", "{\"error\":\"request body too large\"}");
+            return;
+        }
+
         try
         {
             using var sr = new System.IO.StreamReader(ctx.Request.InputStream);
-            var body = sr.ReadToEnd();
+            var body = await sr.ReadToEndAsync().ConfigureAwait(false);
+            if (body.Length > maxFavoriteRequestBytes)
+            {
+                TrySendResponse(ctx, 413, "application/json", "{\"error\":\"request body too large\"}");
+                return;
+            }
+
             var station = System.Text.Json.JsonSerializer.Deserialize<RadioStation>(body);
             if (station is null)
             {
@@ -143,7 +184,7 @@ internal sealed partial class WebServer
     /// can play it without CORS restrictions. Query param: <c>url</c> (encoded stream URL).
     /// Streams bytes indefinitely; the browser disconnects when it stops listening.
     /// </summary>
-    private static async Task HandleRadioStreamProxyAsync(HttpListenerContext ctx)
+    private async Task HandleRadioStreamProxyAsync(HttpListenerContext ctx)
     {
         var streamUrl = ctx.Request.QueryString["url"] ?? string.Empty;
         if (string.IsNullOrWhiteSpace(streamUrl))
@@ -152,23 +193,44 @@ internal sealed partial class WebServer
             return;
         }
 
-        Logger.Detail("Playback", $"[PROXY] Request received for: {streamUrl}");
+        if (!Uri.TryCreate(streamUrl, UriKind.Absolute, out var streamUri)
+            || (streamUri.Scheme != Uri.UriSchemeHttp && streamUri.Scheme != Uri.UriSchemeHttps))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "invalid url");
+            return;
+        }
 
-        using var http = new System.Net.Http.HttpClient();
-        http.Timeout = System.Threading.Timeout.InfiniteTimeSpan;
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 RemotePlay/1.0");
+        if (IsPrivateOrLoopbackHost(streamUri.Host))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "private/local url is not allowed");
+            return;
+        }
+
+        Logger.Detail("Playback", $"[PROXY] Request received for: {streamUri}");
+
+        using var proxyCts = CancellationTokenSource.CreateLinkedTokenSource(_listenerCts.Token);
 
         System.Net.Http.HttpResponseMessage? upstream = null;
         try
         {
-            upstream = await http.GetAsync(streamUrl,
-                System.Net.Http.HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            upstream = await _radioStreamProxyHttpClient.GetAsync(
+                streamUri,
+                System.Net.Http.HttpCompletionOption.ResponseHeadersRead,
+                proxyCts.Token).ConfigureAwait(false);
             Logger.Detail("Playback", $"[PROXY] Upstream responded {(int)upstream.StatusCode}, content-type={upstream.Content.Headers.ContentType}");
         }
         catch (Exception ex)
         {
             Logger.Detail("Playback", $"[PROXY] Failed to connect to upstream: {ex.Message}");
             TrySendResponse(ctx, 502, "text/plain", "upstream error");
+            return;
+        }
+
+        if (!upstream.IsSuccessStatusCode)
+        {
+            Logger.Detail("Playback", $"[PROXY] Upstream non-success {(int)upstream.StatusCode} for {streamUri}");
+            upstream.Dispose();
+            TrySendResponse(ctx, 502, "text/plain", "upstream returned non-success status");
             return;
         }
 
@@ -182,15 +244,19 @@ internal sealed partial class WebServer
         long bytesSent = 0;
         try
         {
-            await using var upstreamStream = await upstream.Content.ReadAsStreamAsync().ConfigureAwait(false);
+            await using var upstreamStream = await upstream.Content.ReadAsStreamAsync(proxyCts.Token).ConfigureAwait(false);
             var buf = new byte[16 * 1024];
             int read;
-            while ((read = await upstreamStream.ReadAsync(buf).ConfigureAwait(false)) > 0)
+            while ((read = await upstreamStream.ReadAsync(buf.AsMemory(0, buf.Length), proxyCts.Token).ConfigureAwait(false)) > 0)
             {
-                await ctx.Response.OutputStream.WriteAsync(buf.AsMemory(0, read)).ConfigureAwait(false);
+                await ctx.Response.OutputStream.WriteAsync(buf.AsMemory(0, read), proxyCts.Token).ConfigureAwait(false);
                 bytesSent += read;
             }
             Logger.Detail("Playback", $"[PROXY] Stream ended normally after {bytesSent} bytes");
+        }
+        catch (OperationCanceledException)
+        {
+            Logger.Detail("Playback", $"[PROXY] Stream cancelled after {bytesSent} bytes");
         }
         catch (Exception ex)
         {

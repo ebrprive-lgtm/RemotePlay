@@ -55,11 +55,15 @@
                     <div class="tp-group-label">⬛ Normal</div>
                     <div class="tp-grid">
                       <button class="tp-item" data-theme="default"       onclick="setTheme('default')">🌑 Dark</button>
+                      <button class="tp-item" data-theme="graphite"      onclick="setTheme('graphite')">⬛ Graphite</button>
                       <button class="tp-item" data-theme="dracula"       onclick="setTheme('dracula')">🧛 Dracula</button>
                       <button class="tp-item" data-theme="dusk"          onclick="setTheme('dusk')">🌆 Dusk</button>
                       <button class="tp-item" data-theme="mocha"         onclick="setTheme('mocha')">☕ Mocha</button>
+                      <button class="tp-item" data-theme="nord"          onclick="setTheme('nord')">🧊 Nord</button>
                       <button class="tp-item" data-theme="slate"         onclick="setTheme('slate')">🪨 Slate</button>
+                      <button class="tp-item" data-theme="cyberpunk"     onclick="setTheme('cyberpunk')">🕶️ Cyberpunk</button>
                       <button class="tp-item" data-theme="sunset"        onclick="setTheme('sunset')">🌅 Sunset</button>
+                      <button class="tp-item" data-theme="solarized-dark" onclick="setTheme('solarized-dark')">🌒 Solarized Dark</button>
                     </div>
                     <div class="tp-group-label">🌑 Deep Dark</div>
                     <div class="tp-grid">
@@ -75,6 +79,15 @@
                     <div class="tp-group-label">♿ Accessibility</div>
                     <div class="tp-grid">
                       <button class="tp-item" data-theme="high-contrast" onclick="setTheme('high-contrast')">◼ High Contrast</button>
+                      <button class="tp-item" data-theme="cb-safe-dark" onclick="setTheme('cb-safe-dark')">🎯 CB Safe Dark</button>
+                      <button class="tp-item" data-theme="cb-safe-light" onclick="setTheme('cb-safe-light')">🎯 CB Safe Light</button>
+                      <button class="tp-item" data-theme="cb-protanopia" onclick="setTheme('cb-protanopia')">👁️ Protanopia</button>
+                      <button class="tp-item" data-theme="cb-deuteranopia" onclick="setTheme('cb-deuteranopia')">👁️ Deuteranopia</button>
+                    </div>
+                    <div class="tp-group-label">🧾 Readability</div>
+                    <div class="tp-grid">
+                      <button class="tp-item" data-theme="paper"         onclick="setTheme('paper')">📄 Paper</button>
+                      <button class="tp-item" data-theme="solarized-light" onclick="setTheme('solarized-light')">🌕 Solarized Light</button>
                     </div>
                   </div>
                 </div>
@@ -122,34 +135,24 @@
                   </div>
                 </div>
               </div>
-              <!-- ── Mode tabs (Video / Music / Radio) as icon row ── -->
-              <div id="mode-tabs">
-                <button id="tab-video" class="mode-tab active" onclick="switchMode('video')">&#127916; Video</button>
-                <button id="tab-music" class="mode-tab" onclick="switchMode('music')">&#127925; Music</button>
-                <button id="tab-radio" class="mode-tab" onclick="switchMode('radio')">&#128251; Radio</button>
-              </div>
               <span id="indexing-badge" style="display:none">Indexing</span>
               <span id="syncing-badge" style="display:none">&#8679; Syncing</span>
             </div>
           </div>
-          <div id="search-wrap">
+          <div id="header-meta-wrap">
+            <!-- ── Mode tabs (Video / Music / Radio / Live TV) ── -->
+            <div id="mode-tabs">
+              <button id="tab-video" class="mode-tab active" onclick="switchMode('video')">&#127916; Video</button>
+              <button id="tab-music" class="mode-tab" onclick="switchMode('music')">&#127925; Music</button>
+              <button id="tab-radio" class="mode-tab" onclick="switchMode('radio')">&#128251; Radio</button>
+              <button id="tab-live-tv" class="mode-tab" onclick="switchMode('live-tv')">&#128250; Live TV</button>
+            </div>
             <div id="radio-tab-bar-header" style="display:none;gap:.35rem;flex-wrap:wrap">
               <button id="header-tab-stations" class="radio-tab active" onclick="radioShowTab('top')">&#128251; Stations</button>
               <button id="header-tab-favorites" class="radio-tab" onclick="radioShowTab('favorites')">&#10084; Favorites</button>
             </div>
-            <div id="radio-station-count" style="display:none;font-size:.75rem;color:var(--muted,#9aa8c2)"></div>
-            <div id="search-row">
-              <input id="search" type="search" placeholder="Search entire library..." oninput="onSearch()" aria-label="Search entire library"/>
-              <div id="search-spinner" aria-label="Searching" title="Searching..."></div>
-            </div>
             <div id="breadcrumb"></div>
             <div id="count-line" style="display:flex;align-items:center;gap:.5rem"><span id="count-text"></span><button id="view-toggle-video" class="radio-reset-btn view-toggle-btn" onclick="_setViewMode('video',_viewMode.video==='grid'?'list':'grid')" style="display:none" title="Toggle view"></button><button id="view-toggle-music" class="radio-reset-btn view-toggle-btn" onclick="_setViewMode('music',_viewMode.music==='grid'?'list':'grid')" style="display:none" title="Toggle view"></button></div>
-            <div id="search-filter-bar" style="display:none" role="group" aria-label="Search filter">
-              <label class="sf-chip"><input type="radio" name="sf" value="all"    checked onchange="setSearchFilter('all')"   /><span>All</span></label>
-              <label class="sf-chip"><input type="radio" name="sf" value="title"         onchange="setSearchFilter('title')" /><span>Title</span></label>
-              <label class="sf-chip sf-music-only"><input type="radio" name="sf" value="artist"        onchange="setSearchFilter('artist')"/><span>Artist</span></label>
-              <label class="sf-chip sf-music-only"><input type="radio" name="sf" value="album"         onchange="setSearchFilter('album')" /><span>Album</span></label>
-            </div>
             <div id="scan-status" style="display:none"></div>
           </div>
           <div id="radio-filter-sticky" style="display:none"></div>
@@ -158,7 +161,6 @@
             <div class="cb-inner" id="mcb-normal">
             <div id="mcb-left">
               <button id="mcb-view-btn" class="vcb-view-btn" onclick="_setViewMode('music',_viewMode.music==='grid'?'list':'grid')" title="Toggle list / grid view"></button>
-              <button id="mcb-pin-btn" class="vcb-pin-btn" onclick="toggleMusicPinFolder(currentMusicFolder)" title="Pin this folder"></button>
               <button id="mcb-dynamic-btn" class="vcb-dynamic-btn" onclick="_createDynamicFolder()" title="Create dynamic folder"> Dynamic folder</button>
               <button id="mcb-reroll-btn" class="vcb-reroll-btn" onclick="_rerollDynamicFolder()" title="Shuffle again (R)" style="display:none">&#9851; Shuffle again</button>
               <button id="mcb-dyn-minus" class="vcb-dyn-count-btn" onclick="_adjustDynCount(-5)" title="5 fewer tracks" style="display:none">−5</button>
@@ -166,6 +168,8 @@
               <span id="mcb-dyn-from" class="mcb-dyn-from" style="display:none"></span>
             </div>
             <div id="mcb-filters">
+              <input id="mcb-search" class="command-search-input" type="search" placeholder="Search music" oninput="onDomainSearch('music')" aria-label="Search music" />
+              <button id="mcb-pin-btn" class="vcb-pin-btn" onclick="toggleMusicPinFolder(currentMusicFolder)" title="Pin this folder"></button>
               <button id="mcb-play-all" class="vcb-pill mcb-play-all" onclick="playMusicAll()" style="display:none">&#9654; Play All</button>
             </div>
             <div id="mcb-right">
@@ -208,13 +212,28 @@
             </div>
             </div>
           </div>
+          <!-- ── Live TV command bar ──────────────────────────────────────────── -->
+          <div id="live-tv-command-bar" style="display:none">
+            <div class="cb-inner">
+            <div id="ltcb-left">
+              <button id="ltcb-view-btn" class="vcb-view-btn" onclick="_setViewMode('live-tv',_viewMode['live-tv']==='grid'?'list':'grid')" title="Toggle list / grid view"></button>
+            </div>
+            <div id="ltcb-filters">
+              <!-- populated by app-live-tv.js -->
+            </div>
+            <div id="ltcb-right">
+              <span id="ltcb-count" class="vcb-count"></span>
+            </div>
+            </div>
+          </div>
           <div id="video-command-bar" style="display:none">
             <div class="cb-inner" id="vcb-normal">
             <div id="vcb-left">
               <button id="vcb-view-btn" class="vcb-view-btn" onclick="_setViewMode('video',_viewMode.video==='grid'?'list':'grid')" title="Toggle list / grid view"></button>
-              <button id="vcb-pin-btn" class="vcb-pin-btn" onclick="togglePinFolder(currentDir)" title="Pin this folder"></button>
             </div>
             <div id="vcb-filters">
+              <input id="vcb-search" class="command-search-input" type="search" placeholder="Search videos" oninput="onDomainSearch('video')" aria-label="Search videos" />
+              <button id="vcb-pin-btn" class="vcb-pin-btn" onclick="togglePinFolder(currentDir)" title="Pin this folder"></button>
               <button class="vcb-pill active" data-vf="all"    onclick="setVideoFilter('all')">All</button>
               <button class="vcb-pill"        data-vf="unwatched" onclick="setVideoFilter('unwatched')">Unwatched</button>
               <button class="vcb-pill"        data-vf="watched"   onclick="setVideoFilter('watched')">Watched</button>
@@ -349,11 +368,15 @@
           <div id="music-recent-strip" style="display:none"></div>
           <button id="music-recent-clear" class="vr-clear-btn" style="display:none" title="Clear recently played" onclick="clearRecentMusic()">&#x2715;</button>
           <div id="radio-recent-strip" style="display:none"></div>
+          <button id="radio-recent-clear" class="vr-clear-btn" style="display:none" title="Clear recent stations" onclick="clearRadioRecent()">&#x2715;</button>
+          <div id="live-tv-recent-strip" style="display:none"></div>
+          <button id="live-tv-recent-clear" class="vr-clear-btn" style="display:none" title="Clear recent channels" onclick="clearLiveTvRecent()">&#x2715;</button>
         </div>
         <div id="browser"></div>
         <div id="music-browser" style="display:none"></div>
         <div id="music-queue-pending-bar" style="display:none"></div>
         <div id="radio-browser" style="display:none"></div>
+        <div id="live-tv-browser" style="display:none"></div>
         <div id="radio-player-bar" style="display:none" aria-label="Radio player">
           <div class="player-top">
               <div id="radio-player-summary">
@@ -434,11 +457,13 @@
         <div id="music-player-bar" style="display:none" aria-label="Music player">
           <div class="player-top">
             <div id="music-player-summary">
-              <div id="music-bar-art" class="music-bar-art-empty" aria-hidden="true">
-                <div id="music-bar-art-bars" class="music-bar-art-bars" aria-hidden="true" style="display:none"><span></span><span></span><span></span></div>
+              <div id="music-bar-art-wrap">
+                <div id="music-bar-art" class="music-bar-art-empty" aria-hidden="true">
+                  <div id="music-bar-art-bars" class="music-bar-art-bars" aria-hidden="true" style="display:none"><span></span><span></span><span></span></div>
+                </div>
+                <div id="music-bar-trackpos" class="music-bar-trackpos" style="display:none"></div>
               </div>
               <div id="music-bar-info">
-                <div id="music-bar-trackpos" class="music-bar-trackpos" style="display:none"></div>
                 <div id="music-bar-title">—</div>
                 <div id="music-bar-artist"></div>
                 <div id="music-bar-album"></div>
@@ -496,6 +521,11 @@
                     <label class="eq-select-label" for="music-reverb-select">Room</label>
                     <div class="audio-filter-subtitle">Space simulation</div>
                     <select id="music-reverb-select" class="track-select" onchange="setReverbPreset(+this.value,'music')" title="Choose ambience amount from dry studio to large hall" aria-label="Reverb room preset"></select>
+                    <div class="audio-filter-strength-wrap">
+                      <input id="music-reverb-strength" class="audio-filter-strength-slider" type="range" min="0" max="1" step="0.01" value="1"
+                             oninput="setMusicReverbStrength(this.value)" aria-label="Reverb strength"/>
+                      <span id="music-reverb-strength-label" class="audio-filter-strength-label">100%</span>
+                    </div>
                   </div>
                   <div id="music-vocal-remove-wrap" class="eq-select-wrap audio-filter-control" style="display:none">
                     <label class="eq-select-label" for="music-vocal-remove">Vocal</label>

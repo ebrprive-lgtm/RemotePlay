@@ -8,6 +8,25 @@ namespace RemotePlay;
 
 internal sealed partial class WebServer
 {
+    private static readonly System.Net.Http.HttpClient _liveTvPlaybackProbeHttpClient = CreateLiveTvPlaybackProbeHttpClient();
+
+    private static System.Net.Http.HttpClient CreateLiveTvPlaybackProbeHttpClient()
+    {
+        var handler = new System.Net.Http.HttpClientHandler
+        {
+            AllowAutoRedirect = true,
+            MaxAutomaticRedirections = 4
+        };
+
+        var client = new System.Net.Http.HttpClient(handler)
+        {
+            Timeout = TimeSpan.FromSeconds(8)
+        };
+
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("RemotePlay/LiveTV");
+        client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.apple.mpegurl,application/x-mpegURL,application/octet-stream,*/*");
+        return client;
+    }
 
     private void HandleSearch(HttpListenerContext ctx)
     {
@@ -64,6 +83,11 @@ internal sealed partial class WebServer
             indexing = _isIndexing,
             lastRefreshUtc = _lastIndexRefreshUtc
         }));
+    }
+
+    private void HandleLiveTvDiagnostics(HttpListenerContext ctx)
+    {
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(GetLiveTvCatalogDiagnosticsSnapshot()));
     }
 
     private void HandleRecent(HttpListenerContext ctx)
@@ -488,6 +512,117 @@ internal sealed partial class WebServer
         _callbacks.RadioStop();
         _callbacks.Play(filePath);
         Logger.Info("Playback", $"Playing Video: '{Path.GetFileName(filePath)}' on Server");
+        TrySendResponse(ctx, 200, "text/plain", "OK");
+        ScheduleSsePush(delayMs: 300);
+    }
+
+    private async Task HandleLiveTvCatalogAsync(HttpListenerContext ctx)
+    {
+        try
+        {
+            using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(_listenerCts.Token);
+            requestCts.CancelAfter(TimeSpan.FromSeconds(45));
+            var (channels, savedAtUtc) = await GetLiveTvCatalogAsync(forceRefresh: false, requestCts.Token).ConfigureAwait(false);
+            TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new
+            {
+                ok = true,
+                savedAt = savedAtUtc,
+                channels
+            }));
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to load Live TV catalog", ex);
+            TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new
+            {
+                ok = false,
+                savedAt = DateTimeOffset.UtcNow,
+                channels = Array.Empty<LiveTvCatalogEntry>(),
+                error = "Unable to load Live TV catalog."
+            }));
+        }
+    }
+
+    private async Task HandleLiveTvReindexAsync(HttpListenerContext ctx)
+    {
+        try
+        {
+            using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(_listenerCts.Token);
+            requestCts.CancelAfter(TimeSpan.FromSeconds(45));
+            var (channels, savedAtUtc) = await GetLiveTvCatalogAsync(forceRefresh: true, requestCts.Token).ConfigureAwait(false);
+            TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new
+            {
+                ok = true,
+                savedAt = savedAtUtc,
+                channels,
+            }));
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to reindex Live TV catalog", ex);
+            TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new
+            {
+                ok = false,
+                savedAt = DateTimeOffset.UtcNow,
+                channels = Array.Empty<LiveTvCatalogEntry>(),
+                error = "Unable to refresh Live TV catalog."
+            }));
+        }
+    }
+
+    private async Task HandleLiveTvPlayAsync(HttpListenerContext ctx)
+    {
+        var rawUrl = (ctx.Request.QueryString["url"] ?? string.Empty).Trim();
+        var name = (ctx.Request.QueryString["name"] ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(rawUrl))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing url");
+            return;
+        }
+
+        if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Invalid url");
+            return;
+        }
+
+        if (IsPrivateOrLoopbackHost(uri.Host))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Private/local stream targets are not allowed");
+            return;
+        }
+
+        try
+        {
+            using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, uri);
+            using var resp = await _liveTvPlaybackProbeHttpClient
+                .SendAsync(req, System.Net.Http.HttpCompletionOption.ResponseHeadersRead)
+                .ConfigureAwait(false);
+
+            if (resp.StatusCode == HttpStatusCode.Forbidden)
+            {
+                Logger.Info("Playback", $"Live TV stream blocked (403): {uri}");
+                TrySendResponse(ctx, 403, "text/plain", "Forbidden (403) from stream provider");
+                return;
+            }
+        }
+        catch (TaskCanceledException)
+        {
+            // Ignore probe timeouts and continue with VLC attempt.
+        }
+        catch (System.Net.Http.HttpRequestException ex)
+        {
+            Logger.Detail("Playback", $"Live TV probe failed for '{uri}': {ex.Message}");
+            // Ignore probe transport errors and continue with VLC attempt.
+        }
+
+        _callbacks.StopMusic();
+        _callbacks.RadioStop();
+        _callbacks.PlayNamed(uri.ToString(), string.IsNullOrWhiteSpace(name) ? uri.Host : name);
+
+        var displayName = string.IsNullOrWhiteSpace(name) ? uri.Host : name;
+        Logger.Info("Playback", $"Playing Live TV: '{displayName}' on Server");
         TrySendResponse(ctx, 200, "text/plain", "OK");
         ScheduleSsePush(delayMs: 300);
     }

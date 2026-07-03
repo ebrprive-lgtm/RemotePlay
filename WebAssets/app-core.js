@@ -223,8 +223,8 @@ function _decodeRouteFolder(friendlyPath, breadcrumbs) {
 }
 
 function _buildUiRoute(mode, folderPath = null) {
-  const routeMode = mode === 'music' || mode === 'radio' ? mode : 'video';
-  let path = '/' + routeMode;
+  const routeMode = mode === 'music' || mode === 'radio' || mode === 'live-tv' ? mode : 'video';
+  let path = routeMode === 'live-tv' ? '/LiveTV' : '/' + routeMode;
   if (folderPath && (routeMode === 'video' || routeMode === 'music')) {
     const token = _encodeRouteFolder(folderPath);
     if (token) path += '/' + token;
@@ -250,8 +250,9 @@ function _parseInitialUiRoute() {
     return { hasExplicitRoute: false, mode: 'video', folderPath: null };
   }
 
-  const mode = parts[0].toLowerCase();
-  if (mode !== 'video' && mode !== 'music' && mode !== 'radio') {
+  const rawMode = parts[0].toLowerCase();
+  const mode = rawMode === 'livetv' ? 'live-tv' : rawMode;
+  if (mode !== 'video' && mode !== 'music' && mode !== 'radio' && mode !== 'live-tv') {
     console.log('[ROUTE] Unknown mode:', mode, '- defaulting to video');
     return { hasExplicitRoute: false, mode: 'video', folderPath: null };
   }
@@ -262,11 +263,16 @@ function _parseInitialUiRoute() {
   // URL format: /mode/friendly-name/base64url-encoded-path
   // or just: /mode/base64url-encoded-path
   let folderPath = null;
+  let routeToken = null;
   if (parts.length > 1) {
-    // Last part might be a base64url-encoded folder path (contains only [A-Za-z0-9_-])
     const lastPart = parts[parts.length - 1];
-    if (/^[A-Za-z0-9_-]+$/.test(lastPart)) {
-      // Looks like base64url encoding, try to decode it
+    if (mode === 'live-tv') {
+      try {
+        routeToken = decodeURIComponent(lastPart);
+      } catch {
+        routeToken = lastPart;
+      }
+    } else if (/^[A-Za-z0-9_-]+$/.test(lastPart)) {
       folderPath = _base64UrlToFolderPath(lastPart);
       if (folderPath) {
         console.log('[ROUTE] Decoded folderPath from URL:', folderPath);
@@ -274,7 +280,7 @@ function _parseInitialUiRoute() {
     }
   }
 
-  return { hasExplicitRoute: true, mode, folderPath };
+  return { hasExplicitRoute: true, mode, folderPath, routeToken };
 }
 
 // Return the parent directory of a decoded FS path (works for both / and \ separators).
@@ -310,10 +316,14 @@ const _viewMode = {
   video: localStorage.getItem('remotePlayViewVideo') || 'grid',
   music: localStorage.getItem('remotePlayViewMusic') || 'grid',
   radio: localStorage.getItem('remotePlayViewRadio') || 'grid',
+  'live-tv': localStorage.getItem('remotePlayViewLiveTv') || 'grid',
 };
 function _setViewMode(section, mode) {
   _viewMode[section] = mode;
-  localStorage.setItem('remotePlayView' + section.charAt(0).toUpperCase() + section.slice(1), mode);
+  const storageKey = section === 'live-tv'
+    ? 'remotePlayViewLiveTv'
+    : 'remotePlayView' + section.charAt(0).toUpperCase() + section.slice(1);
+  localStorage.setItem(storageKey, mode);
   _applyViewToggleBtn(section);
   if (section === 'video' && currentData) {
     if (typeof _applyVcbViewBtn === 'function') _applyVcbViewBtn();
@@ -324,6 +334,9 @@ function _setViewMode(section, mode) {
   } else if (section === 'radio') {
     if (typeof _syncRadioCommandBar === 'function') _syncRadioCommandBar();
     renderRadioCards(_radioStations, _radioStations.length === _radioPageSize * (_radioPage + 1));
+  } else if (section === 'live-tv') {
+    if (typeof _syncLiveTvCommandBar === 'function') _syncLiveTvCommandBar();
+    if (typeof renderLiveTvCards === 'function') renderLiveTvCards();
   }
 }
 function _applyViewToggleBtn(section) {
@@ -390,7 +403,7 @@ function togglePlayLocal() {
       // Notify server and log AFTER localPlay() — deferred so we never race the gesture
       setTimeout(() => {
         fetch('/api/local-playing', { method: 'POST', body: 'true' }).catch(() => {});
-        fetch('/api/radio/stop').catch(() => {});
+        fetch('/api/radio/stop', { method: 'POST' }).catch(() => {});
         fetch('/api/log', { method: 'POST', body: 'Switched playback mode to Local' }).catch(() => {});
       }, 0);
     } else {
@@ -457,7 +470,7 @@ function togglePlayLocal() {
     if (wasPlaying) {
       if (localType === 'Radio' && typeof _radioCurrentUrl !== 'undefined' && _radioCurrentUrl) {
         // Resume radio on server
-        fetch('/api/radio/play?' + new URLSearchParams({ url: _radioCurrentUrl, name: _radioCurrentName || '' }))
+        fetch('/api/radio/play?' + new URLSearchParams({ url: _radioCurrentUrl, name: _radioCurrentName || '' }), { method: 'POST' })
           .then(() => {
             if (typeof updateRadioBar !== 'undefined')
               updateRadioBar(_radioCurrentName, _radioCurrentCountry, _radioCurrentTag, true, _radioCurrentStation);
@@ -579,6 +592,7 @@ function setTheme(theme, save = true) {
     'theme-sunset',
     'theme-neon',
     'theme-forest',
+    'theme-nord',
     'theme-lavender',
     'theme-peach',
     'theme-mint',
@@ -593,7 +607,16 @@ function setTheme(theme, save = true) {
     'theme-mocha',
     'theme-sky',
     'theme-lemon',
+    'theme-graphite',
+    'theme-paper',
+    'theme-cyberpunk',
+    'theme-solarized-dark',
+    'theme-solarized-light',
     'theme-high-contrast',
+    'theme-cb-safe-dark',
+    'theme-cb-safe-light',
+    'theme-cb-protanopia',
+    'theme-cb-deuteranopia',
     'theme-steel',
     'theme-olive',
     'theme-violet',
@@ -660,6 +683,44 @@ function applyPhonePlaybackState(isPlaying) {
   if (!isPhoneRemoteOnly) return;
   document.body.classList.toggle('phone-playing', Boolean(isPlaying));
   setPlayerBarVisible(isPlaying);
+}
+
+function _applyLiveTvPlayerUi(isLiveTvMode, status) {
+  const navGroup = document.querySelector('.transport-nav-group');
+  const queueCard = document.getElementById('queue-card');
+  const speedRow = document.getElementById('speed-row');
+  const progressRow = document.getElementById('progress-row');
+  const resumeCard = document.getElementById('resume-card');
+  const upNextCard = document.getElementById('up-next-card');
+  const seekBack = document.getElementById('seek-back-btn');
+  const seekForward = document.getElementById('seek-forward-btn');
+  const timeLabel = document.getElementById('time-label');
+
+  if (!isLiveTvMode) {
+    if (navGroup) navGroup.style.display = '';
+    if (queueCard) queueCard.style.display = '';
+    if (speedRow) speedRow.style.display = '';
+    if (progressRow) progressRow.style.display = '';
+    if (resumeCard) resumeCard.style.display = '';
+    if (upNextCard) upNextCard.style.display = '';
+    if (seekBack) seekBack.style.display = '';
+    if (seekForward) seekForward.style.display = '';
+    return;
+  }
+
+  if (navGroup) navGroup.style.display = 'none';
+  if (queueCard) queueCard.style.display = 'none';
+  if (speedRow) speedRow.style.display = 'none';
+  if (progressRow) progressRow.style.display = 'none';
+  if (resumeCard) resumeCard.style.display = 'none';
+  if (upNextCard) upNextCard.style.display = 'none';
+  if (seekBack) seekBack.style.display = 'none';
+  if (seekForward) seekForward.style.display = 'none';
+  if (timeLabel) {
+    timeLabel.textContent = status && status.isPlaying
+      ? 'Live stream'
+      : 'Buffering live stream…';
+  }
 }
 
 function setPlayerBarVisible(visible) {
@@ -780,7 +841,7 @@ async function pollStatus() {
     if (!res.ok) {
       setConnectionStatus('Retrying connection...', true);
       statusFailures++;
-      return;
+      return null;
     }
     const s = await res.json();
     statusFailures = 0;
@@ -789,13 +850,32 @@ async function pollStatus() {
     if (typeof s.expertMode === 'boolean') _setExpertMode(s.expertMode);
     if (typeof s.debugMode  === 'boolean') _setDebugMode(s.debugMode);
     const bar = document.getElementById('now-playing-bar');
-    updateQueueControls(s);
     const hasQueue = Array.isArray(s.queue) && s.queue.length > 0;
+    const isLiveTvMode = typeof currentMode !== 'undefined' && currentMode === 'live-tv';
+    const liveTvInfo = isLiveTvMode && typeof liveTvGetNowPlayingInfo === 'function'
+      ? liveTvGetNowPlayingInfo()
+      : null;
+
+    _applyLiveTvPlayerUi(isLiveTvMode, s);
+    if (isLiveTvMode) {
+      if (s.lastError) {
+        showPlaybackErrorPopup('Live TV', s.lastError);
+        if (typeof liveTvHandleStatusPlaybackError === 'function') {
+          liveTvHandleStatusPlaybackError(s.lastError);
+        }
+      } else {
+        clearPlaybackErrorDedup('Live TV');
+        if (typeof liveTvClearStatusPlaybackError === 'function') {
+          liveTvClearStatusPlaybackError();
+        }
+      }
+    }
+    if (!isLiveTvMode) updateQueueControls(s);
     lastQueue = hasQueue ? s.queue : [];
-    updateStopBtn(s.isPlaying, hasQueue);
-    updateAdjacentButtons(s);
+    updateStopBtn(s.isPlaying, isLiveTvMode ? false : hasQueue);
+    if (!isLiveTvMode) updateAdjacentButtons(s);
     if (s.isPlaying || hasQueue) {
-      if (typeof currentMode === 'undefined' || currentMode === 'video')
+      if (typeof currentMode === 'undefined' || currentMode === 'video' || isLiveTvMode)
         setPlayerBarVisible(true);
     }
     if (s.isPlaying) {
@@ -807,10 +887,9 @@ async function pollStatus() {
       }
       const pb = document.getElementById('pause-btn');
       pb.textContent = s.isPaused ? '\u25B6 Resume' : '\u23F8 Pause';
-      document.getElementById('player-title').textContent = (s.title || 'Now playing').replace(
-        /^\s*[▶⏸]\s*/,
-        ''
-      );
+      document.getElementById('player-title').textContent = liveTvInfo?.name
+        ? liveTvInfo.name
+        : (s.title || 'Now playing').replace(/^\s*[▶⏸]\s*/, '');
       const optionsCard = document.getElementById('options-card');
       const volume = Math.max(0, Math.min(1, Number(s.volume) || 0));
       if (volume > 0.001) lastVolumeBeforeMute = volume;
@@ -864,12 +943,12 @@ async function pollStatus() {
       const err = document.getElementById('error');
       if (s.lastError) {
         err.style.display = 'none';
-        showPlaybackErrorPopup('Video', s.lastError);
+        showPlaybackErrorPopup(isLiveTvMode ? 'Live TV' : 'Video', s.lastError);
       } else {
         err.style.display = 'none';
         err.textContent = '';
         // Video is playing without error — allow the popup to reappear if a new error occurs
-        clearPlaybackErrorDedup('Video');
+        clearPlaybackErrorDedup(isLiveTvMode ? 'Live TV' : 'Video');
       }
       updateResumePrompt(s);
       const progress = document.getElementById('progress');
@@ -887,10 +966,12 @@ async function pollStatus() {
       currentPlaybackSpeed = Math.max(0.5, Math.min(2, Number(s.playbackSpeed) || 1));
       syncSpeedChips(currentPlaybackSpeed);
       updateTrackControls(s);
-      document.getElementById('player-meta').textContent = buildPlayerMeta(s, volume, boostAmount);
+      document.getElementById('player-meta').textContent = liveTvInfo
+        ? ['Live TV', liveTvInfo.countryName, liveTvInfo.category, liveTvInfo.sourceHost].filter(Boolean).join(' • ')
+        : buildPlayerMeta(s, volume, boostAmount);
       requestWakeLock();
       if (isPhoneRemoteOnly) applyPhonePlaybackState(true);
-      else if (typeof currentMode === 'undefined' || currentMode === 'video') applyDesktopDockedLayout(true);
+      else if (typeof currentMode === 'undefined' || currentMode === 'video' || isLiveTvMode) applyDesktopDockedLayout(true);
     } else if (isPhoneRemoteOnly) {
       releaseWakeLock();
       updateResumePrompt(null);
@@ -904,6 +985,11 @@ async function pollStatus() {
       document.getElementById('player-meta').textContent = hasQueue
         ? 'Next up: ' + s.queue.length + ' queued video(s)'
         : '';
+      if (isLiveTvMode && liveTvInfo) {
+        document.getElementById('player-title').textContent = liveTvInfo.name || 'Live TV';
+        document.getElementById('player-meta').textContent = ['Live TV', liveTvInfo.countryName, liveTvInfo.category, liveTvInfo.sourceHost].filter(Boolean).join(' • ');
+        setConnectionStatus('Buffering live stream…', true);
+      }
       applyPhonePlaybackState(false);
     } else {
       releaseWakeLock();
@@ -918,7 +1004,13 @@ async function pollStatus() {
       document.getElementById('player-meta').textContent = hasQueue
         ? 'Next up: ' + s.queue.length + ' queued video(s)'
         : '';
-      if (typeof currentMode === 'undefined' || currentMode === 'video') {
+      if (isLiveTvMode && liveTvInfo) {
+        document.getElementById('player-title').textContent = liveTvInfo.name || 'Live TV';
+        document.getElementById('player-meta').textContent = ['Live TV', liveTvInfo.countryName, liveTvInfo.category, liveTvInfo.sourceHost].filter(Boolean).join(' • ');
+        setConnectionStatus('Buffering live stream…', true);
+        setPlayerBarVisible(true);
+      }
+      if (typeof currentMode === 'undefined' || currentMode === 'video' || isLiveTvMode) {
         if (hasQueue) {
           document.body.classList.add('desktop-player-docked');
         } else {
@@ -927,6 +1019,7 @@ async function pollStatus() {
         }
       }
     }
+    return s;
   } catch (e) {
     statusFailures++;
     setConnectionStatus(
@@ -934,6 +1027,7 @@ async function pollStatus() {
       true
     );
     updateDiagnosticsIndicator('error');
+    return null;
   }
 }
 
