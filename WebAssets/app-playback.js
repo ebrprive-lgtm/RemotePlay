@@ -582,15 +582,30 @@ let _lastReverbPreset = 0;       // video
 let _lastMusicReverbPreset = 0;  // music
 let _lastRadioReverbPreset = 0;  // radio
 let _lastMusicReverbStrength = 1;
+let _lastMusicReverbDryLevel = 1;
+let _lastMusicReverbPreDelayMs = 0;
+let _lastMusicReverbBypass = false;
+let _musicReverbBasePreset = 0;
+let _musicReverbIsCustom = false;
 let _lastMusicVocalMode = 0;
 let _musicReverbStrengthDebounceHandle = 0;
+let _musicReverbDryDebounceHandle = 0;
+let _musicReverbPreDelayDebounceHandle = 0;
+let _musicReverbLocalChangeUntil = 0;
 
 function _populateReverbSelect(id) {
   const sel = document.getElementById(id);
   if (!sel || sel.options.length) return;
-  sel.innerHTML = _reverbPresetNames
+  const options = _reverbPresetNames
     .map((name, i) => '<option value="' + i + '">' + esc(name) + '</option>')
     .join('');
+
+  if (id === 'music-reverb-select') {
+    sel.innerHTML = options + '<option value="custom">Custom</option>';
+    return;
+  }
+
+  sel.innerHTML = options;
 }
 
 function renderReverbPresets(currentPreset) {
@@ -601,24 +616,81 @@ function renderReverbPresets(currentPreset) {
 }
 
 function _renderMusicReverbPreset(preset) {
-  if (preset == null || preset === _lastMusicReverbPreset) {
+  const incoming = Number(preset);
+  if (!Number.isFinite(incoming)) {
     _populateReverbSelect('music-reverb-select');
+    _syncMusicReverbPresetSelect();
+    _syncMusicReverbStrengthUi();
     _updateMusicEffectsChips();
     return;
   }
 
-  _lastMusicReverbPreset = preset;
+  if (_musicReverbIsCustom && incoming === _musicReverbBasePreset) {
+    _lastMusicReverbPreset = incoming;
+    _populateReverbSelect('music-reverb-select');
+    _syncMusicReverbPresetSelect();
+    _syncMusicReverbStrengthUi();
+    _updateMusicEffectsChips();
+    return;
+  }
+
+  if (preset == null || preset === _lastMusicReverbPreset) {
+    _populateReverbSelect('music-reverb-select');
+    _syncMusicReverbPresetSelect();
+    _syncMusicReverbStrengthUi();
+    _updateMusicEffectsChips();
+    return;
+  }
+
+  _lastMusicReverbPreset = incoming;
+  _musicReverbBasePreset = incoming;
+  _musicReverbIsCustom = false;
   _populateReverbSelect('music-reverb-select');
-  const sel = document.getElementById('music-reverb-select');
-  if (sel && sel.value !== String(preset)) sel.value = String(preset);
+  _syncMusicReverbPresetSelect();
+  _applyMusicReverbPresetDefaults(incoming, false);
+  _syncMusicReverbHint();
+  _syncMusicReverbStrengthUi();
   _updateMusicEffectsChips();
+}
+
+function _syncMusicReverbPresetSelect() {
+  const sel = document.getElementById('music-reverb-select');
+  if (!sel) return;
+
+  const target = _musicReverbIsCustom ? 'custom' : String(_lastMusicReverbPreset);
+  if (sel.value !== target) sel.value = target;
+}
+
+function _syncMusicReverbStrengthUi() {
+  const slider = document.getElementById('music-reverb-strength');
+  const dry = document.getElementById('music-reverb-dry');
+  const predelay = document.getElementById('music-reverb-predelay');
+  const ab = document.getElementById('music-reverb-ab');
+  if (!slider && !dry && !predelay && !ab) return;
+
+  const enabled = _lastMusicReverbPreset > 0;
+  if (slider) {
+    slider.disabled = !enabled;
+    slider.classList.toggle('is-disabled', !enabled);
+  }
+  if (dry) {
+    dry.disabled = !enabled;
+    dry.classList.toggle('is-disabled', !enabled);
+  }
+  if (predelay) {
+    predelay.disabled = !enabled;
+    predelay.classList.toggle('is-disabled', !enabled);
+  }
+  if (ab) {
+    ab.disabled = !enabled;
+  }
 }
 
 function _normalizeMusicReverbStrength(value) {
   const n = Number(value);
-  if (!Number.isFinite(n)) return 1;
+  if (!Number.isFinite(n)) return _lastMusicReverbStrength;
 
-  return Math.max(0, Math.min(1, n));
+  return Math.max(0, Math.min(2, n));
 }
 
 function _renderMusicReverbStrength(value) {
@@ -634,18 +706,253 @@ function _renderMusicReverbStrength(value) {
   if (label) {
     label.textContent = Math.round(strength * 100) + '%';
   }
+
+  _syncMusicReverbHint();
+}
+
+function _normalizeMusicReverbDryLevel(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return _lastMusicReverbDryLevel;
+
+  return Math.max(0, Math.min(1, n));
+}
+
+function _normalizeMusicReverbPreDelay(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return _lastMusicReverbPreDelayMs;
+
+  return Math.max(0, Math.min(120, n));
+}
+
+function _noteMusicReverbLocalChange() {
+  _musicReverbLocalChangeUntil = Date.now() + 900;
+}
+
+function _renderMusicReverbDryLevel(value) {
+  const dry = _normalizeMusicReverbDryLevel(value);
+  _lastMusicReverbDryLevel = dry;
+
+  const slider = document.getElementById('music-reverb-dry');
+  if (slider && slider.value !== String(dry)) {
+    slider.value = String(dry);
+  }
+
+  const label = document.getElementById('music-reverb-dry-label');
+  if (label) {
+    label.textContent = Math.round(dry * 100) + '%';
+  }
+}
+
+function _renderMusicReverbPreDelay(value) {
+  const preDelayMs = _normalizeMusicReverbPreDelay(value);
+  _lastMusicReverbPreDelayMs = preDelayMs;
+
+  const slider = document.getElementById('music-reverb-predelay');
+  if (slider && slider.value !== String(Math.round(preDelayMs))) {
+    slider.value = String(Math.round(preDelayMs));
+  }
+
+  const label = document.getElementById('music-reverb-predelay-label');
+  if (label) {
+    label.textContent = Math.round(preDelayMs) + ' ms';
+  }
+}
+
+function _renderMusicReverbBypass(value) {
+  const bypass = !!value;
+  _lastMusicReverbBypass = bypass;
+
+  const ab = document.getElementById('music-reverb-ab');
+  if (ab) {
+    ab.textContent = bypass ? 'A/B (Bypass)' : 'A/B';
+    ab.classList.toggle('active', bypass);
+  }
+
+  _syncMusicReverbHint();
+}
+
+async function _setMusicReverbDryImmediate(value) {
+  const dry = _normalizeMusicReverbDryLevel(value);
+  await api('/api/music/reverb-dry?value=' + encodeURIComponent(dry.toFixed(2)));
+  _renderMusicReverbDryLevel(dry);
+  _saveMusicCustomReverbProfile();
+}
+
+function setMusicReverbDryLevel(value) {
+  if (_lastMusicReverbPreset <= 0) {
+    _syncMusicReverbStrengthUi();
+    return;
+  }
+
+  _noteMusicReverbLocalChange();
+  const dry = _normalizeMusicReverbDryLevel(value);
+  _markMusicReverbCustom();
+  _renderMusicReverbDryLevel(dry);
+  _saveMusicCustomReverbProfile();
+
+  if (_musicReverbDryDebounceHandle) clearTimeout(_musicReverbDryDebounceHandle);
+  _musicReverbDryDebounceHandle = setTimeout(() => {
+    _musicReverbDryDebounceHandle = 0;
+    _setMusicReverbDryImmediate(dry).catch(() => {});
+  }, 140);
+}
+
+async function _setMusicReverbPreDelayImmediate(value) {
+  const preDelayMs = _normalizeMusicReverbPreDelay(value);
+  await api('/api/music/reverb-predelay?value=' + encodeURIComponent(preDelayMs.toFixed(0)));
+  _renderMusicReverbPreDelay(preDelayMs);
+  _saveMusicCustomReverbProfile();
+}
+
+function setMusicReverbPreDelay(value) {
+  if (_lastMusicReverbPreset <= 0) {
+    _syncMusicReverbStrengthUi();
+    return;
+  }
+
+  _noteMusicReverbLocalChange();
+  const preDelayMs = _normalizeMusicReverbPreDelay(value);
+  _markMusicReverbCustom();
+  _renderMusicReverbPreDelay(preDelayMs);
+  _saveMusicCustomReverbProfile();
+
+  if (_musicReverbPreDelayDebounceHandle) clearTimeout(_musicReverbPreDelayDebounceHandle);
+  _musicReverbPreDelayDebounceHandle = setTimeout(() => {
+    _musicReverbPreDelayDebounceHandle = 0;
+    _setMusicReverbPreDelayImmediate(preDelayMs).catch(() => {});
+  }, 140);
+}
+
+async function setMusicReverbBypass(value) {
+  const bypass = !!value;
+  _noteMusicReverbLocalChange();
+  _renderMusicReverbBypass(bypass);
+  await api('/api/music/reverb-bypass?value=' + encodeURIComponent(bypass ? '1' : '0'));
+}
+
+function toggleMusicReverbAb() {
+  if (_lastMusicReverbPreset <= 0) return;
+
+  setMusicReverbBypass(!_lastMusicReverbBypass).catch(() => {});
+}
+
+function _syncMusicReverbHint() {
+  const hint = document.getElementById('music-reverb-hint');
+  if (!hint) return;
+
+  if (_lastMusicReverbPreset <= 0) {
+    hint.textContent = 'Enable a Room preset to adjust strength, dry blend, and pre-delay.';
+    return;
+  }
+
+  if (_lastMusicReverbBypass) {
+    hint.textContent = 'A/B is bypassed. Tap A/B again to re-enable Room effect.';
+    return;
+  }
+
+  const prefix = _musicReverbIsCustom
+    ? 'Custom room. '
+    : 'Preset defaults. ';
+
+  hint.textContent = prefix + 'Strength ' + Math.round(_lastMusicReverbStrength * 100)
+    + '%, Dry ' + Math.round(_lastMusicReverbDryLevel * 100)
+    + '%, Pre-delay ' + Math.round(_lastMusicReverbPreDelayMs) + ' ms.';
+}
+
+function _defaultMusicReverbProfile(preset) {
+  const p = Number(preset);
+  switch (p) {
+    case 1: return { strength: 0.75, dry: 0.95, preDelayMs: 8 };
+    case 2: return { strength: 0.85, dry: 0.93, preDelayMs: 12 };
+    case 3: return { strength: 1.00, dry: 0.90, preDelayMs: 18 };
+    case 4: return { strength: 1.10, dry: 0.88, preDelayMs: 24 };
+    case 5: return { strength: 1.20, dry: 0.84, preDelayMs: 32 };
+    case 6: return { strength: 1.30, dry: 0.80, preDelayMs: 45 };
+    case 7: return { strength: 1.25, dry: 0.82, preDelayMs: 38 };
+    case 8: return { strength: 1.35, dry: 0.78, preDelayMs: 52 };
+    case 9: return { strength: 1.30, dry: 0.80, preDelayMs: 48 };
+    case 10: return { strength: 0.90, dry: 0.92, preDelayMs: 20 };
+    case 11: return { strength: 1.05, dry: 0.90, preDelayMs: 28 };
+    default: return { strength: 1.00, dry: 1.00, preDelayMs: 0 };
+  }
+}
+
+function _loadMusicCustomReverbProfile() {
+  try {
+    const raw = localStorage.getItem('musicReverbCustomProfile');
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+
+    return {
+      strength: _normalizeMusicReverbStrength(parsed.strength),
+      dry: _normalizeMusicReverbDryLevel(parsed.dry),
+      preDelayMs: _normalizeMusicReverbPreDelay(parsed.preDelayMs)
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+function _saveMusicCustomReverbProfile() {
+  try {
+    const payload = {
+      strength: _lastMusicReverbStrength,
+      dry: _lastMusicReverbDryLevel,
+      preDelayMs: _lastMusicReverbPreDelayMs
+    };
+    localStorage.setItem('musicReverbCustomProfile', JSON.stringify(payload));
+  } catch (_) {
+    // best effort
+  }
+}
+
+function _applyMusicReverbPresetDefaults(preset, sendToServer) {
+  const p = Number(preset);
+  if (!Number.isFinite(p) || p <= 0) return;
+
+  const defaults = _defaultMusicReverbProfile(p);
+  _renderMusicReverbStrength(defaults.strength);
+  _renderMusicReverbDryLevel(defaults.dry);
+  _renderMusicReverbPreDelay(defaults.preDelayMs);
+
+  if (!sendToServer) return;
+
+  _noteMusicReverbLocalChange();
+  _setMusicReverbStrengthImmediate(defaults.strength).catch(() => {});
+  _setMusicReverbDryImmediate(defaults.dry).catch(() => {});
+  _setMusicReverbPreDelayImmediate(defaults.preDelayMs).catch(() => {});
+}
+
+function _markMusicReverbCustom() {
+  if (_lastMusicReverbPreset <= 0) return;
+  if (_musicReverbIsCustom) return;
+
+  _musicReverbBasePreset = _lastMusicReverbPreset;
+  _musicReverbIsCustom = true;
+  _syncMusicReverbPresetSelect();
 }
 
 async function _setMusicReverbStrengthImmediate(value) {
   const strength = _normalizeMusicReverbStrength(value);
   await api('/api/music/reverb-strength?value=' + encodeURIComponent(strength.toFixed(2)));
+  _noteMusicReverbLocalChange();
   _renderMusicReverbStrength(strength);
+  _saveMusicCustomReverbProfile();
   _updateMusicEffectsChips();
 }
 
 function setMusicReverbStrength(value) {
+  if (_lastMusicReverbPreset <= 0) {
+    _syncMusicReverbStrengthUi();
+    return;
+  }
+
+  _noteMusicReverbLocalChange();
   const strength = _normalizeMusicReverbStrength(value);
+  _markMusicReverbCustom();
   _renderMusicReverbStrength(strength);
+  _saveMusicCustomReverbProfile();
   _updateMusicEffectsChips();
 
   if (_musicReverbStrengthDebounceHandle) {
@@ -669,8 +976,40 @@ function _renderRadioReverbPreset(preset) {
 async function setReverbPreset(id, domain) {
   haptic(8);
   if (domain === 'music') {
+    if (String(id) === 'custom') {
+      const custom = _loadMusicCustomReverbProfile() || {
+        strength: _lastMusicReverbStrength,
+        dry: _lastMusicReverbDryLevel,
+        preDelayMs: _lastMusicReverbPreDelayMs
+      };
+
+      _musicReverbIsCustom = true;
+      _syncMusicReverbPresetSelect();
+      _renderMusicReverbStrength(custom.strength);
+      _renderMusicReverbDryLevel(custom.dry);
+      _renderMusicReverbPreDelay(custom.preDelayMs);
+      _noteMusicReverbLocalChange();
+      await _setMusicReverbStrengthImmediate(custom.strength);
+      await _setMusicReverbDryImmediate(custom.dry);
+      await _setMusicReverbPreDelayImmediate(custom.preDelayMs);
+      _syncMusicReverbHint();
+      _updateMusicEffectsChips();
+      return;
+    }
+
+    const presetId = Number(id);
+    if (!Number.isFinite(presetId)) return;
+
     await api('/api/music/reverb-preset?id=' + encodeURIComponent(id));
-    _lastMusicReverbPreset = Number(id);
+    _noteMusicReverbLocalChange();
+    _lastMusicReverbPreset = presetId;
+    _musicReverbBasePreset = presetId;
+    _musicReverbIsCustom = false;
+    _syncMusicReverbPresetSelect();
+    _syncMusicReverbStrengthUi();
+    _applyMusicReverbPresetDefaults(_lastMusicReverbPreset, true);
+    _syncMusicReverbHint();
+    _updateMusicEffectsChips();
   } else if (domain === 'radio') {
     await api('/api/radio/reverb-preset?id=' + encodeURIComponent(id));
     _lastRadioReverbPreset = Number(id);
@@ -846,6 +1185,9 @@ async function resetMusicEffects() {
   await setEqPreset(-1);
   await setReverbPreset(0, 'music');
   await _setMusicReverbStrengthImmediate(1);
+  await _setMusicReverbDryImmediate(1);
+  await _setMusicReverbPreDelayImmediate(0);
+  await setMusicReverbBypass(false);
   await setMusicVocalRemoval(0);
   _updateMusicEffectsChips();
 }
@@ -854,8 +1196,12 @@ function saveMusicEffectsDefaults() {
   try {
     const defaults = {
       eqPreset: _lastEqPreset,
-      reverbPreset: _lastMusicReverbPreset,
+      reverbPreset: _musicReverbIsCustom ? _musicReverbBasePreset : _lastMusicReverbPreset,
+      reverbCustom: _musicReverbIsCustom,
       reverbStrength: _lastMusicReverbStrength,
+      reverbDryLevel: _lastMusicReverbDryLevel,
+      reverbPreDelayMs: _lastMusicReverbPreDelayMs,
+      reverbBypass: _lastMusicReverbBypass,
       vocalMode: _lastMusicVocalMode
     };
 
@@ -875,7 +1221,15 @@ async function applySavedMusicEffectsDefaults() {
 
     if (typeof saved.eqPreset === 'number') await setEqPreset(saved.eqPreset);
     if (typeof saved.reverbPreset === 'number') await setReverbPreset(saved.reverbPreset, 'music');
-    if (typeof saved.reverbStrength === 'number') await _setMusicReverbStrengthImmediate(saved.reverbStrength);
+    if (saved.reverbCustom === true) {
+      _musicReverbIsCustom = true;
+      _syncMusicReverbPresetSelect();
+      if (typeof saved.reverbStrength === 'number') await _setMusicReverbStrengthImmediate(saved.reverbStrength);
+      if (typeof saved.reverbDryLevel === 'number') await _setMusicReverbDryImmediate(saved.reverbDryLevel);
+      if (typeof saved.reverbPreDelayMs === 'number') await _setMusicReverbPreDelayImmediate(saved.reverbPreDelayMs);
+      _saveMusicCustomReverbProfile();
+    }
+    if (typeof saved.reverbBypass === 'boolean') await setMusicReverbBypass(saved.reverbBypass);
     if (typeof saved.vocalMode === 'number') await setMusicVocalRemoval(saved.vocalMode);
   } catch (_) {
     // ignore malformed local defaults
@@ -917,13 +1271,46 @@ function _syncEqWrapVisibility() {
   if (radioReverbWrap) radioReverbWrap.style.display = radioPlaying ? '' : 'none';
   const musicReverbWrap = document.getElementById('music-reverb-select-wrap');
   if (musicReverbWrap) musicReverbWrap.style.display = musicPlaying ? '' : 'none';
-  if (musicPlaying) _renderMusicReverbStrength(_lastMusicReverbStrength);
+  if (musicPlaying) {
+    _renderMusicReverbStrength(_lastMusicReverbStrength);
+    _renderMusicReverbDryLevel(_lastMusicReverbDryLevel);
+    _renderMusicReverbPreDelay(_lastMusicReverbPreDelayMs);
+    _renderMusicReverbBypass(_lastMusicReverbBypass);
+    _syncMusicReverbStrengthUi();
+    _syncMusicReverbHint();
+  }
   const musicVocalWrap = document.getElementById('music-vocal-remove-wrap');
   if (musicVocalWrap) musicVocalWrap.style.display = musicPlaying ? '' : 'none';
   // Sparklines must be redrawn after the canvas becomes visible
   if (radioPlaying) _drawEqSparkline('radio-eq-sparkline', _lastEqPreset);
   if (musicPlaying) _drawEqSparkline('music-eq-sparkline', _lastEqPreset);
   _updateMusicEffectsChipsVisibility();
+}
+
+function _syncMusicReverbFromStatus(status) {
+  if (!status) return;
+
+  const now = Date.now();
+  if (now < _musicReverbLocalChangeUntil) {
+    _syncMusicReverbHint();
+    return;
+  }
+
+  const statusPreset = Number(status.reverbPreset ?? status.ReverbPreset ?? _lastMusicReverbPreset);
+  if (Number.isFinite(statusPreset) && statusPreset >= 0) {
+    _lastMusicReverbPreset = statusPreset;
+    if (!_musicReverbIsCustom) {
+      _musicReverbBasePreset = statusPreset;
+    }
+  }
+
+  _renderMusicReverbStrength(status.reverbStrength ?? status.ReverbStrength ?? _lastMusicReverbStrength);
+  _renderMusicReverbDryLevel(status.reverbDryLevel ?? status.ReverbDryLevel ?? _lastMusicReverbDryLevel);
+  _renderMusicReverbPreDelay(status.reverbPreDelayMs ?? status.ReverbPreDelayMs ?? _lastMusicReverbPreDelayMs);
+  _renderMusicReverbBypass(status.reverbBypass ?? status.ReverbBypass ?? false);
+  _syncMusicReverbPresetSelect();
+  _syncMusicReverbStrengthUi();
+  _syncMusicReverbHint();
 }
 async function playAdjacent(direction) {
   haptic(10);

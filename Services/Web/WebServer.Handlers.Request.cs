@@ -655,6 +655,18 @@ internal sealed partial class WebServer
                 HandleMusicReverbStrength(ctx);
                 break;
 
+            case "/api/music/reverb-dry":
+                HandleMusicReverbDryLevel(ctx);
+                break;
+
+            case "/api/music/reverb-predelay":
+                HandleMusicReverbPreDelay(ctx);
+                break;
+
+            case "/api/music/reverb-bypass":
+                HandleMusicReverbBypass(ctx);
+                break;
+
             case "/api/music/vocal-removal":
                 HandleMusicVocalRemoval(ctx);
                 break;

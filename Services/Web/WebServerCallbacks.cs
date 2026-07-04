@@ -48,6 +48,9 @@ internal sealed class WebServerCallbacks
     public required Action<string?>       SetMusicNextTrack { get; init; }
     public required Action<int>           SetMusicReverbPreset { get; init; }
     public required Action<double>        SetMusicReverbStrength { get; init; }
+    public required Action<double>        SetMusicReverbDryLevel { get; init; }
+    public required Action<double>        SetMusicReverbPreDelayMs { get; init; }
+    public required Action<bool>          SetMusicReverbBypass { get; init; }
     public required Action<int>           SetMusicEqPreset     { get; init; }
     public required Action<int>           SetMusicVocalRemovalMode { get; init; }
 

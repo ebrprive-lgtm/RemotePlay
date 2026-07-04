@@ -1098,14 +1098,27 @@
         #music-media-controls .eq-reverb-row .eq-select-label{font-size:.68rem}
         #music-media-controls .eq-reverb-row .track-select{font-size:.78rem}
         #music-media-controls .eq-reverb-row .eq-select-inner{gap:.35rem}
-        #music-media-controls .audio-filters-grid{grid-template-columns:repeat(3,minmax(0,1fr));align-items:stretch}
-        #music-media-controls .audio-filter-control{padding:.35rem .4rem;border:1px solid color-mix(in srgb,var(--player-card-border,#2b2b45) 70%, transparent);border-radius:8px;background:color-mix(in srgb,var(--player-card-bg,#17172a) 55%, transparent);display:flex;flex-direction:column;height:100%}
+        #music-media-controls .audio-filters-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch;grid-auto-rows:1fr}
+        #music-media-controls .audio-filter-stack{display:grid;grid-template-rows:1fr 1fr;gap:.55rem;height:100%;min-height:100%}
+        #music-media-controls .audio-filter-stack .audio-filter-control{height:100%;min-height:0}
+        #music-media-controls .audio-filter-control{padding:.35rem .4rem;border:1px solid color-mix(in srgb,var(--player-card-border,#2b2b45) 70%, transparent);border-radius:8px;background:color-mix(in srgb,var(--player-card-bg,#17172a) 55%, transparent);display:flex;flex-direction:column;justify-content:flex-start;height:100%;min-height:100%}
         #music-media-controls #music-eq-select-wrap .eq-select-inner{display:flex;flex-direction:column;align-items:stretch;gap:.25rem}
         #music-media-controls #music-eq-select-wrap .eq-select-inner .track-select{width:100%;min-width:0}
         #music-media-controls #music-eq-select-wrap .eq-select-inner .eq-sparkline{align-self:stretch;margin-top:.08rem;width:100%;height:24px}
-        #music-media-controls #music-reverb-select-wrap .audio-filter-strength-wrap{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.35rem;margin-top:.22rem}
+        #music-media-controls #music-reverb-select-wrap .audio-filter-strength-wrap{display:grid;grid-template-columns:64px minmax(0,1fr) auto;align-items:center;gap:.35rem;margin-top:.22rem}
+        #music-media-controls #music-reverb-select-wrap .audio-filter-strength-wrap::before{content:attr(data-label);font-size:.66rem;font-weight:700;color:var(--player-sub,#9ea2b8);letter-spacing:.01em}
+        #music-media-controls #music-reverb-select-wrap .audio-filter-strength-wrap[data-label="Strength"]::before{content:"Strength"}
+        #music-media-controls #music-reverb-select-wrap .audio-filter-strength-wrap[data-label="Dry"]::before{content:"Dry"}
+        #music-media-controls #music-reverb-select-wrap .audio-filter-strength-wrap[data-label="Pre-delay"]::before{content:"Pre-delay"}
         #music-media-controls #music-reverb-select-wrap .audio-filter-strength-slider{width:100%;min-width:0;accent-color:var(--player-accent,#e94560);cursor:pointer;min-height:20px}
+        #music-media-controls #music-reverb-select-wrap .audio-filter-strength-slider:disabled{opacity:.45;cursor:not-allowed;filter:saturate(.35)}
         #music-media-controls #music-reverb-select-wrap .audio-filter-strength-label{font-size:.68rem;font-weight:700;color:var(--player-sub,#9ea2b8);min-width:2.6rem;text-align:right}
+        #music-media-controls #music-reverb-select-wrap .audio-filter-ab-row{display:flex;justify-content:flex-end;margin-top:.2rem}
+        #music-media-controls #music-reverb-select-wrap .audio-filter-ab-row .btn{min-height:28px;padding:.24rem .55rem;font-size:.68rem}
+        #music-media-controls #music-reverb-select-wrap #music-reverb-hint{margin-top:auto;padding-top:.2rem}
+        #music-media-controls #music-vocal-remove-wrap .audio-filter-hint{margin-top:auto}
+        #music-media-controls #music-reverb-select-wrap .audio-filter-hint,
+        #music-media-controls #music-vocal-remove-wrap .audio-filter-hint{min-height:2.2em}
         #music-media-controls .audio-filter-subtitle{font-size:.62rem;line-height:1.15;color:var(--player-sub,#9ea2b8);opacity:.9;margin-top:-.05rem}
         #music-media-controls .audio-filter-hint{font-size:.61rem;line-height:1.2;color:var(--player-sub,#9ea2b8);opacity:.8;margin-top:.2rem}
         #music-media-controls .music-effects-status{display:none;flex-wrap:wrap;gap:.35rem;margin-top:.55rem}

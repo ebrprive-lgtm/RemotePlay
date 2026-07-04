@@ -3864,6 +3864,10 @@ LIMIT 6;";
             playbackError = pb.LastError,
             eqPreset      = pb.EqPreset,
             reverbPreset  = pb.ReverbPreset,
+            reverbStrength = Math.Round(pb.ReverbStrength, 2),
+            reverbDryLevel = Math.Round(pb.ReverbDryLevel, 2),
+            reverbPreDelayMs = Math.Round(pb.ReverbPreDelayMs, 1),
+            reverbBypass = pb.ReverbBypass,
             vocalRemoval  = pb.VocalRemovalEnabled,
             vocalMode     = pb.VocalMode
         };

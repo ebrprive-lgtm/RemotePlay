@@ -422,7 +422,7 @@ internal sealed partial class WebServer
     private void HandleMusicReverbStrength(HttpListenerContext ctx)
     {
         var valueParam = ctx.Request.QueryString["value"];
-        if (MediaControlValueParser.TryParseClampedDouble(valueParam, 0, 1, out var strength))
+        if (MediaControlValueParser.TryParseClampedDouble(valueParam, 0, 2, out var strength))
         {
             _callbacks.SetMusicReverbStrength(strength);
             TrySendResponse(ctx, 200, "text/plain", "OK");
@@ -431,6 +431,44 @@ internal sealed partial class WebServer
         {
             TrySendResponse(ctx, 400, "text/plain", "Bad reverb strength");
         }
+    }
+
+    private void HandleMusicReverbDryLevel(HttpListenerContext ctx)
+    {
+        var valueParam = ctx.Request.QueryString["value"];
+        if (MediaControlValueParser.TryParseClampedDouble(valueParam, 0, 1, out var dryLevel))
+        {
+            _callbacks.SetMusicReverbDryLevel(dryLevel);
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+        }
+        else
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad reverb dry level");
+        }
+    }
+
+    private void HandleMusicReverbPreDelay(HttpListenerContext ctx)
+    {
+        var valueParam = ctx.Request.QueryString["value"];
+        if (MediaControlValueParser.TryParseClampedDouble(valueParam, 0, 120, out var preDelayMs))
+        {
+            _callbacks.SetMusicReverbPreDelayMs(preDelayMs);
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+        }
+        else
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad reverb pre-delay");
+        }
+    }
+
+    private void HandleMusicReverbBypass(HttpListenerContext ctx)
+    {
+        var valueParam = ctx.Request.QueryString["value"];
+        bool bypass = string.Equals(valueParam, "1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(valueParam, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(valueParam, "on", StringComparison.OrdinalIgnoreCase);
+        _callbacks.SetMusicReverbBypass(bypass);
+        TrySendResponse(ctx, 200, "text/plain", "OK");
     }
 
     private void HandleMusicVocalRemoval(HttpListenerContext ctx)

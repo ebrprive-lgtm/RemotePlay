@@ -695,8 +695,8 @@ function updateMusicBar(s) {
   }
   if (typeof _renderMusicReverbPreset === 'function')
     _renderMusicReverbPreset(s.reverbPreset ?? s.ReverbPreset);
-  if (typeof _renderMusicReverbStrength === 'function')
-    _renderMusicReverbStrength(s.reverbStrength ?? s.ReverbStrength ?? 1);
+  if (typeof _syncMusicReverbFromStatus === 'function')
+    _syncMusicReverbFromStatus(s);
   if (typeof _renderMusicVocalRemoval === 'function')
     _renderMusicVocalRemoval(s.vocalMode ?? s.VocalMode ?? (s.vocalRemoval ?? s.VocalRemoval ?? false));
 }

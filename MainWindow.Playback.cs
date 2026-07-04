@@ -1186,6 +1186,9 @@ public partial class MainWindow
             SetMusicNextTrack = _musicPlayer.SetNextTrack,
             SetMusicReverbPreset = _musicPlayer.SetReverbPreset,
             SetMusicReverbStrength = _musicPlayer.SetReverbStrength,
+            SetMusicReverbDryLevel = _musicPlayer.SetReverbDryLevel,
+            SetMusicReverbPreDelayMs = _musicPlayer.SetReverbPreDelayMs,
+            SetMusicReverbBypass = _musicPlayer.SetReverbBypass,
             SetMusicEqPreset     = _musicPlayer.SetEqPreset,
             SetMusicVocalRemovalMode = _musicPlayer.SetVocalMode,
             // Radio � backed by RadioPlayer + RadioBrowserClient

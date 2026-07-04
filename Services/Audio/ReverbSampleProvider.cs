@@ -30,8 +30,11 @@ internal sealed class ReverbSampleProvider : ISampleProvider
     private readonly ISampleProvider _source;
     private readonly float[] _delayL;
     private readonly float[] _delayR;
+    private readonly float[] _preDelayL;
+    private readonly float[] _preDelayR;
     private readonly int _sampleRate;
     private int _writeIndex;
+    private int _preDelayWriteIndex;
     private int _tap1;
     private int _tap2;
     private int _tap3;
@@ -42,6 +45,10 @@ internal sealed class ReverbSampleProvider : ISampleProvider
     private float _damping;
     private float _cross;
     private float _strength = 1f;
+    private float _dry = 1f;
+    private int _preDelaySamples;
+    private float _outputTrim = 1f;
+    private bool _bypass;
     private float _presetWet;
     private float _filterL;
     private float _filterR;
@@ -60,6 +67,9 @@ internal sealed class ReverbSampleProvider : ISampleProvider
         int maxDelaySamples = Math.Max(_sampleRate * 2, 1);
         _delayL = new float[maxDelaySamples];
         _delayR = new float[maxDelaySamples];
+        int maxPreDelaySamples = Math.Max((int)(_sampleRate * 0.2f), 1);
+        _preDelayL = new float[maxPreDelaySamples];
+        _preDelayR = new float[maxPreDelaySamples];
         ApplyPreset(0);
     }
 
@@ -81,19 +91,41 @@ internal sealed class ReverbSampleProvider : ISampleProvider
         _tap2 = MsToSamples(79f + 110f * room);
         _tap3 = MsToSamples(143f + 210f * room);
         _tap4 = MsToSamples(221f + 430f * room);
+        UpdateOutputTrim();
     }
 
-    /// <summary>Sets wet blend strength in range [0..1], preserving the selected preset shape.</summary>
+    /// <summary>Sets wet blend strength in range [0..2], preserving the selected preset shape.</summary>
     public void SetStrength(double strength)
     {
-        _strength = (float)Math.Clamp(strength, 0d, 1d);
+        _strength = (float)Math.Clamp(strength, 0d, 2d);
         _wet = _presetWet * _strength;
+        UpdateOutputTrim();
+    }
+
+    /// <summary>Sets dry signal amount in range [0..1].</summary>
+    public void SetDryLevel(double dry)
+    {
+        _dry = (float)Math.Clamp(dry, 0d, 1d);
+        UpdateOutputTrim();
+    }
+
+    /// <summary>Sets input pre-delay in milliseconds [0..120].</summary>
+    public void SetPreDelayMs(double ms)
+    {
+        var clampedMs = Math.Clamp(ms, 0d, 120d);
+        _preDelaySamples = Math.Clamp((int)(_sampleRate * clampedMs / 1000d), 0, _preDelayL.Length - 1);
+    }
+
+    /// <summary>Enables/disables reverb path while preserving configured parameters.</summary>
+    public void SetBypass(bool bypass)
+    {
+        _bypass = bypass;
     }
 
     public int Read(float[] buffer, int offset, int count)
     {
         int read = _source.Read(buffer, offset, count);
-        if (_wet <= 0f)
+        if (_bypass)
         {
             return read;
         }
@@ -103,6 +135,27 @@ internal sealed class ReverbSampleProvider : ISampleProvider
         {
             float inL = buffer[n];
             float inR = buffer[n + 1];
+
+            float procInL = inL;
+            float procInR = inR;
+            if (_preDelaySamples > 0)
+            {
+                int preDelayReadIndex = _preDelayWriteIndex - _preDelaySamples;
+                if (preDelayReadIndex < 0)
+                {
+                    preDelayReadIndex += _preDelayL.Length;
+                }
+
+                procInL = _preDelayL[preDelayReadIndex];
+                procInR = _preDelayR[preDelayReadIndex];
+                _preDelayL[_preDelayWriteIndex] = inL;
+                _preDelayR[_preDelayWriteIndex] = inR;
+
+                if (++_preDelayWriteIndex >= _preDelayL.Length)
+                {
+                    _preDelayWriteIndex = 0;
+                }
+            }
 
             float earlyL = ReadDelay(_delayL, _tap1) * 0.60f + ReadDelay(_delayR, _tap2) * 0.40f;
             float earlyR = ReadDelay(_delayR, _tap1) * 0.60f + ReadDelay(_delayL, _tap2) * 0.40f;
@@ -118,12 +171,14 @@ internal sealed class ReverbSampleProvider : ISampleProvider
             float wetL = _filterL * (0.55f + _width * 0.45f) + _filterR * ((1f - _width) * 0.35f);
             float wetR = _filterR * (0.55f + _width * 0.45f) + _filterL * ((1f - _width) * 0.35f);
 
-            buffer[n] = SoftClip(inL + wetL * _wet);
-            buffer[n + 1] = SoftClip(inR + wetR * _wet);
+            float mixedL = (inL * _dry) + (wetL * _wet);
+            float mixedR = (inR * _dry) + (wetR * _wet);
+            buffer[n] = SoftClip(mixedL * _outputTrim);
+            buffer[n + 1] = SoftClip(mixedR * _outputTrim);
 
-            float monoInput = (inL + inR) * 0.5f;
-            _delayL[_writeIndex] = SoftClip(monoInput * (1f - _cross) + inL * _cross + _filterL * _feedback);
-            _delayR[_writeIndex] = SoftClip(monoInput * (1f - _cross) + inR * _cross + _filterR * _feedback);
+            float monoInput = (procInL + procInR) * 0.5f;
+            _delayL[_writeIndex] = SoftClip(monoInput * (1f - _cross) + procInL * _cross + _filterL * _feedback);
+            _delayR[_writeIndex] = SoftClip(monoInput * (1f - _cross) + procInR * _cross + _filterR * _feedback);
 
             if (++_writeIndex >= _delayL.Length)
             {
@@ -150,6 +205,12 @@ internal sealed class ReverbSampleProvider : ISampleProvider
 
     private static float SoftClip(float value)
         => MathF.Tanh(value);
+
+    private void UpdateOutputTrim()
+    {
+        float energy = (_wet * 0.55f) + (_dry * 0.9f);
+        _outputTrim = Math.Clamp(1f / MathF.Max(0.7f, energy), 0.55f, 1f);
+    }
 
     private readonly record struct RoomPreset(float RoomSize, float Feedback, float Wet, float Damping, float Width, float Cross);
 }
