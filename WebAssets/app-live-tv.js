@@ -1064,6 +1064,16 @@ function _liveTvMapChannelList(channels, streams) {
 }
 
 function _syncLiveTvCommandBar() {
+  if (typeof _setViewModeScopeFromSegments === 'function') {
+    _setViewModeScopeFromSegments('live-tv', [
+      'Live TV Root',
+      _liveTvShowFavoritesOnly ? 'Favorites' : 'All',
+      _liveTvFilterCountry || 'All countries',
+      _liveTvFilterCategory || 'All categories',
+      _liveTvFilterLanguage || 'All languages',
+      _liveTvFilterQuery ? 'Search: ' + _liveTvFilterQuery : 'All',
+    ]);
+  }
   const viewBtn = document.getElementById('ltcb-view-btn');
   const isList = _viewMode['live-tv'] === 'list';
 
@@ -1207,6 +1217,11 @@ function _liveTvGetFilteredChannels() {
 
 async function liveTvPlayChannel(url, name) {
   if (!url) return;
+
+  if (typeof closeLocalPlayerForNonLocalPlayback === 'function') {
+    await closeLocalPlayerForNonLocalPlayback();
+  }
+
   if (typeof setStatus === 'function') setStatus('Starting Live TV: ' + (name || 'Unknown channel'));
   _liveTvLastRequestedUrl = url;
   const requestedChannel = _liveTvChannels.find((c) => c.url === url) || null;
@@ -1555,6 +1570,7 @@ async function liveTvReindexNow(background = false) {
 }
 
 function liveTvInit() {
+  _liveTvShowFavoritesOnly = true;
   _syncLiveTvCommandBar();
   _loadFailedLiveTvChannels();
   _loadLiveTvFailureAudit();

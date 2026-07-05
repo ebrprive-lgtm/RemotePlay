@@ -27,11 +27,14 @@ internal sealed record AppConfig
     public string MusicPath { get; init; } = Path.Combine(AppPaths.UserDataDirectory, "Music");
     public double Volume { get; init; } = 1;
     public double Brightness { get; init; } = 0.5;
+    public double Sharpness { get; init; }
     public double Zoom { get; init; } = 1;
     public double AudioBoost { get; init; } = 1;
     public double PlaybackSpeed { get; init; } = 1;
     public bool SubtitlesEnabled { get; init; } = true;
     public string PreferredAudioLanguage { get; init; } = "eng";
+    /// <summary>BCP-47 language code used when fetching Wikipedia artist info (e.g. "en", "nl", "fr", "de"). Empty = auto-detect from langlinks.</summary>
+    public string WikiLanguage { get; init; } = "en";
     public string PreferredSubtitleLanguage { get; init; } = "eng";
     public string SecondarySubtitleLanguage { get; init; } = string.Empty;
     public bool PreferForcedSubtitles { get; init; } = true;

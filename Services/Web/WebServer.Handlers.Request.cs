@@ -268,6 +268,7 @@ internal sealed partial class WebServer
                 break;
 
             case "/api/play":
+            case "/api/video/play":
                 HandlePlay(ctx);
                 break;
 
@@ -399,6 +400,10 @@ internal sealed partial class WebServer
 
             case "/api/brightness":
                 HandleBrightness(ctx);
+                break;
+
+            case "/api/sharpness":
+                HandleSharpness(ctx);
                 break;
 
             case "/api/saturation":
@@ -562,6 +567,10 @@ internal sealed partial class WebServer
                 HandleMusicCover(ctx);
                 break;
 
+            case "/api/music/wiki":
+                await HandleMusicWikiAsync(ctx).ConfigureAwait(false);
+                break;
+
             case "/api/music/album-art":
                 await HandleMusicAlbumArtAsync(ctx).ConfigureAwait(false);
                 break;
@@ -679,6 +688,23 @@ internal sealed partial class WebServer
                 HandleResetM3uCache(ctx);
                 break;
 
+            // ── Podcasts ──────────────────────────────────────────────────────────
+            case "/api/podcasts/search":
+                await HandlePodcastSearchAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/podcasts/countries":
+                HandlePodcastCountries(ctx);
+                break;
+
+            case "/api/podcasts/feed":
+                await HandlePodcastFeedAsync(ctx).ConfigureAwait(false);
+                break;
+
+            case "/api/podcasts/play":
+                HandlePodcastPlay(ctx);
+                break;
+
             // ── Radio ─────────────────────────────────────────────────────────────
             case "/api/radio/search":
                 await HandleRadioSearchAsync(ctx).ConfigureAwait(false);
@@ -737,6 +763,16 @@ internal sealed partial class WebServer
                 }
 
                 HandleRadioBoost(ctx);
+                break;
+
+            case "/api/radio/seek":
+                if (!req.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+                {
+                    TrySendResponse(ctx, 405, "text/plain", "Method Not Allowed");
+                    break;
+                }
+
+                HandleRadioSeek(ctx);
                 break;
 
             case "/api/radio/reverb-preset":

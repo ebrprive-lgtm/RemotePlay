@@ -1,9 +1,70 @@
 let _localMediaType = 'Local';
+
+function _clearLocalPlayerMeta() {
+  // Legacy local-player-bar metadata was removed. Keep as a no-op for compatibility.
+}
+
+function setLocalPodcastMeta(showTitle, artworkUrl) {
+  // Legacy local-player-bar metadata was removed. Keep as a no-op for compatibility.
+}
+
 function _postLog(msg) {
   fetch('/api/log', { method: 'POST', body: msg }).catch(() => {});
 }
+
+function _closeNonLocalPlayersForLocalStart(localType) {
+  const isMusic = localType === 'Music';
+  const isRadio = localType === 'Radio';
+
+  if (typeof stopMusicPlaybackPoll === 'function') stopMusicPlaybackPoll();
+  if (typeof stopMusicStatusPoll === 'function') stopMusicStatusPoll();
+  if (typeof stopRadioStatusPoll === 'function') stopRadioStatusPoll();
+  if (typeof stopPolling === 'function') stopPolling();
+  if (typeof stopSse === 'function') stopSse();
+
+  if (!isMusic) {
+    if (typeof _clearMusicPlaybackVisuals === 'function') _clearMusicPlaybackVisuals();
+    const musicBar = document.getElementById('music-player-bar');
+    if (musicBar) musicBar.style.display = 'none';
+  }
+
+  if (!isMusic) document.body.classList.remove('music-player-docked');
+  if (!isRadio) document.body.classList.remove('radio-player-docked');
+  document.body.classList.remove('desktop-player-docked');
+  document.body.classList.remove('tablet-docked');
+  document.body.classList.remove('phone-playing');
+
+  if (typeof setPlayerBarVisible === 'function') setPlayerBarVisible(false);
+  if (typeof updatePlayingCard === 'function') updatePlayingCard(null, playingPath);
+  if (typeof playingPath !== 'undefined') playingPath = null;
+
+  Promise.allSettled([
+    fetch('/api/stop'),
+    fetch('/api/music/stop'),
+    fetch('/api/music/queue-next'),
+    fetch('/api/radio/stop', { method: 'POST' })
+  ]).catch(() => {});
+}
+
+async function closeLocalPlayerForNonLocalPlayback() {
+  if (_localMediaType === 'Local') return;
+
+  if (typeof localStop === 'function') {
+    await localStop();
+    return;
+  }
+
+  document.body.classList.remove('music-player-docked');
+  document.body.classList.remove('music-local-mode');
+  document.body.classList.remove('radio-player-docked');
+  document.body.classList.remove('podcast-player-mode');
+  _clearLocalPlayerMeta();
+  _localMediaType = 'Local';
+}
+
 function localPlay(url, name, type) {
   _localMediaType = type || 'Local';
+  _closeNonLocalPlayersForLocalStart(_localMediaType);
   _postLog(`[LOCAL-PLAY] localPlay() called — type=${_localMediaType} name='${name}' url=${url}`);
   const a = _getLocalAudio();
   if (!a) {
@@ -16,8 +77,6 @@ function localPlay(url, name, type) {
     const msg = `[LOCAL-PLAY] play() rejected for '${name}': ${err && err.message ? err.message : err}`;
     _postLog(msg);
     fetch('/api/local-playing', { method: 'POST', body: 'false' }).catch(() => {});
-    const s = document.getElementById('local-player-state');
-    if (s) s.textContent = 'Play error: ' + (err && err.message ? err.message : String(err));
     const errMsg = err && err.message ? err.message : String(err);
     if (typeof showPlaybackErrorPopup === 'function') {
       showPlaybackErrorPopup(type || 'Media', `"${name}" could not play.\n\n${errMsg}`);
@@ -25,36 +84,83 @@ function localPlay(url, name, type) {
   });
   // Notify server AFTER play() — keeps the user-gesture scope clean
   setTimeout(() => fetch('/api/local-playing', { method: 'POST', body: 'true' }).catch(() => {}), 0);
-  const nm = document.getElementById('local-player-name');
-  if (nm) nm.textContent = name;
-  // Only show the generic local-player-bar when no domain-specific player bar exists.
-  // Music and Radio already have dedicated player bars with their own controls.
-  if (_localMediaType !== 'Music' && _localMediaType !== 'Radio') {
-    document.body.classList.add('local-player-docked');
+  if (_localMediaType !== 'Podcast') _clearLocalPlayerMeta();
+
+  // Keep the same domain player UI for local playback.
+  if (_localMediaType === 'Music') {
+    const musicBar = document.getElementById('music-player-bar');
+    if (musicBar) musicBar.style.display = 'flex';
+    document.body.classList.add('music-player-docked');
+    document.body.classList.add('music-local-mode');
+    document.body.classList.remove('radio-player-docked');
+    document.body.classList.remove('podcast-player-mode');
   } else {
-    document.body.classList.remove('local-player-docked');
+    const isPodcast = _localMediaType === 'Podcast' || _localMediaType === 'PodcastServer';
+    const radioBar = document.getElementById('radio-player-bar');
+    if (radioBar) radioBar.style.display = 'flex';
+    document.body.classList.add('radio-player-docked');
+    document.body.classList.remove('music-player-docked');
+    document.body.classList.toggle('podcast-player-mode', isPodcast);
+    if (typeof updateRadioBar === 'function') {
+      const resolvedName = name || (isPodcast ? 'Podcast episode' : 'Radio');
+      const country = isPodcast ? '' : (typeof _radioCurrentCountry !== 'undefined' ? _radioCurrentCountry : '');
+      const tag = isPodcast ? 'Podcast' : (typeof _radioCurrentTag !== 'undefined' ? _radioCurrentTag : '');
+      const station = isPodcast ? null : (typeof _radioCurrentStation !== 'undefined' ? _radioCurrentStation : null);
+      updateRadioBar(resolvedName, country, tag, true, station);
+    }
   }
   _localAudioUpdate();
   _postLog(`Playing ${_localMediaType}: '${name}' on Local`);
 }
-function localToggle() {
+async function localToggle() {
+  if (_localMediaType === 'PodcastServer' && typeof radioToggle === 'function') {
+    await radioToggle();
+    return;
+  }
+
   const a = _getLocalAudio();
   if (!a) return;
   if (a.paused) a.play().catch(() => {});
   else a.pause();
 }
-function localStop() {
+async function localStop(keepPlayerVisible = false) {
+  if (_localMediaType === 'PodcastServer') {
+    if (typeof radioDismiss === 'function') await radioDismiss();
+    document.body.classList.remove('podcast-player-mode');
+    _clearLocalPlayerMeta();
+    _localSeekDragging = false;
+    _localMediaType = 'Local';
+    return;
+  }
+
   const caller = (new Error()).stack ? (new Error()).stack.split('\n').slice(1,3).join(' | ') : 'unknown';
   const a = _getLocalAudio();
   const wasActive = a && a.src && !a.paused;
-  _postLog(`[LOCAL-STOP] called — wasActive=${wasActive} caller: ${caller}`);
+  _postLog(`[LOCAL-STOP] called — wasActive=${wasActive} keepPlayerVisible=${keepPlayerVisible} caller: ${caller}`);
   if (a) {
     a.pause();
     a.src = '';
   }
   fetch('/api/local-playing', { method: 'POST', body: 'false' }).catch(() => {});
-  document.body.classList.remove('local-player-docked');
+  if (_localMediaType === 'Music') {
+    // Only hide the player if not keeping it visible for handoff
+    if (!keepPlayerVisible) {
+      document.body.classList.remove('music-player-docked');
+    }
+    document.body.classList.remove('music-local-mode');
+  } else if (_localMediaType === 'Podcast') {
+    if (!keepPlayerVisible) {
+      document.body.classList.remove('radio-player-docked');
+    }
+    document.body.classList.remove('podcast-player-mode');
+  } else if (_localMediaType === 'Radio') {
+    // Radio handoff - keep player visible if requested
+    if (!keepPlayerVisible) {
+      document.body.classList.remove('radio-player-docked');
+    }
+  }
   _localSeekDragging = false;
+  _clearLocalPlayerMeta();
   if (wasActive) _postLog(`Stopping ${_localMediaType} on Local`);
   _localMediaType = 'Local';
 }

@@ -52,6 +52,7 @@ internal sealed partial class WebServer
         "app-context-menu.js",
         "app-library.js",
         "app-live-tv.js",
+        "app-podcasts.js",
         "app-radio.js",
         "app-globe.js",
         "app-radio-status.js",
@@ -89,6 +90,8 @@ internal sealed partial class WebServer
     // True while the browser-side local player is active (set via /api/local-playing)
     public bool BrowserLocalPlaying => _browserLocalPlaying;
 
+    public void SetBrowserLocalPlaying(bool isPlaying) => _browserLocalPlaying = isPlaying;
+
     public void UpdateExpertMode(bool expertMode) => _expertMode = expertMode;
     public void UpdateDebugMode(bool debugMode) => _debugMode = debugMode;
 
@@ -103,6 +106,9 @@ internal sealed partial class WebServer
     private readonly object _liveTvCatalogRefreshGate = new();
     // Lazily populated by background probes so the browse path stays fast.
     private readonly ConcurrentDictionary<string, double> _videoDurationCache = new(StringComparer.OrdinalIgnoreCase);
+    // Folder item/track count cache for music browse: keys are "vis:<path>", "top:<path>", "rec:<path>"
+    private readonly ConcurrentDictionary<string, (int count, DateTime expiry)> _folderCountCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan FolderCountCacheTtl = TimeSpan.FromDays(1);
     private FileSystemWatcher? _libraryWatcher;
     private LibraryFile[] _libraryIndex = [];
     private MusicFile[] _musicIndex = [];
@@ -189,7 +195,6 @@ internal sealed partial class WebServer
         _activeScheme = config.Scheme;
         _appUpdater = appUpdater;
         LoadFavorites();
-        LoadLiveTvCatalogCache();
         _libraryIndexTimer = new Timer(_ => RefreshLibraryIndexIfIdle(), null,
             TimeSpan.FromHours(24), TimeSpan.FromHours(24));
         _libraryWatcherDebounceTimer = new Timer(_ => RunDelayedLibraryRescan(), null,
@@ -430,16 +435,59 @@ internal sealed partial class WebServer
             if (!Directory.Exists(root)) return;
 
             int stale = 0;
+            int unreadable = 0;
+            int inaccessible = 0;
+            int totalLinks = 0;
+            const int sampleLimit = 5;
+            var staleSamples = new List<string>(sampleLimit);
+            var unreadableSamples = new List<string>(sampleLimit);
+            var inaccessibleSamples = new List<string>(sampleLimit);
+
             foreach (var f in Directory.EnumerateFiles(root, "*" + RplinkHelper.Extension, SearchOption.AllDirectories))
             {
-                var target = RplinkHelper.TryReadTarget(f);
-                if (target is null)
-                    stale++;
+                totalLinks++;
+                var inspection = RplinkHelper.InspectTarget(f);
+
+                switch (inspection.Status)
+                {
+                    case RplinkHelper.RplinkTargetStatus.Resolved:
+                        break;
+
+                    case RplinkHelper.RplinkTargetStatus.Missing:
+                        stale++;
+                        if (staleSamples.Count < sampleLimit)
+                        {
+                            staleSamples.Add($"{f} -> {inspection.ResolvedTarget ?? "<unknown target>"}");
+                        }
+                        break;
+
+                    case RplinkHelper.RplinkTargetStatus.UnreadableLink:
+                        unreadable++;
+                        if (unreadableSamples.Count < sampleLimit)
+                        {
+                            unreadableSamples.Add($"{f} ({inspection.Details ?? "unreadable link"})");
+                        }
+                        break;
+
+                    case RplinkHelper.RplinkTargetStatus.InaccessibleTarget:
+                        inaccessible++;
+                        if (inaccessibleSamples.Count < sampleLimit)
+                        {
+                            inaccessibleSamples.Add($"{f} -> {inspection.ResolvedTarget ?? "<unknown target>"} ({inspection.Details ?? "inaccessible"})");
+                        }
+                        break;
+                }
             }
 
             Interlocked.Exchange(ref _staleLinkCount, stale);
-            if (stale > 0)
-                Logger.Info($"Stale-link check: {stale} broken link(s) found in '{root}'");
+            if (stale > 0 || unreadable > 0 || inaccessible > 0)
+            {
+                Logger.Info(
+                    $"Stale-link check in '{root}': confirmed-missing={stale}, inaccessible={inaccessible}, unreadable-link={unreadable}, total-links={totalLinks}. " +
+                    $"Missing samples: [{string.Join(" | ", staleSamples)}]. " +
+                    $"Inaccessible samples: [{string.Join(" | ", inaccessibleSamples)}]. " +
+                    $"Unreadable samples: [{string.Join(" | ", unreadableSamples)}].");
+            }
         }
         catch (Exception ex)
         {

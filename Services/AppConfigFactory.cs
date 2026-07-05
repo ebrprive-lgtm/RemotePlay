@@ -84,6 +84,7 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         AppConfig currentConfig,
         double volume,
         double brightness,
+        double sharpness,
         double zoom,
         double audioBoost,
         double playbackSpeed,
@@ -95,6 +96,7 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         {
             Volume           = volume,
             Brightness       = brightness,
+            Sharpness        = sharpness,
             Zoom             = zoom,
             AudioBoost       = audioBoost,
             PlaybackSpeed    = playbackSpeed,

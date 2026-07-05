@@ -42,6 +42,7 @@ internal interface IAppConfigFactory
         AppConfig currentConfig,
         double volume,
         double brightness,
+        double sharpness,
         double zoom,
         double audioBoost,
         double playbackSpeed,

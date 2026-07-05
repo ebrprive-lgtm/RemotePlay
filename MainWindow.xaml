@@ -682,12 +682,12 @@
                                        Visibility="Collapsed"
                                        ToolTip="Broken links detected — use 'Scan broken links' or right-click a link to auto-heal or retarget"/>
                             <Button x:Name="RegisterContextMenuBtn"
-                                    Content="📋  Register Explorer context menu"
+                                    Content="📋  Register Explorer .rplink integration"
                                     Click="OnRegisterContextMenu"
                                     Background="#333" Foreground="White"
                                     BorderThickness="0" Padding="10,5" Margin="16,0,0,0"
                                     Cursor="Hand" DockPanel.Dock="Right"
-                                    ToolTip="Adds 'Create RemotePlay Link' to the right-click menu for video files in Explorer"/>
+                                    ToolTip="Registers .rplink app icon plus the RemotePlay submenu (Play, Go to In-App, Windows Explorer to) and Create Link action"/>
                             <Button Content="🔍  Scan broken links"
                                     Click="OnScanBrokenLinks"
                                     Background="#333" Foreground="White"
@@ -1156,6 +1156,12 @@
                             <ListView x:Name="BrokenLinksList" Grid.Row="1"
                                       Background="Transparent" Foreground="#E94560"
                                       BorderThickness="0" MaxHeight="160">
+                                <ListView.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Header="🎯  Retarget broken link…"
+                                                  Click="OnRetargetBrokenLinkFromScan"/>
+                                    </ContextMenu>
+                                </ListView.ContextMenu>
                                 <ListView.ItemContainerStyle>
                                     <Style TargetType="ListViewItem">
                                         <Setter Property="Background" Value="Transparent"/>

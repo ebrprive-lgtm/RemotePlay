@@ -416,7 +416,7 @@ internal sealed partial class WebServer
         // Regular sub-folders
         var regularFolders = Directory.EnumerateDirectories(targetDir)
             .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)) && !Path.GetFileName(d).StartsWith('@'))
-            .Select(d => (name: Path.GetFileName(d), dir: WebPathHelpers.EncodePath(d), isLink: false));
+            .Select(d => (name: Path.GetFileName(d), dir: WebPathHelpers.EncodePath(d), isLink: false, virtualPath: string.Empty));
 
         // Folder-link .rplink entries (target is a directory)
         var folderLinkFolders = Directory.EnumerateFiles(targetDir, "*" + RplinkHelper.Extension)
@@ -424,15 +424,17 @@ internal sealed partial class WebServer
             .Select(f =>
             {
                 var target = RplinkHelper.TryReadTarget(f);
+                var linkName = Path.GetFileNameWithoutExtension(f);
                 return (name: Path.GetFileNameWithoutExtension(f),
                         dir: target is not null ? WebPathHelpers.EncodePath(target) : string.Empty,
-                        isLink: true);
+                        isLink: true,
+                        virtualPath: Path.Combine(targetDir, linkName));
             })
             .Where(x => !string.IsNullOrEmpty(x.dir));
 
         var folders = regularFolders.Concat(folderLinkFolders)
             .OrderBy(f => f.name, naturalComparer)
-            .Select(f => new { f.name, f.dir, f.isLink })
+            .Select(f => new { f.name, f.dir, f.isLink, f.virtualPath })
             .ToArray();
 
         var history = GetHistoryForIp(GetClientIp(ctx));
@@ -492,6 +494,15 @@ internal sealed partial class WebServer
 
     private static int ReadPositiveInt(string? value, int defaultValue, int maxValue) => MediaControlValueParser.ReadPositiveInt(value, defaultValue, maxValue);
 
+    private void StopAllServerPlayers(bool stopVideoPlayer = true)
+    {
+        if (stopVideoPlayer)
+            _callbacks.Stop();
+
+        _callbacks.StopMusic();
+        _callbacks.RadioStop();
+    }
+
     private void HandlePlay(HttpListenerContext ctx)
     {
         var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
@@ -508,8 +519,13 @@ internal sealed partial class WebServer
             return;
         }
 
-        _callbacks.StopMusic();
-        _callbacks.RadioStop();
+        if (!WebPathHelpers.IsVideoFile(filePath, _videoExtensions))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Unsupported media type");
+            return;
+        }
+
+        StopAllServerPlayers(stopVideoPlayer: false);
         _callbacks.Play(filePath);
         Logger.Info("Playback", $"Playing Video: '{Path.GetFileName(filePath)}' on Server");
         TrySendResponse(ctx, 200, "text/plain", "OK");
@@ -617,8 +633,7 @@ internal sealed partial class WebServer
             // Ignore probe transport errors and continue with VLC attempt.
         }
 
-        _callbacks.StopMusic();
-        _callbacks.RadioStop();
+        StopAllServerPlayers(stopVideoPlayer: false);
         _callbacks.PlayNamed(uri.ToString(), string.IsNullOrWhiteSpace(name) ? uri.Host : name);
 
         var displayName = string.IsNullOrWhiteSpace(name) ? uri.Host : name;

@@ -359,6 +359,7 @@ public sealed class WebServerIndexTests : IDisposable
         SetVolume             = _ => { },
         ToggleMute            = () => { },
         SetBrightness         = _ => { },
+        SetSharpness          = _ => { },
         SetSaturation         = _ => { },
         SetZoom               = _ => { },
         SetAudioBoost         = _ => { },

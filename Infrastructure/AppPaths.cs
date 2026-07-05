@@ -52,4 +52,6 @@ internal static class AppPaths
     public static string LyricsCacheDirectory   => Path.Combine(UserDataDirectory, "lyrics-cache");
     /// <summary>Stores per-track lyric timing offsets as a JSON map keyed by <c>artist|title</c> (lowercase).</summary>
     public static string LyricOffsetsFile       => Path.Combine(UserDataDirectory, "lyric-offsets.json");
+    /// <summary>Optional artist-name mapping file used for Wikipedia lookups (e.g. <c>ACDC=AC/DC</c>).</summary>
+    public static string WikiNamesFile           => Path.Combine(UserDataDirectory, "wiki.names");
 }

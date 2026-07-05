@@ -1136,6 +1136,7 @@ public sealed class MusicDynamicFolderTests : IDisposable
         SetVolume             = _ => { },
         ToggleMute            = () => { },
         SetBrightness         = _ => { },
+        SetSharpness          = _ => { },
         SetSaturation         = _ => { },
         SetZoom               = _ => { },
         SetAudioBoost         = _ => { },

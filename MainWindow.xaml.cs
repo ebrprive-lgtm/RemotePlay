@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
@@ -16,6 +17,7 @@ using LibVLCSharp.Shared;
 using LibVLCSharp.Shared.Structures;
 using RemotePlay.Helpers;
 using RemotePlay.Models;
+using RemotePlay.Services;
 using RemotePlay.Services.Discovery;
 using RemotePlay.UI;
 using System.Diagnostics.CodeAnalysis;
@@ -64,6 +66,7 @@ public partial class MainWindow : Window
     private bool _smartResumeApplied;
     private string _lastPlaybackError = string.Empty;
     private double _brightness;
+    private double _sharpness;
     private double _saturation = 1;
     private double _zoom = 1;
     private double _volume = 1;
@@ -96,6 +99,8 @@ public partial class MainWindow : Window
     private bool _serverReady;
     private readonly List<string> _playbackQueue = [];
     private string? _serverUrl;
+    private long _pendingWebUiNavigateId;
+    private string? _pendingWebUiNavigateFolder;
     private static readonly LanguageOption[] LanguageOptions =
     [
         new("", "Default / none"),
@@ -486,6 +491,7 @@ public partial class MainWindow : Window
         try
         {
             var actionName = isRestart ? "Restart" : "Startup";
+            Logger.Detail("StartupTrace", $"{actionName}: pipeline entered (pid={Environment.ProcessId}, thread={Environment.CurrentManagedThreadId}, scheme={config.Scheme}, port={config.Port}, https={config.UseHttps})");
             await Dispatcher.InvokeAsync(() =>
             {
                 _serverReady = false;
@@ -524,11 +530,14 @@ public partial class MainWindow : Window
 
             Logger.Info($"{actionName}: creating web server");
             await Dispatcher.InvokeAsync(() => AppendLog($"{actionName}: creating web server…"));
-            _webServer = await RunStartupStepWithTimeoutAsync(() => CreateWebServer(config), "creating web server", TimeSpan.FromSeconds(15));
+            Logger.Detail("StartupTrace", $"{actionName}: invoking timed step 'creating web server'");
+            _webServer = await RunStartupStepWithTimeoutAsync(() => CreateWebServer(config), "creating web server", TimeSpan.FromSeconds(45));
             Logger.Info($"{actionName}: starting web listener");
             await Dispatcher.InvokeAsync(() => AppendLog($"{actionName}: starting web listener on {config.Scheme}://*:{config.Port}…"));
-            await RunStartupStepWithTimeoutAsync(() => _webServer.Start(), "starting web listener", TimeSpan.FromSeconds(15));
+            Logger.Detail("StartupTrace", $"{actionName}: invoking timed step 'starting web listener'");
+            await RunStartupStepWithTimeoutAsync(() => _webServer.Start(), "starting web listener", TimeSpan.FromSeconds(45));
             Logger.Info($"{actionName}: web listener started");
+            Logger.Detail("StartupTrace", $"{actionName}: pipeline reached ready state");
 
             await Dispatcher.InvokeAsync(() =>
             {
@@ -567,6 +576,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            Logger.Detail("StartupTrace", $"Pipeline failure details: type={ex.GetType().Name}, message={ex.Message}");
             Logger.Error("Failed to start web server", ex);
             await Dispatcher.InvokeAsync(() =>
             {
@@ -694,22 +704,148 @@ public partial class MainWindow : Window
 
     private static async Task RunStartupStepWithTimeoutAsync(Action action, string description, TimeSpan timeout)
     {
-        var startupTask = Task.Run(action);
-        var completedTask = await Task.WhenAny(startupTask, Task.Delay(timeout));
-        if (completedTask != startupTask)
-            throw new TimeoutException($"Timed out while {description} after {timeout.TotalSeconds:0} seconds.");
+        ArgumentNullException.ThrowIfNull(action);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var stepId = Guid.NewGuid().ToString("N")[..8];
+        Logger.Detail("StartupTimeout", $"[{stepId}] START '{description}' timeout={timeout.TotalSeconds:0}s callerThread={Environment.CurrentManagedThreadId} {GetThreadPoolSnapshot()}");
 
-        await startupTask;
+        var startupTask = Task.Run(() =>
+        {
+            Logger.Detail("StartupTimeout", $"[{stepId}] WORKER-START '{description}' workerThread={Environment.CurrentManagedThreadId}");
+            try
+            {
+                action();
+                Logger.Detail("StartupTimeout", $"[{stepId}] WORKER-END '{description}' elapsedMs={sw.ElapsedMilliseconds}");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("StartupTimeout", $"[{stepId}] WORKER-ERROR '{description}' after {sw.ElapsedMilliseconds}ms", ex);
+                throw;
+            }
+        });
+
+        _ = startupTask.ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+                Logger.Error("StartupTimeout", $"[{stepId}] TASK-COMPLETE faulted '{description}' status={t.Status} elapsedMs={sw.ElapsedMilliseconds}", t.Exception);
+            else if (t.IsCanceled)
+                Logger.Warning("StartupTimeout", $"[{stepId}] TASK-COMPLETE canceled '{description}' status={t.Status} elapsedMs={sw.ElapsedMilliseconds}");
+            else
+                Logger.Detail("StartupTimeout", $"[{stepId}] TASK-COMPLETE success '{description}' status={t.Status} elapsedMs={sw.ElapsedMilliseconds}");
+        }, TaskScheduler.Default);
+
+        using var heartbeatCts = new CancellationTokenSource();
+        var heartbeatTask = Task.Run(async () =>
+        {
+            try
+            {
+                while (!heartbeatCts.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), heartbeatCts.Token).ConfigureAwait(false);
+                    Logger.Detail("StartupTimeout", $"[{stepId}] HEARTBEAT '{description}' elapsedMs={sw.ElapsedMilliseconds} taskStatus={startupTask.Status} {GetThreadPoolSnapshot()}");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // expected on completion
+            }
+        });
+
+        try
+        {
+            var completedTask = await Task.WhenAny(startupTask, Task.Delay(timeout)).ConfigureAwait(false);
+            if (completedTask != startupTask)
+            {
+                Logger.Error("StartupTimeout", $"[{stepId}] TIMEOUT '{description}' at {sw.ElapsedMilliseconds}ms taskStatus={startupTask.Status} {GetThreadPoolSnapshot()}");
+                throw new TimeoutException($"Timed out while {description} after {timeout.TotalSeconds:0} seconds. stepId={stepId}, taskStatus={startupTask.Status}, elapsedMs={sw.ElapsedMilliseconds}.");
+            }
+
+            await startupTask.ConfigureAwait(false);
+            Logger.Detail("StartupTimeout", $"[{stepId}] END '{description}' completed in {sw.ElapsedMilliseconds}ms");
+        }
+        finally
+        {
+            heartbeatCts.Cancel();
+            await heartbeatTask.ConfigureAwait(false);
+        }
     }
 
     private static async Task<T> RunStartupStepWithTimeoutAsync<T>(Func<T> action, string description, TimeSpan timeout)
     {
-        var startupTask = Task.Run(action);
-        var completedTask = await Task.WhenAny(startupTask, Task.Delay(timeout));
-        if (completedTask != startupTask)
-            throw new TimeoutException($"Timed out while {description} after {timeout.TotalSeconds:0} seconds.");
+        ArgumentNullException.ThrowIfNull(action);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var stepId = Guid.NewGuid().ToString("N")[..8];
+        Logger.Detail("StartupTimeout", $"[{stepId}] START<T> '{description}' timeout={timeout.TotalSeconds:0}s callerThread={Environment.CurrentManagedThreadId} {GetThreadPoolSnapshot()}");
 
-        return await startupTask;
+        var startupTask = Task.Run(() =>
+        {
+            Logger.Detail("StartupTimeout", $"[{stepId}] WORKER-START<T> '{description}' workerThread={Environment.CurrentManagedThreadId}");
+            try
+            {
+                var result = action();
+                Logger.Detail("StartupTimeout", $"[{stepId}] WORKER-END<T> '{description}' elapsedMs={sw.ElapsedMilliseconds}");
+                return result;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("StartupTimeout", $"[{stepId}] WORKER-ERROR<T> '{description}' after {sw.ElapsedMilliseconds}ms", ex);
+                throw;
+            }
+        });
+
+        _ = startupTask.ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+                Logger.Error("StartupTimeout", $"[{stepId}] TASK-COMPLETE<T> faulted '{description}' status={t.Status} elapsedMs={sw.ElapsedMilliseconds}", t.Exception);
+            else if (t.IsCanceled)
+                Logger.Warning("StartupTimeout", $"[{stepId}] TASK-COMPLETE<T> canceled '{description}' status={t.Status} elapsedMs={sw.ElapsedMilliseconds}");
+            else
+                Logger.Detail("StartupTimeout", $"[{stepId}] TASK-COMPLETE<T> success '{description}' status={t.Status} elapsedMs={sw.ElapsedMilliseconds}");
+        }, TaskScheduler.Default);
+
+        using var heartbeatCts = new CancellationTokenSource();
+        var heartbeatTask = Task.Run(async () =>
+        {
+            try
+            {
+                while (!heartbeatCts.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(5), heartbeatCts.Token).ConfigureAwait(false);
+                    Logger.Detail("StartupTimeout", $"[{stepId}] HEARTBEAT<T> '{description}' elapsedMs={sw.ElapsedMilliseconds} taskStatus={startupTask.Status} {GetThreadPoolSnapshot()}");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // expected on completion
+            }
+        });
+
+        try
+        {
+            var completedTask = await Task.WhenAny(startupTask, Task.Delay(timeout)).ConfigureAwait(false);
+            if (completedTask != startupTask)
+            {
+                Logger.Error("StartupTimeout", $"[{stepId}] TIMEOUT<T> '{description}' at {sw.ElapsedMilliseconds}ms taskStatus={startupTask.Status} {GetThreadPoolSnapshot()}");
+                throw new TimeoutException($"Timed out while {description} after {timeout.TotalSeconds:0} seconds. stepId={stepId}, taskStatus={startupTask.Status}, elapsedMs={sw.ElapsedMilliseconds}.");
+            }
+
+            var result = await startupTask.ConfigureAwait(false);
+            Logger.Detail("StartupTimeout", $"[{stepId}] END<T> '{description}' completed in {sw.ElapsedMilliseconds}ms");
+            return result;
+        }
+        finally
+        {
+            heartbeatCts.Cancel();
+            await heartbeatTask.ConfigureAwait(false);
+        }
+    }
+
+    private static string GetThreadPoolSnapshot()
+    {
+        ThreadPool.GetAvailableThreads(out var availWorker, out var availIo);
+        ThreadPool.GetMinThreads(out var minWorker, out var minIo);
+        ThreadPool.GetMaxThreads(out var maxWorker, out var maxIo);
+        return $"threadPool(worker avail={availWorker}/{maxWorker}, io avail={availIo}/{maxIo}, minWorker={minWorker}, minIo={minIo})";
     }
 
     private async Task CheckPortConflictAsync(int port, string actionName, bool isRestart)
@@ -932,9 +1068,17 @@ public partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(available) &&
             !string.Equals(available, current, StringComparison.OrdinalIgnoreCase))
         {
-            UpdateReadyText.Text = $"Auto-update: update available! {current} → {available}";
+            if (UpdateFileHelper.IsHigherVersion(available, current))
+            {
+                UpdateReadyText.Text = $"Auto-update: update available! {current} → {available}";
+                UpdateReadyDot.Background = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromRgb(0xFF, 0xAA, 0x00));
+                return;
+            }
+
+            UpdateReadyText.Text = $"Auto-update: source is older ({current} > {available}), no update";
             UpdateReadyDot.Background = new System.Windows.Media.SolidColorBrush(
-                System.Windows.Media.Color.FromRgb(0xFF, 0xAA, 0x00));
+                System.Windows.Media.Color.FromRgb(0x00, 0xD4, 0xAA));
             return;
         }
 
@@ -2208,6 +2352,410 @@ public partial class MainWindow : Window
             PopulateLeftBrowser(dir);
     }
 
+    internal void HandleExternalCommandArgs(IReadOnlyList<string> args)
+    {
+        if (args.Count == 0)
+            return;
+
+        Logger.Info("ExternalCommand", "Args: " + string.Join(" | ", args));
+        RestoreWindowForPlayback();
+
+        if (TryGetCommandArgument(args, "--create-link", out var createLinkTarget))
+        {
+            NavigateToLinksTab(createLinkTarget);
+            return;
+        }
+
+        if (TryGetCommandArgument(args, "--rplink-play", out var rplinkToPlay))
+        {
+            HandleRplinkPlay(rplinkToPlay);
+            return;
+        }
+
+        if (TryGetCommandArgument(args, "--rplink-goto", out var rplinkToNavigate))
+        {
+            HandleRplinkGoToInApp(rplinkToNavigate);
+            return;
+        }
+
+        if (TryGetCommandArgument(args, "--rplink-explorer", out var rplinkToReveal))
+        {
+            HandleRplinkOpenInExplorer(rplinkToReveal);
+            return;
+        }
+
+        if (args.Count == 1 && RplinkHelper.IsRplinkFile(args[0]))
+            HandleRplinkPlay(args[0]);
+    }
+
+    private static bool TryGetCommandArgument(IReadOnlyList<string> args, string command, [NotNullWhen(true)] out string? value)
+    {
+        for (var index = 0; index < args.Count; index++)
+        {
+            if (!string.Equals(args[index], command, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            if (index + 1 < args.Count && !string.IsNullOrWhiteSpace(args[index + 1]))
+            {
+                value = NormalizeExternalPathArg(args[index + 1]);
+                return true;
+            }
+
+            break;
+        }
+
+        value = null;
+        return false;
+    }
+
+    private static string NormalizeExternalPathArg(string value)
+    {
+        if (Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.IsFile)
+            return uri.LocalPath;
+
+        return value.Trim().Trim('"');
+    }
+
+    private void HandleRplinkPlay(string rplinkPath)
+    {
+        if (!TryResolveRplinkTarget(rplinkPath, out var targetPath, out var isFolder))
+        {
+            Logger.Warning("ExternalCommand", $"Play ignored: could not resolve rplink '{rplinkPath}'.");
+            return;
+        }
+
+        NavigateToTargetInApp(targetPath, isFolder);
+
+        var rplinkFolder = ResolveRplinkContainerFolder(rplinkPath);
+        if (!string.IsNullOrWhiteSpace(rplinkFolder))
+            NavigateWebUiToFolder(rplinkFolder);
+
+        if (isFolder)
+        {
+            Logger.Info("ExternalCommand", $"Play requested on folder link '{rplinkPath}'. Navigated in-app only to '{targetPath}'.");
+            AppendLog($"Play skipped: '{Path.GetFileNameWithoutExtension(rplinkPath)}' is a folder link.");
+            return;
+        }
+
+        if (!File.Exists(targetPath))
+        {
+            if (!TryFindVideoTargetByFileName(targetPath, out var recoveredTargetPath))
+            {
+                Logger.Warning("ExternalCommand", $"Play ignored: target file not found '{targetPath}'.");
+                return;
+            }
+
+            Logger.Info("ExternalCommand", $"Recovered missing play target '{targetPath}' => '{recoveredTargetPath}'.");
+            targetPath = recoveredTargetPath;
+        }
+
+        PlayMovie(targetPath);
+    }
+
+    private bool TryFindVideoTargetByFileName(string missingTargetPath, [NotNullWhen(true)] out string? resolvedTargetPath)
+    {
+        resolvedTargetPath = null;
+
+        var fileName = Path.GetFileName(missingTargetPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+            return false;
+
+        foreach (var libraryRoot in _config.AllResolvedMoviesPaths)
+        {
+            if (string.IsNullOrWhiteSpace(libraryRoot) || !Directory.Exists(libraryRoot))
+                continue;
+
+            try
+            {
+                var match = Directory
+                    .EnumerateFiles(libraryRoot, fileName, SearchOption.AllDirectories)
+                    .FirstOrDefault(path => VideoExtensions.Contains(Path.GetExtension(path)));
+
+                if (string.IsNullOrWhiteSpace(match))
+                    continue;
+
+                resolvedTargetPath = match;
+                return true;
+            }
+            catch
+            {
+                // Continue searching in other library roots.
+            }
+        }
+
+        return false;
+    }
+
+    private void HandleRplinkGoToInApp(string rplinkPath)
+    {
+        if (!TryResolveRplinkTarget(rplinkPath, out var targetPath, out var isFolder))
+        {
+            Logger.Warning("ExternalCommand", $"GoTo ignored: could not resolve rplink '{rplinkPath}'.");
+            return;
+        }
+
+        NavigateToTargetInApp(targetPath, isFolder);
+
+        var rplinkFolder = ResolveRplinkContainerFolder(rplinkPath);
+        if (!string.IsNullOrWhiteSpace(rplinkFolder))
+            NavigateWebUiToFolder(rplinkFolder);
+    }
+
+    private string? ResolveRplinkContainerFolder(string rplinkPath)
+    {
+        var resolvedRplinkPath = NormalizeExternalPathArg(rplinkPath);
+        if (TryResolveMappedDrivePath(resolvedRplinkPath, out var mappedRplinkPath))
+            resolvedRplinkPath = mappedRplinkPath;
+
+        resolvedRplinkPath = ResolveAccessibleRplinkPath(resolvedRplinkPath);
+        return Path.GetDirectoryName(resolvedRplinkPath);
+    }
+
+    private void NavigateWebUiToTarget(string targetPath, bool isFolder)
+    {
+        var folder = isFolder ? targetPath : Path.GetDirectoryName(targetPath);
+        if (string.IsNullOrWhiteSpace(folder))
+            return;
+
+        NavigateWebUiToFolder(folder);
+    }
+
+    private void NavigateWebUiToFolder(string folder)
+    {
+        var existingFolder = FindNearestExistingDirectory(folder) ?? folder;
+        _pendingWebUiNavigateFolder = existingFolder;
+        _pendingWebUiNavigateId++;
+        Logger.Info("ExternalCommand", $"Queued Web UI navigation #{_pendingWebUiNavigateId} to '{existingFolder}'.");
+    }
+
+    private static string BuildVideoWebUiRoute(string folderPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(folderPath);
+
+        var normalized = folderPath.Replace('/', '\\').TrimEnd('\\');
+        if (string.IsNullOrWhiteSpace(normalized))
+            return "/video";
+
+        var parts = normalized.Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        var friendly = string.Join('/', parts.TakeLast(3).Select(Uri.EscapeDataString));
+        var encoded = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(normalized))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+
+        return string.IsNullOrWhiteSpace(friendly)
+            ? $"/video/{encoded}"
+            : $"/video/{friendly}/{encoded}";
+    }
+
+    private void NavigateToTargetInApp(string targetPath, bool isFolder)
+    {
+        if (MainTabs.Items.Count > 0)
+            MainTabs.SelectedIndex = 0;
+
+        var folder = isFolder
+            ? targetPath
+            : Path.GetDirectoryName(targetPath);
+
+        if (string.IsNullOrWhiteSpace(folder))
+            return;
+
+        var existingFolder = FindNearestExistingDirectory(folder);
+        if (string.IsNullOrWhiteSpace(existingFolder))
+        {
+            Logger.Warning("ExternalCommand", $"GoTo: no existing parent folder found for '{folder}'.");
+            return;
+        }
+
+        _leftDir = existingFolder;
+        _rightDir = existingFolder;
+
+        if (MainTabs.Items.Count > 2)
+        {
+            PopulateLeftBrowser(existingFolder);
+            PopulateRightBrowser(existingFolder);
+        }
+    }
+
+    private void HandleRplinkOpenInExplorer(string rplinkPath)
+    {
+        if (!TryResolveRplinkTarget(rplinkPath, out var targetPath, out var isFolder))
+        {
+            Logger.Warning("ExternalCommand", $"ExplorerTo ignored: could not resolve rplink '{rplinkPath}'.");
+            return;
+        }
+
+        var existingFolder = FindNearestExistingDirectory(isFolder ? targetPath : Path.GetDirectoryName(targetPath));
+        if (string.IsNullOrWhiteSpace(existingFolder))
+        {
+            Logger.Warning("ExternalCommand", $"ExplorerTo ignored: no existing parent folder for target '{targetPath}'.");
+            return;
+        }
+
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            Arguments = (!isFolder && File.Exists(targetPath))
+                ? $"/select,\"{targetPath}\""
+                : $"\"{existingFolder}\"",
+            UseShellExecute = true
+        });
+    }
+
+    private bool TryResolveRplinkTarget(string rplinkPath, [NotNullWhen(true)] out string? targetPath, out bool isFolder)
+    {
+        targetPath = null;
+        isFolder = false;
+
+        rplinkPath = NormalizeExternalPathArg(rplinkPath);
+
+        if (TryResolveMappedDrivePath(rplinkPath, out var mappedResolvedPath))
+            rplinkPath = mappedResolvedPath;
+
+        rplinkPath = ResolveAccessibleRplinkPath(rplinkPath);
+
+        if (!File.Exists(rplinkPath))
+        {
+            Logger.Warning("ExternalCommand", $"Resolve failed: rplink file not found or inaccessible '{rplinkPath}'.");
+            return false;
+        }
+
+        if (!RplinkHelper.IsRplinkFile(rplinkPath))
+        {
+            Logger.Warning("ExternalCommand", $"Resolve failed: not an .rplink file '{rplinkPath}'.");
+            return false;
+        }
+
+        targetPath = RplinkHelper.TryReadTargetRaw(rplinkPath);
+        if (string.IsNullOrWhiteSpace(targetPath))
+        {
+            Logger.Warning("ExternalCommand", $"Resolve failed: could not read target from '{rplinkPath}'.");
+            return false;
+        }
+
+        targetPath = NormalizeExternalPathArg(targetPath);
+        if (TryResolveMappedDrivePath(targetPath, out var mappedTargetPath))
+            targetPath = mappedTargetPath;
+
+        targetPath = ResolveAccessibleTargetPath(targetPath);
+
+        var targetExistsAsFile = File.Exists(targetPath);
+        isFolder = Directory.Exists(targetPath)
+            || (!targetExistsAsFile && string.IsNullOrEmpty(Path.GetExtension(targetPath)));
+
+        return true;
+    }
+
+    private string ResolveAccessibleRplinkPath(string rplinkPath)
+    {
+        if (File.Exists(rplinkPath))
+            return rplinkPath;
+
+        var root = Path.GetPathRoot(rplinkPath);
+        if (string.IsNullOrWhiteSpace(root))
+            return rplinkPath;
+
+        var relative = rplinkPath[root.Length..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.IsNullOrWhiteSpace(relative))
+            return rplinkPath;
+
+        foreach (var libraryRoot in _config.AllResolvedMoviesPaths)
+        {
+            if (string.IsNullOrWhiteSpace(libraryRoot))
+                continue;
+
+            try
+            {
+                var candidate = Path.Combine(libraryRoot, relative);
+                if (!File.Exists(candidate))
+                    continue;
+
+                Logger.Info("ExternalCommand", $"Resolved inaccessible rplink path '{rplinkPath}' via library root to '{candidate}'.");
+                return candidate;
+            }
+            catch
+            {
+                // Keep trying other configured roots.
+            }
+        }
+
+        return rplinkPath;
+    }
+
+    private string ResolveAccessibleTargetPath(string targetPath)
+    {
+        if (File.Exists(targetPath) || Directory.Exists(targetPath))
+            return targetPath;
+
+        var root = Path.GetPathRoot(targetPath);
+        if (string.IsNullOrWhiteSpace(root))
+            return targetPath;
+
+        var relative = targetPath[root.Length..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.IsNullOrWhiteSpace(relative))
+            return targetPath;
+
+        foreach (var libraryRoot in _config.AllResolvedMoviesPaths)
+        {
+            if (string.IsNullOrWhiteSpace(libraryRoot))
+                continue;
+
+            try
+            {
+                var candidate = Path.Combine(libraryRoot, relative);
+                if (!File.Exists(candidate) && !Directory.Exists(candidate))
+                    continue;
+
+                Logger.Info("ExternalCommand", $"Resolved inaccessible target path '{targetPath}' via library root to '{candidate}'.");
+                return candidate;
+            }
+            catch
+            {
+                // Keep trying other configured roots.
+            }
+        }
+
+        return targetPath;
+    }
+
+    private static bool TryResolveMappedDrivePath(string path, [NotNullWhen(true)] out string? resolvedPath)
+    {
+        resolvedPath = null;
+        if (string.IsNullOrWhiteSpace(path) || path.Length < 3 || path[1] != ':' || path[2] != '\\')
+            return false;
+
+        var drive = path[..2];
+        var remoteName = new System.Text.StringBuilder(512);
+        var capacity = remoteName.Capacity;
+        var result = WNetGetConnection(drive, remoteName, ref capacity);
+        if (result != 0 || remoteName.Length == 0)
+            return false;
+
+        var suffix = path[2..].TrimStart('\\');
+        resolvedPath = Path.Combine(remoteName.ToString(), suffix);
+        return true;
+    }
+
+    [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
+    private static extern int WNetGetConnection(string localName, System.Text.StringBuilder remoteName, ref int length);
+
+    private static string? FindNearestExistingDirectory(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        var current = NormalizeExternalPathArg(path);
+        while (!string.IsNullOrWhiteSpace(current))
+        {
+            if (Directory.Exists(current))
+                return current;
+
+            current = Path.GetDirectoryName(current);
+        }
+
+        return null;
+    }
+
     private void OnMainTabsSelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
     {
         if (MainTabs.SelectedIndex == 2)
@@ -2356,7 +2904,7 @@ public partial class MainWindow : Window
         var rplinkFiles = Directory.EnumerateFiles(dir, "*" + RplinkHelper.Extension).OrderBy(x => x);
         foreach (var f in rplinkFiles)
         {
-            var target = RplinkHelper.TryReadTarget(f);
+            var target = TryGetExistingLinkTargetPath(f);
             var rawTarget = RplinkHelper.TryReadTargetRaw(f) ?? string.Empty;
             var isFolderLink = RplinkHelper.IsTargetFolder(f);
 
@@ -2367,7 +2915,7 @@ public partial class MainWindow : Window
                 IsDirectory: isFolderLink,
                 IsLink: true,
                 TargetFolder: target is not null ? (isFolderLink ? target : Path.GetDirectoryName(target) ?? string.Empty) : string.Empty,
-                IsBroken: target is null,
+                IsBroken: string.IsNullOrWhiteSpace(target),
                 IsFolderLink: isFolderLink,
                 FullTargetPath: rawTarget));
         }
@@ -2395,7 +2943,9 @@ public partial class MainWindow : Window
 
     private void OnLeftBrowserDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (LeftBrowser.SelectedItem is not BrowserEntry entry) return;
+        var entry = GetDoubleClickedBrowserEntry(LeftBrowser, e);
+        if (entry is null) return;
+
         if (entry.IsDirectory)
         {
             // Folder-links: navigate into the target folder rather than treating as a link.
@@ -2416,7 +2966,9 @@ public partial class MainWindow : Window
 
     private void OnRightBrowserDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (RightBrowser.SelectedItem is not BrowserEntry entry) return;
+        var entry = GetDoubleClickedBrowserEntry(RightBrowser, e);
+        if (entry is null) return;
+
         // Folder-link rows: navigate into the target directory.
         if (entry.IsDirectory)
         {
@@ -2431,6 +2983,21 @@ public partial class MainWindow : Window
     {
         if (sender is System.Windows.Controls.Button btn && btn.Tag is string dir && Directory.Exists(dir))
             PopulateRightBrowser(dir);
+    }
+
+    private static BrowserEntry? GetDoubleClickedBrowserEntry(System.Windows.Controls.ListView browser, MouseButtonEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(browser);
+        ArgumentNullException.ThrowIfNull(e);
+
+        if (e.OriginalSource is DependencyObject source
+            && ItemsControl.ContainerFromElement(browser, source) is System.Windows.Controls.ListViewItem item
+            && item.DataContext is BrowserEntry clickedEntry)
+        {
+            return clickedEntry;
+        }
+
+        return browser.SelectedItem as BrowserEntry;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -2975,13 +3542,54 @@ public partial class MainWindow : Window
 
         if (links.Count == 0) return;
 
-        var dlg = new Microsoft.Win32.OpenFolderDialog
-        {
-            Title = $"Select the new target folder for {links.Count} broken link(s)"
-        };
+        var defaultMoviesFolder = Path.Combine(_config.ResolvedMoviesPath, "@Master.Movies");
+        var defaultSeriesFolder = Path.Combine(_config.ResolvedMoviesPath, "@Master.Series");
+        var fallbackFolder = Directory.Exists(_config.ResolvedMoviesPath) ? _config.ResolvedMoviesPath : string.Empty;
 
-        if (dlg.ShowDialog(this) != true) return;
-        var newTargetDir = dlg.FolderName;
+        var isSingleFileLink = links.Count == 1 && !links[0].IsFolderLink;
+        var allFolderLinks = links.All(link => link.IsFolderLink);
+
+        var newTargetDir = string.Empty;
+        var selectedTargetFile = string.Empty;
+
+        if (isSingleFileLink)
+        {
+            var extensionPatterns = _config.EffectiveVideoFileExtensions
+                .Select(ext => ext.StartsWith('.') ? $"*{ext}" : $"*.{ext}")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            var filterPattern = extensionPatterns.Length > 0
+                ? string.Join(';', extensionPatterns)
+                : "*.*";
+
+            var openFileDialog = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "Select the new target movie file",
+                CheckFileExists = true,
+                Multiselect = false,
+                Filter = $"Movie files ({filterPattern})|{filterPattern}|All files (*.*)|*.*",
+                InitialDirectory = Directory.Exists(defaultMoviesFolder) ? defaultMoviesFolder : fallbackFolder
+            };
+
+            if (openFileDialog.ShowDialog(this) != true) return;
+
+            selectedTargetFile = openFileDialog.FileName;
+            newTargetDir = Path.GetDirectoryName(selectedTargetFile) ?? string.Empty;
+        }
+        else
+        {
+            var defaultFolder = allFolderLinks ? defaultSeriesFolder : defaultMoviesFolder;
+            var openFolderDialog = new Microsoft.Win32.OpenFolderDialog
+            {
+                Title = $"Select the new target folder for {links.Count} broken link(s)",
+                InitialDirectory = Directory.Exists(defaultFolder) ? defaultFolder : fallbackFolder
+            };
+
+            if (openFolderDialog.ShowDialog(this) != true) return;
+
+            newTargetDir = openFolderDialog.FolderName;
+        }
 
         int rewrote = 0, failed = 0;
         string lastError = string.Empty;
@@ -2991,14 +3599,19 @@ public partial class MainWindow : Window
         {
             try
             {
-                // Build a new target: find a matching filename in the chosen folder, else use the folder itself.
-                var currentRaw  = RplinkHelper.TryReadTargetRaw(link.FullPath) ?? string.Empty;
-                var fileName    = Path.GetFileName(currentRaw);
-                var candidate   = string.IsNullOrEmpty(fileName)
-                    ? newTargetDir
-                    : Path.Combine(newTargetDir, fileName);
+                var newTarget = selectedTargetFile;
+                if (string.IsNullOrEmpty(newTarget))
+                {
+                    // Build a new target: find a matching filename in the chosen folder, else use the folder itself.
+                    var currentRaw = RplinkHelper.TryReadTargetRaw(link.FullPath) ?? string.Empty;
+                    var fileName = Path.GetFileName(currentRaw);
+                    var candidate = string.IsNullOrEmpty(fileName)
+                        ? newTargetDir
+                        : Path.Combine(newTargetDir, fileName);
 
-                var newTarget = File.Exists(candidate) ? candidate : newTargetDir;
+                    newTarget = File.Exists(candidate) ? candidate : newTargetDir;
+                }
+
                 var stored    = RplinkHelper.MakeRelativeIfPossible(link.FullPath, newTarget);
                 RplinkHelper.Create(link.FullPath, stored);
                 _webServer?.IndexAddOrUpdateFile(link.FullPath);
@@ -3010,7 +3623,7 @@ public partial class MainWindow : Window
         RefreshBrowser(isLeft);
 
         var msg = rewrote > 0
-            ? $"Retargeted {rewrote} link(s) to:\n{newTargetDir}"
+            ? $"Retargeted {rewrote} link(s) to:\n{(string.IsNullOrEmpty(selectedTargetFile) ? newTargetDir : selectedTargetFile)}"
             : string.Empty;
         if (failed > 0)
             msg += $"\n{failed} link(s) could not be rewritten.\nLast error: {lastError}";
@@ -3115,6 +3728,7 @@ public partial class MainWindow : Window
 
         int failed = 0;
         string lastError = string.Empty;
+        var deletedLinkPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         _webServer?.SuppressWatcher(TimeSpan.FromSeconds(10));
         foreach (var link in links)
@@ -3123,10 +3737,24 @@ public partial class MainWindow : Window
             {
                 File.Delete(link.FullPath);
                 _webServer?.IndexRemoveUnderPath(link.FullPath);
+                deletedLinkPaths.Add(link.FullPath);
             }
             catch (Exception ex) { failed++; lastError = ex.Message; }
         }
-        RefreshBrowser(isLeft);
+
+        if (deletedLinkPaths.Count > 0)
+        {
+            var updatedEntries = browser.Items
+                .OfType<BrowserEntry>()
+                .Where(entry => !deletedLinkPaths.Contains(entry.FullPath))
+                .ToList();
+
+            browser.ItemsSource = updatedEntries;
+        }
+        else
+        {
+            RefreshBrowser(isLeft);
+        }
 
         if (failed > 0)
         {
@@ -3675,6 +4303,55 @@ public partial class MainWindow : Window
             var exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName
                 ?? System.Reflection.Assembly.GetExecutingAssembly().Location;
 
+            const string rplinkExtensionKeyPath = @"Software\Classes\.rplink";
+            const string rplinkProgId = "RemotePlay.rplink";
+            const string rplinkProgIdKeyPath = @"Software\Classes\" + rplinkProgId;
+
+            // Rebuild the ProgID branch to avoid stale values (for example an old direct command)
+            // that can prevent the submenu arrow from appearing.
+            Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(rplinkProgIdKeyPath, throwOnMissingSubKey: false);
+
+            using (var extensionKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(rplinkExtensionKeyPath))
+            {
+                extensionKey.SetValue(null, rplinkProgId);
+            }
+
+            using (var progIdKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(rplinkProgIdKeyPath))
+            {
+                progIdKey.SetValue(null, "RemotePlay Link");
+            }
+
+            using (var defaultIconKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(rplinkProgIdKeyPath + @"\DefaultIcon"))
+            {
+                defaultIconKey.SetValue(null, $"\"{exePath}\",0");
+            }
+
+            using (var openVerbKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(rplinkProgIdKeyPath + @"\shell\open"))
+            {
+                openVerbKey.SetValue("ProgrammaticAccessOnly", string.Empty);
+                openVerbKey.SetValue("LegacyDisable", string.Empty);
+            }
+            using (var openCommandKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(rplinkProgIdKeyPath + @"\shell\open\command"))
+            {
+                openCommandKey.SetValue(null, $"\"{exePath}\" --rplink-play \"%1\"");
+            }
+
+            const string remotePlayShellPath = rplinkProgIdKeyPath + @"\shell\RemotePlay";
+            Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(remotePlayShellPath, throwOnMissingSubKey: false);
+            using (var remotePlayMenuKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(remotePlayShellPath))
+            {
+                remotePlayMenuKey.SetValue("MUIVerb", "Remote Play");
+                remotePlayMenuKey.SetValue("Icon", $"\"{exePath}\",0");
+                remotePlayMenuKey.SetValue("Position", "Top");
+                remotePlayMenuKey.SetValue("SubCommands", string.Empty);
+                remotePlayMenuKey.SetValue("ExtendedSubCommandsKey", rplinkProgId + @"\shell\RemotePlay\shell");
+            }
+
+            RegisterShellCommand(remotePlayShellPath + @"\shell\Play", "Play", $"\"{exePath}\" --rplink-play \"%1\"", exePath);
+            RegisterShellCommand(remotePlayShellPath + @"\shell\GoToInApp", "Goto", $"\"{exePath}\" --rplink-goto \"%1\"", exePath);
+            RegisterShellCommand(remotePlayShellPath + @"\shell\ExplorerTo", "Windows Explorer", $"\"{exePath}\" --rplink-explorer \"%1\"", exePath);
+            RegisterShellCommand(remotePlayShellPath + @"\shell\EditLink", "Edit link file (Notepad)", "notepad.exe \"%1\"", exePath);
+
             const string keyPath = @"Software\Classes\*\shell\RemotePlay.CreateLink";
             using (var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(keyPath))
             {
@@ -3688,6 +4365,15 @@ public partial class MainWindow : Window
 
             RegisterContextMenuBtn.Content = "✓  Registered — right-click a video in Explorer";
             RegisterContextMenuBtn.Background = System.Windows.Media.Brushes.DarkGreen;
+
+            static void RegisterShellCommand(string keyPath, string label, string command, string exePath)
+            {
+                using var menuKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(keyPath);
+                menuKey.SetValue(null, label);
+                menuKey.SetValue("Icon", $"\"{exePath}\",0");
+                using var commandKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(keyPath + @"\command");
+                commandKey.SetValue(null, command);
+            }
         }
         catch (Exception ex)
         {
@@ -3714,27 +4400,64 @@ public partial class MainWindow : Window
         public string Tooltip     => $"Link file: {LinkFile}\nStored target: {StoredTarget}";
     }
 
+    private readonly record struct LinkTargetDiagnosis(
+        string LinkFile,
+        string StoredTargetText,
+        string ResolvedRawTarget,
+        RplinkHelper.RplinkTargetStatus InspectionStatus,
+        string? InspectionResolvedTarget,
+        string? InspectionDetails,
+        string NormalizedTarget,
+        string? MappedTarget,
+        string AccessibleTarget,
+        bool ExistsAsFile,
+        bool ExistsAsDirectory,
+        string ParentDirectory,
+        bool ParentExists,
+        string ParentProbe,
+        bool SameNameDifferentExtension,
+        string SampleSiblingNames)
+    {
+        public bool Exists => ExistsAsFile || ExistsAsDirectory;
+
+        public string? ExistingTargetPath => Exists
+            ? AccessibleTarget
+            : null;
+    }
+
     private void OnScanBrokenLinks(object sender, RoutedEventArgs e)
     {
         var root = _config.ResolvedMoviesPath;
+        Logger.Info("BrokenLinkScan", $"Manual scan requested. Root='{root}'");
+
         if (!Directory.Exists(root))
         {
             BrokenLinksPanel.Visibility = Visibility.Visible;
             BrokenLinksStatus.Text      = "Library root does not exist.";
             BrokenLinksList.ItemsSource = null;
+            Logger.Warning("BrokenLinkScan", $"Scan aborted: library root does not exist '{root}'.");
             return;
         }
 
-        var broken = Directory
+        var diagnostics = Directory
             .EnumerateFiles(root, "*" + RplinkHelper.Extension, SearchOption.AllDirectories)
-            .Select(f =>
-            {
-                var raw = RplinkHelper.TryReadTargetRaw(f) ?? string.Empty;
-                return new BrokenScanEntry(f, raw, Path.GetDirectoryName(f) ?? root);
-            })
-            .Where(e => RplinkHelper.TryReadTarget(e.LinkFile) is null)
-            .OrderBy(e => e.LinkFile)
+            .Select(DiagnoseLinkTarget)
+            .OrderBy(d => d.LinkFile)
             .ToList();
+
+        var broken = diagnostics
+            .Where(d => !d.Exists)
+            .Select(d => new BrokenScanEntry(d.LinkFile, d.StoredTargetText, Path.GetDirectoryName(d.LinkFile) ?? root))
+            .ToList();
+
+        foreach (var d in diagnostics.Where(d => !d.Exists))
+        {
+            Logger.Warning(
+                "BrokenLinkScan",
+                $"Broken link detected. LinkFile='{d.LinkFile}', StoredTarget='{d.StoredTargetText}', ResolvedRawTarget='{d.ResolvedRawTarget}', InspectionStatus={d.InspectionStatus}, InspectionResolved='{d.InspectionResolvedTarget ?? string.Empty}', InspectionDetails='{d.InspectionDetails ?? string.Empty}', Normalized='{d.NormalizedTarget}', Mapped='{d.MappedTarget ?? string.Empty}', Accessible='{d.AccessibleTarget}', ExistsFile={d.ExistsAsFile}, ExistsDirectory={d.ExistsAsDirectory}, ParentDir='{d.ParentDirectory}', ParentExists={d.ParentExists}, ParentProbe='{d.ParentProbe}', SameNameDifferentExtension={d.SameNameDifferentExtension}, SampleSiblingNames='{d.SampleSiblingNames}'");
+        }
+
+        Logger.Info("BrokenLinkScan", $"Manual scan completed. TotalLinks={diagnostics.Count}, BrokenLinks={broken.Count}");
 
         BrokenLinksPanel.Visibility = Visibility.Visible;
         BrokenLinksStatus.Text = broken.Count == 0
@@ -3753,12 +4476,237 @@ public partial class MainWindow : Window
         {
             File.Delete(entry.LinkFile);
             PopulateRightBrowser(_rightDir);
-            OnScanBrokenLinks(sender, e); // refresh list
+            RemoveBrokenScanEntryFromList(entry.LinkFile);
         }
         catch (Exception ex)
         {
             DarkMessageBox.Show("Delete failed: " + ex.Message, "Error", this);
         }
+    }
+
+    private void OnRetargetBrokenLinkFromScan(object sender, RoutedEventArgs e)
+    {
+        if (BrokenLinksList.SelectedItem is not BrokenScanEntry entry)
+            return;
+
+        try
+        {
+            var isFolderLink = RplinkHelper.IsTargetFolder(entry.LinkFile);
+            var defaultMoviesFolder = Path.Combine(_config.ResolvedMoviesPath, "@Master.Movies");
+            var defaultSeriesFolder = Path.Combine(_config.ResolvedMoviesPath, "@Master.Series");
+            var fallbackFolder = Directory.Exists(_config.ResolvedMoviesPath) ? _config.ResolvedMoviesPath : string.Empty;
+
+            var newTarget = string.Empty;
+            if (isFolderLink)
+            {
+                var folderDialog = new Microsoft.Win32.OpenFolderDialog
+                {
+                    Title = "Select the new target folder",
+                    InitialDirectory = Directory.Exists(defaultSeriesFolder) ? defaultSeriesFolder : fallbackFolder
+                };
+
+                if (folderDialog.ShowDialog(this) != true)
+                    return;
+
+                newTarget = folderDialog.FolderName;
+            }
+            else
+            {
+                var fileDialog = new Microsoft.Win32.OpenFileDialog
+                {
+                    Title = "Select the new target movie file",
+                    CheckFileExists = true,
+                    Multiselect = false,
+                    Filter = BuildVideoFilter(),
+                    InitialDirectory = Directory.Exists(defaultMoviesFolder) ? defaultMoviesFolder : fallbackFolder
+                };
+
+                if (fileDialog.ShowDialog(this) != true)
+                    return;
+
+                newTarget = fileDialog.FileName;
+            }
+
+            if (string.IsNullOrWhiteSpace(newTarget))
+                return;
+
+            var stored = RplinkHelper.MakeRelativeIfPossible(entry.LinkFile, newTarget);
+            RplinkHelper.Create(entry.LinkFile, stored);
+            _webServer?.IndexAddOrUpdateFile(entry.LinkFile);
+
+            PopulateRightBrowser(_rightDir);
+            RemoveBrokenScanEntryFromList(entry.LinkFile);
+        }
+        catch (Exception ex)
+        {
+            DarkMessageBox.Show("Retarget failed: " + ex.Message, "Error", this);
+        }
+    }
+
+    private void RemoveBrokenScanEntryFromList(string linkFile)
+    {
+        var current = BrokenLinksList.ItemsSource as IEnumerable<BrokenScanEntry>;
+        if (current is null)
+            return;
+
+        var updated = current
+            .Where(item => !string.Equals(item.LinkFile, linkFile, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(item => item.LinkFile)
+            .ToList();
+
+        BrokenLinksList.ItemsSource = updated;
+        BrokenLinksStatus.Text = updated.Count == 0
+            ? "✅  No broken links found."
+            : $"⚠️  {updated.Count} broken link{(updated.Count == 1 ? "" : "s")} found:";
+    }
+
+    private string? TryGetExistingLinkTargetPath(string rplinkPath)
+    {
+        var diagnosis = DiagnoseLinkTarget(rplinkPath);
+        return diagnosis.ExistingTargetPath;
+    }
+
+    private LinkTargetDiagnosis DiagnoseLinkTarget(string rplinkPath)
+    {
+        var inspection = RplinkHelper.InspectTarget(rplinkPath);
+
+        var storedTargetText = RplinkHelper.TryReadStoredTargetText(rplinkPath) ?? string.Empty;
+        var resolvedRawTarget = RplinkHelper.TryReadTargetRaw(rplinkPath) ?? string.Empty;
+        var normalizedTarget = string.Empty;
+        string? mappedTarget = null;
+        var accessibleTarget = inspection.ResolvedTarget ?? string.Empty;
+        var existsAsFile = false;
+        var existsAsDirectory = false;
+        var parentDirectory = string.Empty;
+        var parentExists = false;
+        var parentProbe = string.Empty;
+        var sameNameDifferentExtension = false;
+        var sampleSiblingNames = string.Empty;
+
+        if (inspection.Status == RplinkHelper.RplinkTargetStatus.Resolved &&
+            !string.IsNullOrWhiteSpace(inspection.ResolvedTarget))
+        {
+            existsAsFile = File.Exists(inspection.ResolvedTarget);
+            existsAsDirectory = Directory.Exists(inspection.ResolvedTarget);
+            if (!existsAsFile && !existsAsDirectory)
+            {
+                existsAsFile = true;
+            }
+
+            return new LinkTargetDiagnosis(
+                rplinkPath,
+                storedTargetText,
+                resolvedRawTarget,
+                inspection.Status,
+                inspection.ResolvedTarget,
+                inspection.Details,
+                normalizedTarget,
+                mappedTarget,
+                accessibleTarget,
+                existsAsFile,
+                existsAsDirectory,
+                parentDirectory,
+                parentExists,
+                parentProbe,
+                sameNameDifferentExtension,
+                sampleSiblingNames);
+        }
+
+        if (string.IsNullOrWhiteSpace(storedTargetText) && string.IsNullOrWhiteSpace(resolvedRawTarget))
+        {
+            return new LinkTargetDiagnosis(
+                rplinkPath,
+                storedTargetText,
+                resolvedRawTarget,
+                inspection.Status,
+                inspection.ResolvedTarget,
+                inspection.Details,
+                normalizedTarget,
+                mappedTarget,
+                accessibleTarget,
+                existsAsFile,
+                existsAsDirectory,
+                parentDirectory,
+                parentExists,
+                parentProbe,
+                sameNameDifferentExtension,
+                sampleSiblingNames);
+        }
+
+        var candidateTarget = !string.IsNullOrWhiteSpace(resolvedRawTarget)
+            ? resolvedRawTarget
+            : storedTargetText;
+
+        normalizedTarget = NormalizeExternalPathArg(candidateTarget);
+        var target = normalizedTarget;
+
+        if (TryResolveMappedDrivePath(target, out var mappedTargetPath))
+        {
+            mappedTarget = mappedTargetPath;
+            target = mappedTargetPath;
+        }
+
+        target = ResolveAccessibleTargetPath(target);
+        accessibleTarget = target;
+
+        existsAsFile = File.Exists(target);
+        existsAsDirectory = Directory.Exists(target);
+
+        parentDirectory = Path.GetDirectoryName(target) ?? string.Empty;
+        if (!string.IsNullOrWhiteSpace(parentDirectory))
+        {
+            parentExists = Directory.Exists(parentDirectory);
+            if (parentExists)
+            {
+                try
+                {
+                    var targetFileName = Path.GetFileName(target);
+                    var targetFileNameWithoutExt = Path.GetFileNameWithoutExtension(target);
+                    var siblings = Directory
+                        .EnumerateFiles(parentDirectory)
+                        .Select(Path.GetFileName)
+                        .Where(name => !string.IsNullOrWhiteSpace(name))
+                        .ToList();
+
+                    sameNameDifferentExtension = siblings.Any(name =>
+                        string.Equals(Path.GetFileNameWithoutExtension(name), targetFileNameWithoutExt, StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(name, targetFileName, StringComparison.OrdinalIgnoreCase));
+
+                    sampleSiblingNames = string.Join(" | ", siblings.Take(5));
+                    parentProbe = $"siblings={siblings.Count}";
+                }
+                catch (Exception ex)
+                {
+                    parentProbe = $"enumeration-failed:{ex.GetType().Name}:{ex.Message}";
+                }
+            }
+            else
+            {
+                parentProbe = "parent-missing";
+            }
+        }
+        else
+        {
+            parentProbe = "parent-unresolved";
+        }
+
+        return new LinkTargetDiagnosis(
+            rplinkPath,
+            storedTargetText,
+            resolvedRawTarget,
+            inspection.Status,
+            inspection.ResolvedTarget,
+            inspection.Details,
+            normalizedTarget,
+            mappedTarget,
+            accessibleTarget,
+            existsAsFile,
+            existsAsDirectory,
+            parentDirectory,
+            parentExists,
+            parentProbe,
+            sameNameDifferentExtension,
+            sampleSiblingNames);
     }
 
     // ── Reverse lookup: find all links pointing at a file (#5) ───────

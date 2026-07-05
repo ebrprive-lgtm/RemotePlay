@@ -97,6 +97,17 @@ public class UpdateFileHelperTests : IDisposable
         Assert.Matches(@"^\d+\.\d+\.\d+$", version);
     }
 
+    [Theory]
+    [InlineData("3.2.4", "3.2.3", true)]
+    [InlineData("3.2.3", "3.2.3", false)]
+    [InlineData("3.2.2", "3.2.3", false)]
+    [InlineData("invalid", "3.2.3", false)]
+    [InlineData("3.2.4", "invalid", false)]
+    public void IsHigherVersion_ReturnsExpectedResult(string candidate, string current, bool expected)
+    {
+        Assert.Equal(expected, UpdateFileHelper.IsHigherVersion(candidate, current));
+    }
+
     // -- CollectChangedFiles --------------------------------------------------
 
     [Fact]

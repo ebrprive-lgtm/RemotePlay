@@ -223,7 +223,7 @@ function _decodeRouteFolder(friendlyPath, breadcrumbs) {
 }
 
 function _buildUiRoute(mode, folderPath = null) {
-  const routeMode = mode === 'music' || mode === 'radio' || mode === 'live-tv' ? mode : 'video';
+  const routeMode = mode === 'music' || mode === 'podcasts' || mode === 'radio' || mode === 'live-tv' ? mode : 'video';
   let path = routeMode === 'live-tv' ? '/LiveTV' : '/' + routeMode;
   if (folderPath && (routeMode === 'video' || routeMode === 'music')) {
     const token = _encodeRouteFolder(folderPath);
@@ -252,7 +252,7 @@ function _parseInitialUiRoute() {
 
   const rawMode = parts[0].toLowerCase();
   const mode = rawMode === 'livetv' ? 'live-tv' : rawMode;
-  if (mode !== 'video' && mode !== 'music' && mode !== 'radio' && mode !== 'live-tv') {
+  if (mode !== 'video' && mode !== 'music' && mode !== 'podcasts' && mode !== 'radio' && mode !== 'live-tv') {
     console.log('[ROUTE] Unknown mode:', mode, '- defaulting to video');
     return { hasExplicitRoute: false, mode: 'video', folderPath: null };
   }
@@ -308,22 +308,103 @@ let statusFailures = 0;
 let cardHoldTimer = null,
   cardHoldOpened = false;
 let zoomDragging = false;
+let sharpnessDragging = false;
 let pendingSearchAbort = null;
 let thumbnailObserver = null;
+let _lastHandledWebUiNavigateId = 0;
+
+async function _applyPendingWebUiNavigation(status) {
+  const navId = Number(status?.webUiNavigateId ?? status?.WebUiNavigateId ?? 0);
+  const folderPath = status?.webUiNavigateFolderPath ?? status?.WebUiNavigateFolderPath ?? '';
+  if (!navId || !folderPath || navId === _lastHandledWebUiNavigateId)
+    return;
+
+  _lastHandledWebUiNavigateId = navId;
+
+  try {
+    if (typeof switchMode === 'function' && currentMode !== 'video')
+      switchMode('video', true);
+
+    if (typeof browse === 'function' && typeof _encodePath === 'function') {
+      const encodedFolder = _encodePath(folderPath);
+      await browse(encodedFolder, 0, false, false);
+    }
+  } catch (e) {
+    console.warn('[WEBUI-NAV] failed to apply navigation command', e);
+  }
+}
+
+function _viewModeStorageBaseKey(section) {
+  return section === 'live-tv'
+    ? 'remotePlayViewLiveTv'
+    : 'remotePlayView' + section.charAt(0).toUpperCase() + section.slice(1);
+}
+
+function _normalizeViewMode(value) {
+  return value === 'list' ? 'list' : 'grid';
+}
+
+function _sanitizeViewScopeName(name) {
+  const clean = String(name || '')
+    .replace(/\s+/g, ' ')
+    .replace(/[<>:"/\\|?*]/g, '')
+    .trim();
+  return clean || 'Root';
+}
+
+function _buildViewScopeKey(level, name) {
+  const lvl = Math.max(1, Number(level) || 1);
+  return String(lvl) + _sanitizeViewScopeName(name);
+}
+
+function _readScopedViewMode(section, scopeKey) {
+  const baseKey = _viewModeStorageBaseKey(section);
+  if (scopeKey) {
+    const scoped = localStorage.getItem(baseKey + ':' + scopeKey);
+    if (scoped === 'grid' || scoped === 'list') return scoped;
+  }
+  const legacy = localStorage.getItem(baseKey);
+  return _normalizeViewMode(legacy);
+}
+
+const _viewModeScope = {
+  video: _buildViewScopeKey(1, 'Video Root'),
+  music: _buildViewScopeKey(1, 'Music Root'),
+  podcasts: _buildViewScopeKey(1, 'Podcasts'),
+  radio: _buildViewScopeKey(1, 'Radio Root'),
+  'live-tv': _buildViewScopeKey(1, 'Live TV Root'),
+};
 
 // View mode: 'grid' or 'list' per section, persisted in localStorage
 const _viewMode = {
-  video: localStorage.getItem('remotePlayViewVideo') || 'grid',
-  music: localStorage.getItem('remotePlayViewMusic') || 'grid',
-  radio: localStorage.getItem('remotePlayViewRadio') || 'grid',
-  'live-tv': localStorage.getItem('remotePlayViewLiveTv') || 'grid',
+  video: _readScopedViewMode('video', _viewModeScope.video),
+  music: _readScopedViewMode('music', _viewModeScope.music),
+  podcasts: _readScopedViewMode('podcasts', _viewModeScope.podcasts),
+  radio: _readScopedViewMode('radio', _viewModeScope.radio),
+  'live-tv': _readScopedViewMode('live-tv', _viewModeScope['live-tv']),
 };
+
+function _setViewModeScope(section, level, name) {
+  const scopeKey = _buildViewScopeKey(level, name);
+  if (_viewModeScope[section] === scopeKey) return;
+  _viewModeScope[section] = scopeKey;
+  _viewMode[section] = _readScopedViewMode(section, scopeKey);
+}
+
+function _setViewModeScopeFromSegments(section, segments) {
+  const list = Array.isArray(segments) ? segments.filter((s) => String(s || '').trim().length > 0) : [];
+  const level = list.length || 1;
+  const name = list.length ? list[list.length - 1] : 'Root';
+  _setViewModeScope(section, level, name);
+}
+
 function _setViewMode(section, mode) {
-  _viewMode[section] = mode;
-  const storageKey = section === 'live-tv'
-    ? 'remotePlayViewLiveTv'
-    : 'remotePlayView' + section.charAt(0).toUpperCase() + section.slice(1);
-  localStorage.setItem(storageKey, mode);
+  const normalized = _normalizeViewMode(mode);
+  _viewMode[section] = normalized;
+  const storageKey = _viewModeStorageBaseKey(section);
+  const scopeKey = _viewModeScope[section];
+  if (scopeKey) localStorage.setItem(storageKey + ':' + scopeKey, normalized);
+  localStorage.setItem(storageKey, normalized);
   _applyViewToggleBtn(section);
   if (section === 'video' && currentData) {
     if (typeof _applyVcbViewBtn === 'function') _applyVcbViewBtn();
@@ -334,6 +415,8 @@ function _setViewMode(section, mode) {
   } else if (section === 'radio') {
     if (typeof _syncRadioCommandBar === 'function') _syncRadioCommandBar();
     renderRadioCards(_radioStations, _radioStations.length === _radioPageSize * (_radioPage + 1));
+  } else if (section === 'podcasts') {
+    if (typeof _renderPodcastsCurrentView === 'function') _renderPodcastsCurrentView();
   } else if (section === 'live-tv') {
     if (typeof _syncLiveTvCommandBar === 'function') _syncLiveTvCommandBar();
     if (typeof renderLiveTvCards === 'function') renderLiveTvCards();
@@ -375,6 +458,8 @@ function setPlayLocal(on) {
     btn.classList.toggle('active', on);
     btn.title = on ? 'Playing on this device — click to switch to server' : 'Playing on server — click to play on this device';
   }
+  // Toggle local-play-mode class on body to hide server-only audio effects
+  document.body.classList.toggle('local-play-mode', on);
 }
 let _togglePlayLocalLast = 0;
 function togglePlayLocal() {
@@ -387,11 +472,11 @@ function togglePlayLocal() {
   setPlayLocal(turningOn);
   if (turningOn) {
     // If radio is currently playing on the server, hand it off to local immediately
-    if (window._radioIsPlaying && window._radioCurrentUrl) {
-      const handoffName    = window._radioCurrentName;
-      const handoffCountry = window._radioCurrentCountry || '';
-      const handoffTag     = window._radioCurrentTag || '';
-      const handoffStation = window._radioCurrentStation || null;
+    if (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying && typeof _radioCurrentUrl !== 'undefined' && _radioCurrentUrl) {
+      const handoffName    = typeof _radioCurrentName !== 'undefined' ? _radioCurrentName : '';
+      const handoffCountry = (typeof _radioCurrentCountry !== 'undefined' ? _radioCurrentCountry : '') || '';
+      const handoffTag     = (typeof _radioCurrentTag !== 'undefined' ? _radioCurrentTag : '') || '';
+      const handoffStation = (typeof _radioCurrentStation !== 'undefined' ? _radioCurrentStation : null) || null;
       const proxyUrl = '/api/radio/stream-proxy?url=' + encodeURIComponent(_radioCurrentUrl);
       // Update UI state immediately (synchronous, in user-gesture scope)
       _radioIsPlaying = true;
@@ -400,21 +485,15 @@ function togglePlayLocal() {
       // Start local audio NOW — any fetch() before this would consume the user-gesture token
       // and Chromium would silently block audio output.
       localPlay(proxyUrl, handoffName || 'Radio', 'Radio');
+      if (typeof startWaveform === 'function') startWaveform();
       // Notify server and log AFTER localPlay() — deferred so we never race the gesture
       setTimeout(() => {
         fetch('/api/local-playing', { method: 'POST', body: 'true' }).catch(() => {});
         fetch('/api/radio/stop', { method: 'POST' }).catch(() => {});
         fetch('/api/log', { method: 'POST', body: 'Switched playback mode to Local' }).catch(() => {});
       }, 0);
-    } else {
-      // No active playback to hand off — just log the mode switch
-      setTimeout(() => {
-        fetch('/api/local-playing', { method: 'POST', body: 'true' }).catch(() => {});
-        fetch('/api/log', { method: 'POST', body: 'Switched playback mode to Local' }).catch(() => {});
-      }, 0);
-    }
-    // If music is playing on the server, hand it off to local immediately
-    if (typeof musicIsPlaying !== 'undefined' && musicIsPlaying && typeof musicCurrentPath !== 'undefined' && musicCurrentPath) {
+    } else if (typeof musicIsPlaying !== 'undefined' && musicIsPlaying && typeof musicCurrentPath !== 'undefined' && musicCurrentPath) {
+      // If music is playing on the server, hand it off to local immediately
       const title = document.getElementById('music-bar-title')?.textContent || 'Track';
       // Capture current playback position from the seek bar (populated by last poll)
       const seekEl = document.getElementById('music-seek');
@@ -452,6 +531,12 @@ function togglePlayLocal() {
 
       // Tell the server to stop AFTER play() is already running; unmute once confirmed.
       fetch('/api/music/stop').then(doSeekAndUnmute).catch(doSeekAndUnmute);
+    } else {
+      // No active playback to hand off — just log the mode switch
+      setTimeout(() => {
+        fetch('/api/local-playing', { method: 'POST', body: 'true' }).catch(() => {});
+        fetch('/api/log', { method: 'POST', body: 'Switched playback mode to Local' }).catch(() => {});
+      }, 0);
     }
   } else {
     fetch('/api/log', { method: 'POST', body: 'Switched playback mode to Server' }).catch(() => {});
@@ -461,8 +546,9 @@ function togglePlayLocal() {
     const localType = typeof _localMediaType !== 'undefined' ? _localMediaType : '';
     const wasPlaying = a && a.src && !a.paused;
     const localResumePos = (a && localType === 'Music') ? (a.currentTime || 0) : 0;
-    // Use localStop() so the "Stopping X on Local" log line is emitted correctly
-    if (typeof localStop !== 'undefined') localStop();
+    // Use localStop() with keepPlayerVisible=true for music/radio handoff to prevent flicker
+    const keepPlayerVisible = wasPlaying && (localType === 'Music' || localType === 'Radio');
+    if (typeof localStop !== 'undefined') localStop(keepPlayerVisible);
     // Leave the Web Audio boost graph running — localStop() already cleared a.src so the
     // MediaElementSource produces silence. Suspending risks a resume-race where the context
     // is still in the suspended→running transition when the next localPlay() calls a.play(),
@@ -481,6 +567,15 @@ function togglePlayLocal() {
           + (localResumePos > 0.5 ? '&pos=' + localResumePos.toFixed(2) : '');
         fetch(playUrl).then(() => {
           if (typeof musicIsPlaying !== 'undefined') musicIsPlaying = true;
+          // Immediately update the music bar to keep it visible during handoff
+          if (typeof updateMusicBar === 'function') {
+            updateMusicBar({ 
+              isPlaying: true, 
+              isPaused: false, 
+              currentPath: musicCurrentPath,
+              position: localResumePos
+            });
+          }
           if (typeof startMusicPlaybackPoll !== 'undefined') startMusicPlaybackPoll();
         }).catch(() => {});
       }
@@ -489,9 +584,10 @@ function togglePlayLocal() {
 }
 // Apply saved state on load
 document.addEventListener('DOMContentLoaded', () => {
-  // Always start in server mode — local is a session gesture, not a persisted preference.
-  localStorage.setItem('remotePlayLocal', 'false');
-  setPlayLocal(false);
+  // Restore user's last selected playback mode (server/local).
+  // Local playback still requires a user gesture when starting media.
+  const savedLocalMode = localStorage.getItem('remotePlayLocal') === 'true';
+  setPlayLocal(savedLocalMode);
 
   // On load, switch to whichever domain is currently playing on this server instance.
   // This means navigating to an instance always lands on the active player, not the default tab.
@@ -507,7 +603,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ]);
       let targetMode = null;
       if (musicRes && (musicRes.isPlaying || musicRes.isPaused)) targetMode = 'music';
-      else if (radioRes && radioRes.isPlaying) targetMode = 'radio';
+      else if (radioRes && (radioRes.isPlaying || radioRes.IsPlaying)) targetMode = 'radio';
       else if (videoRes && (videoRes.isPlaying || videoRes.isPaused)) targetMode = 'video';
 
       if (!targetMode || targetMode === 'video') {
@@ -551,6 +647,36 @@ document.addEventListener('DOMContentLoaded', () => {
             if (folder) browseMusic(folder);
           }
         } else if (targetMode === 'radio') {
+          // Restore radio player UI state
+          const isPlaying = radioRes && (radioRes.isPlaying || radioRes.IsPlaying);
+          console.debug('[RADIO-RESTORE] targetMode=radio, radioRes=', radioRes, 'isPlaying=', isPlaying);
+          if (isPlaying) {
+            const name = radioRes.stationName || radioRes.StationName || 'Radio';
+            const url = radioRes.stationUrl || radioRes.StationUrl || '';
+            const country = radioRes.country || radioRes.Country || '';
+            const tag = radioRes.tag || radioRes.Tag || '';
+            const station = radioRes.station || radioRes.Station || null;
+
+            // Set global variables
+            if (typeof _radioIsPlaying !== 'undefined') _radioIsPlaying = true;
+            if (typeof _radioCurrentUrl !== 'undefined' && url) _radioCurrentUrl = url;
+            if (typeof _radioCurrentName !== 'undefined' && name) _radioCurrentName = name;
+            if (typeof _radioCurrentCountry !== 'undefined') _radioCurrentCountry = country;
+            if (typeof _radioCurrentTag !== 'undefined') _radioCurrentTag = tag;
+            if (typeof _radioCurrentStation !== 'undefined' && station) _radioCurrentStation = station;
+
+            // Show radio player bar
+            const radioBar = document.getElementById('radio-player-bar');
+            console.debug('[RADIO-RESTORE] radioBar element=', radioBar, 'display BEFORE=', radioBar?.style.display);
+            if (radioBar) radioBar.style.display = 'flex';
+            console.debug('[RADIO-RESTORE] display AFTER=', radioBar?.style.display);
+            document.body.classList.add('radio-player-docked');
+
+            // Update radio bar UI
+            if (typeof updateRadioBar !== 'undefined') {
+              updateRadioBar(name, country, tag, true, station);
+            }
+          }
           if (typeof startRadioStatusPoll === 'function') startRadioStatusPoll();
         }
       }
@@ -844,6 +970,7 @@ async function pollStatus() {
       return null;
     }
     const s = await res.json();
+    await _applyPendingWebUiNavigation(s);
     statusFailures = 0;
     setConnectionStatus('Connected', false, true);
     updateDiagnosticsIndicator(s.lastError ? 'error' : 'ok');
@@ -934,8 +1061,14 @@ async function pollStatus() {
       );
       document.getElementById('saturation').value = saturation;
       document.getElementById('saturation-label').textContent = Math.round(saturation * 100) + '%';
+      const rawSharpness = Number(s.sharpness);
+      const sharpness = Math.max(0, Math.min(1, Number.isFinite(rawSharpness) ? rawSharpness : 0));
+      if (!sharpnessDragging) {
+        document.getElementById('sharpness').value = sharpness;
+        document.getElementById('sharpness-label').textContent = Math.round(sharpness * 100) + '%';
+      }
       const rawZoom = Number(s.zoom);
-      const zoom = Math.max(1, Math.min(2, Number.isFinite(rawZoom) ? rawZoom : 1));
+      const zoom = Math.max(0.5, Math.min(2, Number.isFinite(rawZoom) ? rawZoom : 1));
       if (!zoomDragging) {
         document.getElementById('zoom').value = zoom;
         document.getElementById('zoom-label').textContent = Math.round(zoom * 100) + '%';

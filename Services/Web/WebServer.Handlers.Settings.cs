@@ -87,6 +87,7 @@ internal sealed partial class WebServer
             EnableMusicBrainzAlbumArtLookup = dto.EnableMusicBrainzAlbumArtLookup ?? _config.EnableMusicBrainzAlbumArtLookup,
             EnableDiscogsAlbumArtLookup = dto.EnableDiscogsAlbumArtLookup ?? _config.EnableDiscogsAlbumArtLookup,
             DiscogsToken                = dto.DiscogsToken?.Trim() ?? _config.DiscogsToken,
+            WikiLanguage                = dto.WikiLanguage?.Trim().ToLowerInvariant() ?? _config.WikiLanguage,
             PreferredAudioLanguage      = dto.PreferredAudioLanguage?.Trim()            ?? _config.PreferredAudioLanguage,
             PreferredSubtitleLanguage   = dto.PreferredSubtitleLanguage?.Trim()         ?? _config.PreferredSubtitleLanguage,
             SecondarySubtitleLanguage   = dto.SecondarySubtitleLanguage?.Trim()         ?? _config.SecondarySubtitleLanguage,
@@ -268,6 +269,7 @@ internal sealed partial class WebServer
         EnableMusicBrainzAlbumArtLookup = c.EnableMusicBrainzAlbumArtLookup,
         EnableDiscogsAlbumArtLookup = c.EnableDiscogsAlbumArtLookup,
         DiscogsToken                = c.DiscogsToken,
+        WikiLanguage                = c.WikiLanguage,
         PreferredAudioLanguage      = c.PreferredAudioLanguage,
         PreferredSubtitleLanguage   = c.PreferredSubtitleLanguage,
         SecondarySubtitleLanguage   = c.SecondarySubtitleLanguage,
@@ -318,6 +320,7 @@ internal sealed partial class WebServer
         public bool?    EnableMusicBrainzAlbumArtLookup { get; set; }
         public bool?    EnableDiscogsAlbumArtLookup { get; set; }
         public string?  DiscogsToken                { get; set; }
+        public string?  WikiLanguage                { get; set; }
         public string?  PreferredAudioLanguage      { get; set; }
         public string?  PreferredSubtitleLanguage   { get; set; }
         public string?  SecondarySubtitleLanguage   { get; set; }

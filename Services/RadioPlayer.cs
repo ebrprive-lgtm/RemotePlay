@@ -184,6 +184,28 @@ internal sealed class RadioPlayer : IDisposable
         }
     }
 
+    public void Seek(double seconds)
+    {
+        lock (_lock)
+        {
+            if (_reader is null)
+                return;
+
+            var targetSeconds = Math.Max(0, seconds);
+            try
+            {
+                _reader.CurrentTime = TimeSpan.FromSeconds(targetSeconds);
+                _playStartUtc = DateTime.UtcNow - TimeSpan.FromSeconds(targetSeconds);
+                _lastSampleUtc = DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                _lastError = ex.Message;
+                Logger.Warning("Radio", $"Seek failed for '{_currentName}': {ex.Message}");
+            }
+        }
+    }
+
     /// <summary>
     /// </summary>
     public void SetStreamTitle(string title)

@@ -96,6 +96,7 @@ public sealed class AppConfigFactoryTests
             current,
             volume: 0.6,
             brightness: 0.7,
+            sharpness: 0.25,
             zoom: 1.35,
             audioBoost: 1.5,
             playbackSpeed: 1.25,
@@ -119,6 +120,7 @@ public sealed class AppConfigFactoryTests
         Assert.True(config.StartWithWindows);
         Assert.False(config.UseTrayIcon);
         Assert.Equal(0.7, config.Brightness);
+        Assert.Equal(0.25, config.Sharpness);
     }
 
     // ── Guard clauses

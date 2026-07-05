@@ -81,7 +81,6 @@ internal sealed class AppUpdater
             var sourceVersion = UpdateFileHelper.ReadVersionFile(sourcePath);
             if (sourceVersion is null)
             {
-                Logger.Info("AppUpdater: No version.txt found in update source, skipping check.");
                 _lastUpdateError = "No version.txt found in update source folder.";
                 _hasChecked = true;
                 return;
@@ -89,7 +88,7 @@ internal sealed class AppUpdater
 
             _availableVersion = sourceVersion;
 
-            if (string.Equals(sourceVersion, _currentVersion, StringComparison.OrdinalIgnoreCase))
+            if (!UpdateFileHelper.IsHigherVersion(sourceVersion, _currentVersion))
             {
                 _hasChecked = true;
                 return;
@@ -125,13 +124,10 @@ internal sealed class AppUpdater
 
         if (changedFiles.Count == 0)
         {
-            Logger.Info("AppUpdater: No changed files found; update skipped.");
             lock (_gate)
                 _isUpdating = false;
             return;
         }
-
-        Logger.Info($"AppUpdater: Copying {changedFiles.Count} changed file(s).");
 
         // Build a batch file that waits for the process to exit, copies files, then restarts.
         var processId = Environment.ProcessId;
@@ -156,8 +152,6 @@ internal sealed class AppUpdater
         lines.AppendLine("del \"%~f0\"");
 
         await File.WriteAllTextAsync(tempBatchPath, lines.ToString()).ConfigureAwait(false);
-
-        Logger.Info($"AppUpdater: Launching update batch at {tempBatchPath}. App will restart.");
 
         Process.Start(new ProcessStartInfo
         {

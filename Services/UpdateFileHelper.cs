@@ -12,6 +12,22 @@ namespace RemotePlay.Services;
 internal static class UpdateFileHelper
 {
     /// <summary>
+    /// Returns <c>true</c> only when <paramref name="candidateVersion"/> parses as a
+    /// valid <see cref="Version"/> and is strictly greater than
+    /// <paramref name="currentVersion"/>.
+    /// </summary>
+    public static bool IsHigherVersion(string candidateVersion, string currentVersion)
+    {
+        if (!Version.TryParse(candidateVersion, out var candidate))
+            return false;
+
+        if (!Version.TryParse(currentVersion, out var current))
+            return false;
+
+        return candidate > current;
+    }
+
+    /// <summary>
     /// Returns <c>true</c> when both files have the same length and the same SHA-256 hash.
     /// Returns <c>false</c> on any I/O error.
     /// </summary>

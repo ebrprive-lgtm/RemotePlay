@@ -139,4 +139,27 @@ public class AppUpdaterTests : IDisposable
         // No files to copy → update should not be in progress.
         Assert.False(updater.IsUpdating);
     }
+
+    [Fact]
+    public async Task Start_WithLowerVersionInSource_DoesNotApplyUpdate()
+    {
+        var sourceDir = Path.Combine(_tempDir, "source_lower_ver");
+        Directory.CreateDirectory(sourceDir);
+
+        var updater = new AppUpdater();
+        File.WriteAllText(Path.Combine(sourceDir, "version.txt"), "0.0.0");
+        File.WriteAllText(Path.Combine(sourceDir, "dummy.txt"), "changed");
+
+        var config = new AppConfig { UpdateSourcePath = sourceDir };
+
+        updater.Start(config);
+
+        for (var i = 0; i < 30 && !updater.HasChecked; i++)
+            await Task.Delay(100);
+
+        Assert.True(updater.HasChecked);
+        Assert.Equal("0.0.0", updater.AvailableVersion);
+        Assert.Equal(string.Empty, updater.LastUpdateError);
+        Assert.False(updater.IsUpdating);
+    }
 }

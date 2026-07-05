@@ -101,6 +101,7 @@ internal sealed partial class WebServer
             title = s.Title ?? string.Empty,
             volume = Math.Round(s.Volume, 2),
             brightness = Math.Round(s.Brightness, 2),
+            sharpness = Math.Round(s.Sharpness, 2),
             saturation = Math.Round(s.Saturation, 2),
             zoom = Math.Round(s.Zoom, 2),
             audioBoost = Math.Round(s.AudioBoost, 2),
@@ -160,6 +161,20 @@ internal sealed partial class WebServer
         }
         var json = JsonSerializer.Serialize(new { expertMode = _expertMode });
         TrySendResponse(ctx, 200, "application/json", json);
+    }
+
+    private void HandleSharpness(HttpListenerContext ctx)
+    {
+        var valueParam = ctx.Request.QueryString["value"];
+        if (MediaControlValueParser.TryParseClampedDouble(valueParam, 0, 1, out var sharpness))
+        {
+            _callbacks.SetSharpness(sharpness);
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+        }
+        else
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad sharpness");
+        }
     }
 
     private void HandleDebugMode(HttpListenerContext ctx)
@@ -268,7 +283,7 @@ internal sealed partial class WebServer
     private void HandleZoom(HttpListenerContext ctx)
     {
         var valueParam = ctx.Request.QueryString["value"];
-        if (MediaControlValueParser.TryParseClampedDouble(valueParam, 1, 2, out var zoom))
+        if (MediaControlValueParser.TryParseClampedDouble(valueParam, 0.5, 2, out var zoom))
         {
             _callbacks.SetZoom(zoom);
             TrySendResponse(ctx, 200, "text/plain", "OK");
@@ -951,7 +966,7 @@ internal sealed partial class WebServer
                   <div class="metric wide"><dt>Window state</dt><dd>{{{{HtmlEncode(displayDiagnostics.WindowState)}}}} / {{{{HtmlEncode(displayDiagnostics.WindowStyle)}}}} / {{{{HtmlEncode(displayDiagnostics.ResizeMode)}}}} / Topmost={{{{displayDiagnostics.Topmost}}}}</dd></div>
                   <div class="metric wide"><dt>Current video</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(displayDiagnostics.CurrentTitle) ? "N/A" : displayDiagnostics.CurrentTitle)}}}}</dd></div>
                   <div class="metric wide"><dt>Video file</dt><dd class="mono">{{{{HtmlEncode(string.IsNullOrWhiteSpace(displayDiagnostics.CurrentFilePath) ? "N/A" : displayDiagnostics.CurrentFilePath)}}}}</dd></div>
-                  <div class="metric"><dt>Zoom / Brightness / Sat</dt><dd>{{{{Math.Round(displayDiagnostics.Zoom*100)}}}}% / {{{{Math.Round(displayDiagnostics.Brightness*100)}}}}% / {{{{Math.Round(displayDiagnostics.Saturation*100)}}}}%</dd></div>
+                  <div class="metric"><dt>Zoom / Brightness / Sharp / Sat</dt><dd>{{{{Math.Round(displayDiagnostics.Zoom*100)}}}}% / {{{{Math.Round(displayDiagnostics.Brightness*100)}}}}% / {{{{Math.Round(displayDiagnostics.Sharpness*100)}}}}% / {{{{Math.Round(displayDiagnostics.Saturation*100)}}}}%</dd></div>
                   <div class="metric"><dt>Video surface</dt><dd>{{{{displayDiagnostics.VideoSurfaceWidth}}}}&times;{{{{displayDiagnostics.VideoSurfaceHeight}}}}</dd></div>
                 </dl><div class="divider"></div><a href="/api/display-diagnostics" target="_blank" rel="noopener">Open display diagnostics JSON &#8599;</a></section>
 
@@ -1370,6 +1385,78 @@ internal sealed partial class WebServer
                   <input type="password" id="DiscogsToken" placeholder="Discogs personal access token" autocomplete="new-password"/>
                 </div>
                 <div class="hint">Optional. Improves Discogs request limits and is sent only to Discogs API calls.</div>
+                <div class="row">
+                  <label>Wikipedia language</label>
+                  <select id="WikiLanguage">
+                    <option value="en">🌐 English</option>
+                    <option value="af">Afrikaans</option>
+                    <option value="sq">Albanian – shqip</option>
+                    <option value="ar">Arabic – العربية</option>
+                    <option value="hy">Armenian – հայերեն</option>
+                    <option value="az">Azerbaijani – azərbaycan</option>
+                    <option value="eu">Basque – euskara</option>
+                    <option value="be">Belarusian – беларуская</option>
+                    <option value="bn">Bengali – বাংলা</option>
+                    <option value="bs">Bosnian – bosanski</option>
+                    <option value="bg">Bulgarian – български</option>
+                    <option value="ca">Catalan – català</option>
+                    <option value="zh">Chinese – 中文</option>
+                    <option value="hr">Croatian – hrvatski</option>
+                    <option value="cs">Czech – čeština</option>
+                    <option value="da">Danish – dansk</option>
+                    <option value="nl">Dutch – Nederlands</option>
+                    <option value="eo">Esperanto</option>
+                    <option value="et">Estonian – eesti</option>
+                    <option value="fi">Finnish – suomi</option>
+                    <option value="fr">French – français</option>
+                    <option value="gl">Galician – galego</option>
+                    <option value="ka">Georgian – ქართული</option>
+                    <option value="de">German – Deutsch</option>
+                    <option value="el">Greek – ελληνικά</option>
+                    <option value="he">Hebrew – עברית</option>
+                    <option value="hi">Hindi – हिन्दी</option>
+                    <option value="hu">Hungarian – magyar</option>
+                    <option value="id">Indonesian – Bahasa Indonesia</option>
+                    <option value="ga">Irish – Gaeilge</option>
+                    <option value="it">Italian – italiano</option>
+                    <option value="ja">Japanese – 日本語</option>
+                    <option value="kn">Kannada – ಕನ್ನಡ</option>
+                    <option value="kk">Kazakh – қазақша</option>
+                    <option value="ko">Korean – 한국어</option>
+                    <option value="la">Latin – Latina</option>
+                    <option value="lv">Latvian – latviešu</option>
+                    <option value="lt">Lithuanian – lietuvių</option>
+                    <option value="mk">Macedonian – македонски</option>
+                    <option value="ms">Malay – Bahasa Melayu</option>
+                    <option value="ml">Malayalam – മലയാളം</option>
+                    <option value="mt">Maltese – Malti</option>
+                    <option value="mr">Marathi – मराठी</option>
+                    <option value="mn">Mongolian – монгол</option>
+                    <option value="no">Norwegian – norsk</option>
+                    <option value="fa">Persian – فارسی</option>
+                    <option value="pl">Polish – polski</option>
+                    <option value="pt">Portuguese – português</option>
+                    <option value="ro">Romanian – română</option>
+                    <option value="ru">Russian – русский</option>
+                    <option value="sr">Serbian – српски</option>
+                    <option value="sk">Slovak – slovenčina</option>
+                    <option value="sl">Slovenian – slovenščina</option>
+                    <option value="es">Spanish – español</option>
+                    <option value="sw">Swahili – Kiswahili</option>
+                    <option value="sv">Swedish – svenska</option>
+                    <option value="tl">Tagalog</option>
+                    <option value="ta">Tamil – தமிழ்</option>
+                    <option value="te">Telugu – తెలుగు</option>
+                    <option value="th">Thai – ไทย</option>
+                    <option value="tr">Turkish – Türkçe</option>
+                    <option value="uk">Ukrainian – українська</option>
+                    <option value="ur">Urdu – اردو</option>
+                    <option value="uz">Uzbek – o'zbek</option>
+                    <option value="vi">Vietnamese – Tiếng Việt</option>
+                    <option value="cy">Welsh – Cymraeg</option>
+                  </select>
+                </div>
+                <div class="hint">Wikipedia language used for artist info. Set to your local language for richer articles on local artists.</div>
               </div>
               <div class="card">
                 <h2>&#128193; File filters</h2>
@@ -1529,7 +1616,7 @@ internal sealed partial class WebServer
                   <label>Source path&nbsp;/&nbsp;URL</label>
                   <div class="path-row">
                     <input type="text" id="UpdateSourcePath" placeholder="\\server\share\RemotePlay  or  https://..."/>
-                    <button class="test-btn" onclick="testPathOrUrl('UpdateSourcePath','update-source-result')">Test</button>
+                    <button class="test-btn" onclick="testAndSavePathOrUrl('UpdateSourcePath','update-source-result')">Test &amp; Save</button>
                   </div>
                 </div>
                 <span id="update-source-result" class="hint"></span>
@@ -1751,6 +1838,7 @@ internal sealed partial class WebServer
           set('EnableMusicBrainzAlbumArtLookup',cfg.enableMusicBrainzAlbumArtLookup);
           set('EnableDiscogsAlbumArtLookup',cfg.enableDiscogsAlbumArtLookup);
           set('DiscogsToken',cfg.discogsToken);
+          set('WikiLanguage',cfg.wikiLanguage);
           set('IgnoredLibraryFolders',cfg.ignoredLibraryFolders);
           set('VideoFileExtensions',cfg.videoFileExtensions);
           set('MusicFileExtensions',cfg.musicFileExtensions);
@@ -1810,7 +1898,7 @@ internal sealed partial class WebServer
         }
         const CAT_FIELDS={
           library:[],   // handled entirely by list/cred collectors in collectCategory
-          scanning:['LibraryRescanDelayMinutes','LibraryPageSize','EnableThumbnailGeneration','EnableMusicBrainzAlbumArtLookup','EnableDiscogsAlbumArtLookup','DiscogsToken','IgnoredLibraryFolders','VideoFileExtensions','MusicFileExtensions'],
+          scanning:['LibraryRescanDelayMinutes','LibraryPageSize','EnableThumbnailGeneration','EnableMusicBrainzAlbumArtLookup','EnableDiscogsAlbumArtLookup','DiscogsToken','WikiLanguage','IgnoredLibraryFolders','VideoFileExtensions','MusicFileExtensions'],
           playback:['PreferredAudioLanguage','PreferredSubtitleLanguage','SecondarySubtitleLanguage','PreferForcedSubtitles','PlaybackEndBehavior','PlaybackHistoryLimit'],
           audio:['MusicAudioDeviceId'],
           server:[],    // ServerInstanceName, MaxRequestsPerIpPerWindow, RateLimitWindowSeconds handled in collectCategory
@@ -1880,6 +1968,10 @@ internal sealed partial class WebServer
             el.textContent=d.reachable?'\u2714 Reachable (HTTP '+d.status+')':'\u26a0 '+(d.error||'Unreachable');
             el.className=d.reachable?'test-ok':'test-err';
           }else{await testPath(inputId,resultId);}
+        }
+        async function testAndSavePathOrUrl(inputId,resultId){
+          await testPathOrUrl(inputId,resultId);
+          await saveCategory('application');
         }
         async function refreshRuntime(){
           const result=document.getElementById('admin-result'); result.textContent='Refreshing\u2026';

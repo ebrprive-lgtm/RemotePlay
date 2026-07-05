@@ -2,9 +2,51 @@ let _radioStatusPollId = null;
 let _radioElapsedBase = 0; // server-reported elapsed at last poll
 let _radioElapsedPollTime = 0; // performance.now() when that poll landed
 let _radioElapsedTick = null;
+let _podcastServerElapsedBase = 0;
+let _podcastServerElapsedPollTime = 0;
 let _radioRetryCount = 0;
 let _radioWaveformId = null;
 let _radioWaveformPhase = 0;
+const _debouncedPodcastServerVolumeApi = debounce((v) =>
+  fetch('/api/radio/volume?v=' + v, { method: 'POST' }).catch(() => {}), 150);
+const _debouncedPodcastServerBoostApi = debounce((v) =>
+  fetch('/api/radio/boost?v=' + v, { method: 'POST' }).catch(() => {}), 150);
+
+function _updateLocalCombinedSliderVisual(value) {
+  const val = parseFloat(value);
+  if (isNaN(val)) return;
+
+  const slider = document.getElementById('radio-bar-combined');
+  if (!slider) return;
+  if (typeof updateRadioCombinedSliderVisual === 'function') updateRadioCombinedSliderVisual(val);
+}
+
+function _setLocalCombinedSliderLabel(combinedValue, boostValue) {
+  const lbl = document.getElementById('radio-combined-label');
+  if (!lbl) return;
+
+  const combined = Math.max(0, Math.min(1.3, parseFloat(combinedValue) || 0));
+  if (combined <= 1.0) {
+    lbl.textContent = Math.round(combined * 100) + '%';
+    return;
+  }
+
+  const boost = Math.max(0, parseFloat(boostValue) || 1);
+  const db = Math.round(20 * Math.log10(boost));
+  lbl.textContent = '100% +' + db + 'dB';
+}
+
+function _initLocalCombinedSliderVisual() {
+  const slider = document.getElementById('radio-bar-combined');
+  if (!slider) return;
+  _updateLocalCombinedSliderVisual(parseFloat(slider.value) || 1);
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _initLocalCombinedSliderVisual);
+} else {
+  _initLocalCombinedSliderVisual();
+}
 
 // ── Stream title history (feature #3) ────────────────────────────────
 const TITLE_HISTORY_KEY = 'radioTitleHistory';
@@ -99,6 +141,26 @@ function fmtSec(s) {
   const sec = Math.floor(s % 60);
   if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
   return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+function _syncPodcastServerProgress(elapsedSeconds, playing) {
+  if (typeof _localMediaType === 'undefined' || _localMediaType !== 'PodcastServer') return;
+
+  const now = performance.now();
+  const rawElapsed = Number.isFinite(elapsedSeconds) ? Math.max(0, elapsedSeconds) : 0;
+
+  if (rawElapsed > 0 || _podcastServerElapsedPollTime <= 0) {
+    _podcastServerElapsedBase = rawElapsed;
+    _podcastServerElapsedPollTime = now;
+  }
+
+  const assumeRunning = playing || (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying);
+  const elapsed = assumeRunning && _podcastServerElapsedPollTime > 0
+    ? _podcastServerElapsedBase + Math.max(0, Math.round((now - _podcastServerElapsedPollTime) / 1000))
+    : rawElapsed;
+
+  const techText = document.getElementById('radio-bar-tech-text');
+  if (techText) techText.textContent = elapsed > 0 ? `Podcast • ${fmtSec(elapsed)}` : 'Podcast';
 }
 
 // ── Waveform animator ────────────────────────────────────────────────
@@ -222,6 +284,8 @@ async function radioStatusTick() {
     const err = s.error || s.Error || '';
     if (url) _radioCurrentUrl = url;
 
+    _syncPodcastServerProgress(elapsed, playing);
+
     // Update elapsed clock base
     if (playing && elapsed > 0) {
       _radioElapsedBase = elapsed;
@@ -260,6 +324,21 @@ async function radioStatusTick() {
           qBadge.classList.remove('stalled');
         }
       }
+    }
+
+    // Sync podcast-server local bar volume/boost from server state.
+    if (!isPlayLocal() && typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer') {
+      const vol = Math.max(0, Math.min(1, s.volume ?? s.Volume ?? 0.8));
+      const boost = Math.max(0, s.boost ?? s.Boost ?? 1.0);
+      const combined = boost > 1.0 ? Math.min(1.3, 1.0 + (boost - 1) * (0.3 / 2)) : Math.min(1.0, vol);
+      const slider = document.getElementById('radio-bar-combined');
+      _updateLocalCombinedSliderVisual(combined);
+
+      if (slider && Math.abs((parseFloat(slider.value) || 0) - combined) > 0.015) {
+        slider.value = combined;
+      }
+
+      _setLocalCombinedSliderLabel(combined, boost);
     }
 
     // Song title marquee (server mode only — local streams rarely carry ICY metadata via proxy)
@@ -309,7 +388,7 @@ async function radioStatusTick() {
 
     // In local mode the bar state is managed by radioPlayStation/radioToggle — don't let
     // the server poll overwrite it (server reports not-playing when local is active).
-    if (!isPlayLocal()) {
+    if (!isPlayLocal() && !(typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer')) {
       // If we lost the station object (e.g. page reload), try to recover from favorites by URL.
       if (!_radioCurrentStation && url && _radioFavorites && _radioFavorites.length) {
         const match = _radioFavorites.find(
@@ -320,7 +399,7 @@ async function radioStatusTick() {
       updateRadioBar(name, _radioCurrentCountry, _radioCurrentTag, playing, _radioCurrentStation);
     }
     // Sync combined volume/boost slider from server state
-    if (!isPlayLocal()) {
+    if (!isPlayLocal() && !(typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer')) {
       const vol   = s.volume ?? s.Volume ?? 0.8;
       const boost = s.boost  ?? s.Boost  ?? 1.0;
       // Map back to combined slider position (0–1.0 = volume, 1.0–1.3 = boost zone)
@@ -405,6 +484,9 @@ function _getLocalAudio() {
             && typeof isPlayLocal === 'function' && isPlayLocal()
             && typeof musicNext === 'function') {
           musicNext();
+        } else if (typeof _localMediaType !== 'undefined' && _localMediaType === 'Podcast'
+            && typeof podcastNextEpisode === 'function') {
+          podcastNextEpisode({ autoAdvance: true });
         } else {
           localStop();
         }
@@ -426,13 +508,11 @@ function _getLocalAudio() {
       _localAudio.addEventListener('error', () => {
         // Ignore the benign empty-src error fired when localStop() sets a.src = ''
         if (!_localAudio.src || _localAudio.src === window.location.href) return;
-        const s = document.getElementById('local-player-state');
         const errCode = _localAudio.error ? _localAudio.error.code : '?';
         const errMsg = _localAudio.error ? _localAudio.error.message : 'unknown';
         const detail = `Media error ${errCode}: ${errMsg}`;
-        if (s) s.textContent = detail;
         fetch('/api/log', { method: 'POST', body: `Local audio error — ${_localMediaType}: ${detail} (src: ${_localAudio.src || 'none'})` }).catch(() => {});
-        const nmEl = document.getElementById('local-player-name');
+        const nmEl = document.getElementById('radio-bar-title') || document.getElementById('music-bar-title');
         const nm = nmEl ? nmEl.textContent : '';
         if (typeof showPlaybackErrorPopup === 'function') {
           const label = nm ? `"${nm}"` : 'Stream';
@@ -446,15 +526,16 @@ function _getLocalAudio() {
 function _localAudioUpdate() {
   const a = _getLocalAudio();
   if (!a) return;
-  const btn = document.getElementById('local-play-toggle');
-  const s = document.getElementById('local-player-state');
-  if (btn) btn.innerHTML = a.paused ? '&#9654; Play' : '&#9646;&#9646; Pause';
-  if (s) s.textContent = a.paused ? 'Paused' : 'Playing locally';
+  const rBtn = document.getElementById('radio-btn-play');
+  if (rBtn && (typeof _localMediaType !== 'undefined' && (_localMediaType === 'Radio' || _localMediaType === 'Podcast'))) {
+    rBtn.innerHTML = a.paused ? '&#9654; Play' : '&#9646;&#9646; Pause';
+  }
   // Mirror into music bar when in local music mode
   if (typeof _localMediaType !== 'undefined' && _localMediaType === 'Music') {
     const mBtn = document.getElementById('music-btn-play');
     if (mBtn) mBtn.innerHTML = a.paused ? '&#9654; Play' : '&#9646;&#9646; Pause';
   }
+  if (typeof _syncPodcastPlaybackControls === 'function') _syncPodcastPlaybackControls();
 }
 function _localTimeUpdate() {
   const a = _getLocalAudio();
@@ -463,6 +544,8 @@ function _localTimeUpdate() {
   const lbl = document.getElementById('local-time-label');
   const dur = isFinite(a.duration) ? a.duration : 0;
   if (seek && !_localSeekDragging) {
+    seek.disabled = false;
+    seek.removeAttribute('disabled');
     seek.max = dur || 0;
     seek.value = a.currentTime || 0;
   }
@@ -471,7 +554,7 @@ function _localTimeUpdate() {
   if (typeof _localMediaType !== 'undefined' && _localMediaType === 'Music') {
     const mSeek = document.getElementById('music-seek');
     if (mSeek && typeof _musicSeekDragging !== 'undefined' && !_musicSeekDragging) {
-      mSeek.max = dur || 0;
+      if (dur > 0) mSeek.max = dur;
       mSeek.value = a.currentTime || 0;
       if (typeof _updateMusicSeekFill !== 'undefined') _updateMusicSeekFill();
     }
@@ -480,6 +563,24 @@ function _localTimeUpdate() {
   }
 }
 function localSeekDrag() {
+  const seekEl = document.getElementById('local-seek');
+  if (seekEl) {
+    seekEl.disabled = false;
+    seekEl.removeAttribute('disabled');
+  }
+
+  if (typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer') {
+    _localSeekDragging = true;
+    const seek = seekEl;
+    const lbl = document.getElementById('local-time-label');
+    if (seek && lbl) {
+      const val = parseFloat(seek.value) || 0;
+      const max = parseFloat(seek.max) || 0;
+      lbl.textContent = `${fmtSec(val)} / ${max > 0 ? fmtSec(max) : '--:--'}`;
+    }
+    return;
+  }
+
   _localSeekDragging = true;
   const a = _getLocalAudio(),
     seek = document.getElementById('local-seek');
@@ -489,15 +590,39 @@ function localSeekDrag() {
     lbl.textContent = _fmtTime(parseFloat(seek.value)) + ' / ' + _fmtTime(dur);
   }
 }
-function localSeekCommit() {
+async function localSeekCommit() {
+  if (typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer') {
+    const seek = document.getElementById('local-seek');
+    const target = seek ? (parseFloat(seek.value) || 0) : 0;
+    _localSeekDragging = false;
+
+    try {
+      await fetch('/api/radio/seek?' + new URLSearchParams({ v: String(Math.max(0, target)) }), { method: 'POST' });
+    } catch {}
+
+    return;
+  }
+
   _localSeekDragging = false;
   const a = _getLocalAudio(),
     seek = document.getElementById('local-seek');
   if (a && seek) a.currentTime = parseFloat(seek.value) || 0;
 }
 function localVolume(v) {
-  const a = _getLocalAudio();
-  if (a) a.volume = Math.min(1, Math.max(0, parseFloat(v) || 0));
-  const lbl = document.getElementById('local-volume-label');
-  if (lbl) lbl.textContent = Math.round((parseFloat(v) || 0) * 100) + '%';
+  const combined = Math.min(1.3, Math.max(0, parseFloat(v) || 0));
+  const vol = combined <= 1.0 ? combined : 1.0;
+  const boost = combined > 1.0 ? 1 + (combined - 1) * (2 / 0.3) : 1.0;
+
+  _updateLocalCombinedSliderVisual(combined);
+  _setLocalCombinedSliderLabel(combined, boost);
+
+  if (typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer') {
+    _debouncedPodcastServerVolumeApi(vol.toFixed(3));
+    _debouncedPodcastServerBoostApi(boost.toFixed(3));
+  } else {
+    const a = _getLocalAudio();
+    if (a) a.volume = vol;
+    const gainNode = typeof _ensureLocalBoostGraph === 'function' ? _ensureLocalBoostGraph() : null;
+    if (gainNode) gainNode.gain.value = Math.max(0, boost);
+  }
 }

@@ -15,6 +15,7 @@ let _radioStatusPoll = null;
 let _radioCountries = [];
 let _radioTags = [];
 let _radioTab = 'top'; // 'top'|'favorites'
+let _radioFavoritesOnly = false;
 let _radioPage = 0; // current page (0-based), each page = 80 stations
 const _radioPageSize = 80;
 let _radioFilterQ = '';
@@ -239,6 +240,8 @@ async function radioInit() {
     } catch {}
   }
   await radioLoadFavorites();
+  _radioTab = 'favorites';
+  _radioFavoritesOnly = true;
   await radioShowTab(_radioTab);
   startRadioStatusPoll();
   _radioInited = true;
@@ -260,6 +263,7 @@ async function radioShowTab(tab) {
   const prevTag = _radioFilterTag;
   const sameTab = tab === _radioTab;
   _radioTab = tab;
+  _radioFavoritesOnly = tab === 'favorites';
   _radioPage = 0;
   // Always reset sort to default (votes ↓) when switching to a tab
   _radioSortBy = 'votes';
@@ -268,49 +272,37 @@ async function radioShowTab(tab) {
   if (!rb) return;
   rb.style.display = '';
   let html = '';
-  // Sync header tab buttons active state
-  const hts = document.getElementById('header-tab-stations');
-  const htf = document.getElementById('header-tab-favorites');
-  if (hts) hts.classList.toggle('active', tab === 'top');
-  if (htf) htf.classList.toggle('active', tab === 'favorites');
-  // Filters (only for top/search) — rendered into #rcb-filters in the command bar
+  // Filters — rendered into #rcb-filters in the command bar
   const rcbFilters = document.getElementById('rcb-filters');
-  if (tab !== 'favorites') {
-    let filterHtml = '';
-    filterHtml +=
-      '<input id="radio-search-box" type="search" placeholder="Station name\u2026" oninput="radioOnSearchInput()" />';
-    filterHtml +=
-      '<button id="rcb-fav-only-btn" class="vcb-pill" onclick="radioToggleFavoritesFilter()">★ Favorites</button>';
-    filterHtml += _buildFavSelect(
-      'radio-country',
-      _radioCountries.map((c) => ({ value: c.code, label: c.name })),
-      _radioFavCountries,
-      'radioToggleCountryFav',
-      'All countries'
-    );
-    filterHtml += _buildFavSelect(
-      'radio-tag',
-      _radioTags.map((t) => ({ value: t, label: t })),
-      _radioFavTags,
-      'radioToggleTagFav',
-      'All genres'
-    );
-    filterHtml += `<select id="radio-minbitrate" onchange="radioOnBitrateChange()" title="Min bitrate" aria-label="Minimum bitrate">
+  let filterHtml = '';
+  filterHtml +=
+    '<input id="radio-search-box" type="search" placeholder="Station name\u2026" oninput="radioOnSearchInput()" />';
+  filterHtml +=
+    `<button id="rcb-fav-toggle" class="vcb-pill${_radioFavoritesOnly ? ' active' : ''}" onclick="radioToggleFavoritesFilter()">★ Favorites</button>`;
+  filterHtml += _buildFavSelect(
+    'radio-country',
+    _radioCountries.map((c) => ({ value: c.code, label: c.name })),
+    _radioFavCountries,
+    'radioToggleCountryFav',
+    'All countries'
+  );
+  filterHtml += _buildFavSelect(
+    'radio-tag',
+    _radioTags.map((t) => ({ value: t, label: t })),
+    _radioFavTags,
+    'radioToggleTagFav',
+    'All genres'
+  );
+  filterHtml += `<select id="radio-minbitrate" onchange="radioOnBitrateChange()" title="Min bitrate" aria-label="Minimum bitrate">
               <option value="0"${_radioMinBitrate === 0 ? ' selected' : ''}>Any kbps</option>
               <option value="64"${_radioMinBitrate === 64 ? ' selected' : ''}>64+ kbps</option>
               <option value="128"${_radioMinBitrate === 128 ? ' selected' : ''}>128+ kbps</option>
               <option value="192"${_radioMinBitrate === 192 ? ' selected' : ''}>192+ kbps</option>
               <option value="320"${_radioMinBitrate === 320 ? ' selected' : ''}>320+ kbps</option>
             </select>`;
-    filterHtml +=
-      '<button class="rcb-reset cb-reset-btn" onclick="radioResetFilters()" title="Reset filters">&#10005; Reset filters</button>';
-    if (rcbFilters) rcbFilters.innerHTML = filterHtml;
-  } else {
-    if (rcbFilters) {
-      rcbFilters.innerHTML =
-        '<button id="rcb-fav-only-btn" class="vcb-pill active" onclick="radioToggleFavoritesFilter()">↩ All</button>';
-    }
-  }
+  filterHtml +=
+    '<button class="rcb-reset cb-reset-btn" onclick="radioResetFilters()" title="Reset filters">&#10005; Reset filters</button>';
+  if (rcbFilters) rcbFilters.innerHTML = filterHtml;
   // Sync rcb-sort select
   const rcbSort = document.getElementById('rcb-sort');
   if (rcbSort) rcbSort.value = _radioSortBy;
@@ -319,21 +311,19 @@ async function radioShowTab(tab) {
   html += '<div id="radio-cards"></div>';
   rb.innerHTML = html;
   // Restore filter state
-  if (tab !== 'favorites') {
-    const sb = document.getElementById('radio-search-box');
-    const sc = document.getElementById('radio-country');
-    const st = document.getElementById('radio-tag');
-    if (sb) sb.value = prevQ;
-    if (sc) sc.value = prevCountry;
-    if (st) st.value = prevTag;
-    // Sync heart states after restoring selection
-    const bhc = document.getElementById('radio-country-heart');
-    if (bhc) bhc.classList.toggle('active', !!prevCountry && radioIsCountryFav(prevCountry));
-    const bht = document.getElementById('radio-tag-heart');
-    if (bht) bht.classList.toggle('active', !!prevTag && radioIsTagFav(prevTag));
-  }
+  const sb = document.getElementById('radio-search-box');
+  const sc = document.getElementById('radio-country');
+  const st = document.getElementById('radio-tag');
+  if (sb) sb.value = prevQ;
+  if (sc) sc.value = prevCountry;
+  if (st) st.value = prevTag;
+  // Sync heart states after restoring selection
+  const bhc = document.getElementById('radio-country-heart');
+  if (bhc) bhc.classList.toggle('active', !!prevCountry && radioIsCountryFav(prevCountry));
+  const bht = document.getElementById('radio-tag-heart');
+  if (bht) bht.classList.toggle('active', !!prevTag && radioIsTagFav(prevTag));
 
-  if (tab === 'favorites') {
+  if (_radioFavoritesOnly) {
     await radioLoadFavorites();
     renderRadioCards(_radioFavorites, false, true);
   } else {
@@ -345,7 +335,9 @@ async function radioShowTab(tab) {
 }
 
 async function radioToggleFavoritesFilter() {
-  await radioShowTab(_radioTab === 'favorites' ? 'top' : 'favorites');
+  _radioFavoritesOnly = !_radioFavoritesOnly;
+  _radioTab = _radioFavoritesOnly ? 'favorites' : 'top';
+  await radioShowTab(_radioTab);
 }
 
 function radioOnBitrateChange() {
@@ -395,6 +387,19 @@ function radioSetSort(val) {
 }
 
 function _syncRadioCommandBar() {
+  if (typeof _setViewModeScopeFromSegments === 'function') {
+    if (_radioFavoritesOnly) {
+      _setViewModeScopeFromSegments('radio', ['Radio Root', 'Favorites']);
+    } else {
+      _setViewModeScopeFromSegments('radio', [
+        'Radio Root',
+        _radioFilterCountry ? _radioFilterLabel('radio-country', _radioFilterCountry) : 'All countries',
+        _radioFilterTag ? _radioFilterLabel('radio-tag', _radioFilterTag) : 'All genres',
+        _radioFilterQ ? 'Search: ' + _radioFilterQ : 'All',
+        _radioMinBitrate > 0 ? String(_radioMinBitrate) + '+ kbps' : 'Any bitrate',
+      ]);
+    }
+  }
   const viewBtn = document.getElementById('rcb-view-btn');
   const isList = _viewMode.radio === 'list';
   if (viewBtn) {
@@ -418,7 +423,7 @@ function _radioRenderBreadcrumb() {
   if (!bc) return;
   const root = '<button class="radio-breadcrumb-root breadcrumb-root-btn" type="button" onclick="radioResetFromBreadcrumb()" title="Reset all radio filters">⌂ Radio Root</button>';
 
-  if (_radioTab === 'favorites') {
+  if (_radioFavoritesOnly) {
     bc.innerHTML = root + '<span> &rsaquo; </span><span class="crumb-current">Favorites</span>';
     return;
   }
@@ -466,7 +471,9 @@ function _radioRenderBreadcrumb() {
 }
 
 async function radioResetFromBreadcrumb() {
-  if (_radioTab !== 'top') {
+  if (_radioFavoritesOnly) {
+    _radioFavoritesOnly = false;
+    _radioTab = 'top';
     await radioShowTab('top');
   }
 
@@ -474,8 +481,6 @@ async function radioResetFromBreadcrumb() {
 }
 
 async function radioClearBreadcrumbFilter(key) {
-  if (_radioTab === 'favorites') return;
-
   const sb = document.getElementById('radio-search-box');
   const sc = document.getElementById('radio-country');
   const st = document.getElementById('radio-tag');
@@ -530,7 +535,23 @@ async function radioFetch(append = false) {
   try {
     let newStations;
     let total = null;
-    if (!q && !country && !tag && tab === 'top') {
+    if (_radioFavoritesOnly) {
+      await radioLoadFavorites();
+      const queryNeedle = String(q || '').trim().toLowerCase();
+      const countryNeedle = String(country || '').trim().toLowerCase();
+      const tagNeedle = String(tag || '').trim().toLowerCase();
+      newStations = _radioFavorites.filter((s) => {
+        const name = String(s.name || s.Name || '').toLowerCase();
+        const stationCountry = String(s.country || s.Country || s.countrycode || s.CountryCode || '').toLowerCase();
+        const stationTags = String(s.tags || s.Tags || '').toLowerCase();
+        const stationState = String(s.state || s.State || '').toLowerCase();
+        const matchesQuery = !queryNeedle || name.includes(queryNeedle) || stationTags.includes(queryNeedle);
+        const matchesCountry = !countryNeedle || stationCountry === countryNeedle;
+        const matchesTag = !tagNeedle || stationTags.includes(tagNeedle);
+        return matchesQuery && matchesCountry && matchesTag;
+      });
+      total = newStations.length;
+    } else if (!q && !country && !tag && tab === 'top') {
       const r = await fetch(`/api/radio/top?limit=${_radioPageSize}&offset=${offset}`, fetchOptions);
       if (r.ok) {
         const payload = await r.json();
@@ -895,6 +916,7 @@ function _radioLooksLikeOggOpus(station, url) {
 }
 
 async function radioPlayStation(encUrl, encName, encCountry, encTag, encStation) {
+  document.body.classList.remove('podcast-player-mode');
   const url = decodeURIComponent(encUrl);
   const name = decodeURIComponent(encName || '');
   let station = null;
@@ -903,6 +925,11 @@ async function radioPlayStation(encUrl, encName, encCountry, encTag, encStation)
   } catch {
     station = null;
   }
+
+  if (!isPlayLocal() && typeof closeLocalPlayerForNonLocalPlayback === 'function') {
+    await closeLocalPlayerForNonLocalPlayback();
+  }
+
   // Stop current stream first so the server reinitialises cleanly
   await fetch('/api/radio/stop', { method: 'POST' });
   _radioCurrentUrl = url;
@@ -1020,6 +1047,7 @@ async function radioDismiss() {
   _radioCurrentTag = '';
   _radioCurrentStation = null;
   _radioRetryCount = 0;
+  document.body.classList.remove('podcast-player-mode');
   stopElapsedTick();
   stopWaveform();
   setRadioHealthDot('warn');

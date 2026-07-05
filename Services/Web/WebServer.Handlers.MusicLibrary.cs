@@ -188,35 +188,224 @@ internal sealed partial class WebServer
             }
             else
             {
-                var regularFolders = Directory.GetDirectories(browseDir)
+                var regularFolderPaths = Directory.GetDirectories(browseDir)
                     .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)))
-                    .Select(d => (
-                        name: Path.GetFileName(d),
-                        folder: d,
-                        isAll: string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase),
-                        isLink: false,
-                        linkPath: string.Empty,
-                        virtualPath: string.Empty));
+                    .ToArray();
+
+                var trackCountsByRegularFolder = regularFolderPaths
+                    .ToDictionary(path => path, _ => 0, StringComparer.OrdinalIgnoreCase);
+
+                if (trackCountsByRegularFolder.Count > 0)
+                {
+                    var browsePrefix = browseDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                        + Path.DirectorySeparatorChar;
+                    foreach (var track in allTracks)
+                    {
+                        var fullPath = track.FullPath;
+                        if (!fullPath.StartsWith(browsePrefix, StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        var relPath = fullPath[browsePrefix.Length..];
+                        var sepIndex = relPath.IndexOfAny(['\\', '/']);
+                        if (sepIndex <= 0)
+                            continue;
+
+                        var childFolderPath = Path.Combine(browseDir, relPath[..sepIndex]);
+                        if (trackCountsByRegularFolder.TryGetValue(childFolderPath, out var existingCount))
+                            trackCountsByRegularFolder[childFolderPath] = existingCount + 1;
+                    }
+                }
+
+                int CountTracksOnDiskTopDirectory(string folderPath)
+                {
+                    if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+                        return 0;
+
+                    var key = "top:" + folderPath;
+                    var now = DateTime.UtcNow;
+                    if (_folderCountCache.TryGetValue(key, out var cached) && cached.expiry > now)
+                        return cached.count;
+
+                    try
+                    {
+                        var count = Directory.EnumerateFiles(folderPath, "*.*", SearchOption.TopDirectoryOnly)
+                            .Count(p => _musicExtensions.Contains(Path.GetExtension(p)));
+                        _folderCountCache[key] = (count, now.Add(FolderCountCacheTtl));
+                        return count;
+                    }
+                    catch
+                    {
+                        _folderCountCache[key] = (0, now.Add(FolderCountCacheTtl));
+                        return 0;
+                    }
+                }
+
+                int CountTracksOnDiskRecursive(string folderPath)
+                {
+                    if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+                        return 0;
+
+                    var key = "rec:" + folderPath;
+                    var now = DateTime.UtcNow;
+                    if (_folderCountCache.TryGetValue(key, out var cached) && cached.expiry > now)
+                        return cached.count;
+
+                    try
+                    {
+                        var count = Directory.EnumerateFiles(folderPath, "*.*", SearchOption.AllDirectories)
+                            .Count(p => _musicExtensions.Contains(Path.GetExtension(p)));
+                        _folderCountCache[key] = (count, now.Add(FolderCountCacheTtl));
+                        return count;
+                    }
+                    catch
+                    {
+                        _folderCountCache[key] = (0, now.Add(FolderCountCacheTtl));
+                        return 0;
+                    }
+                }
+
+                int CountTracksUnderFolder(string folderPath)
+                {
+                    if (string.IsNullOrWhiteSpace(folderPath))
+                        return 0;
+
+                    var normalized = folderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    var prefix = normalized + Path.DirectorySeparatorChar;
+                    var count = 0;
+                    foreach (var track in allTracks)
+                    {
+                        if (track.FullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                            count++;
+                    }
+
+                    if (count > 0)
+                        return count;
+
+                    // Fast fallback: try direct files first, then recursive subtree count.
+                    // This avoids showing persistent zeroes for category folders like Albums/Singles
+                    // that often store tracks in nested subfolders.
+                    var topCount = CountTracksOnDiskTopDirectory(normalized);
+                    return topCount > 0 ? topCount : CountTracksOnDiskRecursive(normalized);
+                }
+
+                int CountPlaylistsRecursive(string folderPath)
+                {
+                    if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+                        return 0;
+
+                    var key = "pls:" + folderPath;
+                    var now = DateTime.UtcNow;
+                    if (_folderCountCache.TryGetValue(key, out var cached) && cached.expiry > now)
+                        return cached.count;
+
+                    try
+                    {
+                        var count = Directory.EnumerateFiles(folderPath, "*.*", SearchOption.AllDirectories)
+                            .Count(p =>
+                            {
+                                var ext = Path.GetExtension(p);
+                                return string.Equals(ext, ".m3u", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(ext, ".m3u8", StringComparison.OrdinalIgnoreCase);
+                            });
+                        _folderCountCache[key] = (count, now.Add(FolderCountCacheTtl));
+                        return count;
+                    }
+                    catch
+                    {
+                        _folderCountCache[key] = (0, now.Add(FolderCountCacheTtl));
+                        return 0;
+                    }
+                }
+
+                int CountVisibleItemsTopDirectory(string folderPath)
+                {
+                    if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+                        return 0;
+
+                    var key = "vis:" + folderPath;
+                    var now = DateTime.UtcNow;
+                    if (_folderCountCache.TryGetValue(key, out var cached) && cached.expiry > now)
+                        return cached.count;
+
+                    try
+                    {
+                        var subFolderCount = Directory.GetDirectories(folderPath)
+                            .Count(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)));
+                        var linkFolderCount = Directory.EnumerateFiles(folderPath, "*" + RplinkHelper.Extension, SearchOption.TopDirectoryOnly)
+                            .Select(f => RplinkHelper.TryReadTarget(f))
+                            .Count(target => !string.IsNullOrWhiteSpace(target) && Directory.Exists(target));
+                        var musicFileCount = Directory.EnumerateFiles(folderPath, "*.*", SearchOption.TopDirectoryOnly)
+                            .Count(p => _musicExtensions.Contains(Path.GetExtension(p)));
+                        var dynamicFolderCount = Directory.EnumerateFiles(folderPath, "*.rpDynamic", SearchOption.TopDirectoryOnly).Count();
+                        var playlistCount = Directory.EnumerateFiles(folderPath, "*.*", SearchOption.TopDirectoryOnly)
+                            .Count(p =>
+                            {
+                                var ext = Path.GetExtension(p);
+                                return string.Equals(ext, ".m3u", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(ext, ".m3u8", StringComparison.OrdinalIgnoreCase);
+                            });
+
+                        var total = subFolderCount + linkFolderCount + musicFileCount + dynamicFolderCount + playlistCount;
+                        _folderCountCache[key] = (total, now.Add(FolderCountCacheTtl));
+                        return total;
+                    }
+                    catch
+                    {
+                        _folderCountCache[key] = (0, now.Add(FolderCountCacheTtl));
+                        return 0;
+                    }
+                }
+
+                var regularFolders = regularFolderPaths
+                    .AsParallel().AsOrdered()
+                    .Select(d =>
+                    {
+                        var indexCount = trackCountsByRegularFolder.TryGetValue(d, out var count) ? count : 0;
+                        var topCount = indexCount > 0 ? 0 : CountTracksOnDiskTopDirectory(d);
+                        var trackCount = indexCount > 0
+                            ? indexCount
+                            : (topCount > 0 ? topCount : CountTracksOnDiskRecursive(d));
+                        var itemCount = CountVisibleItemsTopDirectory(d);
+                        var playlistCount = trackCount == 0 ? CountPlaylistsRecursive(d) : 0;
+                        return (
+                            name: Path.GetFileName(d),
+                            folder: d,
+                            isAll: string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase),
+                            isLink: false,
+                            linkPath: string.Empty,
+                            virtualPath: string.Empty,
+                            trackCount,
+                            itemCount,
+                            playlistCount);
+                    });
 
                 var linkedFolders = Directory.EnumerateFiles(browseDir, "*" + RplinkHelper.Extension, SearchOption.TopDirectoryOnly)
                     .Where(RplinkHelper.IsTargetFolder)
                     .Select(f => (rplinkPath: f, target: RplinkHelper.TryReadTarget(f)))
                     .Where(x => !string.IsNullOrWhiteSpace(x.target) && Directory.Exists(x.target))
-                    .Select(x => (
-                        name: Path.GetFileNameWithoutExtension(x.rplinkPath),
-                        folder: x.target!.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                        isAll: false,
-                        isLink: true,
-                        linkPath: WebPathHelpers.EncodePath(x.rplinkPath),
-                        virtualPath: Path.Combine(
-                            Path.GetDirectoryName(x.rplinkPath) ?? string.Empty,
-                            Path.GetFileNameWithoutExtension(x.rplinkPath))));
+                    .AsParallel().AsOrdered()
+                    .Select(x =>
+                    {
+                        var targetFolder = x.target!.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                        return (
+                            name: Path.GetFileNameWithoutExtension(x.rplinkPath),
+                            folder: targetFolder,
+                            isAll: false,
+                            isLink: true,
+                            linkPath: WebPathHelpers.EncodePath(x.rplinkPath),
+                            virtualPath: Path.Combine(
+                                Path.GetDirectoryName(x.rplinkPath) ?? string.Empty,
+                                Path.GetFileNameWithoutExtension(x.rplinkPath)),
+                            trackCount: CountTracksUnderFolder(targetFolder),
+                            itemCount: CountVisibleItemsTopDirectory(targetFolder),
+                            playlistCount: CountTracksUnderFolder(targetFolder) == 0 ? CountPlaylistsRecursive(targetFolder) : 0);
+                    });
 
                 folders = regularFolders
                     .Concat(linkedFolders)
                     .OrderBy(f => f.isAll ? 0 : 1)
                     .ThenBy(f => f.name, _naturalComparer)
-                    .Select(f => (object)new { f.name, f.folder, f.isAll, f.isLink, f.linkPath, f.virtualPath })
+                    .Select(f => (object)new { f.name, f.folder, f.isAll, f.isLink, f.linkPath, f.virtualPath, f.trackCount, f.itemCount, f.playlistCount })
                     .ToArray();
             }
         }
@@ -314,6 +503,7 @@ internal sealed partial class WebServer
                     .Select(f =>
                     {
                         int trackCount = 0;
+                        int totalDurationSec = 0;
                         string? artist = null;
                         string albumForArt = Path.GetFileNameWithoutExtension(f);
                         string? albumArtUrl = null;
@@ -327,6 +517,19 @@ internal sealed partial class WebServer
                                 .Where(l => !l.TrimStart().StartsWith('#'))
                                 .ToList();
                             trackCount = trackPaths.Count;
+
+                            // Sum durations from #EXTINF:seconds,... lines
+                            foreach (var extInf in allLines.Where(
+                                l => l.TrimStart().StartsWith("#EXTINF", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                var colonIdx = extInf.IndexOf(':');
+                                if (colonIdx < 0) continue;
+                                var afterColon = extInf[(colonIdx + 1)..].TrimStart();
+                                var endOfNum = afterColon.IndexOfAny([',', ' ']);
+                                var numStr = endOfNum >= 0 ? afterColon[..endOfNum] : afterColon;
+                                if (double.TryParse(numStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var durVal) && durVal > 0)
+                                    totalDurationSec += (int)Math.Round(durVal);
+                            }
 
                             Logger.Detail("CoverDiag", $"Playlist '{plName}': {trackPaths.Count} tracks, {allLines.Count(l => l.TrimStart().StartsWith("#EXTINF", StringComparison.OrdinalIgnoreCase))} #EXTINF lines");
 
@@ -451,7 +654,7 @@ internal sealed partial class WebServer
                             }
                         }
                         catch (Exception plEx) { Logger.Warning("CoverDiag", $"Playlist scan exception for '{f}': {plEx.Message}"); }
-                        return (object)new { name = Path.GetFileNameWithoutExtension(f), path = WebPathHelpers.EncodePath(f), trackCount, artist, albumForArt, albumArtUrl };
+                        return (object)new { name = Path.GetFileNameWithoutExtension(f), path = WebPathHelpers.EncodePath(f), trackCount, totalDurationSec, artist, albumForArt, albumArtUrl };
                     })
                     .ToArray();
             }
@@ -2678,6 +2881,123 @@ CREATE INDEX IF NOT EXISTS ix_discogs_master_art_album ON discogs_master_art(alb
             JsonSerializer.Serialize(new { ok = true, sent, skipped, failed, total = files.Length, failSamples = failReasons }));
     }
 
+    /// <summary>Fetches the Wikipedia introduction section for an artist and returns stripped HTML + page URL.</summary>
+    private async Task HandleMusicWikiAsync(HttpListenerContext ctx)
+    {
+        var artist = (ctx.Request.QueryString["artist"] ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(artist))
+        { TrySendResponse(ctx, 400, "text/plain", "missing artist"); return; }
+
+        // Apply wiki.names mapping: translate folder-safe names to their Wikipedia equivalents (e.g. ACDC → AC/DC)
+        artist = ResolveWikiArtistName(artist);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        try
+        {
+            var lang    = string.IsNullOrWhiteSpace(_config.WikiLanguage) ? "en" : _config.WikiLanguage.ToLowerInvariant().Trim();
+            var encoded = Uri.EscapeDataString(artist);
+
+            using var http = new System.Net.Http.HttpClient();
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("RemotePlay/1.0 (https://github.com/ebrprive-lgtm/RemotePlay)");
+            http.Timeout = TimeSpan.FromSeconds(18);
+
+            // If a non-English language is configured, try to resolve the article title in that language
+            // via the English Wikipedia langlinks API, then fetch from the target wiki.
+            var wikiHost    = "en.wikipedia.org";
+            var articlePage = encoded; // default: use the artist name as the page title
+            if (lang != "en")
+            {
+                var llUrl = $"https://en.wikipedia.org/w/api.php?action=query&titles={encoded}&prop=langlinks&lllang={lang}&redirects=1&format=json";
+                try
+                {
+                    var llJson = await http.GetStringAsync(llUrl, cts.Token).ConfigureAwait(false);
+                    using var llDoc = JsonDocument.Parse(llJson);
+                    if (llDoc.RootElement.TryGetProperty("query", out var llQuery) &&
+                        llQuery.TryGetProperty("pages", out var llPages))
+                    {
+                        foreach (var page in llPages.EnumerateObject())
+                        {
+                            if (page.Value.TryGetProperty("langlinks", out var ll) && ll.GetArrayLength() > 0)
+                            {
+                                var title = ll[0].TryGetProperty("*", out var t) ? t.GetString() : null;
+                                if (!string.IsNullOrWhiteSpace(title))
+                                {
+                                    wikiHost    = $"{lang}.wikipedia.org";
+                                    articlePage = Uri.EscapeDataString(title);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                catch { /* fall through to English */ }
+            }
+
+            var textApiUrl  = $"https://{wikiHost}/w/api.php?action=parse&page={articlePage}&prop=text&section=0&redirects=1&format=json";
+            var imageApiUrl = $"https://{wikiHost}/w/api.php?action=query&titles={articlePage}&prop=pageimages&piprop=thumbnail&pithumbsize=500&redirects=1&format=json";
+            var pageUrl     = $"https://{wikiHost}/wiki/{articlePage}";
+
+            // Fetch text and image in parallel
+            var textTask  = http.GetStringAsync(textApiUrl,  cts.Token);
+            var imageTask = http.GetStringAsync(imageApiUrl, cts.Token);
+            await Task.WhenAll(textTask, imageTask).ConfigureAwait(false);
+
+            using var textDoc  = JsonDocument.Parse(textTask.Result);
+            using var imageDoc = JsonDocument.Parse(imageTask.Result);
+
+            if (!textDoc.RootElement.TryGetProperty("parse", out var parse))
+            { TrySendResponse(ctx, 404, "text/plain", "not found"); return; }
+
+            var html = parse.TryGetProperty("text", out var textEl) && textEl.TryGetProperty("*", out var starEl)
+                ? starEl.GetString() ?? string.Empty
+                : string.Empty;
+
+            // Strip edit-section spans and hatnotes
+            html = System.Text.RegularExpressions.Regex.Replace(html, @"<span[^>]*class=""[^""]*mw-editsection[^""]*""[^>]*>.*?</span>", string.Empty,
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+            html = System.Text.RegularExpressions.Regex.Replace(html, @"<[^>]*class=""[^""]*hatnote[^""]*""[^>]*>.*?</div>", string.Empty,
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+
+            // Strip reference lists (reflist, references, mw-references-wrap)
+            html = System.Text.RegularExpressions.Regex.Replace(html, @"<div[^>]*class=""[^""]*(?:reflist|references|mw-references)[^""]*""[^>]*>.*?</div>", string.Empty,
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+            html = System.Text.RegularExpressions.Regex.Replace(html, @"<ol[^>]*class=""[^""]*references[^""]*""[^>]*>.*?</ol>", string.Empty,
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+            // Strip inline citation superscripts: <sup class="reference">...</sup>
+            html = System.Text.RegularExpressions.Regex.Replace(html, @"<sup[^>]*class=""[^""]*reference[^""]*""[^>]*>.*?</sup>", string.Empty,
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+
+            // Strip all inline images/figures so the banner image we inject is not duplicated
+            html = System.Text.RegularExpressions.Regex.Replace(html, @"<figure[^>]*>.*?</figure>", string.Empty,
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+            html = System.Text.RegularExpressions.Regex.Replace(html, @"<div[^>]*class=""[^""]*(?:thumb|tmbox|floatright|floatleft|infobox)[^""]*""[^>]*>.*?</div>", string.Empty,
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+
+            // Extract thumbnail URL from pageimages response
+            var imageUrl = string.Empty;
+            if (imageDoc.RootElement.TryGetProperty("query", out var query) &&
+                query.TryGetProperty("pages", out var pages))
+            {
+                foreach (var page in pages.EnumerateObject())
+                {
+                    if (page.Value.TryGetProperty("thumbnail", out var thumb) &&
+                        thumb.TryGetProperty("source", out var src))
+                    {
+                        imageUrl = src.GetString() ?? string.Empty;
+                    }
+                    break;
+                }
+            }
+
+            var result = JsonSerializer.Serialize(new { html, pageUrl, imageUrl });
+            TrySendResponse(ctx, 200, "application/json", result);
+        }
+        catch (OperationCanceledException)
+        { TrySendResponse(ctx, 504, "text/plain", "timeout"); }
+        catch (Exception ex)
+        { TrySendResponse(ctx, 502, "text/plain", ex.Message); }
+    }
+
     /// <summary>Proxy-fetches album art from MusicBrainz/CAA. Cached in memory + on disk.</summary>
     private async Task HandleMusicAlbumArtAsync(HttpListenerContext ctx)
     {
@@ -4285,6 +4605,41 @@ LIMIT 6;";
         Logger.Info("M3U cache cleared by user — triggering re-index.");
         StartM3uIndexRefresh();
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+    }
+
+    /// <summary>
+    /// Reads <c>wiki.names</c> from the app data directory and returns the mapped Wikipedia
+    /// display name for <paramref name="artist"/>, or the original name if no mapping exists.
+    /// Each non-blank, non-comment line must be in <c>KEY=VALUE</c> format (case-insensitive key match).
+    /// </summary>
+    private static string ResolveWikiArtistName(string artist)
+    {
+        var path = AppPaths.WikiNamesFile;
+        if (!File.Exists(path)) return artist;
+
+        try
+        {
+            foreach (var raw in File.ReadAllLines(path))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0 || line.StartsWith('#')) continue;
+
+                var eq = line.IndexOf('=');
+                if (eq <= 0) continue;
+
+                var key   = line[..eq].Trim();
+                var value = line[(eq + 1)..].Trim();
+
+                if (string.Equals(key, artist, StringComparison.OrdinalIgnoreCase) && value.Length > 0)
+                    return value;
+            }
+        }
+        catch
+        {
+            // Best-effort: if the file can't be read, fall back to the original name.
+        }
+
+        return artist;
     }
 
 }

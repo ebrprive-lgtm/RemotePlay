@@ -40,8 +40,7 @@ internal sealed partial class WebServer
         if (!recordOnly)
         {
             _musicPlayInitiatorIp = initiatorIp;
-            _callbacks.Stop();
-            _callbacks.RadioStop();
+            StopAllServerPlayers();
             _callbacks.PlayMusic(filePath, startPos);
             Logger.Info("Playback", $"Playing Music: '{Path.GetFileName(filePath)}' on Server" + (startPos > 0 ? $" at {startPos:F1}s" : ""));
             ScheduleSsePush(delayMs: 300);
