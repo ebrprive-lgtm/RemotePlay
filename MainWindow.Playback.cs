@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Threading;
 using System.Windows.Media.Animation;
 using LibVLCSharp.Shared;
 using LibVLCSharp.Shared.Structures;
@@ -12,6 +13,8 @@ namespace RemotePlay;
 public partial class MainWindow
 {
     // -- Playback -------------------------------------------------------------
+
+    private bool _isQuietRestartInProgress;
 
     private void PlayNextQueuedMovie()
     {
@@ -102,6 +105,7 @@ public partial class MainWindow
         {
             try
             {
+                StopCompetingPlaybackBeforeVideoStart();
                 RestoreWindowForPlayback();
                 _isPaused = false;
                 _lastPlaybackError = string.Empty;
@@ -123,6 +127,7 @@ public partial class MainWindow
                 _mediaPlayer.Stop();
                 using var media = new Media(_libVlc, new Uri(filePath, UriKind.Absolute));
                 media.AddOption(":avcodec-hw=none");
+                ApplySharpnessMediaOptions(media);
                 if (_forceSwAudio)
                 {
                     media.AddOption(":audio-resampler=soxr");
@@ -131,7 +136,7 @@ public partial class MainWindow
                 }
                 _hasSubtitles = TryAttachSubtitle(media, filePath);
                 _mediaPlayer.Play(media);
-                StartPositionClock(0);
+                StopPositionClock(0);
                 _mediaPlayer.SetRate((float)_playbackSpeed);
                 ApplyAudioLevel();
                 ApplyVideoZoom();
@@ -157,6 +162,39 @@ public partial class MainWindow
         });
     }
 
+    private void StopCompetingPlaybackBeforeVideoStart()
+    {
+        try
+        {
+            var musicStatus = _musicPlayer.GetStatus();
+            if (musicStatus.IsPlaying || musicStatus.IsPaused)
+            {
+                _musicPlayer.Stop();
+                AppendLog("[Playback] Stopped music before video start.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to stop music before video start", ex);
+        }
+
+        try
+        {
+            var radioStatus = _radioPlayer.GetStatus();
+            if (radioStatus.IsPlaying || !string.IsNullOrWhiteSpace(radioStatus.StationUrl))
+            {
+                _radioPlayer.Stop();
+                AppendLog("[Playback] Stopped radio before video start.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to stop radio before video start", ex);
+        }
+
+        _webServer?.SetBrowserLocalPlaying(false);
+    }
+
     /// <summary>
     /// Re-opens the currently playing media with updated VLC options (e.g. reverb preset)
     /// without any UI transition � no loading overlay, no banner flash, no preference re-apply.
@@ -169,12 +207,21 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(filePath)) return;
         try
         {
+            _isQuietRestartInProgress = true;
             var posMs = Interlocked.Read(ref _positionMs);
+            var shouldPauseAfterRestart = _isPaused;
             _pendingResumePosition = posMs > 0 ? TimeSpan.FromMilliseconds(posMs) : null;
+
+            if (_isVideoMode)
+            {
+                EnsureFullscreenWindowBounds(force: true);
+                VideoPlayer.Visibility = Visibility.Visible;
+            }
 
             _mediaPlayer.Stop();
             using var media = new Media(_libVlc, new Uri(filePath, UriKind.Absolute));
             media.AddOption(":avcodec-hw=none");
+            ApplySharpnessMediaOptions(media);
             if (_forceSwAudio)
             {
                 media.AddOption(":audio-resampler=soxr");
@@ -195,9 +242,40 @@ public partial class MainWindow
             }
             ApplyAudioLevel();
             ApplyVideoZoom();
+
+            if (_isVideoMode)
+                EnsureFullscreenWindowBounds(force: true);
+
+            if (posMs > 500 || shouldPauseAfterRestart)
+            {
+                var restoreTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+                restoreTimer.Tick += (_, _) =>
+                {
+                    restoreTimer.Stop();
+
+                    if (posMs > 500)
+                    {
+                        _mediaPlayer.Time = posMs;
+                        Interlocked.Exchange(ref _positionMs, posMs);
+                        StartPositionClock(posMs);
+                        _pendingResumePosition = null;
+                    }
+
+                    if (shouldPauseAfterRestart && !_isPaused)
+                        TogglePause();
+
+                    _isQuietRestartInProgress = false;
+                };
+                restoreTimer.Start();
+            }
+            else
+            {
+                _isQuietRestartInProgress = false;
+            }
         }
         catch (Exception ex)
         {
+            _isQuietRestartInProgress = false;
             Logger.Error("Error restarting media for reverb change", ex);
             AppendLog($"ERROR restarting media: {ex.Message}");
         }
@@ -225,8 +303,9 @@ public partial class MainWindow
         try
         {
             _brightness = Math.Clamp(preferences.Brightness, 0, 1);
+            _sharpness = Math.Clamp(preferences.Sharpness, 0, 1);
             _saturation = Math.Clamp(preferences.Saturation, 0, 2);
-            _zoom = Math.Clamp(preferences.Zoom, 1, 2);
+            _zoom = Math.Clamp(preferences.Zoom, 0.5, 2);
             _forceSwAudio = preferences.ForceSwAudio;
         }
         finally
@@ -396,6 +475,12 @@ public partial class MainWindow
     {
         Dispatcher.InvokeAsync(() =>
         {
+            if (_isQuietRestartInProgress)
+            {
+                Logger.Info("[Playback] Ignoring EndReached during quiet restart.");
+                return;
+            }
+
             var hasQueuedMovie = _playbackQueue.Count > 0;
             var endedFilePath = _currentFilePath;
             var shouldPlayNext = _config.PlaybackEndBehavior == PlaybackEndMode.PlayNext;
@@ -449,11 +534,13 @@ public partial class MainWindow
             if (!_isPaused)
                 StartPositionClock(GetCurrentVideoPositionMilliseconds());
 
+            // Ensure the transition is completed even if Playing fires before
+            // video mode toggle has finished (race condition when starting playback).
+            VideoPlayer.Visibility = Visibility.Visible;
+            _ = CompleteVideoTransitionAsync();
+
             if (_isVideoMode)
             {
-                VideoPlayer.Visibility = Visibility.Visible;
-                _ = CompleteVideoTransitionAsync();
-
                 // Show banner now that we're in video mode and media is playing
                 ShowBanner();
             }
@@ -486,7 +573,25 @@ public partial class MainWindow
 
     private void OnMediaTimeChanged(object? sender, MediaPlayerTimeChangedEventArgs e)
     {
-        Interlocked.Exchange(ref _positionMs, Math.Max(0, e.Time));
+        var timeMs = Math.Max(0, e.Time);
+        Interlocked.Exchange(ref _positionMs, timeMs);
+
+        if (timeMs <= 0)
+            return;
+
+        Dispatcher.InvokeAsync(() =>
+        {
+            if (!_isPaused)
+                StartPositionClock(timeMs);
+
+            // Fallback: some streams/codecs can advance time without firing Playing reliably.
+            // Ensure fullscreen video is revealed when we see actual media time progression.
+            if (_isVideoMode && (IdleOverlay.Visibility == Visibility.Visible || VideoPanel.Visibility != Visibility.Visible))
+            {
+                VideoPlayer.Visibility = Visibility.Visible;
+                _ = CompleteVideoTransitionAsync();
+            }
+        });
     }
 
     private void OnESAdded(object? sender, MediaPlayerESAddedEventArgs e)
@@ -516,6 +621,21 @@ public partial class MainWindow
             AppendLog("MEDIA ERROR: VLC playback failed");
             ShowDiag("Playback error � VLC could not play this file");
         });
+    }
+
+    private void OnMediaOpening(object? sender, EventArgs e)
+    {
+        Logger.Info("[Playback] Media opening");
+    }
+
+    private void OnMediaBuffering(object? sender, MediaPlayerBufferingEventArgs e)
+    {
+        Logger.Info($"[Playback] Buffering {e.Cache:0.#}%");
+    }
+
+    private void OnMediaPaused(object? sender, EventArgs e)
+    {
+        Logger.Info("[Playback] Media paused event");
     }
 
     private void HideIdleOverlay()
@@ -776,6 +896,10 @@ public partial class MainWindow
 
             var positionSeconds = vlcActive ? GetCurrentVideoPositionSeconds() : Math.Max(0, musicStatus?.Position ?? 0);
             var durationSeconds = vlcActive ? GetCurrentVideoDurationSeconds() : Math.Max(0, musicStatus?.Duration ?? 0);
+            var webUiNavigateId = _pendingWebUiNavigateId;
+            var webUiNavigateFolder = _pendingWebUiNavigateFolder ?? string.Empty;
+            _pendingWebUiNavigateId = 0;
+            _pendingWebUiNavigateFolder = null;
 
             result = new PlaybackStatus
             {
@@ -791,6 +915,7 @@ public partial class MainWindow
                 ResumePositionSeconds = Math.Max(0, _pendingResumePosition?.TotalSeconds ?? 0),
                 SmartResumeApplied = _smartResumeApplied,
                 Brightness = _brightness,
+                Sharpness = _sharpness,
                 Saturation = _saturation,
                 AudioBoost = _audioBoost,
                 PlaybackSpeed = _playbackSpeed,
@@ -809,7 +934,9 @@ public partial class MainWindow
                 Chapters = chapters,
                 CurrentChapter = currentChapter,
                 EqPreset = vlcActive ? _currentEqPreset : (musicStatus?.EqPreset ?? _currentEqPreset),
-                ReverbPreset = vlcActive ? _currentReverbPreset : (musicStatus?.ReverbPreset ?? _currentReverbPreset)
+                ReverbPreset = vlcActive ? _currentReverbPreset : (musicStatus?.ReverbPreset ?? _currentReverbPreset),
+                WebUiNavigateId = webUiNavigateId,
+                WebUiNavigateFolderPath = webUiNavigateFolder
             };
         });
         return result;
@@ -1027,11 +1154,32 @@ public partial class MainWindow
         });
     }
 
+    private void SetSharpness(double sharpness)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            var clampedSharpness = Math.Clamp(sharpness, 0, 1);
+            if (Math.Abs(_sharpness - clampedSharpness) < 0.0001)
+                return;
+
+            _sharpness = clampedSharpness;
+
+            var filePath = _currentFilePath;
+            if (!string.IsNullOrWhiteSpace(filePath) && _mediaPlayer.Media is not null)
+            {
+                RestartMediaQuietly();
+            }
+
+            SaveCurrentMoviePreferences();
+            SavePlaybackPreferences();
+        });
+    }
+
     private void SetZoom(double zoom)
     {
         Dispatcher.Invoke(() =>
         {
-            _zoom = Math.Clamp(zoom, 1, 2);
+            _zoom = Math.Clamp(zoom, 0.5, 2);
             ApplyVideoZoom();
             SaveCurrentMoviePreferences();
             SavePlaybackPreferences();
@@ -1106,6 +1254,7 @@ public partial class MainWindow
         _playbackHistory.SavePreferences(_currentFilePath, new MoviePlaybackPreferences
         {
             Brightness = _brightness,
+            Sharpness = _sharpness,
             Saturation = _saturation,
             Zoom = _zoom,
             ForceSwAudio = _forceSwAudio
@@ -1151,6 +1300,7 @@ public partial class MainWindow
             SetVolume = SetVolume,
             ToggleMute = ToggleMute,
             SetBrightness = SetBrightness,
+            SetSharpness = SetSharpness,
             SetSaturation = SetSaturation,
             SetZoom = SetZoom,
             SetAudioBoost = SetAudioBoost,
@@ -1201,6 +1351,7 @@ public partial class MainWindow
             RadioStop           = _radioPlayer.Stop,
             RadioSetVolume      = _radioPlayer.SetVolume,
             RadioSetBoost       = _radioPlayer.SetBoost,
+            RadioSeek           = _radioPlayer.Seek,
             RadioGetStatus      = _radioPlayer.GetStatus,
             RadioGetFavorites   = _radioBrowser.GetFavorites,
             RadioToggleFavorite = _radioBrowser.ToggleFavorite,
@@ -1293,12 +1444,12 @@ public partial class MainWindow
     {
         try
         {
-            var zoom = Math.Clamp(_zoom, 1, 2);
+            var zoom = Math.Clamp(_zoom, 0.5, 2);
 
             // Keep VLC in auto-fit mode and apply smooth UI zoom as a visual transform.
             _mediaPlayer.Scale = 0f;
 
-            if (zoom <= 1)
+            if (Math.Abs(zoom - 1) < 0.0001)
             {
                 VideoPlayer.RenderTransform = System.Windows.Media.Transform.Identity;
                 return;
@@ -1330,8 +1481,17 @@ public partial class MainWindow
         // Saturation uses 1.0 as neutral.
         try
         {
+            var detailBoost = (float)Math.Clamp(_sharpness, 0, 1);
+            var contrast = 1f + (detailBoost * 1.35f);
+            var gamma = 1f + (detailBoost * 0.14f);
+            // Keep brightness near-neutral across sharpness levels and avoid over-bright output at high sharpness.
+            var compensationFactor = 1 + (detailBoost * 0.05f) - (detailBoost * detailBoost * 0.12f);
+            var compensatedBrightness = Math.Clamp((_brightness * 2) * compensationFactor, 0, 2);
+
             _mediaPlayer.SetAdjustInt(VideoAdjustOption.Enable, 1);
-            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Brightness, (float)Math.Clamp(_brightness * 2, 0, 2));
+            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Brightness, (float)compensatedBrightness);
+            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Contrast, contrast);
+            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Gamma, gamma);
             _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Saturation, (float)Math.Clamp(_saturation, 0, 2));
             nativeApplied = true;
         }
@@ -1350,12 +1510,28 @@ public partial class MainWindow
         }
     }
 
+    private void ApplySharpnessMediaOptions(Media media)
+    {
+        ArgumentNullException.ThrowIfNull(media);
+
+        if (_sharpness <= 0.001)
+            return;
+
+        // VLC sharpen filter is configured at media start time.
+        // Use a stronger non-linear mapping so mid slider values remain visible.
+        var sigma = Math.Clamp(0.1 + (_sharpness * _sharpness * 9.9), 0.1, 10);
+        media.AddOption(":video-filter=sharpen");
+        media.AddOption($":sharpen-sigma={sigma.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}");
+        Logger.Info($"[Video] Sharpness enabled: slider={_sharpness:0.##}, sigma={sigma:0.##}");
+    }
+
     private void SavePlaybackPreferences()
     {
         var updatedConfig = _appConfigFactory.CreateForPlaybackPreferences(
             _config,
             _volume,
             _brightness,
+            _sharpness,
             _zoom,
             _audioBoost,
             _playbackSpeed,

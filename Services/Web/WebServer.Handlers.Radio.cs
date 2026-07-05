@@ -86,8 +86,7 @@ internal sealed partial class WebServer
             return;
         }
 
-        _callbacks.Stop();
-        _callbacks.StopMusic();
+        StopAllServerPlayers();
         _callbacks.RadioPlay(playUri.ToString(), name);
         Logger.Info("Playback", $"Playing Radio: '{name}' on Server");
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
@@ -111,6 +110,17 @@ internal sealed partial class WebServer
                 System.Globalization.CultureInfo.InvariantCulture, out var boost))
             boost = 1.0;
         _callbacks.RadioSetBoost(Math.Clamp(boost, 1.0, 3.0));
+        TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
+    }
+
+    private void HandleRadioSeek(HttpListenerContext ctx)
+    {
+        var raw = ctx.Request.QueryString["v"] ?? "0";
+        if (!double.TryParse(raw, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var seconds))
+            seconds = 0;
+
+        _callbacks.RadioSeek(Math.Max(0, seconds));
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
     }
 

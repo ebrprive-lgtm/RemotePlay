@@ -188,35 +188,181 @@ internal sealed partial class WebServer
             }
             else
             {
-                var regularFolders = Directory.GetDirectories(browseDir)
+                var regularFolderPaths = Directory.GetDirectories(browseDir)
                     .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)))
-                    .Select(d => (
-                        name: Path.GetFileName(d),
-                        folder: d,
-                        isAll: string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase),
-                        isLink: false,
-                        linkPath: string.Empty,
-                        virtualPath: string.Empty));
+                    .ToArray();
+
+                var trackCountsByRegularFolder = regularFolderPaths
+                    .ToDictionary(path => path, _ => 0, StringComparer.OrdinalIgnoreCase);
+
+                if (trackCountsByRegularFolder.Count > 0)
+                {
+                    var browsePrefix = browseDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                        + Path.DirectorySeparatorChar;
+                    foreach (var track in allTracks)
+                    {
+                        var fullPath = track.FullPath;
+                        if (!fullPath.StartsWith(browsePrefix, StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        var relPath = fullPath[browsePrefix.Length..];
+                        var sepIndex = relPath.IndexOfAny(['\\', '/']);
+                        if (sepIndex <= 0)
+                            continue;
+
+                        var childFolderPath = Path.Combine(browseDir, relPath[..sepIndex]);
+                        if (trackCountsByRegularFolder.TryGetValue(childFolderPath, out var existingCount))
+                            trackCountsByRegularFolder[childFolderPath] = existingCount + 1;
+                    }
+                }
+
+                var fallbackTopFolderCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                var fallbackRecursiveFolderCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+                int CountTracksOnDiskTopDirectory(string folderPath)
+                {
+                    if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+                        return 0;
+
+                    if (fallbackTopFolderCounts.TryGetValue(folderPath, out var cached))
+                        return cached;
+
+                    try
+                    {
+                        var count = Directory.EnumerateFiles(folderPath, "*.*", SearchOption.TopDirectoryOnly)
+                            .Count(p => _musicExtensions.Contains(Path.GetExtension(p)));
+                        fallbackTopFolderCounts[folderPath] = count;
+                        return count;
+                    }
+                    catch
+                    {
+                        fallbackTopFolderCounts[folderPath] = 0;
+                        return 0;
+                    }
+                }
+
+                int CountTracksOnDiskRecursive(string folderPath)
+                {
+                    if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+                        return 0;
+
+                    if (fallbackRecursiveFolderCounts.TryGetValue(folderPath, out var cached))
+                        return cached;
+
+                    try
+                    {
+                        var count = Directory.EnumerateFiles(folderPath, "*.*", SearchOption.AllDirectories)
+                            .Count(p => _musicExtensions.Contains(Path.GetExtension(p)));
+                        fallbackRecursiveFolderCounts[folderPath] = count;
+                        return count;
+                    }
+                    catch
+                    {
+                        fallbackRecursiveFolderCounts[folderPath] = 0;
+                        return 0;
+                    }
+                }
+
+                int CountTracksUnderFolder(string folderPath)
+                {
+                    if (string.IsNullOrWhiteSpace(folderPath))
+                        return 0;
+
+                    var normalized = folderPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    var prefix = normalized + Path.DirectorySeparatorChar;
+                    var count = 0;
+                    foreach (var track in allTracks)
+                    {
+                        if (track.FullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                            count++;
+                    }
+
+                    if (count > 0)
+                        return count;
+
+                    // Fast fallback: try direct files first, then recursive subtree count.
+                    // This avoids showing persistent zeroes for category folders like Albums/Singles
+                    // that often store tracks in nested subfolders.
+                    var topCount = CountTracksOnDiskTopDirectory(normalized);
+                    return topCount > 0 ? topCount : CountTracksOnDiskRecursive(normalized);
+                }
+
+                int CountVisibleItemsTopDirectory(string folderPath)
+                {
+                    if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
+                        return 0;
+
+                    try
+                    {
+                        var subFolderCount = Directory.GetDirectories(folderPath)
+                            .Count(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)));
+                        var linkFolderCount = Directory.EnumerateFiles(folderPath, "*" + RplinkHelper.Extension, SearchOption.TopDirectoryOnly)
+                            .Select(f => RplinkHelper.TryReadTarget(f))
+                            .Count(target => !string.IsNullOrWhiteSpace(target) && Directory.Exists(target));
+                        var musicFileCount = Directory.EnumerateFiles(folderPath, "*.*", SearchOption.TopDirectoryOnly)
+                            .Count(p => _musicExtensions.Contains(Path.GetExtension(p)));
+                        var dynamicFolderCount = Directory.EnumerateFiles(folderPath, "*.rpDynamic", SearchOption.TopDirectoryOnly).Count();
+                        var playlistCount = Directory.EnumerateFiles(folderPath, "*.*", SearchOption.TopDirectoryOnly)
+                            .Count(p =>
+                            {
+                                var ext = Path.GetExtension(p);
+                                return string.Equals(ext, ".m3u", StringComparison.OrdinalIgnoreCase)
+                                    || string.Equals(ext, ".m3u8", StringComparison.OrdinalIgnoreCase);
+                            });
+
+                        return subFolderCount + linkFolderCount + musicFileCount + dynamicFolderCount + playlistCount;
+                    }
+                    catch
+                    {
+                        return 0;
+                    }
+                }
+
+                var regularFolders = regularFolderPaths
+                    .Select(d =>
+                    {
+                        var indexCount = trackCountsByRegularFolder.TryGetValue(d, out var count) ? count : 0;
+                        var topCount = indexCount > 0 ? 0 : CountTracksOnDiskTopDirectory(d);
+                        var trackCount = indexCount > 0
+                            ? indexCount
+                            : (topCount > 0 ? topCount : CountTracksOnDiskRecursive(d));
+                        var itemCount = CountVisibleItemsTopDirectory(d);
+                        return (
+                            name: Path.GetFileName(d),
+                            folder: d,
+                            isAll: string.Equals(Path.GetFileName(d), "All", StringComparison.OrdinalIgnoreCase),
+                            isLink: false,
+                            linkPath: string.Empty,
+                            virtualPath: string.Empty,
+                            trackCount,
+                            itemCount);
+                    });
 
                 var linkedFolders = Directory.EnumerateFiles(browseDir, "*" + RplinkHelper.Extension, SearchOption.TopDirectoryOnly)
                     .Where(RplinkHelper.IsTargetFolder)
                     .Select(f => (rplinkPath: f, target: RplinkHelper.TryReadTarget(f)))
                     .Where(x => !string.IsNullOrWhiteSpace(x.target) && Directory.Exists(x.target))
-                    .Select(x => (
-                        name: Path.GetFileNameWithoutExtension(x.rplinkPath),
-                        folder: x.target!.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                        isAll: false,
-                        isLink: true,
-                        linkPath: WebPathHelpers.EncodePath(x.rplinkPath),
-                        virtualPath: Path.Combine(
-                            Path.GetDirectoryName(x.rplinkPath) ?? string.Empty,
-                            Path.GetFileNameWithoutExtension(x.rplinkPath))));
+                    .Select(x =>
+                    {
+                        var targetFolder = x.target!.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                        return (
+                            name: Path.GetFileNameWithoutExtension(x.rplinkPath),
+                            folder: targetFolder,
+                            isAll: false,
+                            isLink: true,
+                            linkPath: WebPathHelpers.EncodePath(x.rplinkPath),
+                            virtualPath: Path.Combine(
+                                Path.GetDirectoryName(x.rplinkPath) ?? string.Empty,
+                                Path.GetFileNameWithoutExtension(x.rplinkPath)),
+                            trackCount: CountTracksUnderFolder(targetFolder),
+                            itemCount: CountVisibleItemsTopDirectory(targetFolder));
+                    });
 
                 folders = regularFolders
                     .Concat(linkedFolders)
                     .OrderBy(f => f.isAll ? 0 : 1)
                     .ThenBy(f => f.name, _naturalComparer)
-                    .Select(f => (object)new { f.name, f.folder, f.isAll, f.isLink, f.linkPath, f.virtualPath })
+                    .Select(f => (object)new { f.name, f.folder, f.isAll, f.isLink, f.linkPath, f.virtualPath, f.trackCount, f.itemCount })
                     .ToArray();
             }
         }

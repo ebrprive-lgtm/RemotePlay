@@ -22,6 +22,7 @@ internal sealed record DisplayDiagnostics
     public string CurrentTitle { get; init; } = string.Empty;
     public double Zoom { get; init; } = 1;
     public double Brightness { get; init; } = 0.5;
+    public double Sharpness { get; init; }
     public double Saturation { get; init; } = 1;
     public double VideoSurfaceWidth { get; init; }
     public double VideoSurfaceHeight { get; init; }

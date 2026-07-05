@@ -8,40 +8,45 @@ internal static class RplinkHelper
 {
     public const string Extension = ".rplink";
 
+    internal enum RplinkTargetStatus
+    {
+        Resolved,
+        Missing,
+        UnreadableLink,
+        InaccessibleTarget,
+    }
+
+    internal readonly record struct RplinkTargetInspection(
+        RplinkTargetStatus Status,
+        string? ResolvedTarget,
+        string? Details);
+
     /// <summary>Returns true when the file path has the <c>.rplink</c> extension.</summary>
     public static bool IsRplinkFile(string path) =>
         string.Equals(Path.GetExtension(path), Extension, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Reads the raw target path from a <c>.rplink</c> file without checking whether
-    /// the target exists. Returns <c>null</c> when the file is unreadable or empty.</summary>
-    public static string? TryReadTargetRaw(string rplinkPath)
+    /// <summary>Reads the stored text from a <c>.rplink</c> file without resolving it.
+    /// Returns <c>null</c> when the file is unreadable or empty.</summary>
+    public static string? TryReadStoredTargetText(string rplinkPath)
     {
         try
         {
-            var raw = File.ReadAllText(rplinkPath).Trim();
-            if (string.IsNullOrWhiteSpace(raw))
-                return null;
-
-            // Handle absolute paths with "@" prefix - replace "@" with the drive root of the link file
-            if (raw.StartsWith("@\\") || raw.StartsWith("@/"))
-            {
-                var linkRoot = Path.GetPathRoot(Path.GetFullPath(rplinkPath));
-                if (string.IsNullOrEmpty(linkRoot))
-                    return null;
-
-                // Replace the "@" prefix with the drive root
-                raw = linkRoot.TrimEnd('\\', '/') + raw.Substring(1);
-            }
-
-            return Path.IsPathRooted(raw)
-                ? raw
-                : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(rplinkPath) ?? string.Empty, raw));
+            var raw = File.ReadAllText(rplinkPath).Trim().TrimStart('\uFEFF');
+            raw = raw.Trim('"');
+            return string.IsNullOrWhiteSpace(raw) ? null : raw;
         }
         catch
         {
             return null;
         }
     }
+
+    /// <summary>Reads the resolved target path from a <c>.rplink</c> file without checking whether
+    /// the target exists. Returns <c>null</c> when the file is unreadable or empty.</summary>
+    public static string? TryReadTargetRaw(string rplinkPath) =>
+        TryResolveTargetPath(rplinkPath, out var targetPath, out _)
+            ? targetPath
+            : null;
 
     /// <summary>Returns <c>true</c> when the raw target of the link points to a directory
     /// (folder link), regardless of whether the directory currently exists.</summary>
@@ -61,32 +66,44 @@ internal static class RplinkHelper
     /// (either as a file or a directory).</summary>
     public static string? TryReadTarget(string rplinkPath)
     {
+        var inspection = InspectTarget(rplinkPath);
+        return inspection.Status == RplinkTargetStatus.Resolved
+            ? inspection.ResolvedTarget
+            : null;
+    }
+
+    internal static RplinkTargetInspection InspectTarget(string rplinkPath)
+    {
+        if (!TryResolveTargetPath(rplinkPath, out var targetPath, out var resolveError))
+            return new(RplinkTargetStatus.UnreadableLink, null, resolveError);
+
+        if (File.Exists(targetPath) || Directory.Exists(targetPath))
+            return new(RplinkTargetStatus.Resolved, targetPath, null);
+
         try
         {
-            var raw = File.ReadAllText(rplinkPath).Trim();
-            if (string.IsNullOrWhiteSpace(raw))
-                return null;
-
-            // Handle absolute paths with "@" prefix - replace "@" with the drive root of the link file
-            if (raw.StartsWith("@\\") || raw.StartsWith("@/"))
-            {
-                var linkRoot = Path.GetPathRoot(Path.GetFullPath(rplinkPath));
-                if (string.IsNullOrEmpty(linkRoot))
-                    return null;
-
-                // Replace the "@" prefix with the drive root
-                raw = linkRoot.TrimEnd('\\', '/') + raw.Substring(1);
-            }
-            // Support paths relative to the .rplink file's own directory.
-            var target = Path.IsPathRooted(raw)
-                ? raw
-                : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(rplinkPath) ?? string.Empty, raw));
-
-            return (File.Exists(target) || Directory.Exists(target)) ? target : null;
+            _ = File.GetAttributes(targetPath);
+            return new(RplinkTargetStatus.Resolved, targetPath, null);
         }
-        catch
+        catch (FileNotFoundException)
         {
-            return null;
+            return new(RplinkTargetStatus.Missing, targetPath, null);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return new(RplinkTargetStatus.Missing, targetPath, null);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new(RplinkTargetStatus.InaccessibleTarget, targetPath, BuildErrorDetails(ex));
+        }
+        catch (IOException ex)
+        {
+            return new(RplinkTargetStatus.InaccessibleTarget, targetPath, BuildErrorDetails(ex));
+        }
+        catch (Exception ex)
+        {
+            return new(RplinkTargetStatus.InaccessibleTarget, targetPath, BuildErrorDetails(ex));
         }
     }
 
@@ -124,4 +141,83 @@ internal static class RplinkHelper
             return targetPath;
         }
     }
+
+    private static bool TryResolveTargetPath(string rplinkPath, out string targetPath, out string? error)
+    {
+        targetPath = string.Empty;
+        error = null;
+
+        try
+        {
+            var raw = File.ReadAllText(rplinkPath).Trim().TrimStart('\uFEFF');
+
+            // Some links may be stored with accidental wrapping quotes (for example,
+            // copied shell strings). Quotes are not valid path characters, so trim
+            // them to avoid false "broken link" detections.
+            raw = raw.Trim('"');
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                error = "Link file is empty.";
+                return false;
+            }
+
+            // Handle anchored paths with "@" prefix.
+            // Prefer the nearest ancestor that contains @Master.Movies or @Master.Series
+            // (library root), then fall back to the drive/share root.
+            if (raw.StartsWith("@\\") || raw.StartsWith("@/"))
+            {
+                var atRoot = ResolveAtPrefixRoot(rplinkPath);
+                if (string.IsNullOrEmpty(atRoot))
+                {
+                    error = "Link root is unavailable for @-prefixed target.";
+                    return false;
+                }
+
+                // Replace the "@" prefix with the inferred anchor root.
+                raw = atRoot.TrimEnd('\\', '/') + raw[1..];
+            }
+
+            // Support paths relative to the .rplink file's own directory.
+            targetPath = Path.IsPathRooted(raw)
+                ? raw
+                : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(rplinkPath) ?? string.Empty, raw));
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = BuildErrorDetails(ex);
+            return false;
+        }
+    }
+
+    private static string? ResolveAtPrefixRoot(string rplinkPath)
+    {
+        var linkDirectory = Path.GetDirectoryName(Path.GetFullPath(rplinkPath));
+        var current = linkDirectory;
+
+        while (!string.IsNullOrWhiteSpace(current))
+        {
+            var hasMasterMovies = Directory.Exists(Path.Combine(current, "@Master.Movies"));
+            var hasMasterSeries = Directory.Exists(Path.Combine(current, "@Master.Series"));
+            if (hasMasterMovies || hasMasterSeries)
+                return current;
+
+            var parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrWhiteSpace(parent) ||
+                string.Equals(parent, current, StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            current = parent;
+        }
+
+        return Path.GetPathRoot(Path.GetFullPath(rplinkPath));
+    }
+
+    private static string BuildErrorDetails(Exception ex) =>
+        string.IsNullOrWhiteSpace(ex.Message)
+            ? ex.GetType().Name
+            : $"{ex.GetType().Name}: {ex.Message}";
 }

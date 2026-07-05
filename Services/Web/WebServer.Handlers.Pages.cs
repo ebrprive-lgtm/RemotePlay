@@ -101,6 +101,7 @@ internal sealed partial class WebServer
             title = s.Title ?? string.Empty,
             volume = Math.Round(s.Volume, 2),
             brightness = Math.Round(s.Brightness, 2),
+            sharpness = Math.Round(s.Sharpness, 2),
             saturation = Math.Round(s.Saturation, 2),
             zoom = Math.Round(s.Zoom, 2),
             audioBoost = Math.Round(s.AudioBoost, 2),
@@ -160,6 +161,20 @@ internal sealed partial class WebServer
         }
         var json = JsonSerializer.Serialize(new { expertMode = _expertMode });
         TrySendResponse(ctx, 200, "application/json", json);
+    }
+
+    private void HandleSharpness(HttpListenerContext ctx)
+    {
+        var valueParam = ctx.Request.QueryString["value"];
+        if (MediaControlValueParser.TryParseClampedDouble(valueParam, 0, 1, out var sharpness))
+        {
+            _callbacks.SetSharpness(sharpness);
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+        }
+        else
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad sharpness");
+        }
     }
 
     private void HandleDebugMode(HttpListenerContext ctx)
@@ -268,7 +283,7 @@ internal sealed partial class WebServer
     private void HandleZoom(HttpListenerContext ctx)
     {
         var valueParam = ctx.Request.QueryString["value"];
-        if (MediaControlValueParser.TryParseClampedDouble(valueParam, 1, 2, out var zoom))
+        if (MediaControlValueParser.TryParseClampedDouble(valueParam, 0.5, 2, out var zoom))
         {
             _callbacks.SetZoom(zoom);
             TrySendResponse(ctx, 200, "text/plain", "OK");
@@ -951,7 +966,7 @@ internal sealed partial class WebServer
                   <div class="metric wide"><dt>Window state</dt><dd>{{{{HtmlEncode(displayDiagnostics.WindowState)}}}} / {{{{HtmlEncode(displayDiagnostics.WindowStyle)}}}} / {{{{HtmlEncode(displayDiagnostics.ResizeMode)}}}} / Topmost={{{{displayDiagnostics.Topmost}}}}</dd></div>
                   <div class="metric wide"><dt>Current video</dt><dd>{{{{HtmlEncode(string.IsNullOrWhiteSpace(displayDiagnostics.CurrentTitle) ? "N/A" : displayDiagnostics.CurrentTitle)}}}}</dd></div>
                   <div class="metric wide"><dt>Video file</dt><dd class="mono">{{{{HtmlEncode(string.IsNullOrWhiteSpace(displayDiagnostics.CurrentFilePath) ? "N/A" : displayDiagnostics.CurrentFilePath)}}}}</dd></div>
-                  <div class="metric"><dt>Zoom / Brightness / Sat</dt><dd>{{{{Math.Round(displayDiagnostics.Zoom*100)}}}}% / {{{{Math.Round(displayDiagnostics.Brightness*100)}}}}% / {{{{Math.Round(displayDiagnostics.Saturation*100)}}}}%</dd></div>
+                  <div class="metric"><dt>Zoom / Brightness / Sharp / Sat</dt><dd>{{{{Math.Round(displayDiagnostics.Zoom*100)}}}}% / {{{{Math.Round(displayDiagnostics.Brightness*100)}}}}% / {{{{Math.Round(displayDiagnostics.Sharpness*100)}}}}% / {{{{Math.Round(displayDiagnostics.Saturation*100)}}}}%</dd></div>
                   <div class="metric"><dt>Video surface</dt><dd>{{{{displayDiagnostics.VideoSurfaceWidth}}}}&times;{{{{displayDiagnostics.VideoSurfaceHeight}}}}</dd></div>
                 </dl><div class="divider"></div><a href="/api/display-diagnostics" target="_blank" rel="noopener">Open display diagnostics JSON &#8599;</a></section>
 
@@ -1529,7 +1544,7 @@ internal sealed partial class WebServer
                   <label>Source path&nbsp;/&nbsp;URL</label>
                   <div class="path-row">
                     <input type="text" id="UpdateSourcePath" placeholder="\\server\share\RemotePlay  or  https://..."/>
-                    <button class="test-btn" onclick="testPathOrUrl('UpdateSourcePath','update-source-result')">Test</button>
+                    <button class="test-btn" onclick="testAndSavePathOrUrl('UpdateSourcePath','update-source-result')">Test &amp; Save</button>
                   </div>
                 </div>
                 <span id="update-source-result" class="hint"></span>
@@ -1880,6 +1895,10 @@ internal sealed partial class WebServer
             el.textContent=d.reachable?'\u2714 Reachable (HTTP '+d.status+')':'\u26a0 '+(d.error||'Unreachable');
             el.className=d.reachable?'test-ok':'test-err';
           }else{await testPath(inputId,resultId);}
+        }
+        async function testAndSavePathOrUrl(inputId,resultId){
+          await testPathOrUrl(inputId,resultId);
+          await saveCategory('application');
         }
         async function refreshRuntime(){
           const result=document.getElementById('admin-result'); result.textContent='Refreshing\u2026';

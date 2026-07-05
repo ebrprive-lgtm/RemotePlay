@@ -27,6 +27,7 @@ internal sealed record AppConfig
     public string MusicPath { get; init; } = Path.Combine(AppPaths.UserDataDirectory, "Music");
     public double Volume { get; init; } = 1;
     public double Brightness { get; init; } = 0.5;
+    public double Sharpness { get; init; }
     public double Zoom { get; init; } = 1;
     public double AudioBoost { get; init; } = 1;
     public double PlaybackSpeed { get; init; } = 1;

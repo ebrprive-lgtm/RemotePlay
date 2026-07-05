@@ -17,6 +17,7 @@ internal sealed record PlaybackStatus
     public double ResumePositionSeconds { get; init; }
     public bool SmartResumeApplied { get; init; }
     public double Brightness { get; init; }
+    public double Sharpness { get; init; }
     public double Saturation { get; init; } = 1;
     public double Zoom { get; init; } = 1;
     public double AudioBoost { get; init; } = 1;
@@ -36,6 +37,8 @@ internal sealed record PlaybackStatus
     public int CurrentChapter { get; init; } = -1;
     public int EqPreset { get; init; } = -1;
     public int ReverbPreset { get; init; } = 0;
+    public long WebUiNavigateId { get; init; }
+    public string WebUiNavigateFolderPath { get; init; } = string.Empty;
 }
 
 [ExcludeFromCodeCoverage]

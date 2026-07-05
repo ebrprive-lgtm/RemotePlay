@@ -62,6 +62,30 @@ public class RplinkHelperTests : IDisposable
     }
 
     [Fact]
+    public void TryReadTargetRaw_WithQuotedAbsolutePath_ReturnsUnquotedPath()
+    {
+        var targetPath = Path.Combine(_tempDir, "quoted.mkv");
+        var linkPath = Path.Combine(_tempDir, "quoted_link.rplink");
+        File.WriteAllText(linkPath, $"\"{targetPath}\"");
+
+        var result = RplinkHelper.TryReadTargetRaw(linkPath);
+
+        Assert.Equal(targetPath, result);
+    }
+
+    [Fact]
+    public void TryReadTargetRaw_WithTrailingExtraQuote_ReturnsNormalizedPath()
+    {
+        var targetPath = Path.Combine(_tempDir, "quoted2.mkv");
+        var linkPath = Path.Combine(_tempDir, "quoted2_link.rplink");
+        File.WriteAllText(linkPath, $"\"{targetPath}\"\"");
+
+        var result = RplinkHelper.TryReadTargetRaw(linkPath);
+
+        Assert.Equal(targetPath, result);
+    }
+
+    [Fact]
     public void TryReadTargetRaw_EmptyFile_ReturnsNull()
     {
         var linkPath = Path.Combine(_tempDir, "link.rplink");
@@ -114,12 +138,82 @@ public class RplinkHelperTests : IDisposable
     }
 
     [Fact]
+    public void TryReadTarget_WithAtPrefixedPath_ResolvesAgainstNearestMasterRoot()
+    {
+        var libraryRoot = Path.Combine(_tempDir, "LibraryRoot");
+        var masterRoot = Path.Combine(libraryRoot, "@Master.Movies");
+        var nested = Path.Combine(libraryRoot, "Genre - Comedy", "Movies");
+        Directory.CreateDirectory(masterRoot);
+        Directory.CreateDirectory(nested);
+
+        var targetFile = Path.Combine(masterRoot, "1941 - Abbott And Costello Buck Privates.mp4");
+        File.WriteAllText(targetFile, "data");
+
+        var linkPath = Path.Combine(nested, "1941 - Abbott And Costello Buck Privates.rplink");
+        File.WriteAllText(linkPath, "@\\@Master.Movies\\1941 - Abbott And Costello Buck Privates.mp4");
+
+        var result = RplinkHelper.TryReadTarget(linkPath);
+
+        Assert.Equal(targetFile, result);
+    }
+
+    [Fact]
     public void TryReadTarget_WhenTargetDoesNotExist_ReturnsNull()
     {
         var linkPath = Path.Combine(_tempDir, "link.rplink");
         File.WriteAllText(linkPath, Path.Combine(_tempDir, "ghost.mkv"));
 
         Assert.Null(RplinkHelper.TryReadTarget(linkPath));
+    }
+
+    [Fact]
+    public void TryReadTarget_WhenTargetFileExistsAndPathIsQuoted_ReturnsPath()
+    {
+        var filePath = Path.Combine(_tempDir, "video_quoted.mkv");
+        File.WriteAllText(filePath, "data");
+        var linkPath = Path.Combine(_tempDir, "quoted_target_link.rplink");
+        File.WriteAllText(linkPath, $"\"{filePath}\"\"");
+
+        Assert.Equal(filePath, RplinkHelper.TryReadTarget(linkPath));
+    }
+
+    [Fact]
+    public void InspectTarget_WhenTargetExists_ReturnsResolved()
+    {
+        var filePath = Path.Combine(_tempDir, "video2.mkv");
+        File.WriteAllText(filePath, "data");
+        var linkPath = Path.Combine(_tempDir, "link2.rplink");
+        File.WriteAllText(linkPath, filePath);
+
+        var inspection = RplinkHelper.InspectTarget(linkPath);
+
+        Assert.Equal(RplinkHelper.RplinkTargetStatus.Resolved, inspection.Status);
+        Assert.Equal(filePath, inspection.ResolvedTarget);
+    }
+
+    [Fact]
+    public void InspectTarget_WhenTargetMissing_ReturnsMissing()
+    {
+        var missingPath = Path.Combine(_tempDir, "ghost2.mkv");
+        var linkPath = Path.Combine(_tempDir, "link3.rplink");
+        File.WriteAllText(linkPath, missingPath);
+
+        var inspection = RplinkHelper.InspectTarget(linkPath);
+
+        Assert.Equal(RplinkHelper.RplinkTargetStatus.Missing, inspection.Status);
+        Assert.Equal(missingPath, inspection.ResolvedTarget);
+    }
+
+    [Fact]
+    public void InspectTarget_WhenLinkFileIsEmpty_ReturnsUnreadableLink()
+    {
+        var linkPath = Path.Combine(_tempDir, "empty.rplink");
+        File.WriteAllText(linkPath, " ");
+
+        var inspection = RplinkHelper.InspectTarget(linkPath);
+
+        Assert.Equal(RplinkHelper.RplinkTargetStatus.UnreadableLink, inspection.Status);
+        Assert.Null(inspection.ResolvedTarget);
     }
 
     // -- Create ---------------------------------------------------------------

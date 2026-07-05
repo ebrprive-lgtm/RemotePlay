@@ -1,8 +1,91 @@
 let _localMediaType = 'Local';
+
+function _clearLocalPlayerMeta() {
+  const ctx = document.getElementById('local-player-context');
+  if (ctx) {
+    ctx.textContent = '';
+    ctx.style.display = 'none';
+  }
+
+  const artWrap = document.getElementById('local-player-art-wrap');
+  const art = document.getElementById('local-player-art');
+  if (art) art.removeAttribute('src');
+  if (artWrap) artWrap.style.display = 'none';
+}
+
+function setLocalPodcastMeta(showTitle, artworkUrl) {
+  const ctx = document.getElementById('local-player-context');
+  const label = (showTitle || '').trim();
+  if (ctx) {
+    ctx.textContent = label;
+    ctx.style.display = label ? '' : 'none';
+  }
+
+  const artWrap = document.getElementById('local-player-art-wrap');
+  const art = document.getElementById('local-player-art');
+  const url = (artworkUrl || '').trim();
+  if (!artWrap || !art) return;
+
+  if (!url) {
+    art.removeAttribute('src');
+    artWrap.style.display = 'none';
+    return;
+  }
+
+  art.src = url;
+  artWrap.style.display = '';
+}
+
 function _postLog(msg) {
   fetch('/api/log', { method: 'POST', body: msg }).catch(() => {});
 }
+
+function _closeNonLocalPlayersForLocalStart() {
+  if (typeof stopMusicPlaybackPoll === 'function') stopMusicPlaybackPoll();
+  if (typeof stopMusicStatusPoll === 'function') stopMusicStatusPoll();
+  if (typeof stopRadioStatusPoll === 'function') stopRadioStatusPoll();
+  if (typeof stopPolling === 'function') stopPolling();
+  if (typeof stopSse === 'function') stopSse();
+
+  if (typeof _clearMusicPlaybackVisuals === 'function') _clearMusicPlaybackVisuals();
+  const musicBar = document.getElementById('music-player-bar');
+  if (musicBar) musicBar.style.display = 'none';
+
+  document.body.classList.remove('music-player-docked');
+  document.body.classList.remove('radio-player-docked');
+  document.body.classList.remove('desktop-player-docked');
+  document.body.classList.remove('tablet-docked');
+  document.body.classList.remove('phone-playing');
+
+  if (typeof setPlayerBarVisible === 'function') setPlayerBarVisible(false);
+  if (typeof updatePlayingCard === 'function') updatePlayingCard(null, playingPath);
+  if (typeof playingPath !== 'undefined') playingPath = null;
+
+  Promise.allSettled([
+    fetch('/api/stop'),
+    fetch('/api/music/stop'),
+    fetch('/api/music/queue-next'),
+    fetch('/api/radio/stop', { method: 'POST' })
+  ]).catch(() => {});
+}
+
+async function closeLocalPlayerForNonLocalPlayback() {
+  const isDocked = document.body.classList.contains('local-player-docked');
+  if (!isDocked && _localMediaType === 'Local') return;
+
+  if (typeof localStop === 'function') {
+    await localStop();
+    return;
+  }
+
+  document.body.classList.remove('local-player-docked');
+  _clearLocalPlayerMeta();
+  _localMediaType = 'Local';
+}
+
 function localPlay(url, name, type) {
+  _closeNonLocalPlayersForLocalStart();
+
   _localMediaType = type || 'Local';
   _postLog(`[LOCAL-PLAY] localPlay() called — type=${_localMediaType} name='${name}' url=${url}`);
   const a = _getLocalAudio();
@@ -27,6 +110,7 @@ function localPlay(url, name, type) {
   setTimeout(() => fetch('/api/local-playing', { method: 'POST', body: 'true' }).catch(() => {}), 0);
   const nm = document.getElementById('local-player-name');
   if (nm) nm.textContent = name;
+  if (_localMediaType !== 'Podcast') _clearLocalPlayerMeta();
   // Only show the generic local-player-bar when no domain-specific player bar exists.
   // Music and Radio already have dedicated player bars with their own controls.
   if (_localMediaType !== 'Music' && _localMediaType !== 'Radio') {
@@ -37,13 +121,29 @@ function localPlay(url, name, type) {
   _localAudioUpdate();
   _postLog(`Playing ${_localMediaType}: '${name}' on Local`);
 }
-function localToggle() {
+async function localToggle() {
+  if (_localMediaType === 'PodcastServer' && typeof radioToggle === 'function') {
+    await radioToggle();
+    const s = document.getElementById('local-player-state');
+    if (s) s.textContent = (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying) ? 'Playing on server' : 'Paused on server';
+    return;
+  }
+
   const a = _getLocalAudio();
   if (!a) return;
   if (a.paused) a.play().catch(() => {});
   else a.pause();
 }
-function localStop() {
+async function localStop() {
+  if (_localMediaType === 'PodcastServer') {
+    if (typeof radioDismiss === 'function') await radioDismiss();
+    document.body.classList.remove('local-player-docked');
+    _clearLocalPlayerMeta();
+    _localSeekDragging = false;
+    _localMediaType = 'Local';
+    return;
+  }
+
   const caller = (new Error()).stack ? (new Error()).stack.split('\n').slice(1,3).join(' | ') : 'unknown';
   const a = _getLocalAudio();
   const wasActive = a && a.src && !a.paused;
@@ -55,6 +155,7 @@ function localStop() {
   fetch('/api/local-playing', { method: 'POST', body: 'false' }).catch(() => {});
   document.body.classList.remove('local-player-docked');
   _localSeekDragging = false;
+  _clearLocalPlayerMeta();
   if (wasActive) _postLog(`Stopping ${_localMediaType} on Local`);
   _localMediaType = 'Local';
 }

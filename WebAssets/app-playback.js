@@ -198,6 +198,24 @@ async function setSaturation(value) {
   document.getElementById('saturation-label').textContent = Math.round(saturation * 100) + '%';
   await api('/api/saturation?value=' + encodeURIComponent(saturation.toFixed(2)));
 }
+async function setSharpness(value) {
+  setSharpnessPreview(value);
+
+  const sharpness = parseFloat(document.getElementById('sharpness').value);
+  await api('/api/sharpness?value=' + encodeURIComponent(sharpness.toFixed(2)));
+}
+function setSharpnessPreview(value) {
+  const parsed = parseFloat(value);
+  const sharpness = Math.max(0, Math.min(1, Number.isFinite(parsed) ? parsed : 0));
+  document.getElementById('sharpness').value = sharpness.toFixed(2);
+  document.getElementById('sharpness-label').textContent = Math.round(sharpness * 100) + '%';
+}
+function onSharpnessPointerDown() {
+  sharpnessDragging = true;
+}
+function onSharpnessPointerUp() {
+  sharpnessDragging = false;
+}
 function onZoomPointerDown() {
   zoomDragging = true;
 }
@@ -206,7 +224,7 @@ function onZoomPointerUp() {
 }
 function setZoomPreview(value) {
   const parsed = parseFloat(value);
-  const zoom = Math.max(1, Math.min(2, Number.isFinite(parsed) ? parsed : 1));
+  const zoom = Math.max(0.5, Math.min(2, Number.isFinite(parsed) ? parsed : 1));
   document.getElementById('zoom').value = zoom.toFixed(2);
   document.getElementById('zoom-label').textContent = Math.round(zoom * 100) + '%';
 }
@@ -226,11 +244,15 @@ function resetSaturationMid() {
   haptic(8);
   setSaturation(1);
 }
+function resetSharpnessDefault() {
+  haptic(8);
+  setSharpness(0);
+}
 function resetZoomDefault() {
   haptic(8);
   commitZoom(1);
 }
-const DEFAULT_PROFILE = { volume: 1, boost: 0, brightness: 0.5, saturation: 1, zoom: 1, speed: 1 };
+const DEFAULT_PROFILE = { volume: 1, boost: 0, brightness: 0.5, sharpness: 0, saturation: 1, zoom: 1, speed: 1 };
 let _profileHoldTimer = null;
 let _profileHoldFired = false;
 function _getProfiles() {
@@ -259,6 +281,7 @@ function _currentSettings() {
     volume,
     boost,
     brightness: parseFloat(document.getElementById('brightness').value) || 0.5,
+    sharpness: parseFloat(document.getElementById('sharpness').value) || 0,
     saturation: parseFloat(document.getElementById('saturation').value) || 1,
     zoom: parseFloat(document.getElementById('zoom').value) || 1,
     speed: currentPlaybackSpeed || 1,
@@ -323,6 +346,7 @@ async function applyProfile(n) {
   if (cs) { cs.value = combined.toFixed(2); await setVideoCombinedSlider(combined); }
   else { await setAudioBoost(profile.boost); }
   await setBrightness(profile.brightness);
+  await setSharpness(profile.sharpness);
   await setSaturation(profile.saturation);
   await commitZoom(profile.zoom);
   await setPlaybackSpeed(profile.speed);
@@ -1380,13 +1404,83 @@ async function loadFavorites() {
   }
 }
 let currentIsLinkedDir = false;
-async function browse(d, offset = 0, append = false, pushHistory = true, isLinked = false) {
+let _videoLinkBase = null;
+
+function _normalizeVideoPathPrefix(path) {
+  return (path || '').replace(/[\\/]+$/, '');
+}
+
+function _applyVideoVirtualBreadcrumbs(breadcrumbs) {
+  if (!Array.isArray(breadcrumbs) || !breadcrumbs.length || !_videoLinkBase) return breadcrumbs;
+
+  const realBasePath = _normalizeVideoPathPrefix(_videoLinkBase.real || '');
+  const virtualBase = _videoLinkBase.virtual || '';
+  if (!realBasePath || !virtualBase) return breadcrumbs;
+
+  const rootDir = _decodePath(breadcrumbs[0] && breadcrumbs[0].dir ? breadcrumbs[0].dir : '');
+  const normalizedRoot = _normalizeVideoPathPrefix(rootDir || '');
+  if (!normalizedRoot) return breadcrumbs;
+
+  const currentCrumb = breadcrumbs[breadcrumbs.length - 1];
+  const currentRealDir = _normalizeVideoPathPrefix(_decodePath(currentCrumb && currentCrumb.dir ? currentCrumb.dir : '') || '');
+  if (!currentRealDir) return breadcrumbs;
+
+  const realBaseLower = realBasePath.toLowerCase();
+  const currentLower = currentRealDir.toLowerCase();
+  if (!currentLower.startsWith(realBaseLower)) return breadcrumbs;
+
+  const currentVirtualDir = virtualBase + currentRealDir.slice(realBasePath.length);
+  const rel = currentVirtualDir.startsWith(normalizedRoot)
+    ? currentVirtualDir.slice(normalizedRoot.length)
+    : '';
+  const sep = rel.indexOf('/') !== -1 ? '/' : '\\';
+  const parts = rel.split(sep).filter((p) => p && p.trim());
+  if (!parts.length) return breadcrumbs;
+
+  const remapped = [breadcrumbs[0]];
+  let virtualCumulative = normalizedRoot;
+  for (const part of parts) {
+    virtualCumulative += sep + part;
+    const normalizedVirtual = _normalizeVideoPathPrefix(virtualCumulative);
+    const realForClick = normalizedVirtual.toLowerCase().startsWith(virtualBase.toLowerCase())
+      ? realBasePath + normalizedVirtual.slice(virtualBase.length)
+      : normalizedVirtual;
+
+    remapped.push({
+      name: part,
+      dir: _encodePath(realForClick)
+    });
+  }
+
+  return remapped;
+}
+
+async function browse(d, offset = 0, append = false, pushHistory = true, isLinked = false, virtualPath = null) {
   console.log('[VIDEO] browse called: d =', d, ', append =', append);
   // Push the current location onto the back-stack before navigating (not for pagination)
   if (!append && pushHistory && currentDir !== d && currentDir !== null)
     browseHistory.push(currentDir);
   if (!append && d === null) browseHistory = [];
-  if (!append) currentIsLinkedDir = isLinked;
+  if (!append) {
+    if (isLinked && d && virtualPath) {
+      const decodedFolder = _decodePath(d);
+      if (decodedFolder) {
+        _videoLinkBase = {
+          real: _normalizeVideoPathPrefix(decodedFolder),
+          virtual: _normalizeVideoPathPrefix(virtualPath)
+        };
+      }
+    } else if (_videoLinkBase && d) {
+      const decodedFolder = _decodePath(d);
+      if (!decodedFolder || !_normalizeVideoPathPrefix(decodedFolder).toLowerCase().startsWith(_videoLinkBase.real.toLowerCase())) {
+        _videoLinkBase = null;
+      }
+    } else {
+      _videoLinkBase = null;
+    }
+
+    currentIsLinkedDir = Boolean(_videoLinkBase);
+  }
   if (!append) _hideSearchFilterBar();
   setStatus('Loading...');
   currentDir = d;
@@ -1420,6 +1514,9 @@ async function browse(d, offset = 0, append = false, pushHistory = true, isLinke
     if (!append) {
       const folderPath = d ? _decodePath(d) : null;
       let friendlyPath = null;
+      if (nextData.breadcrumbs && nextData.breadcrumbs.length) {
+        nextData.breadcrumbs = _applyVideoVirtualBreadcrumbs(nextData.breadcrumbs);
+      }
       if (nextData.breadcrumbs && nextData.breadcrumbs.length) {
         console.log('[VIDEO] Breadcrumbs from server:', nextData.breadcrumbs);
         friendlyPath = _buildFriendlyPathFromBreadcrumbs(nextData.breadcrumbs);
@@ -2019,7 +2116,12 @@ async function _triggerUpNextPlay() {
   if (!_upNextPath) return;
   const path = _upNextPath;
   _clearUpNext();
-  await api('/api/play?path=' + encodeURIComponent(path));
+
+  if (typeof closeLocalPlayerForNonLocalPlayback === 'function') {
+    await closeLocalPlayerForNonLocalPlayback();
+  }
+
+  await api('/api/video/play?path=' + encodeURIComponent(path));
   if (typeof pollStatus === 'function') await pollStatus();
 }
 

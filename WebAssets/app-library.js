@@ -120,6 +120,15 @@ window._playlistArtUrl = window._playlistArtUrl || null;
 window._musicLocalCoverMiss = window._musicLocalCoverMiss || new Set();
 window._musicAlbumArtMiss = window._musicAlbumArtMiss || new Set();
 async function playMusic(path, name) {
+  // Safety: while a video is actively playing and the user is not in Music mode,
+  // ignore background music auto-start attempts (queue/poll race).
+  if (playingPath && currentMode !== 'music') {
+    stopMusicPlaybackPoll();
+    return;
+  }
+
+  await _stopAllPlaybackForNewStart();
+
   musicCurrentPath = path;
   // If this path is not in the current queue, this is a manual play — reset queue cursor.
   if (window._musicQueue && window._musicQueue.length > 0) {
@@ -206,6 +215,10 @@ async function playMusic(path, name) {
   }
 
   const _inQueue = window._musicQueue && window._musicQueue.length > 0;
+  if (typeof closeLocalPlayerForNonLocalPlayback === 'function') {
+    await closeLocalPlayerForNonLocalPlayback();
+  }
+
   await fetch('/api/music/play?path=' + encodeURIComponent(path) + (_inQueue ? '&skipRecord=1' : ''));
   musicIsPlaying = true;
   // Only refresh recent strip when NOT in playlist-queue mode (playlist was recorded once on launch)
@@ -249,12 +262,21 @@ async function musicStop() {
   musicIsPlaying = false;
   musicCurrentPath = null;
   _onMusicTrackChangedLyrics(null, '', '');
+  _clearMusicPlaybackVisuals();
   const bar = document.getElementById('music-player-bar');
   if (bar) bar.style.display = 'none';
   document.body.classList.remove('music-player-docked');
   stopMusicPlaybackPoll();
   if (!playingPath) releaseWakeLock();
   localStop(); // also silence local browser audio
+}
+
+function _clearMusicPlaybackVisuals() {
+  document.querySelectorAll('.music-track-card.playing').forEach((card) => {
+    card.classList.remove('playing');
+  });
+
+  if (typeof _renderMusicQueuePeek === 'function') _renderMusicQueuePeek();
 }
 
 async function musicPrev() {
@@ -437,7 +459,7 @@ function updateMusicBar(s) {
   window._lastMusicBarState = s;
   const bar = document.getElementById('music-player-bar');
   if (!bar) return;
-  const active = s.isPlaying || s.isPaused;
+  const active = (s.isPlaying || s.isPaused) && currentMode === 'music';
   bar.style.display = active ? 'flex' : 'none';
   const isDocked = active && window.matchMedia('(min-width:900px)').matches;
   document.body.classList.toggle('music-player-docked', isDocked);
@@ -1765,12 +1787,23 @@ let _musicKnownSessionId = null; // last server session ID seen; null = unknown
 function startMusicPlaybackPoll() {
   if (musicPlaybackPollTimer) return;
   musicPlaybackPollTimer = setInterval(async () => {
+    if (currentMode !== 'music') {
+      stopMusicPlaybackPoll();
+      return;
+    }
+
     let s;
     try {
       const res = await fetch('/api/music/status');
       if (!res.ok) return;
       s = await res.json();
     } catch (e) {
+      return;
+    }
+
+    // Guard against in-flight race: mode may have changed while awaiting status.
+    if (currentMode !== 'music') {
+      stopMusicPlaybackPoll();
       return;
     }
 
@@ -1865,7 +1898,7 @@ function startMusicPlaybackPoll() {
     // (server handles it when _nextTrackPath was set; this covers the case where
     //  the browser is still open but autoplay wasn't yet registered)
     // Skip in local mode — the ended event on the <audio> element drives advancement there.
-    if (!isPlayLocal() && !s.isPlaying && !s.isPaused && wasPlaying && musicCurrentPath && !s.currentPath) {
+    if (currentMode === 'music' && !isPlayLocal() && !s.isPlaying && !s.isPaused && wasPlaying && musicCurrentPath && !s.currentPath) {
       musicCurrentPath = null;
       const hasQueue = window._musicQueue && window._musicQueue.length > 0;
       if (hasQueue || _musicAutoPlay || _musicShuffle || _musicRepeat !== 'none') {
@@ -1893,19 +1926,47 @@ function stopMusicPlaybackPoll() {
   }
 }
 
+async function _stopAllPlaybackForNewStart() {
+  if (typeof closeLocalPlayerForNonLocalPlayback === 'function') {
+    await closeLocalPlayerForNonLocalPlayback();
+  }
+
+  stopMusicPlaybackPoll();
+  if (typeof stopMusicStatusPoll === 'function') stopMusicStatusPoll();
+  if (typeof stopRadioStatusPoll === 'function') stopRadioStatusPoll();
+
+  musicIsPlaying = false;
+  musicCurrentPath = null;
+  if (typeof _onMusicTrackChangedLyrics === 'function') _onMusicTrackChangedLyrics(null, '', '');
+  _clearMusicPlaybackVisuals();
+
+  const musicBar = document.getElementById('music-player-bar');
+  if (musicBar) musicBar.style.display = 'none';
+  document.body.classList.remove('music-player-docked');
+  document.body.classList.remove('radio-player-docked');
+  if (typeof setPlayerBarVisible === 'function') setPlayerBarVisible(false);
+
+  await Promise.allSettled([
+    fetch('/api/stop'),
+    fetch('/api/music/stop'),
+    fetch('/api/music/queue-next'),
+    fetch('/api/radio/stop', { method: 'POST' })
+  ]);
+}
+
 function switchMode(mode, skipInitialBrowse = false) {
   console.log('[BOOTSTRAP] switchMode called: mode =', mode, ', skipInitialBrowse =', skipInitialBrowse);
-  // Stop whichever player is active before switching away from it.
+  // Domain switching is navigation-only; keep active playback running.
   const leavingVideo = currentMode === 'video' && mode !== 'video';
   const leavingMusic = currentMode === 'music' && mode !== 'music';
+  const leavingPodcasts = currentMode === 'podcasts' && mode !== 'podcasts';
   const leavingRadio = currentMode === 'radio' && mode !== 'radio';
-  console.log('[BOOTSTRAP] Leaving: video =', leavingVideo, ', music =', leavingMusic, ', radio =', leavingRadio);
+  console.log('[BOOTSTRAP] Leaving: video =', leavingVideo, ', music =', leavingMusic, ', podcasts =', leavingPodcasts, ', radio =', leavingRadio);
 
-  if (leavingVideo && playingPath && typeof stop !== 'undefined') stop();
-  if (leavingMusic && musicIsPlaying && typeof musicStop !== 'undefined') musicStop();
-  if (leavingMusic) _cancelPendingPlaylistArtLoads();
-  // Use window._ prefix to safely access potentially uninitialized global variables
-  if (leavingRadio && window._radioIsPlaying && typeof radioStop !== 'undefined') radioStop();
+  if (leavingMusic) {
+    _cancelPendingPlaylistArtLoads();
+    stopMusicPlaybackPoll();
+  }
   if (typeof _hideSearchFilterBar === 'function') _hideSearchFilterBar();
 
   currentMode = mode;
@@ -1914,20 +1975,24 @@ function switchMode(mode, skipInitialBrowse = false) {
   if (typeof _syncUiRoute === 'function') _syncUiRoute(mode);
   // Remove music dock when leaving music mode
   if (mode !== 'music') document.body.classList.remove('music-player-docked');
+  if (mode !== 'music') {
+    const musicBar = document.getElementById('music-player-bar');
+    if (musicBar) musicBar.style.display = 'none';
+  }
   if (mode !== 'radio' && !window._radioIsPlaying) document.body.classList.remove('radio-player-docked');
   document.body.classList.toggle('radio-mode', mode === 'radio');
-  ['video', 'music', 'radio', 'live-tv'].forEach((m) => {
+  ['video', 'music', 'podcasts', 'radio', 'live-tv'].forEach((m) => {
     const tab = document.getElementById('tab-' + m);
     const browser = document.getElementById(m === 'video' ? 'browser' : m + '-browser');
     const active = m === mode;
     if (tab) tab.classList.toggle('active', active);
     if (browser) browser.style.display = active ? '' : 'none';
   });
-  // Radio secondary tab header is managed within radio rendering
-  const radioTabHdr = document.getElementById('radio-tab-bar-header');
-  if (radioTabHdr) radioTabHdr.style.display = 'none';
+  // Radio secondary tab header removed; command-bar toggle is used instead.
   const videoSearch = document.getElementById('vcb-search');
   const musicSearch = document.getElementById('mcb-search');
+  const podcastsViewToggle = document.getElementById('view-toggle-podcasts');
+  if (podcastsViewToggle) podcastsViewToggle.style.display = 'none';
   // Always show the nav row; just switch which recent strip is active
   const navRow = document.getElementById('browse-nav-row');
   const vStrip = document.getElementById('video-recent-strip');
@@ -1968,6 +2033,8 @@ function switchMode(mode, skipInitialBrowse = false) {
     if (rcb) rcb.style.display = 'none';
     const ltcb = document.getElementById('live-tv-command-bar');
     if (ltcb) ltcb.style.display = 'none';
+    const pcb = document.getElementById('podcasts-command-bar');
+    if (pcb) pcb.style.display = 'none';
     refreshLibraryStatus();
     if (currentData) render(currentData);
     else if (skipInitialBrowse) setMusicHeaderForMode('video');
@@ -1980,6 +2047,8 @@ function switchMode(mode, skipInitialBrowse = false) {
     if (rcb) rcb.style.display = 'none';
     const ltcb = document.getElementById('live-tv-command-bar');
     if (ltcb) ltcb.style.display = 'none';
+    const pcb = document.getElementById('podcasts-command-bar');
+    if (pcb) pcb.style.display = 'none';
     const mcb = document.getElementById('music-command-bar');
     // Hide up-front; refreshMusicLibraryStatus will reveal it only when paths are valid.
     if (mcb) { mcb.style.display = 'none'; _syncMusicCommandBar(); }
@@ -2017,10 +2086,30 @@ function switchMode(mode, skipInitialBrowse = false) {
     else if (currentMusicData) {
       renderMusicHeader(currentMusicData, false);
     }
+  } else if (mode === 'podcasts') {
+    if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
+    const mcb = document.getElementById('music-command-bar');
+    if (mcb) mcb.style.display = 'none';
+    const rcb = document.getElementById('radio-command-bar');
+    if (rcb) rcb.style.display = 'none';
+    const ltcb = document.getElementById('live-tv-command-bar');
+    if (ltcb) ltcb.style.display = 'none';
+    const pcb = document.getElementById('podcasts-command-bar');
+    if (pcb) pcb.style.display = 'flex';
+    if (videoSearch) videoSearch.value = '';
+    if (musicSearch) musicSearch.value = '';
+    const badge = document.getElementById('indexing-badge');
+    if (badge) badge.style.display = 'none';
+    stopMusicStatusPoll();
+    stopRadioStatusPoll();
+    setMusicHeaderForMode('podcasts');
+    if (typeof podcastsInit === 'function') podcastsInit();
   } else if (mode === 'radio') {
     if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
     const mcb = document.getElementById('music-command-bar');
     if (mcb) mcb.style.display = 'none';
+    const pcb = document.getElementById('podcasts-command-bar');
+    if (pcb) pcb.style.display = 'none';
     const rcb = document.getElementById('radio-command-bar');
     if (rcb) rcb.style.display = 'flex';
     const ltcb = document.getElementById('live-tv-command-bar');
@@ -2036,6 +2125,8 @@ function switchMode(mode, skipInitialBrowse = false) {
     if (typeof _applyVideoCommandBar === 'function') _applyVideoCommandBar(false);
     const mcb = document.getElementById('music-command-bar');
     if (mcb) mcb.style.display = 'none';
+    const pcb = document.getElementById('podcasts-command-bar');
+    if (pcb) pcb.style.display = 'none';
     const rcb = document.getElementById('radio-command-bar');
     if (rcb) rcb.style.display = 'none';
     const ltcb = document.getElementById('live-tv-command-bar');
@@ -2120,6 +2211,24 @@ function renderMusicHeader(data, searching) {
     }
   }
 
+  if (typeof _setViewModeScope === 'function') {
+    if (searching) {
+      _setViewModeScope('music', 2, 'Search results');
+    } else {
+      const root = data.musicRoot || '';
+      const folder = data.folder || root;
+      const displayFolder = _musicLinkBase && folder && folder.toLowerCase().startsWith(_musicLinkBase.real.toLowerCase())
+        ? _musicLinkBase.virtual + folder.slice(_musicLinkBase.real.length)
+        : folder;
+      const rel = displayFolder && root && displayFolder.toLowerCase() !== root.toLowerCase()
+        ? (displayFolder.startsWith(root) ? displayFolder.slice(root.length) : '')
+        : '';
+      const sep = rel.indexOf('/') !== -1 ? '/' : '\\';
+      const parts = rel.split(sep).filter((p) => p.length > 0);
+      _setViewModeScope('music', parts.length + 1, parts.length ? parts[parts.length - 1] : 'Music Root');
+    }
+  }
+
   // Back button
   if (back) {
     const canGoBack =
@@ -2168,6 +2277,8 @@ function renderMusicHeader(data, searching) {
       (document.getElementById('view-toggle-video').style.display = 'none');
     document.getElementById('view-toggle-music') &&
       (document.getElementById('view-toggle-music').style.display = 'none');
+  document.getElementById('view-toggle-podcasts') &&
+    (document.getElementById('view-toggle-podcasts').style.display = 'none');
     _applyViewToggleBtn('music');
     const txt = document.getElementById('count-text');
     let countText = '';
@@ -2922,6 +3033,39 @@ function renderMusicCards(data, searching) {
       }));
   }
 
+  function _folderLeafName(pathValue, fallbackName) {
+    const raw = String(pathValue || '').trim();
+    if (!raw) return String(fallbackName || '').trim();
+    const parts = raw.split(/[\\/]+/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : String(fallbackName || '').trim();
+  }
+
+  function _musicFolderTypeBadgeInfo(folderPath, folderName, isAll) {
+    const leaf = (isAll ? 'ALL' : _folderLeafName(folderPath, folderName)).trim().toUpperCase();
+    if (leaf === 'ALL') return { icon: '&#10024;', cls: 'type-all', label: 'All' };
+    if (leaf === 'BYTAG') return { icon: '&#127991;&#65039;', cls: 'type-bytag', label: 'ByTag' };
+    if (leaf === 'BYSET') return { icon: '&#129513;', cls: 'type-byset', label: 'BySet' };
+    if (leaf === 'ALBUMS' || leaf === 'ALBUM') return { icon: '&#128191;', cls: 'type-album', label: 'Albums' };
+    if (leaf === 'SINGLES' || leaf === 'SINGLE') return { icon: '&#9835;', cls: 'type-single', label: 'Singles' };
+    if (leaf === 'COMPILATIONS') return { icon: '&#128450;&#65039;', cls: 'type-compilations', label: 'Compilations' };
+    if (leaf === 'LIVE') return { icon: '&#127908;', cls: 'type-live', label: 'Live' };
+    return null;
+  }
+
+  function _musicFolderIconHtml(folderPath, folderName, isAll, className) {
+    const badge = _musicFolderTypeBadgeInfo(folderPath, folderName, isAll);
+    const cls = className ? (' ' + className) : '';
+    const isHero = String(className || '').includes('rp-folder-icon--hero');
+    return '<span class="rp-folder-icon' + cls + '" aria-hidden="true">'
+      + '<span class="rp-folder-base">&#128193;</span>'
+      + (badge
+        ? (isHero
+          ? '<span class="rp-folder-symbol ' + badge.cls + '" title="' + esc(badge.label) + '">' + badge.icon + '</span>'
+          : '<span class="rp-folder-badge ' + badge.cls + '" title="' + esc(badge.label) + '">' + badge.icon + '</span>')
+        : '')
+      + '</span>';
+  }
+
   function _musicFolderListRowHtml(f, idx) {
     const isAll = f.isAll || f.name === 'All';
     const isLink = !!f.isLink;
@@ -2955,7 +3099,7 @@ function renderMusicCards(data, searching) {
       + (idx % 2 === 1 ? ' alt-row' : '')
       + '" role="button" tabindex="0" aria-label="Open ' + esc(folderTypeLabel) + ' ' + esc(folderName) + '"'
       + ' onclick="' + browseAction + '" onkeydown="activateKeyboardClick(event,this)" oncontextmenu="' + contextMenuAction + '">'
-      + '<span class="mtc-play-indicator music-folder-row-icon">' + (isDynamic ? '&#127922;' : (isAll ? '\uD83D\uDCC2' : '&#128193;')) + '</span>'
+      + '<span class="mtc-play-indicator music-folder-row-icon">' + (isDynamic ? '&#127922;' : _musicFolderIconHtml(folderPath, folderName, isAll)) + '</span>'
       + '<span class="mtc-title">' + esc(folderName)
       + (isLink ? ' <span class="music-folder-link-pill" title="Library link">🔗</span>' : '')
       + '</span>'
@@ -3028,14 +3172,21 @@ function renderMusicCards(data, searching) {
       data.folders.filter(f => !f.isDynamic).forEach(function(f) {
         const isAll = f.isAll || f.name === 'All';
         const isLink = !!f.isLink;
+        const itemCountRaw = Number(f.itemCount ?? f.fileCount);
+        const trackCountRaw = Number(f.trackCount);
+        const resolvedCount = Number.isFinite(itemCountRaw) && itemCountRaw >= 0
+          ? itemCountRaw
+          : (Number.isFinite(trackCountRaw) && trackCountRaw >= 0 ? trackCountRaw : NaN);
+        const hasItemCount = Number.isFinite(resolvedCount) && resolvedCount >= 0;
         gridHtml += '<div class="mfc-card mfc-folder-card' + (isAll ? ' folder-row-all' : '') + (isLink ? ' folder-row-link' : '') + '" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
           + ' oncontextmenu="_ctxShow(event,\'music-folder\',{dir:btoa(unescape(encodeURIComponent(\'' + jsStr(f.folder) + '\'))),name:\'' + jsStr(f.name) + '\'})"'
           + ' onclick="browseMusic(\'' + jsStr(f.folder) + '\'' + (isLink && f.virtualPath ? ',\'' + jsStr(f.virtualPath) + '\'' : '') + ')">'
           + '<div class="mfc-card-hero">'
-          + '<span class="mfc-card-icon">' + (isAll ? '\uD83D\uDCC2' : '&#128193;') + '</span>'
+          + _musicFolderIconHtml(f.folder, f.name, isAll, 'mfc-card-icon rp-folder-icon--hero')
           + '</div>'
           + '<div class="mfc-card-footer">'
           + '<span class="mfc-card-name">' + esc(f.name) + '</span>'
+          + (hasItemCount ? '<span class="mfc-card-sub">' + esc(_countWord(resolvedCount, 'item', 'items')) + '</span>' : '')
           + (isLink ? '<span class="folder-link-badge" title="Library link">🔗</span>' : '')
           + '</div>'
           + '</div>';
@@ -3101,7 +3252,7 @@ function renderMusicCards(data, searching) {
           html += '<div class="folder-row' + (isAll ? ' folder-row-all' : '') + (isLink ? ' folder-row-link' : '') + '" role="button" tabindex="0" onkeydown="activateKeyboardClick(event,this)"'
             + ' oncontextmenu="_ctxShow(event,\'music-folder\',{dir:btoa(unescape(encodeURIComponent(\'' + jsStr(f.folder) + '\'))),name:\'' + jsStr(f.name) + '\'})"'
             + ' onclick="browseMusic(\'' + jsStr(f.folder) + '\'' + (isLink && f.virtualPath ? ',\'' + jsStr(f.virtualPath) + '\'' : '') + ')">'
-            + '<span class="folder-icon">' + (isAll ? '\uD83D\uDCC2' : '&#128193;') + '</span><span class="folder-name">'
+            + _musicFolderIconHtml(f.folder, f.name, isAll, 'folder-icon') + '<span class="folder-name">'
             + esc(f.name) + '</span>'
             + (isLink ? '<span class="folder-link-badge" title="Library link">&#128279;</span>' : '')
             + '</div>';
@@ -3502,6 +3653,7 @@ function _toVideoFolderRow(folder, searching, idx) {
   return {
     isFolderRow: true,
     isLink: !!folder.isLink,
+    virtualPath: folder.virtualPath || '',
     displayName: rawName,
     folderDisplayName: parsed.title,
     folderDisplayYear: parsed.year,
@@ -3529,12 +3681,13 @@ function _videoFolderCardHtml(f) {
   const folderNameJs = jsStr(folderName);
   const folderDirJs = jsStr(f.folderDir || '');
   const searchFolderJs = jsStr(f.searchFolder || folderName);
+  const virtualPathJs = jsStr(f.virtualPath || '');
   const folderCtx = f.searching
     ? '_showFolderCtxMenu(event,null,\'' + searchFolderJs + '\',true)'
     : '_showFolderCtxMenu(event,\'' + folderDirJs + '\',\'' + folderNameJs + '\',false)';
   const action = f.searching
     ? 'searchLibrary(\'' + searchFolderJs + '\')'
-    : 'browse(\'' + folderDirJs + '\',0,false,true,' + (f.isLink ? 'true' : 'false') + ')';
+    : 'browse(\'' + folderDirJs + '\',0,false,true,' + (f.isLink ? 'true' : 'false') + ',\'' + virtualPathJs + '\')';
   const folderInfoParts = [];
   if (folderYear) folderInfoParts.push('Year ' + folderYear);
   folderInfoParts.push(f.isLink ? 'Linked folder' : 'Folder');
@@ -3757,6 +3910,16 @@ function render(data, searching) {
       })
       .join('');
   }
+  if (typeof _setViewModeScope === 'function') {
+    if (searching) {
+      _setViewModeScope('video', 2, 'Search results');
+    } else if (data.breadcrumbs && data.breadcrumbs.length) {
+      const last = data.breadcrumbs[data.breadcrumbs.length - 1];
+      _setViewModeScope('video', data.breadcrumbs.length, (last && last.name) || 'Video Root');
+    } else {
+      _setViewModeScope('video', 1, 'Video Root');
+    }
+  }
   _videoRenderBreadcrumbTokens(searching, data);
   const videoFolderCount = data.folders?.length || 0;
   const videoFileCount = data.files?.length || 0;
@@ -3869,6 +4032,7 @@ function _renderVideoFileRows(files) {
         const folderNameJs = jsStr(folderName);
         const folderDirJs = jsStr(f.folderDir || '');
         const searchFolderJs = jsStr(f.searchFolder || folderName);
+        const virtualPathJs = jsStr(f.virtualPath || '');
         const linkBadgeInline = f.isLink ? ' <span class="folder-link-badge" title="Library link">🔗</span>' : '';
         const titleCol = '<div class="vlc-title"><span class="vlc-title-text"><span class="vlc-folder-emoji">&#128193;</span>' + esc(folderName) + linkBadgeInline + '</span></div>';
         const folderCtx = f.searching
@@ -3876,7 +4040,7 @@ function _renderVideoFileRows(files) {
           : '_showFolderCtxMenu(event,\'' + folderDirJs + '\',\'' + folderNameJs + '\',false)';
         const action = f.searching
           ? 'searchLibrary(\'' + searchFolderJs + '\')'
-          : 'browse(\'' + folderDirJs + '\',0,false,true,' + (f.isLink ? 'true' : 'false') + ')';
+          : 'browse(\'' + folderDirJs + '\',0,false,true,' + (f.isLink ? 'true' : 'false') + ',\'' + virtualPathJs + '\')';
 
         return '<div class="movie-card video-folder-row' + (f.isLink ? ' video-folder-row-link' : '') + (rowIndex % 2 === 1 ? ' alt-row' : '') + '" id="' + cardIdFor(f.rowKey) + '" data-path="' + esc(f.rowKey) + '" role="button" tabindex="0" aria-label="Open ' + folderTypeText + ' ' + esc(folderName) + '" onclick="' + action + '" onkeydown="activateKeyboardClick(event,this)" oncontextmenu="' + folderCtx + '">' +
           titleCol + '<div class="vlc-progress"></div><div class="vlc-year">' + esc(folderYear) + '</div><div class="vlc-ext"></div><div class="vlc-duration"></div><div class="vlc-cb"></div>' +
@@ -4308,6 +4472,8 @@ function endCardHold() {
   cardHoldTimer = null;
 }
 async function play(p, name) {
+  await _stopAllPlaybackForNewStart();
+
   const title = name || '';
   playingPath = p;
   setStatus(title ? 'Playing: ' + title : 'Playing...');
@@ -4319,7 +4485,7 @@ async function play(p, name) {
     queuedVideos.delete(p);
     setQueuedCard(p, false);
   }
-  await api('/api/play?path=' + encodeURIComponent(p));
+  await api('/api/video/play?path=' + encodeURIComponent(p));
   setTimeout(() => loadRecent().then((files) => renderRecent(files)), 300);
   startSse();
   await pollStatus();
@@ -4758,6 +4924,8 @@ window.addEventListener('pageshow', (e) => {
 // advanced and the poll is restarted if needed.
 async function _onPageVisible() {
   if (isPlayLocal()) return; // local audio is handled by the browser itself
+  if (currentMode !== 'music') return;
+
   try {
     const res = await fetch('/api/music/status');
     if (!res.ok) return;
@@ -4856,6 +5024,11 @@ function _bootstrapFromRoute() {
       browseMusic(null);
       return;
     }
+    if (savedMode === 'podcasts') {
+      console.log('[BOOTSTRAP] Switching to podcasts mode');
+      switchMode('podcasts', true);
+      return;
+    }
     if (savedMode === 'radio') {
       console.log('[BOOTSTRAP] Switching to radio mode');
       switchMode('radio', true);
@@ -4897,6 +5070,15 @@ function _bootstrapFromRoute() {
     const folderToLoad = route.folderPath || null;
     console.log('[BOOTSTRAP] Loading music folder:', folderToLoad);
     browseMusic(folderToLoad);
+    return;
+  }
+
+  if (route.mode === 'podcasts') {
+    console.log('[BOOTSTRAP] Switching to podcasts mode (from URL)');
+    switchMode('podcasts', true);
+    if (typeof podcastApplyRouteFromUrl === 'function') {
+      podcastApplyRouteFromUrl().catch(() => {});
+    }
     return;
   }
 
@@ -5083,7 +5265,7 @@ async function syncToPeer(peerUrl) {
     }
     const base = peerUrl.replace(/\/$/, '');
     // Play the same file on the peer
-    await fetch(`${base}/api/play?` + new URLSearchParams({ path: s.filePath }));
+    await fetch(`${base}/api/video/play?` + new URLSearchParams({ path: s.filePath }));
     // Allow the peer a moment to start, then seek to match our position
     await new Promise((r) => setTimeout(r, 800));
     await fetch(`${base}/api/seek?` + new URLSearchParams({ position: String(Math.round(s.position)) }));
@@ -5548,6 +5730,10 @@ async function _openDynamicFolder(encodedPath, name) {
           span.replaceWith(a);
         }
       }
+    }
+    if (typeof _setViewModeScope === 'function') {
+      const level = bc ? Math.max(1, bc.querySelectorAll('a, .crumb-current').length) : 2;
+      _setViewModeScope('music', level, 'Dynamic ' + dynamicName);
     }
 
     // Wire back button to return to the real previous folder

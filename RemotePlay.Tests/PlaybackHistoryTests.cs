@@ -121,6 +121,7 @@ public sealed class PlaybackHistoryTests
         var prefs = new MoviePlaybackPreferences
         {
             Brightness = 0.8,
+            Sharpness = 0.35,
             Saturation = 1.2,
             Zoom = 1.5,
             ForceSwAudio = true
@@ -131,6 +132,7 @@ public sealed class PlaybackHistoryTests
 
         Assert.NotNull(result);
         Assert.Equal(0.8, result.Brightness);
+        Assert.Equal(0.35, result.Sharpness);
         Assert.Equal(1.2, result.Saturation);
         Assert.Equal(1.5, result.Zoom);
         Assert.True(result.ForceSwAudio);

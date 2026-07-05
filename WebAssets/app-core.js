@@ -223,7 +223,7 @@ function _decodeRouteFolder(friendlyPath, breadcrumbs) {
 }
 
 function _buildUiRoute(mode, folderPath = null) {
-  const routeMode = mode === 'music' || mode === 'radio' || mode === 'live-tv' ? mode : 'video';
+  const routeMode = mode === 'music' || mode === 'podcasts' || mode === 'radio' || mode === 'live-tv' ? mode : 'video';
   let path = routeMode === 'live-tv' ? '/LiveTV' : '/' + routeMode;
   if (folderPath && (routeMode === 'video' || routeMode === 'music')) {
     const token = _encodeRouteFolder(folderPath);
@@ -252,7 +252,7 @@ function _parseInitialUiRoute() {
 
   const rawMode = parts[0].toLowerCase();
   const mode = rawMode === 'livetv' ? 'live-tv' : rawMode;
-  if (mode !== 'video' && mode !== 'music' && mode !== 'radio' && mode !== 'live-tv') {
+  if (mode !== 'video' && mode !== 'music' && mode !== 'podcasts' && mode !== 'radio' && mode !== 'live-tv') {
     console.log('[ROUTE] Unknown mode:', mode, '- defaulting to video');
     return { hasExplicitRoute: false, mode: 'video', folderPath: null };
   }
@@ -308,22 +308,103 @@ let statusFailures = 0;
 let cardHoldTimer = null,
   cardHoldOpened = false;
 let zoomDragging = false;
+let sharpnessDragging = false;
 let pendingSearchAbort = null;
 let thumbnailObserver = null;
+let _lastHandledWebUiNavigateId = 0;
+
+async function _applyPendingWebUiNavigation(status) {
+  const navId = Number(status?.webUiNavigateId ?? status?.WebUiNavigateId ?? 0);
+  const folderPath = status?.webUiNavigateFolderPath ?? status?.WebUiNavigateFolderPath ?? '';
+  if (!navId || !folderPath || navId === _lastHandledWebUiNavigateId)
+    return;
+
+  _lastHandledWebUiNavigateId = navId;
+
+  try {
+    if (typeof switchMode === 'function' && currentMode !== 'video')
+      switchMode('video', true);
+
+    if (typeof browse === 'function' && typeof _encodePath === 'function') {
+      const encodedFolder = _encodePath(folderPath);
+      await browse(encodedFolder, 0, false, false);
+    }
+  } catch (e) {
+    console.warn('[WEBUI-NAV] failed to apply navigation command', e);
+  }
+}
+
+function _viewModeStorageBaseKey(section) {
+  return section === 'live-tv'
+    ? 'remotePlayViewLiveTv'
+    : 'remotePlayView' + section.charAt(0).toUpperCase() + section.slice(1);
+}
+
+function _normalizeViewMode(value) {
+  return value === 'list' ? 'list' : 'grid';
+}
+
+function _sanitizeViewScopeName(name) {
+  const clean = String(name || '')
+    .replace(/\s+/g, ' ')
+    .replace(/[<>:"/\\|?*]/g, '')
+    .trim();
+  return clean || 'Root';
+}
+
+function _buildViewScopeKey(level, name) {
+  const lvl = Math.max(1, Number(level) || 1);
+  return String(lvl) + _sanitizeViewScopeName(name);
+}
+
+function _readScopedViewMode(section, scopeKey) {
+  const baseKey = _viewModeStorageBaseKey(section);
+  if (scopeKey) {
+    const scoped = localStorage.getItem(baseKey + ':' + scopeKey);
+    if (scoped === 'grid' || scoped === 'list') return scoped;
+  }
+  const legacy = localStorage.getItem(baseKey);
+  return _normalizeViewMode(legacy);
+}
+
+const _viewModeScope = {
+  video: _buildViewScopeKey(1, 'Video Root'),
+  music: _buildViewScopeKey(1, 'Music Root'),
+  podcasts: _buildViewScopeKey(1, 'Podcasts'),
+  radio: _buildViewScopeKey(1, 'Radio Root'),
+  'live-tv': _buildViewScopeKey(1, 'Live TV Root'),
+};
 
 // View mode: 'grid' or 'list' per section, persisted in localStorage
 const _viewMode = {
-  video: localStorage.getItem('remotePlayViewVideo') || 'grid',
-  music: localStorage.getItem('remotePlayViewMusic') || 'grid',
-  radio: localStorage.getItem('remotePlayViewRadio') || 'grid',
-  'live-tv': localStorage.getItem('remotePlayViewLiveTv') || 'grid',
+  video: _readScopedViewMode('video', _viewModeScope.video),
+  music: _readScopedViewMode('music', _viewModeScope.music),
+  podcasts: _readScopedViewMode('podcasts', _viewModeScope.podcasts),
+  radio: _readScopedViewMode('radio', _viewModeScope.radio),
+  'live-tv': _readScopedViewMode('live-tv', _viewModeScope['live-tv']),
 };
+
+function _setViewModeScope(section, level, name) {
+  const scopeKey = _buildViewScopeKey(level, name);
+  if (_viewModeScope[section] === scopeKey) return;
+  _viewModeScope[section] = scopeKey;
+  _viewMode[section] = _readScopedViewMode(section, scopeKey);
+}
+
+function _setViewModeScopeFromSegments(section, segments) {
+  const list = Array.isArray(segments) ? segments.filter((s) => String(s || '').trim().length > 0) : [];
+  const level = list.length || 1;
+  const name = list.length ? list[list.length - 1] : 'Root';
+  _setViewModeScope(section, level, name);
+}
+
 function _setViewMode(section, mode) {
-  _viewMode[section] = mode;
-  const storageKey = section === 'live-tv'
-    ? 'remotePlayViewLiveTv'
-    : 'remotePlayView' + section.charAt(0).toUpperCase() + section.slice(1);
-  localStorage.setItem(storageKey, mode);
+  const normalized = _normalizeViewMode(mode);
+  _viewMode[section] = normalized;
+  const storageKey = _viewModeStorageBaseKey(section);
+  const scopeKey = _viewModeScope[section];
+  if (scopeKey) localStorage.setItem(storageKey + ':' + scopeKey, normalized);
+  localStorage.setItem(storageKey, normalized);
   _applyViewToggleBtn(section);
   if (section === 'video' && currentData) {
     if (typeof _applyVcbViewBtn === 'function') _applyVcbViewBtn();
@@ -334,6 +415,8 @@ function _setViewMode(section, mode) {
   } else if (section === 'radio') {
     if (typeof _syncRadioCommandBar === 'function') _syncRadioCommandBar();
     renderRadioCards(_radioStations, _radioStations.length === _radioPageSize * (_radioPage + 1));
+  } else if (section === 'podcasts') {
+    if (typeof _renderPodcastsCurrentView === 'function') _renderPodcastsCurrentView();
   } else if (section === 'live-tv') {
     if (typeof _syncLiveTvCommandBar === 'function') _syncLiveTvCommandBar();
     if (typeof renderLiveTvCards === 'function') renderLiveTvCards();
@@ -489,9 +572,10 @@ function togglePlayLocal() {
 }
 // Apply saved state on load
 document.addEventListener('DOMContentLoaded', () => {
-  // Always start in server mode — local is a session gesture, not a persisted preference.
-  localStorage.setItem('remotePlayLocal', 'false');
-  setPlayLocal(false);
+  // Restore user's last selected playback mode (server/local).
+  // Local playback still requires a user gesture when starting media.
+  const savedLocalMode = localStorage.getItem('remotePlayLocal') === 'true';
+  setPlayLocal(savedLocalMode);
 
   // On load, switch to whichever domain is currently playing on this server instance.
   // This means navigating to an instance always lands on the active player, not the default tab.
@@ -844,6 +928,7 @@ async function pollStatus() {
       return null;
     }
     const s = await res.json();
+    await _applyPendingWebUiNavigation(s);
     statusFailures = 0;
     setConnectionStatus('Connected', false, true);
     updateDiagnosticsIndicator(s.lastError ? 'error' : 'ok');
@@ -934,8 +1019,14 @@ async function pollStatus() {
       );
       document.getElementById('saturation').value = saturation;
       document.getElementById('saturation-label').textContent = Math.round(saturation * 100) + '%';
+      const rawSharpness = Number(s.sharpness);
+      const sharpness = Math.max(0, Math.min(1, Number.isFinite(rawSharpness) ? rawSharpness : 0));
+      if (!sharpnessDragging) {
+        document.getElementById('sharpness').value = sharpness;
+        document.getElementById('sharpness-label').textContent = Math.round(sharpness * 100) + '%';
+      }
       const rawZoom = Number(s.zoom);
-      const zoom = Math.max(1, Math.min(2, Number.isFinite(rawZoom) ? rawZoom : 1));
+      const zoom = Math.max(0.5, Math.min(2, Number.isFinite(rawZoom) ? rawZoom : 1));
       if (!zoomDragging) {
         document.getElementById('zoom').value = zoom;
         document.getElementById('zoom-label').textContent = Math.round(zoom * 100) + '%';

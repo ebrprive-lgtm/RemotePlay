@@ -36,7 +36,7 @@ public sealed class WebAssetRegressionTests
     {
         var appJs = ReadConcatenatedAppJs();
 
-        Assert.Contains("/api/play?path=", appJs, StringComparison.Ordinal);
+        Assert.Contains("/api/video/play?path=", appJs, StringComparison.Ordinal);
     }
 
     [Fact]
