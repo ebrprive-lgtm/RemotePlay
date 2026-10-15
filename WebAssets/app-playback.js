@@ -187,6 +187,7 @@ async function toggleAudioBoostMute() {
 }
 async function setBrightness(value) {
   const brightness = Math.max(0.3, Math.min(0.7, parseFloat(value) || 0.5));
+  brightnessPendingUntil = Date.now() + 1500;
   document.getElementById('brightness').value = brightness.toFixed(2);
   document.getElementById('brightness-label').textContent = Math.round(brightness * 100) + '%';
   await api('/api/brightness?value=' + encodeURIComponent(brightness.toFixed(2)));
@@ -194,11 +195,13 @@ async function setBrightness(value) {
 async function setSaturation(value) {
   const parsed = parseFloat(value);
   const saturation = Math.max(0, Math.min(2, Number.isFinite(parsed) ? parsed : 1));
+  saturationPendingUntil = Date.now() + 1500;
   document.getElementById('saturation').value = saturation.toFixed(2);
   document.getElementById('saturation-label').textContent = Math.round(saturation * 100) + '%';
   await api('/api/saturation?value=' + encodeURIComponent(saturation.toFixed(2)));
 }
 async function setSharpness(value) {
+  sharpnessPendingUntil = Date.now() + 1500;
   setSharpnessPreview(value);
 
   const sharpness = parseFloat(document.getElementById('sharpness').value);
@@ -229,6 +232,7 @@ function setZoomPreview(value) {
   document.getElementById('zoom-label').textContent = Math.round(zoom * 100) + '%';
 }
 async function commitZoom(value) {
+  zoomPendingUntil = Date.now() + 1500;
   setZoomPreview(value);
   await api(
     '/api/zoom?value=' +

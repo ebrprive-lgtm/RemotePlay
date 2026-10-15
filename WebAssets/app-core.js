@@ -309,6 +309,10 @@ let cardHoldTimer = null,
   cardHoldOpened = false;
 let zoomDragging = false;
 let sharpnessDragging = false;
+let brightnessPendingUntil = 0;
+let saturationPendingUntil = 0;
+let sharpnessPendingUntil = 0;
+let zoomPendingUntil = 0;
 let pendingSearchAbort = null;
 let thumbnailObserver = null;
 let _lastHandledWebUiNavigateId = 0;
@@ -1052,24 +1056,28 @@ async function pollStatus() {
         }
       }
       const brightness = Math.max(0.3, Math.min(0.7, Number(s.brightness) || 0.5));
-      document.getElementById('brightness').value = brightness;
-      document.getElementById('brightness-label').textContent = Math.round(brightness * 100) + '%';
+      if (Date.now() >= brightnessPendingUntil) {
+        document.getElementById('brightness').value = brightness;
+        document.getElementById('brightness-label').textContent = Math.round(brightness * 100) + '%';
+      }
       const rawSaturation = Number(s.saturation);
       const saturation = Math.max(
         0,
         Math.min(2, Number.isFinite(rawSaturation) ? rawSaturation : 1)
       );
-      document.getElementById('saturation').value = saturation;
-      document.getElementById('saturation-label').textContent = Math.round(saturation * 100) + '%';
+      if (Date.now() >= saturationPendingUntil) {
+        document.getElementById('saturation').value = saturation;
+        document.getElementById('saturation-label').textContent = Math.round(saturation * 100) + '%';
+      }
       const rawSharpness = Number(s.sharpness);
       const sharpness = Math.max(0, Math.min(1, Number.isFinite(rawSharpness) ? rawSharpness : 0));
-      if (!sharpnessDragging) {
+      if (!sharpnessDragging && Date.now() >= sharpnessPendingUntil) {
         document.getElementById('sharpness').value = sharpness;
         document.getElementById('sharpness-label').textContent = Math.round(sharpness * 100) + '%';
       }
       const rawZoom = Number(s.zoom);
       const zoom = Math.max(0.5, Math.min(2, Number.isFinite(rawZoom) ? rawZoom : 1));
-      if (!zoomDragging) {
+      if (!zoomDragging && Date.now() >= zoomPendingUntil) {
         document.getElementById('zoom').value = zoom;
         document.getElementById('zoom-label').textContent = Math.round(zoom * 100) + '%';
       }

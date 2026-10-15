@@ -141,6 +141,36 @@ public sealed class WebServerIndexTests : IDisposable
         Assert.Single(result);
     }
 
+    // ── FindIndexedFilePathByName ─────────────────────────────────────────────
+
+    [Fact]
+    public void FindIndexedFilePathByName_EmptyIndex_ReturnsNull()
+    {
+        var result = _server.FindIndexedFilePathByName("film.mp4");
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void FindIndexedFilePathByName_MatchingFile_ReturnsFilePath()
+    {
+        SeedIndex([MakeFile(@"C:\Movies\Action\film.mp4")]);
+
+        var result = _server.FindIndexedFilePathByName("film.mp4");
+
+        Assert.Equal(@"C:\Movies\Action\film.mp4", result);
+    }
+
+    [Fact]
+    public void FindIndexedFilePathByName_IsCaseInsensitive()
+    {
+        SeedIndex([MakeFile(@"C:\Movies\Action\Film.mp4")]);
+
+        var result = _server.FindIndexedFilePathByName("film.mp4");
+
+        Assert.Equal(@"C:\Movies\Action\Film.mp4", result);
+    }
+
     // ── GetIndexedPathSet ────────────────────────────────────────────────────
 
     [Fact]

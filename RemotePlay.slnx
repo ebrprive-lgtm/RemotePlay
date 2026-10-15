@@ -2,4 +2,5 @@
   <Project Path="BenchmarkSuite1/BenchmarkSuite1.csproj" />
   <Project Path="RemotePlay.csproj" />
   <Project Path="RemotePlay.Tests/RemotePlay.Tests.csproj" />
+  <Project Path="RemotePlay.VideoPlayer/RemotePlay.VideoPlayer.csproj" />
 </Solution>

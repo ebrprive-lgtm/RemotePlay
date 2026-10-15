@@ -215,6 +215,9 @@ public partial class MainWindow : Window
             _lyricsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
             _lyricsTimer.Tick += (_, _) => TickLyricsOverlay();
 
+            // Initialize video player health monitoring
+            InitializeVideoPlayerMonitoring();
+
             _musicPlayer.TrackAdvanced += _ => { if (_isVideoMode) Dispatcher.InvokeAsync(ShowIdleOverlay); };
             _mediaPlayer.Playing += OnMediaPlaying;
             _mediaPlayer.EndReached += OnMediaEnded;
@@ -667,6 +670,11 @@ public partial class MainWindow : Window
         _trayIcon?.Dispose();
         _videoOverlay?.Dispose();
         _videoOverlay = null;
+
+        // Dispose isolated video player process
+        _videoPlayerManager?.Dispose();
+        _videoPlayerManager = null;
+
         _mediaPlayer.Dispose();
         _musicPlayer.Dispose();
         _radioPlayer.Dispose();
@@ -3634,72 +3642,61 @@ public partial class MainWindow : Window
 
     // ── Auto-heal broken link (#2) ────────────────────────────────────
 
-    private void OnBrowserAutoHeal(object sender, RoutedEventArgs e)
+    private async void OnBrowserAutoHeal(object sender, RoutedEventArgs e)
     {
         var (browser, _, _, isLeft) = GetBrowserContext(sender);
 
-        var links = browser.SelectedItems
+        var linkPaths = browser.SelectedItems
             .OfType<BrowserEntry>()
             .Where(x => x.IsLink && x.IsBroken)
+            .Select(x => x.FullPath)
             .ToList();
 
-        if (links.Count == 0) return;
+        if (linkPaths.Count == 0) return;
 
-        var root = _config.ResolvedMoviesPath;
-        if (!Directory.Exists(root)) return;
-
-        var failed = 0;
-        var rewrote = 0;
-
-        var lastError = string.Empty;
-
-        foreach (var link in links)
+        var webServer = _webServer;
+        var (rewrote, failed, lastError) = await Task.Run(() =>
         {
-            try
+            var failed = 0;
+            var rewrote = 0;
+            var lastError = string.Empty;
+
+            foreach (var linkPath in linkPaths)
             {
-
-                var targetRaw = RplinkHelper.TryReadTargetRaw(link.FullPath) ?? string.Empty;
-                var searchName = Path.GetFileName(targetRaw);
-
-                if (string.IsNullOrEmpty(searchName))
-                {
-                    failed++;
-                    continue;
-                }
-
-                string? found = null;
                 try
                 {
-                    found = Directory
-                        .EnumerateFiles(root, searchName, SearchOption.AllDirectories)
-                        .FirstOrDefault(f => !RplinkHelper.IsRplinkFile(f));
+                    var targetRaw = RplinkHelper.TryReadTargetRaw(linkPath) ?? string.Empty;
+                    var searchName = Path.GetFileName(targetRaw);
+
+                    if (string.IsNullOrEmpty(searchName))
+                    {
+                        failed++;
+                        continue;
+                    }
+
+                    var found = webServer?.FindIndexedFilePathByName(searchName);
+
+                    if (found is null)
+                    {
+                        failed++;
+                        continue;
+                    }
+
+                    var stored = RplinkHelper.MakeRelativeIfPossible(linkPath, found);
+                    RplinkHelper.Create(linkPath, stored);
+                    webServer?.IndexAddOrUpdateFile(linkPath);
+                    rewrote++;
                 }
                 catch (Exception ex)
                 {
                     failed++;
-                    continue;
+                    lastError = ex.Message;
                 }
-
-                if (found is null)
-                {
-                    failed++;
-                    continue;
-                }
-
-                var stored = RplinkHelper.MakeRelativeIfPossible(link.FullPath, found);
-                RplinkHelper.Create(link.FullPath, stored);
-                _webServer?.IndexAddOrUpdateFile(link.FullPath);
-                rewrote++;
-                
-            }
-            catch (Exception ex) 
-            { 
-                failed++; 
-                lastError = ex.Message; 
             }
 
+            return (rewrote, failed, lastError);
+        });
 
-        }
         RefreshBrowser(isLeft);
 
         var msg = rewrote > 0

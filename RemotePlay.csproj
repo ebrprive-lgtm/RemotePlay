@@ -25,6 +25,9 @@
     <None Remove="RemotePlay.Tests\**" />
     <Compile Remove="BenchmarkSuite1\**\*.cs" />
     <None Remove="BenchmarkSuite1\**" />
+    <Compile Remove="RemotePlay.VideoPlayer\**\*.cs" />
+    <Page Remove="RemotePlay.VideoPlayer\**\*.xaml" />
+    <ApplicationDefinition Remove="RemotePlay.VideoPlayer\**\*.xaml" />
   </ItemGroup>
 
   <ItemGroup>
@@ -39,6 +42,11 @@
     <Content Include="WebAssets\*.*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+
+    <!-- Link to IPC contracts from VideoPlayer project -->
+    <Compile Include="RemotePlay.VideoPlayer\Ipc\IpcContracts.cs">
+      <Link>Services\Ipc\IpcContracts.cs</Link>
+    </Compile>
   </ItemGroup>
 
   <ItemGroup>
@@ -52,6 +60,10 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.7" />
     <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.23.1" />
     <None Include=".github\copilot-instructions.md" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="Services\Ipc\" />
   </ItemGroup>
 
 </Project>

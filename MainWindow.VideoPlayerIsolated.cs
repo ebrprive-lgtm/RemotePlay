@@ -1,0 +1,343 @@
+using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
+using RemotePlay.VideoPlayer.Ipc;
+
+namespace RemotePlay;
+
+/// <summary>
+/// Video Playback via Isolated Process
+/// </summary>
+public partial class MainWindow
+{
+    private readonly SemaphoreSlim _videoPlaybackStartLock = new(1, 1);
+
+    private async void PlayMovieIsolated(string filePath)
+    {
+        await _videoPlaybackStartLock.WaitAsync();
+        try
+        {
+            AppendLog($"[Video] PlayMovieIsolated: {System.IO.Path.GetFileName(filePath)}");
+            StopCompetingPlaybackBeforeVideoStart();
+            RestoreWindowForPlayback();
+
+            // Ensure video player process is running (semaphore inside StartAsync prevents double-launch)
+            if (_videoPlayerManager is null || !_videoPlayerManager.IsProcessRunning || !_videoPlayerManager.IsConnected)
+            {
+                AppendLog($"[Video] Manager state: null={_videoPlayerManager is null} running={_videoPlayerManager?.IsProcessRunning} connected={_videoPlayerManager?.IsConnected}");
+                _videoPlayerManager?.Dispose();
+                _videoPlayerManager = new Services.VideoPlayerProcessManager(AppendLog);
+
+                var displayIndex = GetTargetDisplayIndex();
+                AppendLog($"[Video] Launching VideoPlayer process (display={displayIndex})...");
+
+                // Keep synchronous process and pipe startup away from the UI and normal
+                // thread pool, which LibVLC may occupy while its native components load.
+                var started = await Task.Factory.StartNew(
+                    () => _videoPlayerManager.StartAsync(displayIndex).GetAwaiter().GetResult(),
+                    System.Threading.CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default);
+
+                AppendLog($"[Video] StartAsync returned: {started}");
+
+                if (!started)
+                {
+                    AppendLog("[Video] ERROR: Failed to start video player process");
+                    return;
+                }
+
+                StartVideoPlayerHealthMonitoring();
+            }
+            else
+            {
+                AppendLog("[Video] Reusing existing VideoPlayer process");
+            }
+
+            // Prepare playback state
+            _isPaused = false;
+            _lastPlaybackError = string.Empty;
+            _currentFilePath = filePath;
+            RefreshAdjacentVideoCache(filePath);
+            _pendingResumePosition = null;
+            _smartResumeApplied = false;
+            _duration = TimeSpan.Zero;
+            _positionMs = 0;
+            _positionBaseMs = 0;
+            _positionClockStartedUtc = null;
+            _lastSubtitleTrackId = null;
+            _lastAudioTrackId = null;
+            _preferredSubtitleApplied = false;
+            _zoom = 1;
+            _forceSwAudio = false;
+
+            ApplyStoredMoviePreferences(filePath);
+            BeginVideoTransition();
+
+            // Find subtitle file
+            string? subtitlePath = FindSubtitleFile(filePath);
+
+            // Build play command
+            var playCmd = new PlayCommand
+            {
+                MessageType = nameof(PlayCommand),
+                FilePath = filePath,
+                StartPositionSeconds = 0,
+                Volume = _volume,
+                Brightness = _brightness,
+                Saturation = _saturation,
+                Sharpness = _sharpness,
+                Zoom = _zoom,
+                AudioBoost = _audioBoost,
+                PlaybackSpeed = _playbackSpeed,
+                SubtitlesEnabled = _subtitlesEnabled,
+                PreferredAudioTrack = _lastAudioTrackId,
+                PreferredSubtitleTrack = _lastSubtitleTrackId,
+                TargetDisplayIndex = GetTargetDisplayIndex(),
+                SubtitleFilePath = subtitlePath,
+                EqPreset = _currentEqPreset,
+                ReverbPreset = _currentReverbPreset,
+                ForceSwAudio = _forceSwAudio
+            };
+
+            // Send play command off the UI thread (pipe write should not block UI)
+            AppendLog($"[Video] Sending PlayCommand: {System.IO.Path.GetFileName(filePath)} pos=0");
+            var playAccepted = await Task.Run(() => _videoPlayerManager.SendPlayCommandAsync(playCmd));
+            if (!playAccepted)
+                throw new InvalidOperationException("The isolated video player did not acknowledge the playback request.");
+
+            AppendLog("[Video] PlayCommand acknowledged");
+
+            StopPositionClock(0);
+            _historyTimer.Start();
+            AppendLog($"Playing: {Path.GetFileName(filePath)}");
+            Logger.Info($"[Video Isolated] Playing: {filePath}");
+
+            // Auto-switch to video mode
+            if (!_isVideoMode)
+                OnToggleView(this, new RoutedEventArgs());
+            else
+                EnsureFullscreenWindowBounds();
+
+            // Complete video transition
+            CompleteVideoTransition();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[Video Isolated] Error starting playback", ex);
+            AppendLog($"[Video] ERROR: {ex.Message}");
+        }
+        finally
+        {
+            _videoPlaybackStartLock.Release();
+        }
+    }
+
+    private string? FindSubtitleFile(string videoPath)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(videoPath);
+            if (string.IsNullOrEmpty(dir))
+                return null;
+
+            var nameWithoutExt = Path.GetFileNameWithoutExtension(videoPath);
+
+            foreach (var ext in SubtitleExtensions)
+            {
+                var subtitlePath = Path.Combine(dir, nameWithoutExt + ext);
+                if (File.Exists(subtitlePath))
+                {
+                    Logger.Info($"[Video] Found subtitle: {Path.GetFileName(subtitlePath)}");
+                    return subtitlePath;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[Video] Subtitle search error", ex);
+        }
+
+        return null;
+    }
+
+    private int GetTargetDisplayIndex()
+    {
+        // For now, use primary display (index 0)
+        // TODO: Respect user's display preference from config
+        return 0;
+    }
+
+    private async void PauseVideoIsolated()
+    {
+        if (_videoPlayerManager is null)
+            return;
+
+        try
+        {
+            await _videoPlayerManager.SendPauseAsync();
+            _isPaused = true;
+            AppendLog("[Video] Paused");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[Video] Pause error", ex);
+        }
+    }
+
+    private async void ResumeVideoIsolated()
+    {
+        if (_videoPlayerManager is null)
+            return;
+
+        try
+        {
+            await _videoPlayerManager.SendResumeAsync();
+            _isPaused = false;
+            AppendLog("[Video] Resumed");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[Video] Resume error", ex);
+        }
+    }
+
+    private async void StopVideoIsolated()
+    {
+        if (_videoPlayerManager is null)
+            return;
+
+        try
+        {
+            await _videoPlayerManager.SendStopAsync();
+            _currentFilePath = null;
+            _isPaused = false;
+            _historyTimer.Stop();
+            StopVideoPlayerHealthMonitoring();
+            AppendLog("[Video] Stopped");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[Video] Stop error", ex);
+        }
+    }
+
+    private async void SeekVideoIsolated(double positionSeconds)
+    {
+        if (_videoPlayerManager is null)
+            return;
+
+        try
+        {
+            await _videoPlayerManager.SendSeekAsync(positionSeconds);
+            _positionMs = (long)(positionSeconds * 1000);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[Video] Seek error", ex);
+        }
+    }
+
+    private async void UpdateVideoVolumeIsolated()
+    {
+        if (_videoPlayerManager is null)
+            return;
+
+        try
+        {
+            await _videoPlayerManager.SendSetVolumeAsync(_volume);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[Video] Volume update error", ex);
+        }
+    }
+
+    private async void UpdateVideoBrightnessIsolated()
+    {
+        if (_videoPlayerManager is null)
+            return;
+
+        try
+        {
+            await _videoPlayerManager.SendSetBrightnessAsync(_brightness);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[Video] Brightness update error", ex);
+        }
+    }
+
+    private async void UpdateVideoSaturationIsolated()
+    {
+        if (_videoPlayerManager is null)
+            return;
+
+        try
+        {
+            await _videoPlayerManager.SendSetSaturationAsync(_saturation);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[Video] Saturation update error", ex);
+        }
+    }
+
+    private async void UpdateVideoSharpnessIsolated()
+    {
+        if (_videoPlayerManager is null)
+            return;
+
+        try
+        {
+            await _videoPlayerManager.SendSetSharpnessAsync(_sharpness);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[Video] Sharpness update error", ex);
+        }
+    }
+
+    private async void UpdateVideoZoomIsolated()
+    {
+        if (_videoPlayerManager is null)
+            return;
+
+        try
+        {
+            await _videoPlayerManager.SendSetZoomAsync(_zoom);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[Video] Zoom update error", ex);
+        }
+    }
+
+    private async void UpdateVideoPlaybackSpeedIsolated()
+    {
+        if (_videoPlayerManager is null)
+            return;
+
+        try
+        {
+            await _videoPlayerManager.SendSetPlaybackSpeedAsync(_playbackSpeed);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("[Video] Playback speed update error", ex);
+        }
+    }
+
+    private void CompleteVideoTransition()
+    {
+        // Called after video starts playing to complete UI transition
+        Dispatcher.InvokeAsync(() =>
+        {
+            // Show video is active
+            if (FindName("IdleOverlay") is UIElement idleOverlay)
+                idleOverlay.Visibility = Visibility.Collapsed;
+        });
+    }
+}

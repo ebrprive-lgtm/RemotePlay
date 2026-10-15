@@ -15,6 +15,10 @@ public partial class MainWindow
     // -- Playback -------------------------------------------------------------
 
     private bool _isQuietRestartInProgress;
+    private string? _adjacentVideoCacheCurrentPath;
+    private string? _previousAdjacentVideoPath;
+    private string? _nextAdjacentVideoPath;
+    private int _adjacentVideoCacheRefreshInProgress;
 
     private void PlayNextQueuedMovie()
     {
@@ -100,6 +104,21 @@ public partial class MainWindow
     }
 
     private void PlayMovie(string filePath)
+    {
+        // Always marshal to the UI thread — callers may come from background threads
+        // (web server callbacks, queue timers, VLC event handlers, etc.)
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(() => PlayMovie(filePath));
+            return;
+        }
+
+        // Use isolated video player process to prevent crashes
+        PlayMovieIsolated(filePath);
+    }
+
+    // Legacy direct VLC playback (kept for reference, not used)
+    private void PlayMovieLegacy(string filePath)
     {
         Dispatcher.Invoke(() =>
         {
@@ -415,6 +434,18 @@ public partial class MainWindow
         {
             try
             {
+                // Check if isolated video player is running
+                if (_videoPlayerManager is not null && _videoPlayerManager.IsProcessRunning)
+                {
+                    SaveCurrentPlaybackPosition();
+                    StopVideoIsolated();
+                    ResetPlaybackState();
+                    AppendLog("Playback stopped");
+                    Logger.Info("[Video Isolated] Playback stopped");
+                    return;
+                }
+
+                // Legacy VLC player
                 var isActive = _mediaPlayer.Media is not null
                     && _mediaPlayer.State is not LibVLCSharp.Shared.VLCState.Stopped
                                          and not LibVLCSharp.Shared.VLCState.NothingSpecial
@@ -444,12 +475,32 @@ public partial class MainWindow
         {
             try
             {
+                // Check if isolated video player is running
+                if (_videoPlayerManager is not null && _videoPlayerManager.IsProcessRunning)
+                {
+                    if (_isPaused)
+                    {
+                        ResumeVideoIsolated();
+                        StartPositionClock(GetCurrentVideoPositionMilliseconds());
+                        ShowBanner();
+                    }
+                    else
+                    {
+                        StopPositionClock(GetCurrentVideoPositionMilliseconds());
+                        PauseVideoIsolated();
+                        ShowBanner();
+                        _bannerTimer.Stop();
+                    }
+                    AppendLog(_isPaused ? "Resumed" : "Paused");
+                    return;
+                }
+
+                // Legacy VLC player
                 if (_isPaused)
                 {
                     _mediaPlayer.Play();
                     _isPaused = false;
                     StartPositionClock(GetCurrentVideoPositionMilliseconds());
-                    // NowPlayingText removed - text is managed by ShowBanner
                     ShowBanner();
                 }
                 else
@@ -457,7 +508,6 @@ public partial class MainWindow
                     StopPositionClock(GetCurrentVideoPositionMilliseconds());
                     _mediaPlayer.Pause();
                     _isPaused = true;
-                    // NowPlayingText removed - text is managed by ShowBanner
                     ShowBanner();
                     _bannerTimer.Stop();
                 }
@@ -889,13 +939,27 @@ public partial class MainWindow
                 && _mediaPlayer.State is not VLCState.Stopped
                                        and not VLCState.NothingSpecial
                                        and not VLCState.Ended;
+            var isolatedStatus = _videoPlayerManager?.LastStatus;
+            var isolatedVideoActive = _videoPlayerManager is { IsProcessRunning: true, IsConnected: true }
+                && !string.IsNullOrEmpty(_currentFilePath);
+            var activeVideoPath = isolatedStatus?.CurrentFilePath ?? _currentFilePath;
+            var isolatedIsPlaying = isolatedStatus?.IsPlaying ?? !_isPaused;
+            var videoActive = vlcActive || isolatedVideoActive;
 
             // When VLC is idle, fall back to the music player so that sync can
             // read IsPlaying / FilePath / position during music-only playback.
-            var musicStatus = vlcActive ? null : _musicPlayer.GetStatus();
+            var musicStatus = videoActive ? null : _musicPlayer.GetStatus();
 
-            var positionSeconds = vlcActive ? GetCurrentVideoPositionSeconds() : Math.Max(0, musicStatus?.Position ?? 0);
-            var durationSeconds = vlcActive ? GetCurrentVideoDurationSeconds() : Math.Max(0, musicStatus?.Duration ?? 0);
+            var positionSeconds = vlcActive
+                ? GetCurrentVideoPositionSeconds()
+                : isolatedVideoActive
+                    ? Math.Max(0, isolatedStatus?.PositionSeconds ?? _positionMs / 1000d)
+                    : Math.Max(0, musicStatus?.Position ?? 0);
+            var durationSeconds = vlcActive
+                ? GetCurrentVideoDurationSeconds()
+                : isolatedVideoActive
+                    ? Math.Max(0, isolatedStatus?.DurationSeconds ?? _duration.TotalSeconds)
+                    : Math.Max(0, musicStatus?.Duration ?? 0);
             var webUiNavigateId = _pendingWebUiNavigateId;
             var webUiNavigateFolder = _pendingWebUiNavigateFolder ?? string.Empty;
             _pendingWebUiNavigateId = 0;
@@ -903,11 +967,15 @@ public partial class MainWindow
 
             result = new PlaybackStatus
             {
-                IsPlaying = vlcActive || (musicStatus?.IsPlaying ?? false),
-                IsPaused = vlcActive ? _isPaused : (musicStatus?.IsPaused ?? false),
+                IsPlaying = vlcActive || (isolatedVideoActive ? isolatedIsPlaying : (musicStatus?.IsPlaying ?? false)),
+                IsPaused = vlcActive
+                    ? _isPaused
+                    : isolatedVideoActive
+                        ? (isolatedStatus?.IsPaused ?? _isPaused)
+                        : (musicStatus?.IsPaused ?? false),
                 PositionSeconds = positionSeconds,
                 DurationSeconds = durationSeconds,
-                Title = _currentFilePath != null ? Path.GetFileNameWithoutExtension(_currentFilePath) : "",
+                Title = activeVideoPath != null ? Path.GetFileNameWithoutExtension(activeVideoPath) : "",
                 Volume = _volume,
                 IsMuted = _mediaPlayer.Mute,
                 LastError = _lastPlaybackError,
@@ -921,20 +989,20 @@ public partial class MainWindow
                 PlaybackSpeed = _playbackSpeed,
                 Zoom = _zoom,
                 SubtitlesEnabled = subtitlesEnabled,
-                HasSubtitles = hasSubtitles,
+                HasSubtitles = isolatedVideoActive ? isolatedStatus?.HasSubtitles ?? hasSubtitles : hasSubtitles,
                 AudioTracks = audioTracks,
                 SubtitleTracks = subtitleTracks,
-                CurrentAudioTrackId = currentAudioTrackId,
-                CurrentSubtitleTrackId = currentSubtitleTrackId,
+                CurrentAudioTrackId = isolatedVideoActive ? isolatedStatus?.CurrentAudioTrack ?? currentAudioTrackId : currentAudioTrackId,
+                CurrentSubtitleTrackId = isolatedVideoActive ? isolatedStatus?.CurrentSubtitleTrack ?? currentSubtitleTrackId : currentSubtitleTrackId,
                 PreviousTitle = GetAdjacentVideoTitle(-1),
                 NextTitle = GetAdjacentVideoTitle(1),
-                FilePath = vlcActive ? _currentFilePath : musicStatus?.CurrentPath,
+                FilePath = videoActive ? activeVideoPath : musicStatus?.CurrentPath,
                 Queue = GetPlaybackQueue(),
                 QueueCount = _playbackQueue.Count,
                 Chapters = chapters,
                 CurrentChapter = currentChapter,
-                EqPreset = vlcActive ? _currentEqPreset : (musicStatus?.EqPreset ?? _currentEqPreset),
-                ReverbPreset = vlcActive ? _currentReverbPreset : (musicStatus?.ReverbPreset ?? _currentReverbPreset),
+                EqPreset = videoActive ? _currentEqPreset : (musicStatus?.EqPreset ?? _currentEqPreset),
+                ReverbPreset = videoActive ? _currentReverbPreset : (musicStatus?.ReverbPreset ?? _currentReverbPreset),
                 WebUiNavigateId = webUiNavigateId,
                 WebUiNavigateFolderPath = webUiNavigateFolder
             };
@@ -1018,6 +1086,18 @@ public partial class MainWindow
             try
             {
                 var ms = (long)Math.Max(0, seconds * 1000);
+
+                // Check if isolated video player is running
+                if (_videoPlayerManager is not null && _videoPlayerManager.IsProcessRunning)
+                {
+                    SeekVideoIsolated(seconds);
+                    Interlocked.Exchange(ref _positionMs, ms);
+                    StartPositionClock(ms);
+                    _pendingResumePosition = null;
+                    return;
+                }
+
+                // Legacy VLC player
                 _mediaPlayer.Time = ms;
                 Interlocked.Exchange(ref _positionMs, ms);
                 StartPositionClock(ms);
@@ -1078,8 +1158,52 @@ public partial class MainWindow
 
     private string? GetAdjacentVideoTitle(int direction)
     {
-        var path = GetAdjacentVideoPath(direction);
+        var currentFilePath = _currentFilePath;
+        if (!string.Equals(_adjacentVideoCacheCurrentPath, currentFilePath, StringComparison.OrdinalIgnoreCase))
+        {
+            RefreshAdjacentVideoCache(currentFilePath);
+            return null;
+        }
+
+        var path = direction < 0 ? _previousAdjacentVideoPath : _nextAdjacentVideoPath;
         return string.IsNullOrWhiteSpace(path) ? null : Path.GetFileNameWithoutExtension(path);
+    }
+
+    private void RefreshAdjacentVideoCache(string? currentFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(currentFilePath)
+            || Interlocked.Exchange(ref _adjacentVideoCacheRefreshInProgress, 1) != 0)
+        {
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            string? previousPath = null;
+            string? nextPath = null;
+
+            try
+            {
+                previousPath = GetAdjacentVideoPath(currentFilePath, -1);
+                nextPath = GetAdjacentVideoPath(currentFilePath, 1);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+            finally
+            {
+                Dispatcher.BeginInvoke(() =>
+                {
+                    _adjacentVideoCacheCurrentPath = currentFilePath;
+                    _previousAdjacentVideoPath = previousPath;
+                    _nextAdjacentVideoPath = nextPath;
+                    Interlocked.Exchange(ref _adjacentVideoCacheRefreshInProgress, 0);
+                });
+            }
+        });
     }
 
     private string? GetAdjacentVideoPath(string? currentFilePath, int direction)
@@ -1113,6 +1237,9 @@ public partial class MainWindow
         {
             _volume = Math.Clamp(volume, 0, 1);
             ApplyAudioLevel();
+            if (_videoPlayerManager is { IsProcessRunning: true, IsConnected: true })
+                UpdateVideoVolumeIsolated();
+
             SavePlaybackPreferences();
         });
     }
@@ -1128,6 +1255,9 @@ public partial class MainWindow
         {
             _brightness = Math.Clamp(brightness, 0, 1);
             ApplyBrightnessOverlay();
+            if (_videoPlayerManager is { IsProcessRunning: true, IsConnected: true })
+                UpdateVideoBrightnessIsolated();
+
             SaveCurrentMoviePreferences();
             SavePlaybackPreferences();
         });
@@ -1149,6 +1279,9 @@ public partial class MainWindow
         {
             _saturation = Math.Clamp(saturation, 0, 2);
             ApplyBrightnessOverlay();
+            if (_videoPlayerManager is { IsProcessRunning: true, IsConnected: true })
+                UpdateVideoSaturationIsolated();
+
             SaveCurrentMoviePreferences();
             SavePlaybackPreferences();
         });
@@ -1165,7 +1298,9 @@ public partial class MainWindow
             _sharpness = clampedSharpness;
 
             var filePath = _currentFilePath;
-            if (!string.IsNullOrWhiteSpace(filePath) && _mediaPlayer.Media is not null)
+            if (_videoPlayerManager is { IsProcessRunning: true, IsConnected: true })
+                UpdateVideoSharpnessIsolated();
+            else if (!string.IsNullOrWhiteSpace(filePath) && _mediaPlayer.Media is not null)
             {
                 RestartMediaQuietly();
             }
@@ -1181,6 +1316,9 @@ public partial class MainWindow
         {
             _zoom = Math.Clamp(zoom, 0.5, 2);
             ApplyVideoZoom();
+            if (_videoPlayerManager is { IsProcessRunning: true, IsConnected: true })
+                UpdateVideoZoomIsolated();
+
             SaveCurrentMoviePreferences();
             SavePlaybackPreferences();
         });
@@ -1192,6 +1330,9 @@ public partial class MainWindow
         {
             _playbackSpeed = Math.Clamp(playbackSpeed, 0.5, 2);
             _mediaPlayer.SetRate((float)_playbackSpeed);
+            if (_videoPlayerManager is { IsProcessRunning: true, IsConnected: true })
+                UpdateVideoPlaybackSpeedIsolated();
+
             SavePlaybackPreferences();
             SaveCurrentMoviePreferences();
         });

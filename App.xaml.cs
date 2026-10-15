@@ -111,6 +111,7 @@ namespace RemotePlay
                 splash.Show();
 
                 Logger.Clear();
+                ClearVideoPlayerDiagnosticLog();
                 Logger.Info("Application startup begin");
                 base.OnStartup(e);
 
@@ -149,6 +150,26 @@ namespace RemotePlay
             {
                 Logger.Error("Application startup failed", ex);
                 throw;
+            }
+        }
+
+        private static void ClearVideoPlayerDiagnosticLog()
+        {
+            var logPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RemotePlay",
+                "Logs",
+                "RemotePlay.VideoPlayer.log");
+
+            try
+            {
+                File.Delete(logPath);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
             }
         }
 

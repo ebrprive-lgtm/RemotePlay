@@ -40,6 +40,19 @@ internal sealed partial class WebServer
     }
 
     /// <summary>
+    /// Finds a video by its file name in the in-memory library index.
+    /// Returns <c>null</c> when no indexed target has that name.
+    /// </summary>
+    public string? FindIndexedFilePathByName(string fileName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
+
+        return _libraryIndex
+            .FirstOrDefault(f => string.Equals(Path.GetFileName(f.FilePath), fileName, StringComparison.OrdinalIgnoreCase))
+            ?.FilePath;
+    }
+
+    /// <summary>
     /// Returns a set of all paths tracked by the current index: for regular files this is
     /// the file path; for links this is the .rplink file path. Used by the Check Index command.
     /// Returns an empty set when the index has not been built yet.
