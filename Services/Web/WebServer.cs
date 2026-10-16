@@ -183,12 +183,22 @@ internal sealed partial class WebServer
     // â”€â”€ Graceful-shutdown token â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private CancellationTokenSource _listenerCts = new();
 
-    public WebServer(AppConfig config, WebServerCallbacks callbacks, PresenceBroadcaster? broadcaster = null, PlaybackHistory? playbackHistory = null, RemotePlay.Services.AppUpdater? appUpdater = null, RemotePlay.Services.Discovery.DlnaDiscovery? dlna = null, PodcastFeedHttpClient? podcastFeedHttpClient = null, TimeProvider? podcastFeedCacheTimeProvider = null)
+    public WebServer(
+        AppConfig config,
+        WebServerCallbacks callbacks,
+        PresenceBroadcaster? broadcaster = null,
+        PlaybackHistory? playbackHistory = null,
+        RemotePlay.Services.AppUpdater? appUpdater = null,
+        RemotePlay.Services.Discovery.DlnaDiscovery? dlna = null,
+        PodcastFeedHttpClient? podcastFeedHttpClient = null,
+        TimeProvider? podcastFeedCacheTimeProvider = null,
+        System.Net.Http.HttpClient? podcastCatalogHttpClient = null)
     {
         _config = config;
         _expertMode = config.ExpertMode;
         _debugMode  = config.DebugMode;
         _callbacks = callbacks;
+        _podcastHttpClient = podcastCatalogHttpClient ?? _defaultPodcastHttpClient;
         _podcastFeedHttpClient = podcastFeedHttpClient ?? _defaultPodcastFeedHttpClient;
         _podcastFeedCacheTimeProvider = podcastFeedCacheTimeProvider ?? TimeProvider.System;
         _podcastFeedCache = new PodcastFeedCache(_podcastFeedCacheTimeProvider);

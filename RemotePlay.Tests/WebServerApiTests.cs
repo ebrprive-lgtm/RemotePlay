@@ -19,7 +19,9 @@ public sealed class WebServerApiTests : IDisposable
     private readonly WebServer _server;
     private readonly HttpClient _client;
     private readonly HttpClient _podcastUpstreamClient;
+    private readonly HttpClient _podcastCatalogHttpClient;
     private readonly TestPodcastHttpMessageHandler _podcastHttpHandler;
+    private readonly TestPodcastCatalogHttpMessageHandler _podcastCatalogHttpHandler;
     private readonly TestPodcastHostResolver _podcastHostResolver;
     private readonly TestPodcastCacheTimeProvider _podcastCacheTimeProvider;
     private readonly List<(string Url, string Title)> _radioPlayRequests = [];
@@ -28,15 +30,18 @@ public sealed class WebServerApiTests : IDisposable
     {
         var port = FindFreePort();
         _podcastHttpHandler = new TestPodcastHttpMessageHandler();
+        _podcastCatalogHttpHandler = new TestPodcastCatalogHttpMessageHandler();
         _podcastHostResolver = new TestPodcastHostResolver();
         _podcastCacheTimeProvider = new TestPodcastCacheTimeProvider();
         _podcastUpstreamClient = new HttpClient(_podcastHttpHandler);
+        _podcastCatalogHttpClient = new HttpClient(_podcastCatalogHttpHandler);
         var podcastFeedHttpClient = new PodcastFeedHttpClient(_podcastUpstreamClient, _podcastHostResolver);
         _server = new WebServer(
             new AppConfig { Port = port },
             BuildStubCallbacks((url, title) => _radioPlayRequests.Add((url, title))),
             podcastFeedHttpClient: podcastFeedHttpClient,
-            podcastFeedCacheTimeProvider: _podcastCacheTimeProvider);
+            podcastFeedCacheTimeProvider: _podcastCacheTimeProvider,
+            podcastCatalogHttpClient: _podcastCatalogHttpClient);
         _server.Start();
         _client = new HttpClient { BaseAddress = new Uri($"http://localhost:{port}") };
     }
@@ -46,6 +51,7 @@ public sealed class WebServerApiTests : IDisposable
         _server.Stop();
         _client.Dispose();
         _podcastUpstreamClient.Dispose();
+        _podcastCatalogHttpClient.Dispose();
     }
 
     // â”€â”€ /api/status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -371,6 +377,158 @@ public sealed class WebServerApiTests : IDisposable
         }
 
         Assert.True(hasUnitedStates);
+    }
+
+    [Fact]
+    public async Task PodcastsSearch_GlobalFallbackBalancesCountriesAndCachesStableDeduplicatedOrder()
+    {
+        var countries = new[] { "US", "GB", "CA", "AU", "DE", "FR", "ES", "IT", "NL", "BE" };
+        _podcastCatalogHttpHandler.ResponseFactory = request =>
+        {
+            var country = request.RequestUri!.AbsolutePath
+                .Split('/', StringSplitOptions.RemoveEmptyEntries)[2]
+                .ToUpperInvariant();
+            var sharedFeedUrl = country == "GB"
+                ? "https://FEEDS.test/shared.xml"
+                : "https://feeds.test/shared.xml";
+            var results = Enumerable.Range(0, 25)
+                .Select(index => new
+                {
+                    name = index == 1
+                        ? "Shared Top"
+                        : $"{country} Top {(index == 0 ? 1 : index)}",
+                    artistName = index == 1 ? "Shared Author" : $"{country} Author",
+                    url = index == 1
+                        ? sharedFeedUrl
+                        : $"https://feeds.test/{country.ToLowerInvariant()}-{index}.xml",
+                    artworkUrl100 = string.Empty,
+                    genres = new[] { new { name = "News" } },
+                })
+                .ToArray();
+            if (country == "BE")
+                results = results[..1];
+
+            var json = JsonSerializer.Serialize(new { feed = new { results } });
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json),
+            };
+        };
+
+        using var firstResponse = await _client.GetAsync("/api/podcasts/search?limit=50");
+        var firstJson = await firstResponse.Content.ReadAsStringAsync();
+        using var firstDocument = JsonDocument.Parse(firstJson);
+        var firstRoot = firstDocument.RootElement;
+        var firstTitles = firstRoot.GetProperty("shows")
+            .EnumerateArray()
+            .Select(show => show.GetProperty("title").GetString())
+            .ToArray();
+
+        using var secondResponse = await _client.GetAsync("/api/podcasts/search?limit=5&offset=5");
+        var secondJson = await secondResponse.Content.ReadAsStringAsync();
+        using var secondDocument = JsonDocument.Parse(secondJson);
+        var secondRoot = secondDocument.RootElement;
+        var secondTitles = secondDocument.RootElement.GetProperty("shows")
+            .EnumerateArray()
+            .Select(show => show.GetProperty("title").GetString())
+            .ToArray();
+        using var stableResponse = await _client.GetAsync("/api/podcasts/search?limit=49");
+        var stableJson = await stableResponse.Content.ReadAsStringAsync();
+        using var stableDocument = JsonDocument.Parse(stableJson);
+        var stableTitles = stableDocument.RootElement.GetProperty("shows")
+            .EnumerateArray()
+            .Select(show => show.GetProperty("title").GetString())
+            .ToArray();
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, stableResponse.StatusCode);
+        Assert.Equal(countries.Select(country => $"{country} Top 1"), firstTitles.Take(countries.Length));
+        Assert.Equal(50, firstTitles.Length);
+        Assert.Equal(1, firstTitles.Count(title => title == "Shared Top"));
+        Assert.Equal(firstTitles.Skip(5).Take(5), secondTitles);
+        Assert.Equal(firstTitles.Take(49), stableTitles);
+        Assert.True(firstRoot.GetProperty("hasMore").GetBoolean());
+        Assert.Equal(200, firstRoot.GetProperty("total").GetInt32());
+        Assert.True(secondRoot.GetProperty("hasMore").GetBoolean());
+        Assert.Equal(200, secondRoot.GetProperty("total").GetInt32());
+        Assert.Equal(countries.Length, _podcastCatalogHttpHandler.RequestedUris.Count);
+        Assert.All(
+            _podcastCatalogHttpHandler.RequestedUris,
+            uri => Assert.Contains("/top/200/", uri.AbsolutePath, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task PodcastsSearch_ExplicitCountryRemainsCountrySpecific()
+    {
+        _podcastCatalogHttpHandler.ResponseFactory = request =>
+        {
+            if (!request.RequestUri!.Host.Equals("itunes.apple.com", StringComparison.OrdinalIgnoreCase))
+                return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+
+            var json = JsonSerializer.Serialize(new
+            {
+                resultCount = 2,
+                results = new[]
+                {
+                    new
+                    {
+                        collectionName = "Country Result 1",
+                        artistName = "Country Author",
+                        feedUrl = "https://feeds.test/country-1.xml",
+                        artworkUrl100 = string.Empty,
+                        primaryGenreName = "News",
+                        country = "US",
+                    },
+                    new
+                    {
+                        collectionName = "Country Result 2",
+                        artistName = "Country Author",
+                        feedUrl = "https://feeds.test/country-2.xml",
+                        artworkUrl100 = string.Empty,
+                        primaryGenreName = "News",
+                        country = "US",
+                    },
+                },
+            });
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(json),
+            };
+        };
+
+        using var firstResponse = await _client.GetAsync(
+            "/api/podcasts/search?country=US&q=phase-three-country-specific&limit=1&offset=0");
+        var firstJson = await firstResponse.Content.ReadAsStringAsync();
+        using var firstDocument = JsonDocument.Parse(firstJson);
+        using var secondResponse = await _client.GetAsync(
+            "/api/podcasts/search?country=US&q=phase-three-country-specific&limit=1&offset=1");
+        var secondJson = await secondResponse.Content.ReadAsStringAsync();
+        using var secondDocument = JsonDocument.Parse(secondJson);
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        Assert.Equal(
+            "Country Result 1",
+            firstDocument.RootElement.GetProperty("shows")[0].GetProperty("title").GetString());
+        Assert.Equal(
+            "US",
+            firstDocument.RootElement.GetProperty("shows")[0].GetProperty("country").GetString());
+        Assert.True(firstDocument.RootElement.GetProperty("hasMore").GetBoolean());
+        Assert.Equal(2, firstDocument.RootElement.GetProperty("total").GetInt32());
+        Assert.Equal(
+            "Country Result 2",
+            secondDocument.RootElement.GetProperty("shows")[0].GetProperty("title").GetString());
+        Assert.False(secondDocument.RootElement.GetProperty("hasMore").GetBoolean());
+        Assert.Equal(2, secondDocument.RootElement.GetProperty("total").GetInt32());
+        Assert.Equal(2, _podcastCatalogHttpHandler.RequestedUris.Count);
+        Assert.All(
+            _podcastCatalogHttpHandler.RequestedUris,
+            uri =>
+            {
+                Assert.Equal("itunes.apple.com", uri.Host);
+                Assert.Contains("country=US", uri.Query, StringComparison.Ordinal);
+            });
     }
 
     [Fact]
@@ -1133,6 +1291,28 @@ public sealed class WebServerApiTests : IDisposable
                     request.Headers.IfNoneMatch.FirstOrDefault()?.ToString(),
                     request.Headers.IfModifiedSince));
             }
+
+            return Task.FromResult(ResponseFactory(request));
+        }
+    }
+
+    private sealed class TestPodcastCatalogHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly object _requestGate = new();
+
+        internal List<Uri> RequestedUris { get; } = [];
+        internal Func<HttpRequestMessage, HttpResponseMessage> ResponseFactory { get; set; } =
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"resultCount\":0,\"results\":[]}"),
+            };
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            lock (_requestGate)
+                RequestedUris.Add(request.RequestUri!);
 
             return Task.FromResult(ResponseFactory(request));
         }

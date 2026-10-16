@@ -285,6 +285,9 @@ async function radioStatusTick() {
     if (url) _radioCurrentUrl = url;
 
     _syncPodcastServerProgress(elapsed, playing);
+    if (typeof podcastHandleServerPlaybackStatus === 'function') {
+      podcastHandleServerPlaybackStatus(playing, stalled, err);
+    }
 
     // Update elapsed clock base
     if (playing && elapsed > 0) {

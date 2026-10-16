@@ -18,7 +18,8 @@ internal sealed partial class WebServer
     private const int PodcastAudioHostValidationConcurrency = 8;
     private static readonly TimeSpan PodcastFeedRequestTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan PodcastAudioHostValidationTimeout = TimeSpan.FromSeconds(10);
-    private static readonly HttpClient _podcastHttpClient = CreatePodcastHttpClient();
+    private static readonly HttpClient _defaultPodcastHttpClient = CreatePodcastHttpClient();
+    private readonly HttpClient _podcastHttpClient;
     private static readonly PodcastFeedHttpClient _defaultPodcastFeedHttpClient = PodcastFeedHttpClient.CreateDefault();
     private static readonly ConcurrentDictionary<string, PodcastSearchCacheEntry> _podcastSearchCache = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, PodcastTopPoolCacheEntry> _podcastTopPoolCache = new(StringComparer.Ordinal);
@@ -498,20 +499,33 @@ internal sealed partial class WebServer
 
     private async Task<PodcastShowDto[]> FetchGlobalTopPodcastsAsync(int limit)
     {
+        var safeLimit = Math.Clamp(limit, 1, 200);
         var countries = new[] { "US", "GB", "CA", "AU", "DE", "FR", "ES", "IT", "NL", "BE" };
-        var unique = new List<PodcastShowDto>(limit + 8);
-        var seenFeedUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var countryShows = new List<PodcastShowDto[]>(countries.Length);
 
-        foreach (var c in countries)
+        foreach (var country in countries)
         {
-            var top = await FetchTopPodcastsAsync(c, Math.Clamp(limit, 1, 200)).ConfigureAwait(false);
-            foreach (var show in top)
+            countryShows.Add(
+                await FetchTopPodcastsAsync(country, safeLimit).ConfigureAwait(false));
+        }
+
+        var unique = new List<PodcastShowDto>(safeLimit);
+        var seenFeedUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var maxRoundCount = countryShows.Max(shows => shows.Length);
+
+        for (var round = 0; round < maxRoundCount && unique.Count < safeLimit; round++)
+        {
+            foreach (var shows in countryShows)
             {
+                if (round >= shows.Length)
+                    continue;
+
+                var show = shows[round];
                 if (!seenFeedUrls.Add(show.FeedUrl))
                     continue;
 
                 unique.Add(show);
-                if (unique.Count >= limit)
+                if (unique.Count >= safeLimit)
                     return unique.ToArray();
             }
         }

@@ -19,8 +19,26 @@ let _podcastEpisodesTotal = null;
 let _podcastEpisodesRequestId = 0;
 let _podcastEpisodesLoadMoreRequestId = null;
 const _podcastEpisodesPageSize = 80;
+let _podcastDirectoryRequest = null;
+let _podcastShowsRequest = null;
+let _podcastEpisodesRequest = null;
+let _podcastBrowseResumeKind = null;
 let _podcastCurrentEpisodeIndex = -1;
 let _podcastPlaybackEpisodes = [];
+let _podcastPlaybackFeedUrl = '';
+let _podcastPlaybackShowTitle = '';
+let _podcastPlaybackOffset = 0;
+let _podcastPlaybackHasMore = false;
+let _podcastPlaybackTotal = null;
+let _podcastPlaybackPageRequest = null;
+let _podcastPlaybackPageRequestId = 0;
+let _podcastPlaybackQueueGeneration = 0;
+let _podcastPlaybackPageLoading = false;
+let _podcastPlaybackPageMessage = '';
+let _podcastPlaybackBusy = false;
+let _podcastPlaybackTransitionPromise = null;
+let _podcastServerPlaybackStarted = false;
+let _podcastServerAutoAdvanceHandled = false;
 let _podcastCountryNames = new Map([['US', 'United States']]);
 let _podcastFavoriteShowFeeds = [];
 let _podcastFavoritesOnly = false;
@@ -58,6 +76,54 @@ const _podcastAllTopics = [
   'Documentary'
 ];
 
+function _createPodcastRequest() {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  return { controller, signal: controller?.signal || null };
+}
+
+function _podcastRequestWasAborted(error, request) {
+  return Boolean(request?.signal?.aborted) || error?.name === 'AbortError';
+}
+
+function _invalidatePodcastBrowseRequests({ resumeOnReturn = false } = {}) {
+  let resumeKind = null;
+  if (resumeOnReturn) {
+    if (_podcastSearchDebounceTimer) resumeKind = 'search';
+    else if (_podcastEpisodesRequest && _podcastEpisodes.length === 0) resumeKind = 'episodes';
+    else if (_podcastShowsRequest && _podcastShows.length === 0) resumeKind = 'search';
+    else if (_podcastDirectoryRequest) resumeKind = 'directory';
+  }
+
+  if (_podcastSearchDebounceTimer) {
+    clearTimeout(_podcastSearchDebounceTimer);
+    _podcastSearchDebounceTimer = null;
+  }
+
+  for (const request of [_podcastDirectoryRequest, _podcastShowsRequest, _podcastEpisodesRequest]) {
+    request?.controller?.abort();
+  }
+  _podcastDirectoryRequest = null;
+  _podcastShowsRequest = null;
+  _podcastEpisodesRequest = null;
+  _podcastDirectoryRequestId++;
+  _podcastShowsRequestId++;
+  _podcastEpisodesRequestId++;
+  _podcastDirectoryLoading = false;
+  _podcastShowsLoadMoreRequestId = null;
+  _podcastEpisodesLoadMoreRequestId = null;
+  _podcastBrowseResumeKind = resumeKind;
+
+  return {
+    directoryRequestId: _podcastDirectoryRequestId,
+    showsRequestId: _podcastShowsRequestId,
+    episodesRequestId: _podcastEpisodesRequestId,
+  };
+}
+
+function podcastsLeaveView() {
+  _invalidatePodcastBrowseRequests({ resumeOnReturn: true });
+}
+
 function podcastsInit() {
   const root = document.getElementById('podcasts-browser');
   if (!root) return;
@@ -84,10 +150,35 @@ function podcastsInit() {
     return;
   }
 
+  const resumeKind = _podcastBrowseResumeKind;
+  _podcastBrowseResumeKind = null;
+  if (resumeKind === 'directory') {
+    _podcastDirectoryLoading = true;
+    _renderPodcastDirectoryLoading();
+    _loadPodcastDirectory();
+    return;
+  }
+  if (resumeKind === 'search') {
+    podcastsSearch();
+    return;
+  }
+  if (resumeKind === 'episodes' && _podcastSelectedShow) {
+    const show = _podcastSelectedShow;
+    podcastOpenShow(show.feedUrl, show.title, show.artworkUrl);
+    return;
+  }
+
   if (_podcastSelectedShow) _renderPodcastEpisodes();
   else if (_podcastFavoritesOnly) _renderPodcastShows();
   else if (_podcastShows.length) _renderPodcastShows();
-  else _renderPodcastDirectory();
+  else if (_podcastLastSearch.query || _podcastLastSearch.topic || _podcastLastSearch.country) {
+    _renderPodcastShows();
+  } else if (_podcastDirectory.length) _renderPodcastDirectory();
+  else {
+    _podcastDirectoryLoading = true;
+    _renderPodcastDirectoryLoading();
+    _loadPodcastDirectory();
+  }
 }
 
 function _podcastNormalizeFeedUrl(url) {
@@ -255,9 +346,6 @@ function podcastToggleTopicFavorite(topic, evt) {
 
 function podcastsToggleFavoritesFilter() {
   _podcastFavoritesOnly = !_podcastFavoritesOnly;
-  _podcastShowsRequestId++;
-  _podcastDirectoryRequestId++;
-  _podcastDirectoryLoading = false;
   _syncPodcastRoute(_podcastSelectedShow?.feedUrl || '', _podcastSelectedShow?.title || '');
   _syncPodcastCommandBar();
 
@@ -266,6 +354,7 @@ function podcastsToggleFavoritesFilter() {
     return;
   }
 
+  _invalidatePodcastBrowseRequests();
   if (_podcastFavoritesOnly) {
     _renderPodcastShows();
     return;
@@ -339,8 +428,7 @@ async function podcastApplyRouteFromUrl() {
   const feedUrl = (params.get('feed') || '').trim();
   if (!feedUrl) {
     if (_podcastFavoritesOnly) {
-      _podcastDirectoryRequestId++;
-      _podcastDirectoryLoading = false;
+      _invalidatePodcastBrowseRequests();
     }
     _syncPodcastRoute('', '');
     _renderPodcastsCurrentView();
@@ -453,6 +541,7 @@ function _wirePodcastControls() {
       podcastsSearch();
       return;
     }
+    _invalidatePodcastBrowseRequests();
     _podcastSearchDebounceTimer = setTimeout(() => {
       _podcastSearchDebounceTimer = null;
       podcastsSearch();
@@ -598,10 +687,9 @@ async function podcastsSearch() {
   const country = (document.getElementById('pcb-country')?.value || '').trim();
   _podcastLastSearch = { query: search, topic, country };
   const hasFilters = Boolean(search || topic || country);
-  const requestId = ++_podcastShowsRequestId;
-  _podcastDirectoryRequestId++;
-  _podcastDirectoryLoading = false;
-  _podcastEpisodesRequestId++;
+  const requestId = _invalidatePodcastBrowseRequests().showsRequestId;
+  const request = _createPodcastRequest();
+  _podcastShowsRequest = request;
   _podcastSelectedShow = null;
   _podcastEpisodes = [];
   _podcastEpisodesOffset = 0;
@@ -616,7 +704,7 @@ async function podcastsSearch() {
   root.innerHTML = '<div style="padding:.8rem;color:var(--muted,#9aa8c2)">Searching podcasts…</div>';
 
   try {
-    const loaded = await _loadPodcastShowsPage({ append: false, requestId });
+    const loaded = await _loadPodcastShowsPage({ append: false, requestId, request });
     if (!loaded || requestId !== _podcastShowsRequestId) return;
 
     if (_podcastShows.length > 0 || hasFilters) _renderPodcastShows();
@@ -625,7 +713,7 @@ async function podcastsSearch() {
       setStatus(_podcastShows.length > 0 ? `Found ${_podcastShows.length} podcast show(s).` : 'No podcasts found for this search.');
     }
   } catch (error) {
-    if (requestId !== _podcastShowsRequestId) return;
+    if (requestId !== _podcastShowsRequestId || _podcastRequestWasAborted(error, request)) return;
     const details = error?.message ? ` (${error.message})` : '';
     console.error('Podcast search failed', {
       error,
@@ -635,10 +723,12 @@ async function podcastsSearch() {
     });
     root.innerHTML = `<div style="padding:.8rem;color:#ff8f8f">Podcast search failed${esc(details)}.</div>`;
     if (typeof setStatus === 'function') setStatus('Podcast search failed.');
+  } finally {
+    if (_podcastShowsRequest === request) _podcastShowsRequest = null;
   }
 }
 
-async function _loadPodcastShowsPage({ append, requestId = _podcastShowsRequestId }) {
+async function _loadPodcastShowsPage({ append, requestId = _podcastShowsRequestId, request = _podcastShowsRequest }) {
   const search = (_podcastLastSearch.query || '').trim();
   const topic = (_podcastLastSearch.topic || '').trim();
   const country = (_podcastLastSearch.country || '').trim();
@@ -652,7 +742,7 @@ async function _loadPodcastShowsPage({ append, requestId = _podcastShowsRequestI
     query.set('offset', String(_podcastShowsOffset));
 
     const url = '/api/podcasts/search?' + query.toString();
-    const r = await fetch(url);
+    const r = await fetch(url, request?.signal ? { signal: request.signal } : undefined);
     if (!r.ok) {
       let body = '';
       try {
@@ -671,7 +761,7 @@ async function _loadPodcastShowsPage({ append, requestId = _podcastShowsRequestI
   try {
     data = await requestPage({ includeTerm: true });
   } catch (error) {
-    if (requestId !== _podcastShowsRequestId) return false;
+    if (requestId !== _podcastShowsRequestId || _podcastRequestWasAborted(error, request)) return false;
     console.warn('Primary podcast search request failed, trying fallback request without term', {
       error,
       query: _podcastLastSearch,
@@ -694,7 +784,8 @@ async function _loadPodcastShowsPage({ append, requestId = _podcastShowsRequestI
         hasMore: false,
         total: filtered.length,
       };
-    } catch {
+    } catch (fallbackError) {
+      if (requestId !== _podcastShowsRequestId || _podcastRequestWasAborted(fallbackError, request)) return false;
       throw error;
     }
   }
@@ -717,7 +808,8 @@ async function _loadPodcastShowsPage({ append, requestId = _podcastShowsRequestI
         hasMore: false,
         total: filtered.length,
       };
-    } catch {
+    } catch (fallbackError) {
+      if (requestId !== _podcastShowsRequestId || _podcastRequestWasAborted(fallbackError, request)) return false;
       // Keep original empty response if fallback enrichment fails.
     }
   }
@@ -755,19 +847,23 @@ async function _loadPodcastShowsPage({ append, requestId = _podcastShowsRequestI
 }
 
 async function podcastLoadMoreShows() {
-  const requestId = _podcastShowsRequestId;
-  if (!_podcastShowsHasMore || _podcastShowsLoadMoreRequestId === requestId) return;
+  if (currentMode !== 'podcasts' || !_podcastShowsHasMore) return;
+  if (_podcastShowsLoadMoreRequestId === _podcastShowsRequestId) return;
 
+  const requestId = _invalidatePodcastBrowseRequests().showsRequestId;
+  const request = _createPodcastRequest();
+  _podcastShowsRequest = request;
   _podcastShowsLoadMoreRequestId = requestId;
   try {
-    const loaded = await _loadPodcastShowsPage({ append: true, requestId });
+    const loaded = await _loadPodcastShowsPage({ append: true, requestId, request });
     if (loaded && requestId === _podcastShowsRequestId) _renderPodcastShows();
   } catch (error) {
-    if (requestId === _podcastShowsRequestId) {
+    if (requestId === _podcastShowsRequestId && !_podcastRequestWasAborted(error, request)) {
       console.error('Failed to load more podcasts', error);
       if (typeof setStatus === 'function') setStatus('Failed to load more podcasts.');
     }
   } finally {
+    if (_podcastShowsRequest === request) _podcastShowsRequest = null;
     if (_podcastShowsLoadMoreRequestId === requestId) _podcastShowsLoadMoreRequestId = null;
   }
 }
@@ -778,11 +874,9 @@ async function podcastOpenShow(feedUrl, showTitle, artworkUrl) {
   const root = document.getElementById('podcasts-browser');
   if (!root) return;
 
-  const requestId = ++_podcastEpisodesRequestId;
-  _podcastShowsRequestId++;
-  _podcastDirectoryRequestId++;
-  _podcastDirectoryLoading = false;
-  _podcastShowsLoadMoreRequestId = null;
+  const requestId = _invalidatePodcastBrowseRequests().episodesRequestId;
+  const request = _createPodcastRequest();
+  _podcastEpisodesRequest = request;
   root.innerHTML = '<div style="padding:.8rem;color:var(--muted,#9aa8c2)">Loading episodes…</div>';
 
   const knownArt = (artworkUrl || '').trim()
@@ -795,12 +889,12 @@ async function podcastOpenShow(feedUrl, showTitle, artworkUrl) {
   _syncPodcastPlaybackControls();
 
   try {
-    const loaded = await _loadPodcastEpisodesPage({ append: false, requestId });
+    const loaded = await _loadPodcastEpisodesPage({ append: false, requestId, request });
     if (!loaded || requestId !== _podcastEpisodesRequestId) return;
     _syncPodcastRoute(feedUrl, showTitle || 'Podcast');
     _renderPodcastEpisodes();
   } catch (error) {
-    if (requestId !== _podcastEpisodesRequestId) return;
+    if (requestId !== _podcastEpisodesRequestId || _podcastRequestWasAborted(error, request)) return;
     console.error('Failed to load podcast episodes', {
       error,
       feedUrl,
@@ -811,10 +905,16 @@ async function podcastOpenShow(feedUrl, showTitle, artworkUrl) {
     const detail = error?.message ? ` (${error.message})` : '';
     root.innerHTML = `<div style="padding:.8rem;color:#ff8f8f">Failed to load episodes${esc(detail)}.</div>`;
     if (typeof setStatus === 'function') setStatus('Failed to load podcast episodes.' + (error?.message ? ` ${error.message}` : ''));
+  } finally {
+    if (_podcastEpisodesRequest === request) _podcastEpisodesRequest = null;
   }
 }
 
-async function _loadPodcastEpisodesPage({ append, requestId = _podcastEpisodesRequestId }) {
+async function _loadPodcastEpisodesPage({
+  append,
+  requestId = _podcastEpisodesRequestId,
+  request = _podcastEpisodesRequest,
+}) {
   const show = _podcastSelectedShow;
   if (!show?.feedUrl) return false;
   const feedUrl = show.feedUrl;
@@ -824,7 +924,10 @@ async function _loadPodcastEpisodesPage({ append, requestId = _podcastEpisodesRe
     limit: String(_podcastEpisodesPageSize),
     offset: String(_podcastEpisodesOffset),
   });
-  const r = await fetch('/api/podcasts/feed?' + query.toString());
+  const r = await fetch(
+    '/api/podcasts/feed?' + query.toString(),
+    request?.signal ? { signal: request.signal } : undefined
+  );
   if (!r.ok) {
     let body = '';
     try {
@@ -852,27 +955,29 @@ async function _loadPodcastEpisodesPage({ append, requestId = _podcastEpisodesRe
 }
 
 async function podcastLoadMoreEpisodes() {
-  const requestId = _podcastEpisodesRequestId;
-  if (!_podcastEpisodesHasMore || _podcastEpisodesLoadMoreRequestId === requestId) return;
+  if (currentMode !== 'podcasts' || !_podcastEpisodesHasMore) return;
+  if (_podcastEpisodesLoadMoreRequestId === _podcastEpisodesRequestId) return;
 
+  const requestId = _invalidatePodcastBrowseRequests().episodesRequestId;
+  const request = _createPodcastRequest();
+  _podcastEpisodesRequest = request;
   _podcastEpisodesLoadMoreRequestId = requestId;
   try {
-    const loaded = await _loadPodcastEpisodesPage({ append: true, requestId });
+    const loaded = await _loadPodcastEpisodesPage({ append: true, requestId, request });
     if (loaded && requestId === _podcastEpisodesRequestId) _renderPodcastEpisodes();
   } catch (error) {
-    if (requestId === _podcastEpisodesRequestId) {
+    if (requestId === _podcastEpisodesRequestId && !_podcastRequestWasAborted(error, request)) {
       console.error('Failed to load more podcast episodes', error);
       if (typeof setStatus === 'function') setStatus('Failed to load more episodes.');
     }
   } finally {
+    if (_podcastEpisodesRequest === request) _podcastEpisodesRequest = null;
     if (_podcastEpisodesLoadMoreRequestId === requestId) _podcastEpisodesLoadMoreRequestId = null;
   }
 }
 
 function podcastsBackToDirectory() {
-  _podcastShowsRequestId++;
-  _podcastEpisodesRequestId++;
-  _podcastDirectoryRequestId++;
+  _invalidatePodcastBrowseRequests();
   _podcastDirectoryLoading = true;
   _podcastFavoritesOnly = false;
   _podcastSelectedShow = null;
@@ -904,7 +1009,7 @@ function podcastsBackToDirectory() {
 }
 
 function podcastBackToShows() {
-  _podcastEpisodesRequestId++;
+  _invalidatePodcastBrowseRequests();
   _podcastSelectedShow = null;
   _podcastEpisodes = [];
   _podcastEpisodesOffset = 0;
@@ -922,11 +1027,72 @@ async function podcastPlayEpisode(episodeIndex) {
   const index = Number(episodeIndex);
   if (!Number.isInteger(index) || index < 0 || index >= _podcastEpisodes.length) return false;
 
-  return _podcastPlayEpisodeFromQueue(_podcastEpisodes, index);
+  if (_podcastPlaybackTransitionPromise) {
+    if (typeof setStatus === 'function') setStatus('Please wait for the current podcast transition to finish.');
+    return false;
+  }
+
+  if (_podcastEpisodesRequest) {
+    _podcastEpisodesRequest.controller?.abort();
+    _podcastEpisodesRequest = null;
+    _podcastEpisodesRequestId++;
+    _podcastEpisodesLoadMoreRequestId = null;
+  }
+  _cancelPodcastPlaybackPageRequest({ clearMessage: true });
+
+  const show = _podcastSelectedShow;
+  const episodes = _podcastEpisodes.slice();
+  const feedState = {
+    feedUrl: (show?.feedUrl || '').trim(),
+    showTitle: show?.title || 'Podcast',
+    offset: _podcastEpisodesOffset,
+    hasMore: _podcastEpisodesHasMore,
+    total: _podcastEpisodesTotal,
+  };
+  const queueGeneration = _podcastPlaybackQueueGeneration;
+  return _runPodcastPlaybackTransition(
+    () => _podcastPlayEpisodeFromQueue(episodes, index, feedState, queueGeneration)
+  );
 }
 
-async function _podcastPlayEpisodeFromQueue(episodes, index) {
-  if (!Array.isArray(episodes) || !Number.isInteger(index) || index < 0 || index >= episodes.length) return false;
+function _runPodcastPlaybackTransition(action) {
+  if (_podcastPlaybackTransitionPromise) return _podcastPlaybackTransitionPromise;
+
+  _podcastPlaybackBusy = true;
+  _syncPodcastPlaybackControls();
+
+  let transitionPromise;
+  transitionPromise = (async () => {
+    try {
+      return await action();
+    } catch (error) {
+      console.error('Podcast playback navigation failed', error);
+      _podcastPlaybackPageMessage = 'Could not start the requested episode. Try again.';
+      if (typeof setStatus === 'function') setStatus(_podcastPlaybackPageMessage);
+      return false;
+    } finally {
+      if (_podcastPlaybackTransitionPromise === transitionPromise) {
+        _podcastPlaybackTransitionPromise = null;
+        _podcastPlaybackBusy = false;
+        _syncPodcastPlaybackControls();
+      }
+    }
+  })();
+  _podcastPlaybackTransitionPromise = transitionPromise;
+  return transitionPromise;
+}
+
+async function _podcastPlayEpisodeFromQueue(
+  episodes,
+  index,
+  feedState = null,
+  queueGeneration = _podcastPlaybackQueueGeneration
+) {
+  if (!Array.isArray(episodes)
+      || !Number.isInteger(index)
+      || index < 0
+      || index >= episodes.length
+      || queueGeneration !== _podcastPlaybackQueueGeneration) return false;
 
   const episode = episodes[index] || null;
   const audioUrl = (episode?.audioUrl || '').trim();
@@ -946,6 +1112,7 @@ async function _podcastPlayEpisodeFromQueue(episodes, index) {
 
     if (playLocal) {
       await fetch('/api/radio/stop', { method: 'POST' }).catch(() => {});
+      if (queueGeneration !== _podcastPlaybackQueueGeneration) return false;
       if (typeof stopRadioStatusPoll === 'function') stopRadioStatusPoll();
       document.body.classList.remove('radio-player-docked');
 
@@ -963,7 +1130,10 @@ async function _podcastPlayEpisodeFromQueue(episodes, index) {
 
       localPlay(audioUrl, title, 'Podcast');
     } else {
-      if (typeof localStop === 'function') await localStop();
+      if (typeof localStop === 'function') {
+        await localStop(false, { preservePodcastQueue: true });
+      }
+      if (queueGeneration !== _podcastPlaybackQueueGeneration) return false;
 
       const query = new URLSearchParams({ url: audioUrl, title });
       const r = await fetch('/api/podcasts/play?' + query.toString(), { method: 'POST' });
@@ -989,9 +1159,19 @@ async function _podcastPlayEpisodeFromQueue(episodes, index) {
 
     _podcastPlaybackEpisodes = episodes;
     _podcastCurrentEpisodeIndex = index;
+    if (feedState) {
+      _podcastPlaybackFeedUrl = feedState.feedUrl;
+      _podcastPlaybackShowTitle = feedState.showTitle;
+      _podcastPlaybackOffset = feedState.offset;
+      _podcastPlaybackHasMore = Boolean(feedState.feedUrl && feedState.hasMore);
+      _podcastPlaybackTotal = feedState.total;
+    }
+    _podcastPlaybackPageMessage = '';
+    _podcastServerPlaybackStarted = false;
+    _podcastServerAutoAdvanceHandled = false;
     _syncPodcastPlaybackControls();
 
-    if (typeof setStatus === 'function') setStatus('Playing podcast episode…');
+    if (typeof setStatus === 'function') setStatus('Playing podcast episode...');
     return true;
   } catch (error) {
     console.error('Podcast playback failed', error);
@@ -1003,48 +1183,223 @@ async function _podcastPlayEpisodeFromQueue(episodes, index) {
 }
 
 async function podcastPrevEpisode() {
+  if (_podcastPlaybackTransitionPromise) return false;
   if (_podcastCurrentEpisodeIndex <= 0) {
     _syncPodcastPlaybackControls();
     return false;
   }
 
-  return _podcastPlayEpisodeFromQueue(_podcastPlaybackEpisodes, _podcastCurrentEpisodeIndex - 1);
+  const queueGeneration = _podcastPlaybackQueueGeneration;
+  return _runPodcastPlaybackTransition(
+    () => _podcastPlayEpisodeFromQueue(
+      _podcastPlaybackEpisodes,
+      _podcastCurrentEpisodeIndex - 1,
+      null,
+      queueGeneration
+    )
+  );
 }
 
-async function podcastNextEpisode(options) {
+function podcastNextEpisode(options) {
+  if (_podcastPlaybackTransitionPromise) return _podcastPlaybackTransitionPromise;
   const autoAdvance = Boolean(options && options.autoAdvance);
+  return _runPodcastPlaybackTransition(() => _advancePodcastPlayback(autoAdvance));
+}
+
+async function _advancePodcastPlayback(autoAdvance) {
+  const queueGeneration = _podcastPlaybackQueueGeneration;
   const nextIndex = _podcastCurrentEpisodeIndex + 1;
-  if (nextIndex < 0 || nextIndex >= _podcastPlaybackEpisodes.length) {
-    if (autoAdvance && typeof localStop === 'function') {
-      await localStop();
-      _podcastPlaybackEpisodes = [];
-      _podcastCurrentEpisodeIndex = -1;
-    }
-    _syncPodcastPlaybackControls();
-    return false;
+  if (nextIndex < 0 || _podcastCurrentEpisodeIndex < 0) return false;
+
+  while (nextIndex >= _podcastPlaybackEpisodes.length
+      && _podcastPlaybackHasMore
+      && _podcastPlaybackFeedUrl) {
+    const loaded = await _loadNextPodcastPlaybackPage(queueGeneration);
+    if (!loaded || queueGeneration !== _podcastPlaybackQueueGeneration) return false;
   }
 
-  return _podcastPlayEpisodeFromQueue(_podcastPlaybackEpisodes, nextIndex);
+  if (nextIndex < _podcastPlaybackEpisodes.length) {
+    return _podcastPlayEpisodeFromQueue(
+      _podcastPlaybackEpisodes,
+      nextIndex,
+      null,
+      queueGeneration
+    );
+  }
+
+  if (autoAdvance) {
+    if (typeof localStop === 'function') {
+      await localStop(false, { preservePodcastQueue: true });
+    }
+    if (queueGeneration === _podcastPlaybackQueueGeneration) _clearPodcastPlaybackQueue();
+  }
+
+  _syncPodcastPlaybackControls();
+  return false;
+}
+
+async function _loadNextPodcastPlaybackPage(queueGeneration) {
+  const feedUrl = _podcastPlaybackFeedUrl;
+  if (!feedUrl || !_podcastPlaybackHasMore) return false;
+
+  const requestId = ++_podcastPlaybackPageRequestId;
+  const request = _createPodcastRequest();
+  const offset = _podcastPlaybackOffset;
+  _podcastPlaybackPageRequest = request;
+  _podcastPlaybackPageLoading = true;
+  _podcastPlaybackPageMessage = 'Loading next page...';
+  _syncPodcastPlaybackControls();
+
+  const query = new URLSearchParams({
+    url: feedUrl,
+    limit: String(_podcastEpisodesPageSize),
+    offset: String(offset),
+  });
+
+  try {
+    const r = await fetch(
+      '/api/podcasts/feed?' + query.toString(),
+      request.signal ? { signal: request.signal } : undefined
+    );
+    if (!r.ok) throw new Error(`podcast feed page failed (${r.status})`);
+
+    const data = await r.json();
+    if (requestId !== _podcastPlaybackPageRequestId
+        || queueGeneration !== _podcastPlaybackQueueGeneration
+        || _podcastRequestWasAborted(null, request)) return false;
+
+    const page = Array.isArray(data.episodes) ? data.episodes : [];
+    const seen = new Set(
+      _podcastPlaybackEpisodes
+        .map((item) => (item?.audioUrl || '').trim())
+        .filter(Boolean)
+    );
+    for (const item of page) {
+      const audioUrl = (item?.audioUrl || '').trim();
+      if (!audioUrl || seen.has(audioUrl)) continue;
+      seen.add(audioUrl);
+      _podcastPlaybackEpisodes.push(item);
+    }
+
+    _podcastPlaybackOffset = offset + page.length;
+    _podcastPlaybackHasMore = Boolean(data.hasMore) && page.length > 0;
+    _podcastPlaybackTotal = _toOptionalNumber(data.total);
+    _podcastPlaybackPageMessage = '';
+    return true;
+  } catch (error) {
+    if (requestId !== _podcastPlaybackPageRequestId
+        || queueGeneration !== _podcastPlaybackQueueGeneration
+        || _podcastRequestWasAborted(error, request)) return false;
+
+    console.error('Failed to load next podcast page', {
+      error,
+      feedUrl,
+      offset,
+    });
+    _podcastPlaybackPageMessage = 'Could not load the next page. Press Next to retry.';
+    if (typeof setStatus === 'function') setStatus(_podcastPlaybackPageMessage);
+    return false;
+  } finally {
+    if (_podcastPlaybackPageRequest === request) {
+      _podcastPlaybackPageRequest = null;
+      _podcastPlaybackPageLoading = false;
+      _syncPodcastPlaybackControls();
+    }
+  }
+}
+
+function _cancelPodcastPlaybackPageRequest({ clearMessage = false } = {}) {
+  const wasLoading = _podcastPlaybackPageLoading;
+  _podcastPlaybackQueueGeneration++;
+  _podcastPlaybackPageRequestId++;
+  _podcastPlaybackPageRequest?.controller?.abort();
+  _podcastPlaybackPageRequest = null;
+  _podcastPlaybackPageLoading = false;
+  if (clearMessage || wasLoading) _podcastPlaybackPageMessage = '';
+  _podcastServerPlaybackStarted = false;
+  _podcastServerAutoAdvanceHandled = false;
+  _syncPodcastPlaybackControls();
+}
+
+function podcastPlaybackStopped() {
+  _cancelPodcastPlaybackPageRequest();
+}
+
+function _clearPodcastPlaybackQueue() {
+  _podcastPlaybackEpisodes = [];
+  _podcastCurrentEpisodeIndex = -1;
+  _podcastPlaybackFeedUrl = '';
+  _podcastPlaybackShowTitle = '';
+  _podcastPlaybackOffset = 0;
+  _podcastPlaybackHasMore = false;
+  _podcastPlaybackTotal = null;
+  _podcastPlaybackPageMessage = '';
+  _podcastServerPlaybackStarted = false;
+  _podcastServerAutoAdvanceHandled = false;
+  _syncPodcastPlaybackControls();
 }
 
 function _syncPodcastPlaybackControls() {
   const prevBtn = document.getElementById('local-podcast-prev');
   const nextBtn = document.getElementById('local-podcast-next');
   const indexLabel = document.getElementById('local-podcast-index');
+  const pageStatus = document.getElementById('local-podcast-page-status');
   const isPodcast = typeof _localMediaType !== 'undefined' && (_localMediaType === 'Podcast' || _localMediaType === 'PodcastServer');
   const total = _podcastPlaybackEpisodes.length;
   const active = _podcastCurrentEpisodeIndex >= 0 && _podcastCurrentEpisodeIndex < total;
+  const canLoadNextPage = Boolean(_podcastPlaybackFeedUrl && _podcastPlaybackHasMore);
+  const atEnd = _podcastCurrentEpisodeIndex >= total - 1;
 
   if (prevBtn) prevBtn.style.display = isPodcast && total > 0 ? '' : 'none';
   if (nextBtn) nextBtn.style.display = isPodcast && total > 0 ? '' : 'none';
   if (indexLabel) indexLabel.style.display = isPodcast && total > 0 ? '' : 'none';
 
-  if (prevBtn) prevBtn.disabled = !active || _podcastCurrentEpisodeIndex <= 0;
-  if (nextBtn) nextBtn.disabled = !active || _podcastCurrentEpisodeIndex >= total - 1;
+  if (prevBtn) prevBtn.disabled = !active || _podcastPlaybackBusy || _podcastCurrentEpisodeIndex <= 0;
+  if (nextBtn) {
+    nextBtn.disabled = !active || _podcastPlaybackBusy || (atEnd && !canLoadNextPage);
+    nextBtn.title = _podcastPlaybackPageMessage.startsWith('Could not load')
+      ? 'Retry loading the next podcast page'
+      : (_podcastPlaybackBusy ? 'Podcast playback is changing' : 'Next episode');
+    nextBtn.setAttribute('aria-label', nextBtn.title);
+    nextBtn.setAttribute('aria-busy', String(_podcastPlaybackPageLoading));
+  }
 
   if (indexLabel) {
     indexLabel.textContent = active ? `Episode ${_podcastCurrentEpisodeIndex + 1} / ${total}` : '';
   }
+  if (pageStatus) {
+    const showStatus = isPodcast && total > 0 && Boolean(_podcastPlaybackPageMessage);
+    pageStatus.style.display = showStatus ? '' : 'none';
+    pageStatus.style.color = _podcastPlaybackPageMessage.startsWith('Could not load')
+      ? '#ff8f8f'
+      : 'var(--muted,#9aa8c2)';
+    pageStatus.textContent = showStatus ? _podcastPlaybackPageMessage : '';
+    pageStatus.setAttribute('aria-busy', String(_podcastPlaybackPageLoading));
+  }
+}
+
+function podcastHandleServerPlaybackStatus(playing, stalled, error) {
+  if (typeof _localMediaType === 'undefined' || _localMediaType !== 'PodcastServer') {
+    _podcastServerPlaybackStarted = false;
+    _podcastServerAutoAdvanceHandled = false;
+    return;
+  }
+
+  if (playing) {
+    _podcastServerPlaybackStarted = true;
+    _podcastServerAutoAdvanceHandled = false;
+    return;
+  }
+
+  if (stalled || error || !_radioIsPlaying || !_podcastServerPlaybackStarted || _podcastServerAutoAdvanceHandled) {
+    return;
+  }
+
+  _podcastServerAutoAdvanceHandled = true;
+  podcastNextEpisode({ autoAdvance: true }).catch((advanceError) => {
+    console.error('Podcast server auto-advance failed', advanceError);
+    if (typeof setStatus === 'function') setStatus('Podcast playback could not advance.');
+  });
 }
 
 function podcastPickTopic(topic) {
@@ -1061,16 +1416,10 @@ function podcastsResetFilters() {
   if (search) search.value = '';
   if (topic) topic.value = '';
   if (country) country.value = '';
-  if (_podcastSearchDebounceTimer) {
-    clearTimeout(_podcastSearchDebounceTimer);
-    _podcastSearchDebounceTimer = null;
-  }
+  _invalidatePodcastBrowseRequests();
 
   _podcastFavoritesOnly = false;
   _podcastLastSearch = { query: '', topic: '', country: '' };
-  _podcastShowsRequestId++;
-  _podcastEpisodesRequestId++;
-  _podcastDirectoryRequestId++;
   _podcastDirectoryLoading = true;
   _podcastShows = [];
   _podcastShowsOffset = 0;
@@ -1092,12 +1441,20 @@ function podcastsResetFilters() {
 }
 
 async function _loadPodcastDirectory() {
+  if (typeof currentMode !== 'undefined' && currentMode !== 'podcasts') {
+    if (!_podcastSelectedShow && !_podcastFavoritesOnly) _podcastBrowseResumeKind = 'directory';
+    return;
+  }
+
   if (_podcastSelectedShow || _podcastFavoritesOnly) {
     _podcastDirectoryLoading = false;
     return;
   }
 
   const requestId = ++_podcastDirectoryRequestId;
+  _podcastDirectoryRequest?.controller?.abort();
+  const request = _createPodcastRequest();
+  _podcastDirectoryRequest = request;
   _podcastDirectoryLoading = true;
   _podcastDirectory = [];
   const country = (document.getElementById('pcb-country')?.value || '').trim();
@@ -1110,7 +1467,7 @@ async function _loadPodcastDirectory() {
   try {
     const loadSection = async (topic, limit, take) => {
       try {
-        const shows = await _fetchPodcastShows({ country, topic, limit });
+        const shows = await _fetchPodcastShows({ country, topic, limit, request });
         if (requestId !== _podcastDirectoryRequestId) return false;
         if (shows.length > 0) {
           sections.push({ topic: topic || 'Top Podcasts', shows: shows.slice(0, take) });
@@ -1119,6 +1476,7 @@ async function _loadPodcastDirectory() {
         if (!_podcastSelectedShow && !_podcastFavoritesOnly) _renderPodcastDirectory();
         return true;
       } catch (error) {
+        if (requestId !== _podcastDirectoryRequestId || _podcastRequestWasAborted(error, request)) return false;
         failedSections++;
         console.warn('Failed to load podcast directory section', { topic: topic || 'Top Podcasts', error });
         return requestId === _podcastDirectoryRequestId;
@@ -1133,6 +1491,7 @@ async function _loadPodcastDirectory() {
     }
   } finally {
     if (requestId === _podcastDirectoryRequestId) {
+      if (_podcastDirectoryRequest === request) _podcastDirectoryRequest = null;
       _podcastDirectoryLoading = false;
       if (!_podcastSelectedShow) {
         if (_podcastFavoritesOnly) _renderPodcastShows();
@@ -1147,14 +1506,14 @@ async function _loadPodcastDirectory() {
   }
 }
 
-async function _fetchPodcastShows({ country, topic = '', limit = 12 }) {
+async function _fetchPodcastShows({ country, topic = '', limit = 12, request = null }) {
   const query = new URLSearchParams();
   if (country) query.set('country', country);
   if (topic) query.set('topic', topic);
   query.set('limit', String(limit));
 
   const url = '/api/podcasts/search?' + query.toString();
-  const r = await fetch(url);
+  const r = await fetch(url, request?.signal ? { signal: request.signal } : undefined);
   if (!r.ok) throw new Error(`podcast discovery request failed (${r.status})`);
   const data = await r.json();
   return Array.isArray(data.shows) ? data.shows : [];

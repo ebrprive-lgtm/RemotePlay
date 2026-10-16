@@ -2020,6 +2020,7 @@ function switchMode(mode, skipInitialBrowse = false) {
   const leavingRadio = currentMode === 'radio' && mode !== 'radio';
   console.log('[BOOTSTRAP] Leaving: video =', leavingVideo, ', music =', leavingMusic, ', podcasts =', leavingPodcasts, ', radio =', leavingRadio);
 
+  if (leavingPodcasts && typeof podcastsLeaveView === 'function') podcastsLeaveView();
   if (leavingMusic) {
     _cancelPendingPlaylistArtLoads();
     stopMusicPlaybackPoll();

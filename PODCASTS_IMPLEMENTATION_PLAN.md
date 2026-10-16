@@ -198,25 +198,54 @@ directory.
 
 **Primary file:** [Services/Web/WebServer.Handlers.Podcasts.cs](./Services/Web/WebServer.Handlers.Podcasts.cs).
 
-- [ ] Change the all-country top-pool merge to sample countries in rounds
+- [x] Change the all-country top-pool merge to sample countries in rounds
   (for example, one new unique show per country per round) instead of filling
   the result from the first country that reaches the limit.
-- [ ] Keep feed-URL deduplication, stable ordering between requests, the
+- [x] Keep feed-URL deduplication, stable ordering between requests, the
   existing result limit, and the daily top-pool cache.
-- [ ] Keep explicit country searches country-specific; do not change their
+- [x] Keep explicit country searches country-specific; do not change their
   filtering or ranking semantics as part of global balancing.
-- [ ] Bound the countries sampled and the number of results requested from
-  each source; keep calls sequential through the existing iTunes throttle and
-  retain early termination when sources are exhausted or the pool is full.
+- [x] Bound the countries sampled and the number of results requested from
+  each source; keep source calls sequential, preserve the existing iTunes
+  search throttle, and stop merging when sources are exhausted or the pool is
+  full.
 
 **Acceptance checks**
 
-- [ ] When multiple country sources have unique results, the global pool
+- [x] When multiple country sources have unique results, the global pool
   includes results from multiple sources before any one source fills the pool.
-- [ ] Duplicate feed URLs appear only once, and repeated requests against the
+- [x] Duplicate feed URLs appear only once, and repeated requests against the
   same cached pool return results in the same order.
-- [ ] Explicitly selected country results and current pagination contracts
+- [x] Explicitly selected country results and current pagination contracts
   remain unchanged.
+
+**Phase 3 implementation notes and limits**
+
+- Global top-pool generation samples the existing fixed order of ten
+  countries (`US`, `GB`, `CA`, `AU`, `DE`, `FR`, `ES`, `IT`, `NL`, `BE`).
+  Top-feed requests remain sequential, each source is asked for at most 200
+  shows, and the merged pool is capped at 200. The existing throttle for
+  `itunes.apple.com` search calls remains unchanged.
+- Results are merged one rank at a time across countries. Feed URLs are
+  trimmed during source mapping and deduplicated case-insensitively; the first
+  occurrence keeps its country metadata. Iteration stops when the pool is
+  full or all fetched country lists are exhausted.
+- The fixed country/result order and existing 24-hour all-country pool cache
+  provide stable results between requests. Explicit-country search and
+  fallback paths continue to fetch only the requested country.
+- An injectable catalog `HttpClient` was added to the `WebServer` constructor
+  so the discovery merge can be tested with deterministic Apple RSS/iTunes
+  responses without live provider calls.
+
+**Phase 3 verification**
+
+- [x] Podcast-focused tests passed: 80 passed, 0 failed. This includes
+  multi-country round ordering, feed-URL deduplication, cached ordering,
+  the 200-item pool cap with uneven source exhaustion, fallback pagination,
+  and explicit-country pagination.
+- [x] The complete `WebServerApiTests` selection ran: 56 passed; the existing
+  rate-limit test still fails with expected HTTP 429 / actual HTTP 200, matching
+  the previously documented baseline failure.
 
 ### Phase 4 — Cancel superseded requests and continue playback across feed pages
 
@@ -230,61 +259,106 @@ the episodes already loaded, even when the feed has another page.
 [WebAssets/app-radio.js](./WebAssets/app-radio.js),
 [WebAssets/index.html](./WebAssets/index.html).
 
-- [ ] Add `AbortController` handling to podcast directory, search, feed, and
+- [x] Add `AbortController` handling to podcast directory, search, feed, and
   load-more requests. Abort the prior request when a newer selection or query
   supersedes it, or when the user leaves the relevant view.
-- [ ] Keep request-generation checks as a second guard against late responses
+- [x] Keep request-generation checks as a second guard against late responses
   and browsers/environments where abort is unavailable. Do not present an
   intentional abort as a user-visible failure.
-- [ ] Track the active playback feed and its loaded offset/`hasMore`
+- [x] Track the active playback feed and its loaded offset/`hasMore`
   independently of the currently displayed show and browse results.
-- [ ] When Next (including automatic end-of-episode advance) reaches the end
+- [x] When Next (including automatic end-of-episode advance) reaches the end
   of the loaded page and `hasMore` is true, fetch the next page, append it to
   the playback list, and play the next episode exactly once.
-- [ ] Prevent double-advance and duplicate-page races; keep Previous/Next
+- [x] Prevent double-advance and duplicate-page races; keep Previous/Next
   disabled or visibly busy while a required page is loading.
-- [ ] On a failed next-page request, show an explicit error and a retry path;
+- [x] On a failed next-page request, show an explicit error and a retry path;
   do not silently skip episodes or discard the remaining queue.
-- [ ] Preserve the current playback queue when browsing another show or
+- [x] Preserve the current playback queue when browsing another show or
   returning to the directory, and preserve the existing radio/player mode,
   stop, and polling behavior.
 
 **Acceptance checks**
 
-- [ ] A slow old search/feed response cannot replace the current selection;
+- [x] A slow old search/feed response cannot replace the current selection;
   superseded requests are aborted where supported.
-- [ ] Advancing at a page boundary loads and plays the next episode without
+- [x] Advancing at a page boundary loads and plays the next episode without
   a duplicate or skipped episode, including automatic advance at end of
   playback.
-- [ ] Rapid/repeated Next clicks do not trigger multiple page loads or
+- [x] Rapid/repeated Next clicks do not trigger multiple page loads or
   multiple playback starts.
-- [ ] A failed page load leaves the existing playback state recoverable and
+- [x] A failed page load leaves the existing playback state recoverable and
   reports a clear error.
-- [ ] Browsing, route changes, local/server playback switching, and stop
+- [x] Browsing, route changes, local/server playback switching, and stop
   behavior do not corrupt or unexpectedly clear the active queue.
+
+**Phase 4 verification**
+
+- [x] Temporary Deno mocked checks passed: 7 playback/cancellation checks,
+  plus focused view-exit/re-entry and final local pause/resume checks (1 each).
+  The temporary harness files were removed; no JavaScript test dependency or
+  permanent test harness was added.
+- [x] Deno syntax checks and editor diagnostics passed for the modified
+  JavaScript files; `git diff --check` passed.
 
 ### Phase 5 — Regression verification and completion
 
-- [ ] Add focused deterministic API tests for redirect validation, DNS/address
+- [x] Add focused deterministic API tests for redirect validation, DNS/address
   rejection, feed caching, cache limits, and balanced global discovery.
-- [ ] Add focused frontend tests for cancellation and queue page-boundary
-  behavior if a suitable lightweight harness is available; otherwise run and
-  record targeted Deno/browser checks without introducing an unrelated
-  dependency stack.
-- [ ] Run the focused podcast API tests:
+- [x] No JavaScript test runner is configured, so run targeted Deno and browser
+  checks for cancellation, queue page-boundary behavior, and the podcast UI
+  without adding an unrelated dependency stack.
+- [x] Run the focused podcast API tests:
 
   ```powershell
-  dotnet test .\RemotePlay.Tests\RemotePlay.Tests.csproj --filter "FullyQualifiedName~Podcast"
+  dotnet test .\RemotePlay.Tests\RemotePlay.Tests.csproj --configuration PodcastCacheVerification --filter "FullyQualifiedName~Podcast" --no-restore
   ```
 
-- [ ] Run the complete API test class and compare failures with the documented
+- [x] Run the complete API test class and compare failures with the documented
   rate-limit baseline. Investigate any new or changed failure.
-- [ ] Run the applicable JavaScript syntax/behavior checks and verify the
+
+  ```powershell
+  dotnet test .\RemotePlay.Tests\RemotePlay.Tests.csproj --configuration PodcastCacheVerification --filter "FullyQualifiedName~WebServerApiTests" --no-restore
+  ```
+
+- [x] Run the applicable JavaScript syntax/behavior checks and verify the
   podcast entry, topic/country selection, feed paging, and playback controls
   in the web UI.
-- [ ] Run `git diff --check`; review the final diff for unrelated changes.
-- [ ] Update this plan's checkboxes only after the corresponding behavior and
+- [x] Run `git diff --check`; review the final diff for unrelated changes.
+- [x] Update this plan's checkboxes only after the corresponding behavior and
   tests have been verified.
+
+**Phase 5 verification**
+
+- Podcast API selection: 80 passed, 0 failed.
+- `WebServerApiTests`: 56 passed; the existing rate-limit test still expects
+  HTTP 429 but receives HTTP 200. Running that test alone reproduced the same
+  failure, matching the documented baseline.
+
+- Deno syntax checks and editor diagnostics passed for the modified frontend
+  and API files. Syntax check command:
+
+  ```powershell
+  deno check --no-config .\WebAssets\app-podcasts.js .\WebAssets\app-local.js .\WebAssets\app-radio.js .\WebAssets\app-radio-status.js .\WebAssets\app-library.js
+  ```
+
+- A mocked browser smoke test using the real frontend bundle confirmed
+  immediate podcast recommendations, Technology/NL filtering, episode feed
+  paging from 2 to 4 items, visible playback controls, and Next advancing from
+  Episode 2 / 2 to Episode 3 / 4 across the feed-page boundary.
+- `WebAssetRegressionTests` command:
+
+  ```powershell
+  dotnet test .\RemotePlay.Tests\RemotePlay.Tests.csproj --configuration PodcastCacheVerification --filter "FullyQualifiedName~WebAssetRegressionTests" --no-restore
+  ```
+
+  Result: 18 passed; the unrelated
+  `VideoFolderRowsDoNotUseBroadYearPrefixSplit` assertion fails because it
+  rejects any `split('-')` in the concatenated app bundle, including the
+  unchanged `WebAssets/app-live-tv.js` usage. No unrelated video code was
+  changed.
+- `git diff --check` passed. The temporary browser mock server was removed;
+  no JavaScript test dependency or permanent test harness was added.
 
 ## Dependencies and delivery order
 

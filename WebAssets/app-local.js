@@ -123,15 +123,25 @@ async function localToggle() {
   if (a.paused) a.play().catch(() => {});
   else a.pause();
 }
-async function localStop(keepPlayerVisible = false) {
+async function localStop(keepPlayerVisible = false, options = {}) {
+  const preservePodcastQueue = options.preservePodcastQueue === true;
   if (_localMediaType === 'PodcastServer') {
-    if (typeof radioDismiss === 'function') await radioDismiss();
+    if (!preservePodcastQueue && typeof podcastPlaybackStopped === 'function') podcastPlaybackStopped();
+    if (typeof radioDismiss === 'function') {
+      await radioDismiss({ preservePodcastQueue: true });
+    }
     document.body.classList.remove('podcast-player-mode');
     _clearLocalPlayerMeta();
     _localSeekDragging = false;
     _localMediaType = 'Local';
     if (typeof _syncPodcastPlaybackControls === 'function') _syncPodcastPlaybackControls();
     return;
+  }
+
+  if (_localMediaType === 'Podcast'
+      && !preservePodcastQueue
+      && typeof podcastPlaybackStopped === 'function') {
+    podcastPlaybackStopped();
   }
 
   const caller = (new Error()).stack ? (new Error()).stack.split('\n').slice(1,3).join(' | ') : 'unknown';

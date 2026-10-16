@@ -987,6 +987,23 @@ async function radioPlayStation(encUrl, encName, encCountry, encTag, encStation)
 }
 
 async function radioToggle() {
+  if (isPlayLocal()
+      && typeof _localMediaType !== 'undefined'
+      && _localMediaType === 'Podcast') {
+    const audio = typeof _getLocalAudio === 'function' ? _getLocalAudio() : null;
+    if (!audio) return;
+    _radioIsPlaying = audio.paused;
+    await localToggle();
+    updateRadioBar(
+      _radioCurrentName,
+      _radioCurrentCountry,
+      _radioCurrentTag,
+      _radioIsPlaying,
+      _radioCurrentStation
+    );
+    return;
+  }
+
   if (_radioIsPlaying) {
     if (isPlayLocal()) {
       // Stop local audio and update bar; don't touch server
@@ -1023,14 +1040,22 @@ async function radioToggle() {
   }
 }
 
-async function radioStop() {
+async function radioStop(options = {}) {
+  const preservePodcastQueue = options.preservePodcastQueue === true;
+  const stoppingPodcast = !preservePodcastQueue
+    && typeof _localMediaType !== 'undefined'
+    && (_localMediaType === 'Podcast' || _localMediaType === 'PodcastServer');
+  if (stoppingPodcast && typeof podcastPlaybackStopped === 'function') {
+    podcastPlaybackStopped();
+  }
+
   await fetch('/api/radio/stop', { method: 'POST' });
   _radioIsPlaying = false;
   // Only stop local audio when in local-play mode; server-mode stop has nothing local to clean up.
   if (isPlayLocal()
       && !(typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer')
       && typeof localStop === 'function') {
-    await localStop();
+    await localStop(false, { preservePodcastQueue: preservePodcastQueue || stoppingPodcast });
   }
   // Keep radio-player-docked so the bar stays visible — the user can resume from here.
   updateRadioBar(
@@ -1042,9 +1067,10 @@ async function radioStop() {
   );
 }
 
-async function radioDismiss() {
+async function radioDismiss(options = {}) {
+  const preservePodcastQueue = options.preservePodcastQueue === true;
   sleepCancel();
-  await radioStop();
+  await radioStop({ preservePodcastQueue });
   _radioCurrentUrl = '';
   _radioCurrentName = '';
   _radioCurrentCountry = '';
