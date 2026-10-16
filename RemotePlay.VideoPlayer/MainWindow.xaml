@@ -15,7 +15,107 @@
         Background="Black"
         ShowInTaskbar="False"
         Loaded="Window_Loaded"
-        KeyDown="Window_KeyDown">
+        KeyDown="Window_KeyDown"
+        MouseMove="Window_MouseMove"
+        Deactivated="Window_Deactivated">
     <!-- VideoView created in code-behind to avoid XAML parse-time VLC native library dependency -->
-    <Grid x:Name="VideoHost" Background="Black" />
+    <Grid x:Name="VideoHost" Background="Black" ClipToBounds="True">
+        <Border x:Name="PlaybackControls"
+                Panel.ZIndex="100"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Bottom"
+                Margin="70,0,70,64"
+                Padding="22,14,22,12"
+                Background="#D91B1B1B"
+                CornerRadius="14"
+                Visibility="Collapsed">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Slider x:Name="SeekSlider"
+                        Grid.Row="0"
+                        Minimum="0"
+                        Maximum="1"
+                        Value="0"
+                        Height="42"
+                        IsMoveToPointEnabled="True"
+                        IsEnabled="False"
+                        PreviewMouseLeftButtonDown="SeekSlider_PreviewMouseLeftButtonDown"
+                        PreviewMouseLeftButtonUp="SeekSlider_PreviewMouseLeftButtonUp"
+                        ValueChanged="SeekSlider_ValueChanged">
+                    <Slider.Template>
+                        <ControlTemplate TargetType="{x:Type Slider}">
+                            <Grid Height="42">
+                                <Track x:Name="PART_Track"
+                                       Minimum="{TemplateBinding Minimum}"
+                                       Maximum="{TemplateBinding Maximum}"
+                                       Value="{TemplateBinding Value}"
+                                       Orientation="Horizontal"
+                                       IsDirectionReversed="{TemplateBinding IsDirectionReversed}"
+                                       VerticalAlignment="Center">
+                                    <Track.DecreaseRepeatButton>
+                                        <RepeatButton Command="Slider.DecreaseLarge"
+                                                      Focusable="False"
+                                                      IsTabStop="False"
+                                                      Background="Transparent"
+                                                      BorderThickness="0"
+                                                      HorizontalContentAlignment="Stretch"
+                                                      VerticalContentAlignment="Center">
+                                            <Border Height="8" Background="#E94560" CornerRadius="4"/>
+                                        </RepeatButton>
+                                    </Track.DecreaseRepeatButton>
+                                    <Track.IncreaseRepeatButton>
+                                        <RepeatButton Command="Slider.IncreaseLarge"
+                                                      Focusable="False"
+                                                      IsTabStop="False"
+                                                      Background="Transparent"
+                                                      BorderThickness="0"
+                                                      HorizontalContentAlignment="Stretch"
+                                                      VerticalContentAlignment="Center">
+                                            <Border Height="8" Background="#66FFFFFF" CornerRadius="4"/>
+                                        </RepeatButton>
+                                    </Track.IncreaseRepeatButton>
+                                    <Track.Thumb>
+                                        <Thumb Width="24" Height="24" Focusable="False">
+                                            <Thumb.Template>
+                                                <ControlTemplate TargetType="{x:Type Thumb}">
+                                                    <Ellipse Fill="White" Stroke="#E94560" StrokeThickness="3"/>
+                                                </ControlTemplate>
+                                            </Thumb.Template>
+                                        </Thumb>
+                                    </Track.Thumb>
+                                </Track>
+                            </Grid>
+                        </ControlTemplate>
+                    </Slider.Template>
+                </Slider>
+
+                <DockPanel Grid.Row="1" LastChildFill="False" Margin="2,6,0,0">
+                    <TextBlock x:Name="PlaybackTimeText"
+                               Text="00:00 / --:--"
+                               Foreground="White"
+                               FontSize="18"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center"/>
+                    <Button x:Name="StopPlaybackButton"
+                            DockPanel.Dock="Right"
+                            Content="Stop"
+                            MinWidth="92"
+                            Height="42"
+                            Margin="20,0,0,0"
+                            Padding="18,0"
+                            Background="#E94560"
+                            Foreground="White"
+                            FontSize="16"
+                            FontWeight="Bold"
+                            BorderThickness="0"
+                            Cursor="Hand"
+                            Click="StopPlaybackButton_Click"/>
+                </DockPanel>
+            </Grid>
+        </Border>
+    </Grid>
 </Window>

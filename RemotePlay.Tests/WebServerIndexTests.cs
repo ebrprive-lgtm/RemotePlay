@@ -171,6 +171,31 @@ public sealed class WebServerIndexTests : IDisposable
         Assert.Equal(@"C:\Movies\Action\Film.mp4", result);
     }
 
+    [Fact]
+    public void FindIndexedFilePathByName_MatchesUniqueTargetWhenPunctuationDiffers()
+    {
+        const string actualPath = @"C:\Movies\2010 - The Secret World Of Arrietty (Kari Gurashi No Arietti).mkv";
+        SeedIndex([MakeFile(actualPath)]);
+
+        var result = _server.FindIndexedFilePathByName(
+            "2010 - The Secret World Of Arrietty (Kari-gurashi No Arietti).mkv");
+
+        Assert.Equal(actualPath, result);
+    }
+
+    [Fact]
+    public void FindIndexedFilePathByName_AmbiguousPunctuationInsensitiveMatch_ReturnsNull()
+    {
+        SeedIndex([
+            MakeFile(@"C:\Movies\Film-Name.mkv"),
+            MakeFile(@"C:\Movies\Film Name.mkv"),
+        ]);
+
+        var result = _server.FindIndexedFilePathByName("Film_Name.mkv");
+
+        Assert.Null(result);
+    }
+
     // ── GetIndexedPathSet ────────────────────────────────────────────────────
 
     [Fact]

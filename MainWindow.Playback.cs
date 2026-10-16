@@ -5,6 +5,7 @@ using System.Windows.Threading;
 using System.Windows.Media.Animation;
 using LibVLCSharp.Shared;
 using LibVLCSharp.Shared.Structures;
+using RemotePlay.Helpers;
 using RemotePlay.Models;
 using System.Diagnostics.CodeAnalysis;
 
@@ -781,14 +782,16 @@ public partial class MainWindow
         // because the background connection task is async and IsPlaying flips true only after
         // the MediaFoundationReader opens � typically 5-30 s after Play() is called.
         var radioStatus = _radioPlayer.GetStatus();
+        var isolatedVideoActive = IsIsolatedVideoActive;
         var audioOnly = (radioStatus.IsPlaying || !string.IsNullOrEmpty(radioStatus.StationUrl))
                      || _musicPlayer.GetStatus().IsPlaying
                      || (_webServer?.BrowserLocalPlaying ?? false);
         if (FindName("IdleOverlayContent") is UIElement content)
-            content.Visibility = audioOnly ? Visibility.Collapsed : Visibility.Visible;
+            content.Visibility = audioOnly || isolatedVideoActive ? Visibility.Collapsed : Visibility.Visible;
 
         // Refresh the QR image in case it wasn't loaded yet when UpdateServerUrlDisplay ran.
         if (!audioOnly
+            && !isolatedVideoActive
             && _serverUrl is not null
             && FindName("FullscreenQrImage") is System.Windows.Controls.Image qrImage
             && qrImage.Source is null)
@@ -802,8 +805,8 @@ public partial class MainWindow
         // to avoid covering and blocking the window.
         if (_isVideoMode)
         {
-            IdleOverlay.Visibility = Visibility.Visible;
-            IdleOverlay.IsHitTestVisible = true;
+            IdleOverlay.Visibility = isolatedVideoActive ? Visibility.Collapsed : Visibility.Visible;
+            IdleOverlay.IsHitTestVisible = !isolatedVideoActive;
         }
 
         // Start karaoke lyric overlay when music is playing in fullscreen
@@ -1622,18 +1625,13 @@ public partial class MainWindow
         // Saturation uses 1.0 as neutral.
         try
         {
-            var detailBoost = (float)Math.Clamp(_sharpness, 0, 1);
-            var contrast = 1f + (detailBoost * 1.35f);
-            var gamma = 1f + (detailBoost * 0.14f);
-            // Keep brightness near-neutral across sharpness levels and avoid over-bright output at high sharpness.
-            var compensationFactor = 1 + (detailBoost * 0.05f) - (detailBoost * detailBoost * 0.12f);
-            var compensatedBrightness = Math.Clamp((_brightness * 2) * compensationFactor, 0, 2);
+            var adjustments = VideoAdjustmentMapper.Map(_brightness, _sharpness, _saturation);
 
             _mediaPlayer.SetAdjustInt(VideoAdjustOption.Enable, 1);
-            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Brightness, (float)compensatedBrightness);
-            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Contrast, contrast);
-            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Gamma, gamma);
-            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Saturation, (float)Math.Clamp(_saturation, 0, 2));
+            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Brightness, adjustments.Brightness);
+            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Contrast, adjustments.Contrast);
+            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Gamma, adjustments.Gamma);
+            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Saturation, adjustments.Saturation);
             nativeApplied = true;
         }
         catch (Exception ex)

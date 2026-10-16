@@ -40,17 +40,39 @@ internal sealed partial class WebServer
     }
 
     /// <summary>
-    /// Finds a video by its file name in the in-memory library index.
-    /// Returns <c>null</c> when no indexed target has that name.
+    /// Finds a video by its file name in the in-memory library index. If there is no exact
+    /// match, a unique match ignoring punctuation and spacing may be returned for link repair.
+    /// Returns <c>null</c> when there is no unique match.
     /// </summary>
     public string? FindIndexedFilePathByName(string fileName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(fileName);
 
-        return _libraryIndex
-            .FirstOrDefault(f => string.Equals(Path.GetFileName(f.FilePath), fileName, StringComparison.OrdinalIgnoreCase))
-            ?.FilePath;
+        var index = _libraryIndex;
+        var exactMatch = index.FirstOrDefault(f =>
+            string.Equals(Path.GetFileName(f.FilePath), fileName, StringComparison.OrdinalIgnoreCase));
+        if (exactMatch is not null)
+            return exactMatch.FilePath;
+
+        var normalizedName = NormalizeFileNameForMatching(fileName);
+        if (normalizedName.Length == 0)
+            return null;
+
+        var matches = index
+            .Where(f => string.Equals(
+                NormalizeFileNameForMatching(Path.GetFileName(f.FilePath)),
+                normalizedName,
+                StringComparison.Ordinal))
+            .Select(f => f.FilePath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .ToArray();
+
+        return matches.Length == 1 ? matches[0] : null;
     }
+
+    private static string NormalizeFileNameForMatching(string fileName) =>
+        string.Concat(fileName.Where(char.IsLetterOrDigit).Select(char.ToUpperInvariant));
 
     /// <summary>
     /// Returns a set of all paths tracked by the current index: for regular files this is

@@ -527,7 +527,7 @@ internal sealed partial class WebServer
 
         StopAllServerPlayers(stopVideoPlayer: false);
         _callbacks.Play(filePath);
-        Logger.Info("Playback", $"Playing Video: '{Path.GetFileName(filePath)}' on Server");
+        Logger.Info("Playback", $"Video playback requested: '{Path.GetFileName(filePath)}' on Server");
         TrySendResponse(ctx, 200, "text/plain", "OK");
         ScheduleSsePush(delayMs: 300);
     }

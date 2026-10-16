@@ -66,4 +66,38 @@
     <Folder Include="Services\Ipc\" />
   </ItemGroup>
 
+  <Target Name="BuildVideoPlayerForRemotePlay" BeforeTargets="CopyVideoPlayerToBuildOutput;CopyVideoPlayerToPublishOutput" Condition="'$(DesignTimeBuild)' != 'true'">
+    <MSBuild Projects="$(MSBuildProjectDirectory)\RemotePlay.VideoPlayer\RemotePlay.VideoPlayer.csproj"
+             Targets="Build"
+             Properties="Configuration=$(Configuration)" />
+  </Target>
+
+  <Target Name="CopyVideoPlayerToBuildOutput" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
+    <PropertyGroup>
+      <_VideoPlayerBuildOutput>$(MSBuildProjectDirectory)\RemotePlay.VideoPlayer\bin\$(Configuration)\net8.0-windows\win-x64</_VideoPlayerBuildOutput>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_VideoPlayerBuildOutput)\RemotePlay.VideoPlayer.exe')"
+           Text="The isolated video player was not built at '$(_VideoPlayerBuildOutput)'. Ensure RemotePlay.VideoPlayer builds successfully." />
+    <ItemGroup>
+      <_VideoPlayerBuildFiles Include="$(_VideoPlayerBuildOutput)\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_VideoPlayerBuildFiles)"
+          DestinationFiles="@(_VideoPlayerBuildFiles->'$(TargetDir)RemotePlay.VideoPlayer\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyVideoPlayerToPublishOutput" AfterTargets="Publish" Condition="'$(DesignTimeBuild)' != 'true'">
+    <PropertyGroup>
+      <_VideoPlayerBuildOutput>$(MSBuildProjectDirectory)\RemotePlay.VideoPlayer\bin\$(Configuration)\net8.0-windows\win-x64</_VideoPlayerBuildOutput>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_VideoPlayerBuildOutput)\RemotePlay.VideoPlayer.exe')"
+           Text="The isolated video player was not built at '$(_VideoPlayerBuildOutput)'. Ensure RemotePlay.VideoPlayer builds successfully." />
+    <ItemGroup>
+      <_VideoPlayerPublishFiles Include="$(_VideoPlayerBuildOutput)\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_VideoPlayerPublishFiles)"
+          DestinationFiles="@(_VideoPlayerPublishFiles->'$(PublishDir)RemotePlay.VideoPlayer\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -7,8 +8,10 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Input;
 using System.Windows.Forms;
+using System.Windows.Threading;
 using LibVLCSharp.Shared;
 using LibVLCSharp.WPF;
+using RemotePlay.Helpers;
 using RemotePlay.VideoPlayer.Ipc;
 
 namespace RemotePlay.VideoPlayer;
@@ -18,11 +21,12 @@ namespace RemotePlay.VideoPlayer;
 /// </summary>
 public partial class MainWindow : Window
 {
-    private const uint SwpNoZOrder = 0x0004;
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpFrameChanged = 0x0020;
+    private static readonly nint HwndTopmost = new(-1);
 
     private readonly string _instanceId;
+    private readonly int? _startupDisplayIndex;
     private IpcServer? _ipcServer;
     private LibVLC? _libVlc;
     private MediaPlayer? _mediaPlayer;
@@ -32,7 +36,7 @@ public partial class MainWindow : Window
     private bool _isPaused;
     private string? _currentFilePath;
     private double _volume = 1.0;
-    private double _brightness;
+    private double _brightness = 0.5;
     private double _saturation = 1.0;
     private double _sharpness;
     private double _zoom = 1.0;
@@ -42,38 +46,61 @@ public partial class MainWindow : Window
     private int? _lastSubtitleTrackId;
     private int? _lastAudioTrackId;
     private bool _hasSubtitles;
+    private bool _isSeeking;
+    private bool _hasLastPointerPosition;
+    private NativePoint _lastPointerPosition;
+    private readonly DispatcherTimer _pointerTrackingTimer;
+    private readonly DispatcherTimer _controlsAutoHideTimer;
+    private readonly DispatcherTimer _playbackProgressTimer;
 
     public MainWindow()
     {
         InitializeComponent();
 
+        _pointerTrackingTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+        _pointerTrackingTimer.Tick += PointerTrackingTimer_Tick;
+        _controlsAutoHideTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2500) };
+        _controlsAutoHideTimer.Tick += ControlsAutoHideTimer_Tick;
+        _playbackProgressTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+        _playbackProgressTimer.Tick += PlaybackProgressTimer_Tick;
+
         // Get instance ID from command line arguments
         var args = Environment.GetCommandLineArgs();
         _instanceId = args.Length > 1 ? args[1] : Guid.NewGuid().ToString();
+        _startupDisplayIndex = args.Length > 2 && int.TryParse(args[2], out var displayIndex)
+            ? displayIndex
+            : null;
+        SourceInitialized += Window_SourceInitialized;
 
         PlayerDiagnostics.Info($"Main window created for instance {_instanceId}");
         Console.WriteLine($"[VideoPlayer] Starting with instance ID: {_instanceId}");
+    }
+
+    private void Window_SourceInitialized(object? sender, EventArgs e)
+    {
+        if (_startupDisplayIndex is not { } displayIndex)
+        {
+            Console.WriteLine("[VideoPlayer] [1/7] No display arg — using default position");
+            return;
+        }
+
+        Console.WriteLine($"[VideoPlayer] [1/7] Positioning on display {displayIndex} before first presentation");
+        PositionOnDisplay(displayIndex);
     }
 
     private async void Window_Loaded(object sender, RoutedEventArgs e)
     {
         try
         {
-            PlayerDiagnostics.Info("Window loaded; starting IPC server and LibVLC initialization");
-            Console.WriteLine($"[VideoPlayer] [1/7] Window_Loaded — instance: {_instanceId}");
+            if (GetCursorPos(out var initialPointerPosition))
+            {
+                _lastPointerPosition = initialPointerPosition;
+                _hasLastPointerPosition = true;
+            }
+            _pointerTrackingTimer.Start();
 
-            // Position on the correct monitor
-            var args = Environment.GetCommandLineArgs();
-            if (args.Length > 2 && int.TryParse(args[2], out var displayIndex))
-            {
-                Console.WriteLine($"[VideoPlayer] [2/7] Positioning on display {displayIndex}");
-                PositionOnDisplay(displayIndex);
-                Console.WriteLine($"[VideoPlayer] [2/7] Positioned — Left={Left:F0} Top={Top:F0} Width={Width:F0} Height={Height:F0}");
-            }
-            else
-            {
-                Console.WriteLine("[VideoPlayer] [2/7] No display arg — using default position");
-            }
+            PlayerDiagnostics.Info("Window loaded; starting IPC server and LibVLC initialization");
+            Console.WriteLine($"[VideoPlayer] [2/7] Window_Loaded — instance: {_instanceId}");
 
             // Start the IPC server FIRST so the main app can connect while LibVLC loads.
             Console.WriteLine("[VideoPlayer] [3/7] Starting IPC server...");
@@ -142,7 +169,7 @@ public partial class MainWindow : Window
                 var pending = _pendingPlayCommand;
                 _pendingPlayCommand = null;
                 Console.WriteLine($"[VideoPlayer] Scheduling buffered PlayCommand (after HWND ready): {pending.FilePath}");
-                Dispatcher.BeginInvoke(() => ExecutePlay(pending), System.Windows.Threading.DispatcherPriority.Loaded);
+                QueuePlayCommand(pending);
             }
         }
         catch (Exception ex)
@@ -161,29 +188,72 @@ public partial class MainWindow : Window
         try
         {
             var screens = Screen.AllScreens;
-            if (displayIndex >= 0 && displayIndex < screens.Length)
-            {
-                var screen = screens[displayIndex];
-                var bounds = screen.Bounds;
+            if (screens.Length == 0)
+                throw new InvalidOperationException("No display detected.");
 
-                WindowState = WindowState.Normal;
-                SetWindowPos(
+            var targetIndex = displayIndex;
+            if (targetIndex < 0 || targetIndex >= screens.Length)
+            {
+                var primaryDeviceName = Screen.PrimaryScreen?.DeviceName;
+                targetIndex = Array.FindIndex(screens, screen =>
+                    string.Equals(screen.DeviceName, primaryDeviceName, StringComparison.OrdinalIgnoreCase));
+                if (targetIndex < 0)
+                    targetIndex = 0;
+                PlayerDiagnostics.Info($"Requested display {displayIndex} is unavailable; using display {targetIndex}");
+            }
+
+            var bounds = screens[targetIndex].Bounds;
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            WindowStyle = WindowStyle.None;
+            ResizeMode = ResizeMode.NoResize;
+            Topmost = true;
+            WindowState = WindowState.Normal;
+
+            if (!SetWindowPos(
                     new WindowInteropHelper(this).Handle,
-                    nint.Zero,
+                    HwndTopmost,
                     bounds.Left,
                     bounds.Top,
                     bounds.Width,
                     bounds.Height,
-                    SwpNoZOrder | SwpNoActivate | SwpFrameChanged);
-
-                Console.WriteLine($"[VideoPlayer] Positioned on display {displayIndex}: {bounds}");
+                    SwpNoActivate | SwpFrameChanged))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
             }
+
+            PlayerDiagnostics.Info($"Positioned fullscreen on display {targetIndex}: {bounds}");
+            Console.WriteLine($"[VideoPlayer] Positioned on display {targetIndex}: {bounds}");
         }
         catch (Exception ex)
         {
+            PlayerDiagnostics.Error("Failed to position fullscreen player window", ex);
             Console.WriteLine($"[VideoPlayer] Failed to position on display: {ex.Message}");
         }
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetCursorPos(out NativePoint point);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(nint hWnd, out NativeRect rect);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetWindowPos(
@@ -200,9 +270,217 @@ public partial class MainWindow : Window
         if (e.Key == Key.Escape)
         {
             PlayerDiagnostics.Info("Escape pressed; minimizing player window");
+            HidePlaybackControls();
+            SetPlayerCursorVisible(true);
             WindowState = WindowState.Minimized;
             e.Handled = true;
         }
+    }
+
+    private void Window_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (GetCursorPos(out var position))
+            HandlePointerPosition(position);
+    }
+
+    private void Window_Deactivated(object? sender, EventArgs e)
+    {
+        HidePlaybackControls();
+        SetPlayerCursorVisible(true);
+    }
+
+    private void PointerTrackingTimer_Tick(object? sender, EventArgs e)
+    {
+        if (WindowState == WindowState.Minimized)
+        {
+            HidePlaybackControls();
+            SetPlayerCursorVisible(true);
+            return;
+        }
+
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle != nint.Zero
+            && GetCursorPos(out var position)
+            && GetWindowRect(handle, out var bounds))
+        {
+            HandlePointerPosition(position, bounds);
+        }
+    }
+
+    private void HandlePointerPosition(NativePoint position)
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle == nint.Zero || !GetWindowRect(handle, out var bounds))
+            return;
+
+        HandlePointerPosition(position, bounds);
+    }
+
+    private void HandlePointerPosition(NativePoint position, NativeRect bounds)
+    {
+        // VLC renders in a child HWND, so WPF mouse events alone miss some pointer movement.
+        var moved = !_hasLastPointerPosition
+            || position.X != _lastPointerPosition.X
+            || position.Y != _lastPointerPosition.Y;
+        _lastPointerPosition = position;
+        _hasLastPointerPosition = true;
+
+        var insideWindow = position.X >= bounds.Left
+            && position.X < bounds.Right
+            && position.Y >= bounds.Top
+            && position.Y < bounds.Bottom;
+
+        if (!insideWindow && !_isSeeking)
+        {
+            HidePlaybackControls();
+            SetPlayerCursorVisible(true);
+            return;
+        }
+
+        if (insideWindow && moved)
+            ShowPlaybackControls();
+    }
+
+    private void ShowPlaybackControls()
+    {
+        SetPlayerCursorVisible(true);
+        if (string.IsNullOrWhiteSpace(_currentFilePath) || _mediaPlayer is null)
+            return;
+
+        PlaybackControls.Visibility = Visibility.Visible;
+        UpdatePlaybackControlsProgress();
+        _controlsAutoHideTimer.Stop();
+        if (!_isSeeking)
+            _controlsAutoHideTimer.Start();
+    }
+
+    private void HidePlaybackControls()
+    {
+        _controlsAutoHideTimer.Stop();
+        PlaybackControls.Visibility = Visibility.Collapsed;
+    }
+
+    private void ControlsAutoHideTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_isSeeking)
+        {
+            _controlsAutoHideTimer.Start();
+            return;
+        }
+
+        HidePlaybackControls();
+        SetPlayerCursorVisible(WindowState == WindowState.Minimized || !IsPointerInsideWindow());
+    }
+
+    private bool IsPointerInsideWindow()
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        return handle != nint.Zero
+            && GetCursorPos(out var position)
+            && GetWindowRect(handle, out var bounds)
+            && position.X >= bounds.Left
+            && position.X < bounds.Right
+            && position.Y >= bounds.Top
+            && position.Y < bounds.Bottom;
+    }
+
+    private void SetPlayerCursorVisible(bool visible)
+    {
+        Cursor = visible
+            ? System.Windows.Input.Cursors.Arrow
+            : System.Windows.Input.Cursors.None;
+        if (_videoView is not null)
+            _videoView.Cursor = Cursor;
+    }
+
+    private void PlaybackProgressTimer_Tick(object? sender, EventArgs e) =>
+        UpdatePlaybackControlsProgress();
+
+    private void UpdatePlaybackControlsProgress()
+    {
+        var duration = GetDurationSeconds();
+        if (duration <= 0)
+        {
+            SeekSlider.IsEnabled = false;
+            SeekSlider.Maximum = 1;
+            if (!_isSeeking)
+                SeekSlider.Value = 0;
+            PlaybackTimeText.Text = $"00:00 / {FormatPlaybackTime(duration)}";
+            return;
+        }
+
+        SeekSlider.Maximum = duration;
+        SeekSlider.IsEnabled = !string.IsNullOrWhiteSpace(_currentFilePath);
+
+        var position = Math.Clamp(GetPositionSeconds(), 0, duration);
+        if (!_isSeeking)
+            SeekSlider.Value = position;
+
+        PlaybackTimeText.Text = $"{FormatPlaybackTime(_isSeeking ? SeekSlider.Value : position)} / {FormatPlaybackTime(duration)}";
+    }
+
+    private static string FormatPlaybackTime(double seconds)
+    {
+        var totalSeconds = Math.Max(0, (long)Math.Floor(seconds));
+        var hours = totalSeconds / 3600;
+        return hours > 0
+            ? $"{hours}:{totalSeconds % 3600 / 60:00}:{totalSeconds % 60:00}"
+            : $"{totalSeconds / 60:00}:{totalSeconds % 60:00}";
+    }
+
+    private void SeekSlider_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (GetDurationSeconds() <= 0 || string.IsNullOrWhiteSpace(_currentFilePath))
+            return;
+
+        _isSeeking = true;
+        _controlsAutoHideTimer.Stop();
+        ShowPlaybackControls();
+    }
+
+    private void SeekSlider_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isSeeking)
+            return;
+
+        _isSeeking = false;
+        SeekToSeconds(SeekSlider.Value);
+        UpdatePlaybackControlsProgress();
+        ShowPlaybackControls();
+    }
+
+    private void SeekSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_isSeeking)
+            PlaybackTimeText.Text = $"{FormatPlaybackTime(SeekSlider.Value)} / {FormatPlaybackTime(GetDurationSeconds())}";
+    }
+
+    private void StopPlaybackButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            StopPlayback();
+            WindowState = WindowState.Minimized;
+        }
+        catch (Exception ex)
+        {
+            PlayerDiagnostics.Error("Stop button failed", ex);
+        }
+    }
+
+    private void StopPlayback()
+    {
+        _mediaPlayer?.Stop();
+        _currentFilePath = null;
+        _activePlayCommand = null;
+        _pendingPlayCommand = null;
+        _isPaused = false;
+        _hasSubtitles = false;
+        _isSeeking = false;
+        _playbackProgressTimer.Stop();
+        HidePlaybackControls();
+        SetPlayerCursorVisible(true);
+        UpdatePlaybackControlsProgress();
     }
 
     private void RestoreWindowForPlayback()
@@ -213,6 +491,19 @@ public partial class MainWindow : Window
         PlayerDiagnostics.Info("Restoring minimized player window for playback");
         WindowState = WindowState.Maximized;
         Activate();
+    }
+
+    private void QueuePlayCommand(PlayCommand cmd)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            RestoreWindowForPlayback();
+            PositionOnDisplay(cmd.TargetDisplayIndex);
+            UpdateLayout();
+            VideoHost.UpdateLayout();
+            _videoView?.UpdateLayout();
+            ExecutePlay(cmd);
+        }, DispatcherPriority.ApplicationIdle);
     }
 
     private Task<IpcMessage?> HandleIpcMessageAsync(IpcMessage message)
@@ -249,9 +540,15 @@ public partial class MainWindow : Window
                 },
 
                 PlayCommand play => DispatchPlay(play),
+                BringToFrontCommand bring => DispatchAction(() =>
+                {
+                    RestoreWindowForPlayback();
+                    PositionOnDisplay(bring.TargetDisplayIndex);
+                    Activate();
+                }, message.MessageId),
                 PauseCommand => DispatchAction(() => { _mediaPlayer?.Pause(); _isPaused = true; }, message.MessageId),
                 ResumeCommand => DispatchAction(() => { _mediaPlayer?.Play(); _isPaused = false; }, message.MessageId),
-                StopCommand => DispatchAction(() => { _mediaPlayer?.Stop(); _currentFilePath = null; _isPaused = false; }, message.MessageId),
+                StopCommand => DispatchAction(StopPlayback, message.MessageId),
                 SeekCommand seek => DispatchAction(() => ApplySeek(seek), message.MessageId),
                 SetVolumeCommand vol => DispatchAction(() => { _volume = vol.Volume; ApplyAudioLevel(); }, message.MessageId),
                 SetBrightnessCommand bright => DispatchAction(() => { _brightness = bright.Brightness; ApplyVideoAdjustments(); }, message.MessageId),
@@ -314,8 +611,6 @@ public partial class MainWindow : Window
         PlayerDiagnostics.Info($"Play requested: {cmd.FilePath}; fileExists={File.Exists(cmd.FilePath)}; mediaPlayerReady={_mediaPlayer is not null}");
         Console.WriteLine($"[VideoPlayer] DispatchPlay: {Path.GetFileName(cmd.FilePath)}; mediaPlayerReady={_mediaPlayer is not null}");
 
-        Dispatcher.BeginInvoke(RestoreWindowForPlayback);
-
         // Store state fields immediately (thread-safe value types / strings)
         _currentFilePath = cmd.FilePath;
         _volume = cmd.Volume;
@@ -347,7 +642,7 @@ public partial class MainWindow : Window
             // Defer to DispatcherPriority.Loaded (6) so the call runs AFTER the Render pass
             // (priority 7) has created the VideoView HWND. Normal priority (9) would race it.
             Console.WriteLine($"[VideoPlayer] Dispatching ExecutePlay (HWND-safe): {Path.GetFileName(cmd.FilePath)}");
-            Dispatcher.BeginInvoke(() => ExecutePlay(cmd), System.Windows.Threading.DispatcherPriority.Loaded);
+            QueuePlayCommand(cmd);
         }
 
         return new AcknowledgmentResponse
@@ -410,7 +705,12 @@ public partial class MainWindow : Window
                 _hasSubtitles = TryAttachSubtitle(media, cmd.FilePath);
             }
 
+            // Set scale before VLC renders its first frame to avoid a native-size top-left flash.
+            ApplyVideoZoom();
             _mediaPlayer?.Play(media);
+            _playbackProgressTimer.Start();
+            _controlsAutoHideTimer.Stop();
+            _controlsAutoHideTimer.Start();
             PlayerDiagnostics.Info("LibVLC Play call completed; awaiting playback events");
             _mediaPlayer?.SetRate((float)_playbackSpeed);
             ApplyAudioLevel();
@@ -438,12 +738,14 @@ public partial class MainWindow : Window
 
     private void ApplySeek(SeekCommand cmd)
     {
+        SeekToSeconds(cmd.PositionSeconds);
+    }
+
+    private void SeekToSeconds(double positionSeconds)
+    {
         var duration = GetDurationSeconds();
-        if (duration > 0)
-        {
-            var pos = (float)Math.Clamp(cmd.PositionSeconds / duration, 0, 1);
-            _mediaPlayer!.Position = pos;
-        }
+        if (_mediaPlayer is not null && duration > 0 && double.IsFinite(positionSeconds))
+            _mediaPlayer.Position = (float)Math.Clamp(positionSeconds / duration, 0, 1);
     }
 
     private bool TryAttachSubtitle(Media media, string videoPath)
@@ -491,9 +793,12 @@ public partial class MainWindow : Window
         if (_mediaPlayer is null)
             return;
 
+        var adjustments = VideoAdjustmentMapper.Map(_brightness, _sharpness, _saturation);
         _mediaPlayer.SetAdjustInt(VideoAdjustOption.Enable, 1);
-        _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Brightness, (float)_brightness);
-        _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Saturation, (float)_saturation);
+        _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Brightness, adjustments.Brightness);
+        _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Contrast, adjustments.Contrast);
+        _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Gamma, adjustments.Gamma);
+        _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Saturation, adjustments.Saturation);
     }
 
     private void ApplyVideoZoom()
@@ -530,19 +835,38 @@ public partial class MainWindow : Window
     {
         PlayerDiagnostics.Info("LibVLC event: Playing");
         Console.WriteLine("[VideoPlayer] Media playing");
-        Dispatcher.BeginInvoke(ApplyVideoZoom, System.Windows.Threading.DispatcherPriority.Render);
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_activePlayCommand is { } command)
+                PositionOnDisplay(command.TargetDisplayIndex);
+            ApplyVideoAdjustments();
+            ApplyVideoZoom();
+            UpdatePlaybackControlsProgress();
+        }, System.Windows.Threading.DispatcherPriority.Render);
     }
 
     private void OnMediaEnded(object? sender, EventArgs e)
     {
         PlayerDiagnostics.Info("LibVLC event: EndReached");
         Console.WriteLine("[VideoPlayer] Media ended");
+        Dispatcher.BeginInvoke(() =>
+        {
+            _playbackProgressTimer.Stop();
+            HidePlaybackControls();
+            SetPlayerCursorVisible(true);
+        });
     }
 
     private void OnMediaFailed(object? sender, EventArgs e)
     {
         PlayerDiagnostics.Info($"LibVLC event: EncounteredError; state={_mediaPlayer?.State}");
         Console.WriteLine($"[VideoPlayer] Media FAILED (VLC state={_mediaPlayer?.State})");
+        Dispatcher.BeginInvoke(() =>
+        {
+            _playbackProgressTimer.Stop();
+            HidePlaybackControls();
+            SetPlayerCursorVisible(true);
+        });
     }
 
     private void OnMediaLengthChanged(object? sender, MediaPlayerLengthChangedEventArgs e)
@@ -571,6 +895,9 @@ public partial class MainWindow : Window
         Console.WriteLine("[VideoPlayer] OnClosed triggered");
         Console.WriteLine($"[VideoPlayer] OnClosed stack trace:\n{Environment.StackTrace}");
 
+        _pointerTrackingTimer.Stop();
+        _controlsAutoHideTimer.Stop();
+        _playbackProgressTimer.Stop();
         base.OnClosed(e);
 
         _ipcServer?.Dispose();

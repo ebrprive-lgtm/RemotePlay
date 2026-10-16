@@ -1005,6 +1005,19 @@ async function pollStatus() {
     lastQueue = hasQueue ? s.queue : [];
     updateStopBtn(s.isPlaying, isLiveTvMode ? false : hasQueue);
     if (!isLiveTvMode) updateAdjacentButtons(s);
+    if (!isLiveTvMode) {
+      const err = document.getElementById('error');
+      if (s.lastError) {
+        if (err) err.style.display = 'none';
+        showPlaybackErrorPopup('Video', s.lastError);
+      } else {
+        if (err) {
+          err.style.display = 'none';
+          err.textContent = '';
+        }
+        clearPlaybackErrorDedup('Video');
+      }
+    }
     if (s.isPlaying || hasQueue) {
       if (typeof currentMode === 'undefined' || currentMode === 'video' || isLiveTvMode)
         setPlayerBarVisible(true);
@@ -1080,16 +1093,6 @@ async function pollStatus() {
       if (!zoomDragging && Date.now() >= zoomPendingUntil) {
         document.getElementById('zoom').value = zoom;
         document.getElementById('zoom-label').textContent = Math.round(zoom * 100) + '%';
-      }
-      const err = document.getElementById('error');
-      if (s.lastError) {
-        err.style.display = 'none';
-        showPlaybackErrorPopup(isLiveTvMode ? 'Live TV' : 'Video', s.lastError);
-      } else {
-        err.style.display = 'none';
-        err.textContent = '';
-        // Video is playing without error — allow the popup to reappear if a new error occurs
-        clearPlaybackErrorDedup(isLiveTvMode ? 'Live TV' : 'Video');
       }
       updateResumePrompt(s);
       const progress = document.getElementById('progress');

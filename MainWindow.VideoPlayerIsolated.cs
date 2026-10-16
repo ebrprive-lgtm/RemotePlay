@@ -14,6 +14,44 @@ public partial class MainWindow
 {
     private readonly SemaphoreSlim _videoPlaybackStartLock = new(1, 1);
 
+    private bool IsIsolatedVideoActive
+    {
+        get
+        {
+            if (_videoPlayerManager is not { IsProcessRunning: true } manager
+                || string.IsNullOrWhiteSpace(_currentFilePath))
+            {
+                return false;
+            }
+
+            var status = manager.LastStatus;
+            if (status is null)
+                return true;
+
+            if (string.IsNullOrWhiteSpace(status.CurrentFilePath))
+                return false;
+
+            if (!string.Equals(status.CurrentFilePath, _currentFilePath, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return status.IsPlaying
+                || status.IsPaused
+                || status.PlayerState is "Opening" or "Buffering" or "Playing" or "Paused";
+        }
+    }
+
+    private async Task BringIsolatedVideoToFrontAsync()
+    {
+        if (_videoPlayerManager is not { IsProcessRunning: true, IsConnected: true } manager)
+        {
+            Logger.Warning("VideoPlayback", "The isolated video player is not available to bring forward.");
+            return;
+        }
+
+        if (!await manager.BringToFrontAsync(GetTargetDisplayIndex()))
+            Logger.Warning("VideoPlayback", "Could not bring the isolated video player to the front.");
+    }
+
     private async void PlayMovieIsolated(string filePath)
     {
         await _videoPlaybackStartLock.WaitAsync();
@@ -22,6 +60,8 @@ public partial class MainWindow
             AppendLog($"[Video] PlayMovieIsolated: {System.IO.Path.GetFileName(filePath)}");
             StopCompetingPlaybackBeforeVideoStart();
             RestoreWindowForPlayback();
+            if (_isVideoMode)
+                OnToggleView(this, new RoutedEventArgs());
 
             // Ensure video player process is running (semaphore inside StartAsync prevents double-launch)
             if (_videoPlayerManager is null || !_videoPlayerManager.IsProcessRunning || !_videoPlayerManager.IsConnected)
@@ -46,6 +86,9 @@ public partial class MainWindow
                 if (!started)
                 {
                     AppendLog("[Video] ERROR: Failed to start video player process");
+                    _currentFilePath = null;
+                    _lastPlaybackError = "The isolated video player could not be started. Check the application log for details.";
+                    ShowIdleOverlay();
                     return;
                 }
 
@@ -74,7 +117,6 @@ public partial class MainWindow
             _forceSwAudio = false;
 
             ApplyStoredMoviePreferences(filePath);
-            BeginVideoTransition();
 
             // Find subtitle file
             string? subtitlePath = FindSubtitleFile(filePath);
@@ -109,25 +151,19 @@ public partial class MainWindow
                 throw new InvalidOperationException("The isolated video player did not acknowledge the playback request.");
 
             AppendLog("[Video] PlayCommand acknowledged");
+            await BringIsolatedVideoToFrontAsync();
 
             StopPositionClock(0);
             _historyTimer.Start();
             AppendLog($"Playing: {Path.GetFileName(filePath)}");
             Logger.Info($"[Video Isolated] Playing: {filePath}");
-
-            // Auto-switch to video mode
-            if (!_isVideoMode)
-                OnToggleView(this, new RoutedEventArgs());
-            else
-                EnsureFullscreenWindowBounds();
-
-            // Complete video transition
-            CompleteVideoTransition();
         }
         catch (Exception ex)
         {
             Logger.Error("[Video Isolated] Error starting playback", ex);
             AppendLog($"[Video] ERROR: {ex.Message}");
+            _lastPlaybackError = $"Video playback failed to start: {ex.Message}";
+            ShowIdleOverlay();
         }
         finally
         {
@@ -165,8 +201,25 @@ public partial class MainWindow
 
     private int GetTargetDisplayIndex()
     {
-        // For now, use primary display (index 0)
-        // TODO: Respect user's display preference from config
+        var screens = System.Windows.Forms.Screen.AllScreens;
+        if (screens.Length == 0)
+            throw new InvalidOperationException("No display detected.");
+
+        var preferredIndex = _config.PreferredDisplayIndex;
+        if (preferredIndex >= 0 && preferredIndex < screens.Length)
+            return preferredIndex;
+
+        var primaryDeviceName = System.Windows.Forms.Screen.PrimaryScreen?.DeviceName;
+        for (var index = 0; index < screens.Length; index++)
+        {
+            if (string.Equals(screens[index].DeviceName, primaryDeviceName, StringComparison.OrdinalIgnoreCase))
+            {
+                Logger.Warning("VideoPlayback", $"Preferred display index {preferredIndex} is unavailable; using primary display {index}.");
+                return index;
+            }
+        }
+
+        Logger.Warning("VideoPlayback", $"Preferred display index {preferredIndex} is unavailable; using display 0.");
         return 0;
     }
 

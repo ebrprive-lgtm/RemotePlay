@@ -61,7 +61,7 @@ namespace RemotePlay
             }
 
             // Create the bring-to-front event so the existing instance can react.
-            using var bringToFrontEvent = new EventWaitHandle(
+            var bringToFrontEvent = new EventWaitHandle(
                 initialState: false,
                 mode: EventResetMode.AutoReset,
                 name: BringToFrontEventName);
@@ -74,25 +74,32 @@ namespace RemotePlay
 
             _ = Task.Run(() =>
             {
-                while (!token.IsCancellationRequested)
+                try
                 {
-                    bool signalled = bringToFrontEvent.WaitOne(TimeSpan.FromSeconds(1));
-                    if (signalled && !token.IsCancellationRequested)
+                    while (!token.IsCancellationRequested)
                     {
-                        Dispatcher.Invoke(() =>
+                        bool signalled = bringToFrontEvent.WaitOne(TimeSpan.FromSeconds(1));
+                        if (signalled && !token.IsCancellationRequested)
                         {
-                            var win = MainWindow;
-                            if (win is null) return;
-                            if (win.WindowState == WindowState.Minimized)
-                                win.WindowState = WindowState.Normal;
-                            win.Activate();
-                            win.Topmost = true;
-                            win.Topmost = false;
-                            win.Focus();
-                        });
+                            Dispatcher.Invoke(() =>
+                            {
+                                var win = MainWindow;
+                                if (win is null) return;
+                                if (win.WindowState == WindowState.Minimized)
+                                    win.WindowState = WindowState.Normal;
+                                win.Activate();
+                                win.Topmost = true;
+                                win.Topmost = false;
+                                win.Focus();
+                            });
+                        }
                     }
                 }
-            }, token);
+                finally
+                {
+                    bringToFrontEvent.Dispose();
+                }
+            });
             // ── End single-instance guard ────────────────────────────────────────
 
             AppDomain.CurrentDomain.UnhandledException += (_, args) =>

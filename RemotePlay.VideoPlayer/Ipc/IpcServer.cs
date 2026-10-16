@@ -124,7 +124,7 @@ internal sealed class IpcServer : IDisposable
                     var response = _messageHandler(message).GetAwaiter().GetResult();
                     if (response is not null)
                     {
-                        var responseJson = JsonSerializer.Serialize(response, GetJsonOptions());
+                        var responseJson = IpcMessageJson.Serialize(response, GetJsonOptions());
                         writer.WriteLine(responseJson);
                         writer.Flush();
                         PlayerDiagnostics.Info($"IPC responded {response.MessageType} to {message.MessageType} ({message.MessageId})");
@@ -184,6 +184,7 @@ internal sealed class IpcServer : IDisposable
     private static Type? GetCommandType(string messageType) => messageType switch
     {
         nameof(PlayCommand) => typeof(PlayCommand),
+        nameof(BringToFrontCommand) => typeof(BringToFrontCommand),
         nameof(PauseCommand) => typeof(PauseCommand),
         nameof(ResumeCommand) => typeof(ResumeCommand),
         nameof(StopCommand) => typeof(StopCommand),

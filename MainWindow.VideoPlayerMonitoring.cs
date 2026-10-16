@@ -67,6 +67,19 @@ public partial class MainWindow
                 var status = await _videoPlayerManager.GetStatusAsync();
                 if (status is not null)
                 {
+                    if (string.IsNullOrWhiteSpace(status.CurrentFilePath)
+                        && !string.IsNullOrWhiteSpace(_currentFilePath)
+                        && _videoPlaybackStartLock.CurrentCount > 0)
+                    {
+                        _currentFilePath = null;
+                        _isPaused = false;
+                        _positionMs = 0;
+                        _duration = TimeSpan.Zero;
+                        StopPositionClock(0);
+                        _historyTimer.Stop();
+                        AppendLog("[Video] Playback stopped from the fullscreen player");
+                    }
+
                     // Update position tracking
                     _positionMs = (long)(status.PositionSeconds * 1000);
                     _duration = TimeSpan.FromSeconds(Math.Max(0, status.DurationSeconds));

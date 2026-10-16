@@ -1137,6 +1137,12 @@ public partial class MainWindow : Window
     {
         if (!_isVideoMode)
         {
+            if (IsIsolatedVideoActive)
+            {
+                _ = BringIsolatedVideoToFrontAsync();
+                return;
+            }
+
             _ = EnterFullscreenCleanAsync();
             return;
         }
@@ -1253,6 +1259,9 @@ public partial class MainWindow : Window
         {
             Dispatcher.InvokeAsync(() => ShowBanner(), System.Windows.Threading.DispatcherPriority.Loaded);
         }
+
+        if (IsIsolatedVideoActive)
+            await BringIsolatedVideoToFrontAsync();
     }
 
     private void FadeOutFlashCover()

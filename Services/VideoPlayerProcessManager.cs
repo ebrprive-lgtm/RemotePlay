@@ -348,6 +348,14 @@ internal sealed class VideoPlayerProcessManager : IDisposable
 
     public async Task<bool> SendPlayCommandAsync(PlayCommand cmd, CancellationToken ct = default)
     {
+        Volatile.Write(ref _lastStatus, new StatusResponse
+        {
+            MessageType = nameof(StatusResponse),
+            CurrentFilePath = cmd.FilePath,
+            PositionSeconds = cmd.StartPositionSeconds,
+            PlayerState = "Opening"
+        });
+
         // Update last known state
         _lastKnownState = new PlaybackState
         {
@@ -459,6 +467,17 @@ internal sealed class VideoPlayerProcessManager : IDisposable
     public Task SendShutdownAsync(CancellationToken ct = default)
         => SendCommandAsync<AcknowledgmentResponse>(new ShutdownCommand { MessageType = nameof(ShutdownCommand) }, ct);
 
+    public async Task<bool> BringToFrontAsync(int targetDisplayIndex, CancellationToken ct = default)
+    {
+        var response = await SendCommandAsync<AcknowledgmentResponse>(new BringToFrontCommand
+        {
+            MessageType = nameof(BringToFrontCommand),
+            TargetDisplayIndex = targetDisplayIndex
+        }, ct).ConfigureAwait(false);
+
+        return response?.Success == true;
+    }
+
     private async Task<T?> SendCommandAsync<T>(IpcMessage command, CancellationToken ct) where T : IpcMessage
     {
         await _commandLock.WaitAsync(ct).ConfigureAwait(false);
@@ -470,7 +489,7 @@ internal sealed class VideoPlayerProcessManager : IDisposable
                 return null;
             }
 
-            var json = JsonSerializer.Serialize(command, command.GetType(), GetJsonOptions());
+            var json = IpcMessageJson.Serialize(command, GetJsonOptions());
             if (command is not PingCommand and not StatusRequestCommand)
                 _logger($"[VideoPlayerManager] Sending {command.MessageType}: {json}");
 
@@ -663,7 +682,7 @@ internal sealed class VideoPlayerProcessManager : IDisposable
         public bool IsPlaying { get; set; }
         public int DisplayIndex { get; set; }
         public double Volume { get; set; } = 1.0;
-        public double Brightness { get; set; }
+        public double Brightness { get; set; } = 0.5;
         public double Saturation { get; set; } = 1.0;
         public double Zoom { get; set; } = 1.0;
         public double AudioBoost { get; set; } = 1.0;

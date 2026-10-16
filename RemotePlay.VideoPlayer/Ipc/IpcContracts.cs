@@ -1,6 +1,13 @@
 using System;
+using System.Text.Json;
 
 namespace RemotePlay.VideoPlayer.Ipc;
+
+public static class IpcMessageJson
+{
+    public static string Serialize(IpcMessage message, JsonSerializerOptions? options = null)
+        => JsonSerializer.Serialize(message, message.GetType(), options);
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // IPC Message Base
@@ -22,7 +29,7 @@ public sealed record PlayCommand : IpcMessage
     public required string FilePath { get; init; }
     public double StartPositionSeconds { get; init; }
     public double Volume { get; init; } = 1.0;
-    public double Brightness { get; init; } = 0.0;
+    public double Brightness { get; init; } = 0.5;
     public double Saturation { get; init; } = 1.0;
     public double Sharpness { get; init; } = 0.0;
     public double Zoom { get; init; } = 1.0;
@@ -48,6 +55,11 @@ public sealed record ResumeCommand : IpcMessage
 
 public sealed record StopCommand : IpcMessage
 {
+}
+
+public sealed record BringToFrontCommand : IpcMessage
+{
+    public int TargetDisplayIndex { get; init; }
 }
 
 public sealed record SeekCommand : IpcMessage
