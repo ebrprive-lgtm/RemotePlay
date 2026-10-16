@@ -52,6 +52,81 @@ public partial class MainWindow
             Logger.Warning("VideoPlayback", "Could not bring the isolated video player to the front.");
     }
 
+    private async Task ApplyFullscreenControlsSettingsToPlayerAsync(bool enabled, double autoHideDelaySeconds)
+    {
+        if (_videoPlayerManager is not { IsProcessRunning: true } manager)
+            return;
+
+        try
+        {
+            if (!await manager.SendSetFullscreenControlsSettingsAsync(enabled, autoHideDelaySeconds))
+            {
+                Logger.Warning(
+                    "VideoPlayback",
+                    "The isolated player did not acknowledge the fullscreen controls settings; they will be retried before the next playback.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("VideoPlayback", "Failed to apply fullscreen controls settings to the isolated player.", ex);
+        }
+    }
+
+    private void UpdateIsolatedPlayerNavigationTitles()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(UpdateIsolatedPlayerNavigationTitles);
+            return;
+        }
+
+        var currentPath = _currentFilePath;
+        if (string.IsNullOrWhiteSpace(currentPath)
+            || _videoPlayerManager is not { IsProcessRunning: true, IsConnected: true } manager)
+        {
+            return;
+        }
+
+        var hasCurrentAdjacentCache = string.Equals(
+            _adjacentVideoCacheCurrentPath,
+            currentPath,
+            StringComparison.OrdinalIgnoreCase);
+        if (!hasCurrentAdjacentCache)
+            RefreshAdjacentVideoCache(currentPath);
+
+        var previousTitle = hasCurrentAdjacentCache && !string.IsNullOrWhiteSpace(_previousAdjacentVideoPath)
+            ? Path.GetFileNameWithoutExtension(_previousAdjacentVideoPath)
+            : null;
+        var nextTitle = _playbackQueue.Count > 0
+            ? Path.GetFileNameWithoutExtension(_playbackQueue[0])
+            : hasCurrentAdjacentCache && !string.IsNullOrWhiteSpace(_nextAdjacentVideoPath)
+                ? Path.GetFileNameWithoutExtension(_nextAdjacentVideoPath)
+                : null;
+
+        _ = SendAdjacentVideoTitlesToPlayerAsync(manager, currentPath, previousTitle, nextTitle);
+    }
+
+    private async Task SendAdjacentVideoTitlesToPlayerAsync(
+        Services.VideoPlayerProcessManager manager,
+        string currentPath,
+        string? previousTitle,
+        string? nextTitle)
+    {
+        try
+        {
+            if (!await manager.SendSetAdjacentVideoTitlesAsync(currentPath, previousTitle, nextTitle))
+            {
+                Logger.Warning(
+                    "VideoPlayback",
+                    "The isolated player did not acknowledge the adjacent video titles.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("VideoPlayback", "Failed to update adjacent video titles in the isolated player.", ex);
+        }
+    }
+
     private async void PlayMovieIsolated(string filePath)
     {
         await _videoPlaybackStartLock.WaitAsync();
@@ -97,6 +172,13 @@ public partial class MainWindow
             else
             {
                 AppendLog("[Video] Reusing existing VideoPlayer process");
+            }
+
+            if (!await _videoPlayerManager.SendSetFullscreenControlsSettingsAsync(
+                    _config.FullscreenControlsEnabled,
+                    _config.FullscreenControlsAutoHideDelaySeconds))
+            {
+                Logger.Warning("VideoPlayback", "The isolated player did not acknowledge its fullscreen controls settings.");
             }
 
             // Prepare playback state
@@ -152,6 +234,7 @@ public partial class MainWindow
 
             AppendLog("[Video] PlayCommand acknowledged");
             await BringIsolatedVideoToFrontAsync();
+            UpdateIsolatedPlayerNavigationTitles();
 
             StopPositionClock(0);
             _historyTimer.Start();

@@ -20,6 +20,7 @@ using RemotePlay.Models;
 using RemotePlay.Services;
 using RemotePlay.Services.Discovery;
 using RemotePlay.UI;
+using RemotePlay.VideoPlayer.Ipc;
 using System.Diagnostics.CodeAnalysis;
 
 namespace RemotePlay;
@@ -348,6 +349,12 @@ public partial class MainWindow : Window
             instanceNameBox.Text = _config.InstanceName;
         if (FindName("UseHttpsBox") is System.Windows.Controls.CheckBox useHttpsBox)
             useHttpsBox.IsChecked = _config.UseHttps;
+        if (FindName("FullscreenControlsEnabledBox") is System.Windows.Controls.CheckBox fullscreenControlsBox)
+            fullscreenControlsBox.IsChecked = _config.FullscreenControlsEnabled;
+        if (FindName("FullscreenControlsAutoHideDelayBox") is System.Windows.Controls.TextBox fullscreenControlsDelayBox)
+            fullscreenControlsDelayBox.Text = _config.FullscreenControlsAutoHideDelaySeconds.ToString(
+                "0.##",
+                System.Globalization.CultureInfo.CurrentCulture);
         PopulateLanguageCombo("PreferredAudioLangCombo", _config.PreferredAudioLanguage);
         PopulateLanguageCombo("PreferredSubtitleLangCombo", _config.PreferredSubtitleLanguage);
         PopulateLanguageCombo("SecondarySubtitleLangCombo", _config.SecondarySubtitleLanguage);
@@ -1870,6 +1877,23 @@ public partial class MainWindow : Window
             ? instanceNameBox2.Text.Trim()
             : _config.InstanceName;
         var useHttps = FindName("UseHttpsBox") is System.Windows.Controls.CheckBox useHttpsBox && useHttpsBox.IsChecked == true;
+        var fullscreenControlsEnabled = FindName("FullscreenControlsEnabledBox") is System.Windows.Controls.CheckBox fullscreenControlsBox
+            ? fullscreenControlsBox.IsChecked == true
+            : _config.FullscreenControlsEnabled;
+        var fullscreenControlsAutoHideDelaySeconds = _config.FullscreenControlsAutoHideDelaySeconds;
+        if (FindName("FullscreenControlsAutoHideDelayBox") is System.Windows.Controls.TextBox fullscreenControlsDelayBox
+            && (!double.TryParse(
+                    fullscreenControlsDelayBox.Text.Trim(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.CurrentCulture,
+                    out fullscreenControlsAutoHideDelaySeconds)
+                || !FullscreenControlsSettings.IsValidAutoHideDelaySeconds(fullscreenControlsAutoHideDelaySeconds)))
+        {
+            ShowSettingsFeedback(
+                $"Fullscreen controls auto-hide delay must be between {FullscreenControlsSettings.MinimumAutoHideDelaySeconds} and {FullscreenControlsSettings.MaximumAutoHideDelaySeconds} seconds.",
+                isError: true);
+            return;
+        }
 
         var preferredAudioLang = GetSelectedLanguageCode("PreferredAudioLangCombo", _config.PreferredAudioLanguage);
         var preferredSubtitleLang = GetSelectedLanguageCode("PreferredSubtitleLangCombo", _config.PreferredSubtitleLanguage);
@@ -2039,10 +2063,19 @@ public partial class MainWindow : Window
                 rateLimitWindowSeconds,
                 (FindName("CredentialsEditor") is Controls.NetworkCredentialsEditor credsEditor
                     ? credsEditor.Entries.Where(e => !string.IsNullOrWhiteSpace(e.Path)).Select(e => new NetworkShareCredential { Path = e.Path.Trim(), Username = e.Username.Trim(), Password = e.Password })
-                    : _config.NetworkShareCredentials.AsEnumerable()).ToArray());
+                    : _config.NetworkShareCredentials.AsEnumerable()).ToArray(),
+                fullscreenControlsEnabled,
+                fullscreenControlsAutoHideDelaySeconds);
 
             _config = _settingsApplyService.ApplyAndReload(updatedConfig);
             ApplySettingsSideEffects();
+            if (previousConfig.FullscreenControlsEnabled != _config.FullscreenControlsEnabled
+                || previousConfig.FullscreenControlsAutoHideDelaySeconds != _config.FullscreenControlsAutoHideDelaySeconds)
+            {
+                _ = ApplyFullscreenControlsSettingsToPlayerAsync(
+                    _config.FullscreenControlsEnabled,
+                    _config.FullscreenControlsAutoHideDelaySeconds);
+            }
 
             var requiresRestart = SettingsRequireServerRestart(previousConfig, _config);
             if (restartServer)
@@ -2375,6 +2408,19 @@ public partial class MainWindow : Window
             return;
 
         Logger.Info("ExternalCommand", "Args: " + string.Join(" | ", args));
+
+        if (args.Count == 1 && args[0] == RemotePlayCommandPipe.FullscreenPlayerNextArgument)
+        {
+            PlayAdjacent(1);
+            return;
+        }
+
+        if (args.Count == 1 && args[0] == RemotePlayCommandPipe.FullscreenPlayerPreviousArgument)
+        {
+            PlayAdjacent(-1);
+            return;
+        }
+
         RestoreWindowForPlayback();
 
         if (TryGetCommandArgument(args, "--create-link", out var createLinkTarget))

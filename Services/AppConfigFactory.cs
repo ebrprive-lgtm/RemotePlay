@@ -1,4 +1,5 @@
 using RemotePlay.Abstractions.Services;
+using RemotePlay.VideoPlayer.Ipc;
 
 namespace RemotePlay.Services;
 
@@ -38,9 +39,21 @@ internal sealed class AppConfigFactory : IAppConfigFactory
         string[] musicFileExtensions,
         int maxRequestsPerIpPerWindow,
         int rateLimitWindowSeconds,
-        NetworkShareCredential[] networkShareCredentials)
+        NetworkShareCredential[] networkShareCredentials,
+        bool? fullscreenControlsEnabled = null,
+        double? fullscreenControlsAutoHideDelaySeconds = null)
     {
         ArgumentNullException.ThrowIfNull(currentConfig);
+
+        var controlsAutoHideDelay = fullscreenControlsAutoHideDelaySeconds
+            ?? currentConfig.FullscreenControlsAutoHideDelaySeconds;
+        if (!FullscreenControlsSettings.IsValidAutoHideDelaySeconds(controlsAutoHideDelay))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(fullscreenControlsAutoHideDelaySeconds),
+                controlsAutoHideDelay,
+                $"Fullscreen controls auto-hide delay must be between {FullscreenControlsSettings.MinimumAutoHideDelaySeconds} and {FullscreenControlsSettings.MaximumAutoHideDelaySeconds} seconds.");
+        }
 
         return currentConfig with
         {
@@ -51,6 +64,8 @@ internal sealed class AppConfigFactory : IAppConfigFactory
             Zoom                      = zoom,
             AudioBoost                = audioBoost,
             PlaybackSpeed             = playbackSpeed,
+            FullscreenControlsEnabled = fullscreenControlsEnabled ?? currentConfig.FullscreenControlsEnabled,
+            FullscreenControlsAutoHideDelaySeconds = controlsAutoHideDelay,
             SubtitlesEnabled          = subtitlesEnabled,
             PreferredAudioLanguage    = preferredAudioLanguage,
             PreferredSubtitleLanguage = preferredSubtitleLanguage,

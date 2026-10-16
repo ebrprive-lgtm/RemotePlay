@@ -28,6 +28,8 @@ internal sealed class VideoPlayerProcessManager : IDisposable
     private readonly SemaphoreSlim _commandLock = new(1, 1);
     private DateTime _lastPongReceived = DateTime.MinValue;
     private PlaybackState _lastKnownState = new();
+    private bool _fullscreenControlsEnabled = FullscreenControlsSettings.EnabledByDefault;
+    private double _fullscreenControlsAutoHideDelaySeconds = FullscreenControlsSettings.DefaultAutoHideDelaySeconds;
     private StatusResponse? _lastStatus;
 
     public bool IsProcessRunning
@@ -191,6 +193,14 @@ internal sealed class VideoPlayerProcessManager : IDisposable
             var started = StartCore(_lastKnownState.DisplayIndex, ct);
             if (!started)
                 return false;
+
+            if (!await SendSetFullscreenControlsSettingsAsync(
+                    _fullscreenControlsEnabled,
+                    _fullscreenControlsAutoHideDelaySeconds,
+                    ct))
+            {
+                _logger("[VideoPlayerManager] Fullscreen controls settings were not acknowledged after player restart.");
+            }
 
             // Resume playback if we had a file playing
             if (!string.IsNullOrEmpty(lastFilePath) && File.Exists(lastFilePath))
@@ -386,6 +396,50 @@ internal sealed class VideoPlayerProcessManager : IDisposable
 
         _logger($"[VideoPlayerManager] Play command was not acknowledged: {response?.ErrorMessage ?? "no response"}");
         return false;
+    }
+
+    public async Task<bool> SendSetFullscreenControlsSettingsAsync(
+        bool enabled,
+        double autoHideDelaySeconds,
+        CancellationToken ct = default)
+    {
+        if (!FullscreenControlsSettings.IsValidAutoHideDelaySeconds(autoHideDelaySeconds))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(autoHideDelaySeconds),
+                autoHideDelaySeconds,
+                $"Fullscreen controls auto-hide delay must be between {FullscreenControlsSettings.MinimumAutoHideDelaySeconds} and {FullscreenControlsSettings.MaximumAutoHideDelaySeconds} seconds.");
+        }
+
+        _fullscreenControlsEnabled = enabled;
+        _fullscreenControlsAutoHideDelaySeconds = autoHideDelaySeconds;
+        var response = await SendCommandAsync<AcknowledgmentResponse>(new SetFullscreenControlsSettingsCommand
+        {
+            MessageType = nameof(SetFullscreenControlsSettingsCommand),
+            Enabled = enabled,
+            AutoHideDelaySeconds = autoHideDelaySeconds
+        }, ct);
+
+        return response?.Success == true;
+    }
+
+    public async Task<bool> SendSetAdjacentVideoTitlesAsync(
+        string filePath,
+        string? previousTitle,
+        string? nextTitle,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+
+        var response = await SendCommandAsync<AcknowledgmentResponse>(new SetAdjacentVideoTitlesCommand
+        {
+            MessageType = nameof(SetAdjacentVideoTitlesCommand),
+            FilePath = filePath,
+            PreviousTitle = previousTitle,
+            NextTitle = nextTitle
+        }, ct);
+
+        return response?.Success == true;
     }
 
     public Task SendPauseAsync(CancellationToken ct = default)

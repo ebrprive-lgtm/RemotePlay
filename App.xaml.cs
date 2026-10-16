@@ -6,6 +6,7 @@ using System.Threading;
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using RemotePlay.DependencyInjection;
+using RemotePlay.VideoPlayer.Ipc;
 using WpfApplication = System.Windows.Application;
 using System.Diagnostics.CodeAnalysis;
 
@@ -19,7 +20,7 @@ namespace RemotePlay
     {
         private const string SingleInstanceMutexName = "Global\\RemotePlay_SingleInstance_Mutex";
         private const string BringToFrontEventName   = "Global\\RemotePlay_BringToFront_Event";
-        private const string CommandPipeName         = "RemotePlay_CommandPipe";
+        private const string CommandPipeName         = RemotePlayCommandPipe.Name;
 
         // Held for the lifetime of the process — must not be disposed until Exit.
         private static Mutex? _singleInstanceMutex;
@@ -192,7 +193,7 @@ namespace RemotePlay
                     using var client = new NamedPipeClientStream(".", CommandPipeName, PipeDirection.Out);
                     client.Connect(timeout: 750);
                     using var writer = new StreamWriter(client) { AutoFlush = true };
-                    writer.WriteLine(string.Join('\u001f', args));
+                    writer.WriteLine(string.Join(RemotePlayCommandPipe.ArgumentSeparator, args));
                     return true;
                 }
                 catch
@@ -224,7 +225,9 @@ namespace RemotePlay
                     if (string.IsNullOrWhiteSpace(payload))
                         continue;
 
-                    var args = payload.Split('\u001f', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    var args = payload.Split(
+                        RemotePlayCommandPipe.ArgumentSeparator,
+                        StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
                     if (args.Length == 0)
                         continue;
 

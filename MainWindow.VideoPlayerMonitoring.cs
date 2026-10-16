@@ -109,6 +109,7 @@ public partial class MainWindow
                 {
                     AppendLog("[Video] Process restarted and playback resumed");
                     Logger.Info("[Video] Process successfully restarted");
+                    UpdateIsolatedPlayerNavigationTitles();
                 }
                 else
                 {

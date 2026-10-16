@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.IO;
+using RemotePlay.VideoPlayer.Ipc;
 
 namespace RemotePlay;
 
@@ -31,6 +32,8 @@ internal sealed record AppConfig
     public double Zoom { get; init; } = 1;
     public double AudioBoost { get; init; } = 1;
     public double PlaybackSpeed { get; init; } = 1;
+    public bool FullscreenControlsEnabled { get; init; } = FullscreenControlsSettings.EnabledByDefault;
+    public double FullscreenControlsAutoHideDelaySeconds { get; init; } = FullscreenControlsSettings.DefaultAutoHideDelaySeconds;
     public bool SubtitlesEnabled { get; init; } = true;
     public string PreferredAudioLanguage { get; init; } = "eng";
     /// <summary>BCP-47 language code used when fetching Wikipedia artist info (e.g. "en", "nl", "fr", "de"). Empty = auto-detect from langlinks.</summary>

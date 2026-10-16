@@ -20,6 +20,27 @@ public abstract record IpcMessage
     public DateTime Timestamp { get; init; } = DateTime.UtcNow;
 }
 
+public static class FullscreenControlsSettings
+{
+    public const bool EnabledByDefault = true;
+    public const double DefaultAutoHideDelaySeconds = 2.5;
+    public const double MinimumAutoHideDelaySeconds = 0.5;
+    public const double MaximumAutoHideDelaySeconds = 60;
+
+    public static bool IsValidAutoHideDelaySeconds(double seconds) =>
+        double.IsFinite(seconds)
+        && seconds >= MinimumAutoHideDelaySeconds
+        && seconds <= MaximumAutoHideDelaySeconds;
+}
+
+public static class RemotePlayCommandPipe
+{
+    public const string Name = "RemotePlay_CommandPipe";
+    public const char ArgumentSeparator = '\u001f';
+    public const string FullscreenPlayerNextArgument = "--fullscreen-player-next";
+    public const string FullscreenPlayerPreviousArgument = "--fullscreen-player-previous";
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Commands (Main Window → Video Player)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -70,6 +91,19 @@ public sealed record SeekCommand : IpcMessage
 public sealed record SetVolumeCommand : IpcMessage
 {
     public required double Volume { get; init; }
+}
+
+public sealed record SetFullscreenControlsSettingsCommand : IpcMessage
+{
+    public required bool Enabled { get; init; }
+    public required double AutoHideDelaySeconds { get; init; }
+}
+
+public sealed record SetAdjacentVideoTitlesCommand : IpcMessage
+{
+    public required string FilePath { get; init; }
+    public string? PreviousTitle { get; init; }
+    public string? NextTitle { get; init; }
 }
 
 public sealed record SetBrightnessCommand : IpcMessage

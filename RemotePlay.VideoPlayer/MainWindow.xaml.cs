@@ -1,12 +1,17 @@
 ﻿using System;
 using System.ComponentModel;
 using System.IO;
+using System.IO.Pipes;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Windows.Input;
+using System.Windows.Media.Animation;
 using System.Windows.Forms;
 using System.Windows.Threading;
 using LibVLCSharp.Shared;
@@ -23,6 +28,10 @@ public partial class MainWindow : Window
 {
     private const uint SwpNoActivate = 0x0010;
     private const uint SwpFrameChanged = 0x0020;
+    private const int WmKeyDown = 0x0100;
+    private const int WmSysKeyDown = 0x0104;
+    private const double KeyboardSeekStepSeconds = 10;
+    private const double PlaybackControlsMaxWidth = 1400;
     private static readonly nint HwndTopmost = new(-1);
 
     private readonly string _instanceId;
@@ -35,7 +44,10 @@ public partial class MainWindow : Window
     private PlayCommand? _activePlayCommand;
     private bool _isPaused;
     private string? _currentFilePath;
+    private string? _previousVideoTitle;
+    private string? _nextVideoTitle;
     private double _volume = 1.0;
+    private double _lastNonZeroVolume = 1.0;
     private double _brightness = 0.5;
     private double _saturation = 1.0;
     private double _sharpness;
@@ -47,6 +59,21 @@ public partial class MainWindow : Window
     private int? _lastAudioTrackId;
     private bool _hasSubtitles;
     private bool _isSeeking;
+    private double? _pendingSeekSeconds;
+    private long _pendingSeekExpiresAt;
+    private long _pendingSeekFallbackAt;
+    private long _pendingSeekConfirmAfter;
+    private long _pendingSeekLastConfirmSampleAt;
+    private int _pendingSeekConfirmSamples;
+    private bool _pendingSeekPositionFallbackAttempted;
+    private bool _isTrackClickSeek;
+    private bool _isUpdatingVolumeSlider;
+    private bool _showRemainingTime = true;
+    private bool _fullscreenControlsEnabled = FullscreenControlsSettings.EnabledByDefault;
+    private double _fullscreenControlsAutoHideDelaySeconds = FullscreenControlsSettings.DefaultAutoHideDelaySeconds;
+    private bool _isFadingOutControls;
+    private bool _controlsInitialized;
+    private int _controlsVisibilityVersion;
     private bool _hasLastPointerPosition;
     private NativePoint _lastPointerPosition;
     private readonly DispatcherTimer _pointerTrackingTimer;
@@ -56,10 +83,28 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        _controlsInitialized = true;
+        PlaybackControlsPopup.PlacementTarget = VideoHost;
+        PlaybackControlsPopup.CustomPopupPlacementCallback = PlacePlaybackControlsPopup;
+        PlaybackControls.PreviewKeyDown += PlaybackControls_PreviewKeyDown;
+        ComponentDispatcher.ThreadPreprocessMessage += ComponentDispatcher_ThreadPreprocessMessage;
+        SeekSlider.AddHandler(
+            UIElement.PreviewMouseLeftButtonDownEvent,
+            new MouseButtonEventHandler(SeekSlider_PreviewMouseLeftButtonDown),
+            handledEventsToo: true);
+        SeekSlider.AddHandler(
+            UIElement.PreviewMouseLeftButtonUpEvent,
+            new MouseButtonEventHandler(SeekSlider_PreviewMouseLeftButtonUp),
+            handledEventsToo: true);
+        UpdateVolumeControls();
+        UpdatePlaybackToggleButton();
 
         _pointerTrackingTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _pointerTrackingTimer.Tick += PointerTrackingTimer_Tick;
-        _controlsAutoHideTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(2500) };
+        _controlsAutoHideTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(_fullscreenControlsAutoHideDelaySeconds)
+        };
         _controlsAutoHideTimer.Tick += ControlsAutoHideTimer_Tick;
         _playbackProgressTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
         _playbackProgressTimer.Tick += PlaybackProgressTimer_Tick;
@@ -74,6 +119,19 @@ public partial class MainWindow : Window
 
         PlayerDiagnostics.Info($"Main window created for instance {_instanceId}");
         Console.WriteLine($"[VideoPlayer] Starting with instance ID: {_instanceId}");
+    }
+
+    private static CustomPopupPlacement[] PlacePlaybackControlsPopup(
+        System.Windows.Size popupSize,
+        System.Windows.Size targetSize,
+        System.Windows.Point offset)
+    {
+        var x = Math.Max(0, (targetSize.Width - popupSize.Width) / 2);
+        var y = Math.Max(0, targetSize.Height - popupSize.Height - 64);
+        return new[]
+        {
+            new CustomPopupPlacement(new System.Windows.Point(x, y), PopupPrimaryAxis.None)
+        };
     }
 
     private void Window_SourceInitialized(object? sender, EventArgs e)
@@ -154,7 +212,7 @@ public partial class MainWindow : Window
             _mediaPlayer.Opening          += (_, _) => PlayerDiagnostics.Info("LibVLC event: Opening");
             _mediaPlayer.Buffering        += (_, e) => Console.WriteLine($"[VideoPlayer] VLC state: Buffering {e.Cache:0}%");
             _mediaPlayer.Stopped          += (_, _) => PlayerDiagnostics.Info("LibVLC event: Stopped");
-            _mediaPlayer.Paused           += (_, _) => PlayerDiagnostics.Info("LibVLC event: Paused");
+            _mediaPlayer.Paused           += OnMediaPaused;
 
             PlayerDiagnostics.Info($"Player initialization complete. Pending playback={_pendingPlayCommand is not null}");
             Console.WriteLine($"[VideoPlayer] [7/7] Fully initialized and ready (pendingPlay={_pendingPlayCommand?.FilePath ?? "none"})");
@@ -265,16 +323,109 @@ public partial class MainWindow : Window
         int cy,
         uint uFlags);
 
+    [DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(nint hWnd, out uint processId);
+
     private void Window_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
-        if (e.Key == Key.Escape)
+        HandlePlaybackKeyDown(e);
+    }
+
+    private void PlaybackControls_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        ShowPlaybackControls();
+        HandlePlaybackKeyDown(e);
+    }
+
+    private void HandlePlaybackKeyDown(System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Handled)
+            return;
+
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        e.Handled = HandlePlayerShortcut(key, e.IsRepeat);
+    }
+
+    private void ComponentDispatcher_ThreadPreprocessMessage(ref MSG msg, ref bool handled)
+    {
+        if (handled
+            || (msg.message != WmKeyDown && msg.message != WmSysKeyDown)
+            || !IsActivePlayerMessage(msg.hwnd))
+        {
+            return;
+        }
+
+        var key = KeyInterop.KeyFromVirtualKey(msg.wParam.ToInt32());
+        var isRepeat = (msg.lParam.ToInt64() & 0x40000000L) != 0;
+        handled = HandlePlayerShortcut(key, isRepeat);
+    }
+
+    private bool IsActivePlayerMessage(nint messageWindow)
+    {
+        if (messageWindow == nint.Zero)
+            return false;
+
+        var foregroundWindow = GetForegroundWindow();
+        if (foregroundWindow == nint.Zero)
+            return false;
+
+        _ = GetWindowThreadProcessId(messageWindow, out var messageProcessId);
+        _ = GetWindowThreadProcessId(foregroundWindow, out var foregroundProcessId);
+        var playerProcessId = (uint)Environment.ProcessId;
+        return messageProcessId == playerProcessId && foregroundProcessId == playerProcessId;
+    }
+
+    private bool HandlePlayerShortcut(Key key, bool isRepeat)
+    {
+        if (Keyboard.Modifiers != ModifierKeys.None)
+            return false;
+
+        if (key == Key.Escape)
         {
             PlayerDiagnostics.Info("Escape pressed; minimizing player window");
-            HidePlaybackControls();
+            HidePlaybackControls(animate: false);
             SetPlayerCursorVisible(true);
             WindowState = WindowState.Minimized;
-            e.Handled = true;
+            return true;
         }
+
+        if (key == Key.Space)
+        {
+            if (IsPlaybackControlButtonFocused())
+                return false;
+
+            return isRepeat || TogglePlaybackPause();
+        }
+
+        if (VolumeSlider.IsKeyboardFocusWithin)
+            return false;
+
+        return key switch
+        {
+            Key.Left => SeekBySeconds(-KeyboardSeekStepSeconds),
+            Key.Right => SeekBySeconds(KeyboardSeekStepSeconds),
+            _ => false
+        };
+    }
+
+    private bool IsPlaybackControlButtonFocused() =>
+        PreviousVideoButton.IsKeyboardFocusWithin
+        || PausePlaybackButton.IsKeyboardFocusWithin
+        || NextVideoButton.IsKeyboardFocusWithin
+        || StopPlaybackButton.IsKeyboardFocusWithin
+        || MuteVolumeButton.IsKeyboardFocusWithin
+        || PlaybackTimeButton.IsKeyboardFocusWithin;
+
+    private bool TogglePlaybackPause()
+    {
+        if (_mediaPlayer is null || string.IsNullOrWhiteSpace(_currentFilePath))
+            return false;
+
+        SetPlaybackPaused(!_isPaused);
+        return true;
     }
 
     private void Window_MouseMove(object sender, System.Windows.Input.MouseEventArgs e)
@@ -347,17 +498,85 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(_currentFilePath) || _mediaPlayer is null)
             return;
 
+        if (!_fullscreenControlsEnabled)
+        {
+            HidePlaybackControls(animate: false);
+            ResetControlsAutoHideTimer();
+            return;
+        }
+
+        PlaybackControlsPopup.Width = Math.Min(PlaybackControlsMaxWidth, Math.Max(0, VideoHost.ActualWidth - 64));
+        VolumeSlider.Width = Math.Clamp(PlaybackControlsPopup.Width * 0.12, 100, 180);
+        var wasOpen = PlaybackControlsPopup.IsOpen && PlaybackControls.Visibility == Visibility.Visible;
+        var shouldFadeIn = !wasOpen || _isFadingOutControls;
+        var startingOpacity = wasOpen ? PlaybackControls.Opacity : 0;
+        if (shouldFadeIn)
+        {
+            _controlsVisibilityVersion++;
+            _isFadingOutControls = false;
+            PlaybackControls.BeginAnimation(UIElement.OpacityProperty, null);
+            PlaybackControls.Opacity = startingOpacity;
+        }
+
         PlaybackControls.Visibility = Visibility.Visible;
+        PlaybackControlsPopup.IsOpen = true;
+        if (shouldFadeIn)
+        {
+            PlaybackControls.BeginAnimation(
+                UIElement.OpacityProperty,
+                new DoubleAnimation(startingOpacity, 1, TimeSpan.FromMilliseconds(180)));
+        }
+
+        UpdateVolumeControls();
         UpdatePlaybackControlsProgress();
+        ResetControlsAutoHideTimer();
+    }
+
+    private void ResetControlsAutoHideTimer()
+    {
         _controlsAutoHideTimer.Stop();
         if (!_isSeeking)
             _controlsAutoHideTimer.Start();
     }
 
-    private void HidePlaybackControls()
+    private void HidePlaybackControls(bool animate = true)
     {
         _controlsAutoHideTimer.Stop();
-        PlaybackControls.Visibility = Visibility.Collapsed;
+        if (PlaybackControls.IsKeyboardFocusWithin)
+            Keyboard.ClearFocus();
+
+        if (!animate)
+        {
+            _controlsVisibilityVersion++;
+            _isFadingOutControls = false;
+            PlaybackControls.BeginAnimation(UIElement.OpacityProperty, null);
+            PlaybackControls.Opacity = 1;
+            PlaybackControlsPopup.IsOpen = false;
+            PlaybackControls.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        if (!PlaybackControlsPopup.IsOpen || _isFadingOutControls)
+            return;
+
+        _isFadingOutControls = true;
+        var transitionVersion = ++_controlsVisibilityVersion;
+        var fadeOut = new DoubleAnimation(
+            PlaybackControls.Opacity,
+            0,
+            TimeSpan.FromMilliseconds(180));
+        fadeOut.Completed += (_, _) =>
+        {
+            if (transitionVersion != _controlsVisibilityVersion)
+                return;
+
+            _isFadingOutControls = false;
+            PlaybackControlsPopup.IsOpen = false;
+            PlaybackControls.Visibility = Visibility.Collapsed;
+            PlaybackControls.BeginAnimation(UIElement.OpacityProperty, null);
+            PlaybackControls.Opacity = 1;
+        };
+        PlaybackControls.BeginAnimation(UIElement.OpacityProperty, fadeOut);
     }
 
     private void ControlsAutoHideTimer_Tick(object? sender, EventArgs e)
@@ -405,7 +624,8 @@ public partial class MainWindow : Window
             SeekSlider.Maximum = 1;
             if (!_isSeeking)
                 SeekSlider.Value = 0;
-            PlaybackTimeText.Text = $"00:00 / {FormatPlaybackTime(duration)}";
+            PlaybackTimeText.Text = FormatPlaybackTimePair(0, duration);
+            UpdatePlaybackToggleButton();
             return;
         }
 
@@ -413,10 +633,65 @@ public partial class MainWindow : Window
         SeekSlider.IsEnabled = !string.IsNullOrWhiteSpace(_currentFilePath);
 
         var position = Math.Clamp(GetPositionSeconds(), 0, duration);
-        if (!_isSeeking)
-            SeekSlider.Value = position;
+        var displayPosition = position;
+        if (!_isSeeking && _pendingSeekSeconds is double pendingSeek)
+        {
+            var now = Environment.TickCount64;
+            if (now < _pendingSeekConfirmAfter || Math.Abs(position - pendingSeek) > 1.5)
+            {
+                _pendingSeekConfirmSamples = 0;
+                _pendingSeekLastConfirmSampleAt = 0;
+            }
+            else if (now - _pendingSeekLastConfirmSampleAt >= 150)
+            {
+                _pendingSeekConfirmSamples++;
+                _pendingSeekLastConfirmSampleAt = now;
+            }
 
-        PlaybackTimeText.Text = $"{FormatPlaybackTime(_isSeeking ? SeekSlider.Value : position)} / {FormatPlaybackTime(duration)}";
+            var seekReached = _pendingSeekConfirmSamples >= 2;
+            var seekTimedOut = now >= _pendingSeekExpiresAt;
+            if (seekReached || seekTimedOut)
+            {
+                if (seekReached)
+                    PlayerDiagnostics.Info($"Seek confirmed at {position:0.##}s for target {pendingSeek:0.##}s");
+                else
+                    PlayerDiagnostics.Info($"Seek to {pendingSeek:0.##}s was not confirmed; player remains at {position:0.##}s");
+                _pendingSeekSeconds = null;
+                _pendingSeekPositionFallbackAttempted = false;
+                _pendingSeekConfirmSamples = 0;
+                _pendingSeekLastConfirmSampleAt = 0;
+            }
+            else
+            {
+                if (!_pendingSeekPositionFallbackAttempted && now >= _pendingSeekFallbackAt)
+                {
+                    _pendingSeekPositionFallbackAttempted = true;
+                    _pendingSeekConfirmAfter = now + 600;
+                    _pendingSeekConfirmSamples = 0;
+                    _pendingSeekLastConfirmSampleAt = 0;
+                    if (_mediaPlayer is not null)
+                    {
+                        try
+                        {
+                            _mediaPlayer.Position = (float)Math.Clamp(pendingSeek / duration, 0, 1);
+                            PlayerDiagnostics.Info($"Retrying seek to {pendingSeek:0.##}s through LibVLC normalized position");
+                        }
+                        catch (Exception ex)
+                        {
+                            PlayerDiagnostics.Error("Normalized-position seek failed", ex);
+                        }
+                    }
+                }
+
+                displayPosition = pendingSeek;
+            }
+        }
+
+        if (!_isSeeking)
+            SeekSlider.Value = displayPosition;
+
+        PlaybackTimeText.Text = FormatPlaybackTimePair(_isSeeking ? SeekSlider.Value : displayPosition, duration);
+        UpdatePlaybackToggleButton();
     }
 
     private static string FormatPlaybackTime(double seconds)
@@ -428,6 +703,31 @@ public partial class MainWindow : Window
             : $"{totalSeconds / 60:00}:{totalSeconds % 60:00}";
     }
 
+    private string FormatPlaybackTimePair(double position, double duration)
+    {
+        if (duration <= 0)
+            return "00:00 / --:--";
+
+        var clampedPosition = Math.Clamp(position, 0, duration);
+        var otherTime = _showRemainingTime
+            ? $"-{FormatPlaybackTime(Math.Max(0, duration - clampedPosition))}"
+            : FormatPlaybackTime(duration);
+        return $"{FormatPlaybackTime(clampedPosition)} / {otherTime}";
+    }
+
+    private void PlaybackTimeButton_Click(object sender, RoutedEventArgs e)
+    {
+        _showRemainingTime = !_showRemainingTime;
+        PlaybackTimeButton.ToolTip = _showRemainingTime
+            ? "Click to show total duration"
+            : "Click to show time remaining";
+        AutomationProperties.SetName(
+            PlaybackTimeButton,
+            _showRemainingTime ? "Show total duration" : "Show time remaining");
+        UpdatePlaybackControlsProgress();
+        ShowPlaybackControls();
+    }
+
     private void SeekSlider_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (GetDurationSeconds() <= 0 || string.IsNullOrWhiteSpace(_currentFilePath))
@@ -435,6 +735,27 @@ public partial class MainWindow : Window
 
         _isSeeking = true;
         _controlsAutoHideTimer.Stop();
+
+        _isTrackClickSeek = false;
+        if (SeekSlider.Template.FindName("PART_Track", SeekSlider) is Track track
+            && track.Thumb is { IsMouseOver: false })
+        {
+            var point = e.GetPosition(track);
+            var thumbWidth = track.Thumb.ActualWidth;
+            var usableWidth = track.ActualWidth - thumbWidth;
+            var fraction = usableWidth > 0
+                ? (point.X - thumbWidth / 2) / usableWidth
+                : 0;
+            if (track.IsDirectionReversed)
+                fraction = 1 - fraction;
+            fraction = Math.Clamp(fraction, 0, 1);
+            SeekSlider.Value = SeekSlider.Minimum + fraction * (SeekSlider.Maximum - SeekSlider.Minimum);
+            _isTrackClickSeek = true;
+            PlayerDiagnostics.Info($"Seek track click: x={point.X:0.##}/{track.ActualWidth:0.##}, thumb={thumbWidth:0.##}, fraction={fraction:0.####}, value={SeekSlider.Value:0.##}s");
+            e.Handled = true;
+            QueueSeekCommit();
+        }
+
         ShowPlaybackControls();
     }
 
@@ -443,8 +764,52 @@ public partial class MainWindow : Window
         if (!_isSeeking)
             return;
 
+        QueueSeekCommit();
+    }
+
+    private void QueueSeekCommit()
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (!_isSeeking)
+                return;
+
+            var targetSeconds = SeekSlider.Value;
+            var source = _isTrackClickSeek ? "track click" : "thumb drag";
+            CommitSeek(targetSeconds, source);
+        }, DispatcherPriority.Input);
+    }
+
+    private bool SeekBySeconds(double offsetSeconds)
+    {
+        var duration = GetDurationSeconds();
+        if (duration <= 0 || string.IsNullOrWhiteSpace(_currentFilePath))
+            return false;
+
+        var currentPosition = _pendingSeekSeconds ?? GetPositionSeconds();
+        CommitSeek(Math.Clamp(currentPosition + offsetSeconds, 0, duration), "keyboard");
+        return true;
+    }
+
+    private void CommitSeek(double targetSeconds, string source)
+    {
+        var duration = GetDurationSeconds();
+        if (duration <= 0 || string.IsNullOrWhiteSpace(_currentFilePath))
+            return;
+
+        targetSeconds = Math.Clamp(targetSeconds, 0, duration);
         _isSeeking = false;
-        SeekToSeconds(SeekSlider.Value);
+        PlayerDiagnostics.Info($"Committing {source} seek at {targetSeconds:0.##}s");
+        _isTrackClickSeek = false;
+        _pendingSeekSeconds = targetSeconds;
+        var now = Environment.TickCount64;
+        _pendingSeekFallbackAt = now + 750;
+        _pendingSeekConfirmAfter = now + 600;
+        _pendingSeekExpiresAt = now + 7000;
+        _pendingSeekConfirmSamples = 0;
+        _pendingSeekLastConfirmSampleAt = 0;
+        _pendingSeekPositionFallbackAttempted = false;
+        SeekToSeconds(targetSeconds);
         UpdatePlaybackControlsProgress();
         ShowPlaybackControls();
     }
@@ -452,7 +817,162 @@ public partial class MainWindow : Window
     private void SeekSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_isSeeking)
-            PlaybackTimeText.Text = $"{FormatPlaybackTime(SeekSlider.Value)} / {FormatPlaybackTime(GetDurationSeconds())}";
+            PlaybackTimeText.Text = FormatPlaybackTimePair(SeekSlider.Value, GetDurationSeconds());
+    }
+
+    private void PausePlaybackButton_Click(object sender, RoutedEventArgs e)
+    {
+        TogglePlaybackPause();
+    }
+
+    private async void PreviousVideoButton_Click(object sender, RoutedEventArgs e)
+    {
+        await RequestAdjacentVideoAsync(RemotePlayCommandPipe.FullscreenPlayerPreviousArgument);
+    }
+
+    private async void NextVideoButton_Click(object sender, RoutedEventArgs e)
+    {
+        await RequestAdjacentVideoAsync(RemotePlayCommandPipe.FullscreenPlayerNextArgument);
+    }
+
+    private async Task RequestAdjacentVideoAsync(string commandArgument)
+    {
+        ShowPlaybackControls();
+        try
+        {
+            using var client = new NamedPipeClientStream(
+                ".",
+                RemotePlayCommandPipe.Name,
+                PipeDirection.Out,
+                PipeOptions.Asynchronous);
+            await client.ConnectAsync(1000);
+
+            using var writer = new StreamWriter(client, new UTF8Encoding(false), 1024, leaveOpen: true)
+            {
+                AutoFlush = true
+            };
+            await writer.WriteLineAsync(commandArgument);
+        }
+        catch (Exception ex) when (
+            ex is IOException
+            or TimeoutException
+            or UnauthorizedAccessException
+            or InvalidOperationException)
+        {
+            PlayerDiagnostics.Error("Could not request adjacent video playback from the main app", ex);
+        }
+    }
+
+    private void UpdateAdjacentVideoButtons(string? previousTitle, string? nextTitle)
+    {
+        _previousVideoTitle = string.IsNullOrWhiteSpace(previousTitle) ? null : previousTitle;
+        _nextVideoTitle = string.IsNullOrWhiteSpace(nextTitle) ? null : nextTitle;
+
+        PreviousVideoButton.IsEnabled = _previousVideoTitle is not null;
+        PreviousVideoButton.ToolTip = _previousVideoTitle ?? "No previous title";
+        AutomationProperties.SetName(
+            PreviousVideoButton,
+            _previousVideoTitle is null ? "Previous video" : $"Previous video: {_previousVideoTitle}");
+
+        NextVideoButton.IsEnabled = _nextVideoTitle is not null;
+        NextVideoButton.ToolTip = _nextVideoTitle ?? "No next title";
+        AutomationProperties.SetName(
+            NextVideoButton,
+            _nextVideoTitle is null ? "Next video" : $"Next video: {_nextVideoTitle}");
+    }
+
+    private void SetPlaybackPaused(bool paused)
+    {
+        if (_mediaPlayer is null || string.IsNullOrWhiteSpace(_currentFilePath))
+            return;
+
+        if (_isPaused == paused)
+        {
+            UpdatePlaybackToggleButton();
+            return;
+        }
+
+        try
+        {
+            if (paused)
+                _mediaPlayer.Pause();
+            else
+                _mediaPlayer.Play();
+
+            _isPaused = paused;
+            PlayerDiagnostics.Info(paused ? "Playback paused from controls" : "Playback resumed from controls");
+            UpdatePlaybackToggleButton();
+            ShowPlaybackControls();
+        }
+        catch (Exception ex)
+        {
+            PlayerDiagnostics.Error(paused ? "Playback pause failed" : "Playback resume failed", ex);
+        }
+    }
+
+    private void UpdatePlaybackToggleButton()
+    {
+        if (!_controlsInitialized)
+            return;
+
+        PausePlaybackButton.IsEnabled = _mediaPlayer is not null && !string.IsNullOrWhiteSpace(_currentFilePath);
+        PausePlaybackButton.Content = _isPaused ? "\uE768" : "\uE769";
+        PausePlaybackButton.ToolTip = _isPaused ? "Resume playback (Space)" : "Pause playback (Space)";
+        AutomationProperties.SetName(PausePlaybackButton, _isPaused ? "Resume playback" : "Pause playback");
+    }
+
+    private void VolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (!_isUpdatingVolumeSlider)
+            SetPlaybackVolume(e.NewValue);
+    }
+
+    private void MuteVolumeButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_volume <= 0)
+            SetPlaybackVolume(_lastNonZeroVolume > 0 ? _lastNonZeroVolume : 1);
+        else
+            SetPlaybackVolume(0);
+
+        ShowPlaybackControls();
+    }
+
+    private void SetPlaybackVolume(double volume)
+    {
+        _volume = volume;
+        if (_volume > 0)
+            _lastNonZeroVolume = _volume;
+
+        try
+        {
+            ApplyAudioLevel();
+        }
+        catch (Exception ex)
+        {
+            PlayerDiagnostics.Error("Setting playback volume failed", ex);
+        }
+
+        UpdateVolumeControls();
+    }
+
+    private void UpdateVolumeControls()
+    {
+        if (!_controlsInitialized)
+            return;
+
+        _isUpdatingVolumeSlider = true;
+        try
+        {
+            VolumeSlider.Value = Math.Clamp(_volume, VolumeSlider.Minimum, VolumeSlider.Maximum);
+            var isMuted = _volume <= 0;
+            MuteVolumeButton.Content = isMuted ? "\uE74F" : "\uE767";
+            MuteVolumeButton.ToolTip = isMuted ? "Unmute audio" : "Mute audio";
+            AutomationProperties.SetName(MuteVolumeButton, isMuted ? "Unmute audio" : "Mute audio");
+        }
+        finally
+        {
+            _isUpdatingVolumeSlider = false;
+        }
     }
 
     private void StopPlaybackButton_Click(object sender, RoutedEventArgs e)
@@ -475,10 +995,15 @@ public partial class MainWindow : Window
         _activePlayCommand = null;
         _pendingPlayCommand = null;
         _isPaused = false;
+        UpdateAdjacentVideoButtons(null, null);
         _hasSubtitles = false;
         _isSeeking = false;
+        _pendingSeekSeconds = null;
+        _pendingSeekPositionFallbackAttempted = false;
+        _pendingSeekConfirmSamples = 0;
+        _pendingSeekLastConfirmSampleAt = 0;
         _playbackProgressTimer.Stop();
-        HidePlaybackControls();
+        HidePlaybackControls(animate: false);
         SetPlayerCursorVisible(true);
         UpdatePlaybackControlsProgress();
     }
@@ -502,6 +1027,8 @@ public partial class MainWindow : Window
             UpdateLayout();
             VideoHost.UpdateLayout();
             _videoView?.UpdateLayout();
+            UpdateVolumeControls();
+            UpdatePlaybackToggleButton();
             ExecutePlay(cmd);
         }, DispatcherPriority.ApplicationIdle);
     }
@@ -546,11 +1073,13 @@ public partial class MainWindow : Window
                     PositionOnDisplay(bring.TargetDisplayIndex);
                     Activate();
                 }, message.MessageId),
-                PauseCommand => DispatchAction(() => { _mediaPlayer?.Pause(); _isPaused = true; }, message.MessageId),
-                ResumeCommand => DispatchAction(() => { _mediaPlayer?.Play(); _isPaused = false; }, message.MessageId),
+                PauseCommand => DispatchAction(() => SetPlaybackPaused(true), message.MessageId),
+                ResumeCommand => DispatchAction(() => SetPlaybackPaused(false), message.MessageId),
                 StopCommand => DispatchAction(StopPlayback, message.MessageId),
                 SeekCommand seek => DispatchAction(() => ApplySeek(seek), message.MessageId),
-                SetVolumeCommand vol => DispatchAction(() => { _volume = vol.Volume; ApplyAudioLevel(); }, message.MessageId),
+                SetVolumeCommand vol => DispatchAction(() => SetPlaybackVolume(vol.Volume), message.MessageId),
+                SetFullscreenControlsSettingsCommand controls => DispatchFullscreenControlsSettings(controls),
+                SetAdjacentVideoTitlesCommand titles => DispatchAdjacentVideoTitles(titles),
                 SetBrightnessCommand bright => DispatchAction(() => { _brightness = bright.Brightness; ApplyVideoAdjustments(); }, message.MessageId),
                 SetSaturationCommand sat => DispatchAction(() => { _saturation = sat.Saturation; ApplyVideoAdjustments(); }, message.MessageId),
                 SetSharpnessCommand sharp => DispatchAction(() =>
@@ -606,6 +1135,70 @@ public partial class MainWindow : Window
         };
     }
 
+    private AcknowledgmentResponse DispatchFullscreenControlsSettings(SetFullscreenControlsSettingsCommand command)
+    {
+        if (!FullscreenControlsSettings.IsValidAutoHideDelaySeconds(command.AutoHideDelaySeconds))
+        {
+            var errorMessage =
+                $"Fullscreen controls auto-hide delay must be between {FullscreenControlsSettings.MinimumAutoHideDelaySeconds} and {FullscreenControlsSettings.MaximumAutoHideDelaySeconds} seconds.";
+            PlayerDiagnostics.Error(
+                "Rejected fullscreen controls settings",
+                new ArgumentOutOfRangeException(nameof(command.AutoHideDelaySeconds), command.AutoHideDelaySeconds, errorMessage));
+            return new AcknowledgmentResponse
+            {
+                MessageType = nameof(AcknowledgmentResponse),
+                RequestId = command.MessageId,
+                Success = false,
+                ErrorMessage = errorMessage
+            };
+        }
+
+        return DispatchAction(
+            () => ApplyFullscreenControlsSettings(command.Enabled, command.AutoHideDelaySeconds),
+            command.MessageId);
+    }
+
+    private AcknowledgmentResponse DispatchAdjacentVideoTitles(SetAdjacentVideoTitlesCommand command)
+    {
+        if (string.IsNullOrWhiteSpace(command.FilePath))
+        {
+            const string errorMessage = "Adjacent video titles require the current file path.";
+            PlayerDiagnostics.Error(errorMessage, new ArgumentException(errorMessage, nameof(command.FilePath)));
+            return new AcknowledgmentResponse
+            {
+                MessageType = nameof(AcknowledgmentResponse),
+                RequestId = command.MessageId,
+                Success = false,
+                ErrorMessage = errorMessage
+            };
+        }
+
+        return DispatchAction(() =>
+        {
+            if (!string.Equals(_currentFilePath, command.FilePath, StringComparison.OrdinalIgnoreCase))
+            {
+                PlayerDiagnostics.Info($"Ignored stale adjacent video titles for {command.FilePath}");
+                return;
+            }
+
+            UpdateAdjacentVideoButtons(command.PreviousTitle, command.NextTitle);
+        }, command.MessageId);
+    }
+
+    private void ApplyFullscreenControlsSettings(bool enabled, double autoHideDelaySeconds)
+    {
+        _fullscreenControlsEnabled = enabled;
+        _fullscreenControlsAutoHideDelaySeconds = autoHideDelaySeconds;
+        _controlsAutoHideTimer.Interval = TimeSpan.FromSeconds(autoHideDelaySeconds);
+        PlayerDiagnostics.Info(
+            $"Fullscreen controls settings updated: enabled={enabled}; autoHide={autoHideDelaySeconds:0.##}s");
+
+        if (_mediaPlayer is not null && !string.IsNullOrWhiteSpace(_currentFilePath))
+            ShowPlaybackControls();
+        else if (!enabled)
+            HidePlaybackControls(animate: false);
+    }
+
     private AcknowledgmentResponse DispatchPlay(PlayCommand cmd)
     {
         PlayerDiagnostics.Info($"Play requested: {cmd.FilePath}; fileExists={File.Exists(cmd.FilePath)}; mediaPlayerReady={_mediaPlayer is not null}");
@@ -613,7 +1206,12 @@ public partial class MainWindow : Window
 
         // Store state fields immediately (thread-safe value types / strings)
         _currentFilePath = cmd.FilePath;
+        Dispatcher.BeginInvoke(
+            () => UpdateAdjacentVideoButtons(null, null),
+            DispatcherPriority.Send);
         _volume = cmd.Volume;
+        if (_volume > 0)
+            _lastNonZeroVolume = _volume;
         _brightness = cmd.Brightness;
         _saturation = cmd.Saturation;
         _sharpness = cmd.Sharpness;
@@ -624,6 +1222,10 @@ public partial class MainWindow : Window
         _lastAudioTrackId = cmd.PreferredAudioTrack;
         _lastSubtitleTrackId = cmd.PreferredSubtitleTrack;
         _isPaused = false;
+        _pendingSeekSeconds = null;
+        _pendingSeekPositionFallbackAttempted = false;
+        _pendingSeekConfirmSamples = 0;
+        _pendingSeekLastConfirmSampleAt = 0;
         _activePlayCommand = cmd;
 
         // All LibVLC operations must run on the UI thread.
@@ -718,12 +1320,10 @@ public partial class MainWindow : Window
 
             if (cmd.StartPositionSeconds > 0)
             {
-                // Seek after a short delay — media must be playing before Position is writable
+                // Seek after a short delay so VLC is already playing when the target time is applied.
                 Task.Delay(800).ContinueWith(_ => Dispatcher.BeginInvoke(() =>
                 {
-                    var duration = GetDurationSeconds();
-                    if (duration > 0)
-                        _mediaPlayer!.Position = (float)Math.Clamp(cmd.StartPositionSeconds / duration, 0, 1);
+                    SeekToSeconds(cmd.StartPositionSeconds);
                 }));
             }
 
@@ -745,7 +1345,18 @@ public partial class MainWindow : Window
     {
         var duration = GetDurationSeconds();
         if (_mediaPlayer is not null && duration > 0 && double.IsFinite(positionSeconds))
-            _mediaPlayer.Position = (float)Math.Clamp(positionSeconds / duration, 0, 1);
+        {
+            var targetMilliseconds = (long)(Math.Clamp(positionSeconds, 0, duration) * 1000);
+            PlayerDiagnostics.Info($"Seek request: target={targetMilliseconds}ms, current={_mediaPlayer.Time}ms, duration={_mediaPlayer.Length}ms, seekable={_mediaPlayer.IsSeekable}");
+            try
+            {
+                _mediaPlayer.Time = targetMilliseconds;
+            }
+            catch (Exception ex)
+            {
+                PlayerDiagnostics.Error("Timestamp seek failed", ex);
+            }
+        }
     }
 
     private bool TryAttachSubtitle(Media media, string videoPath)
@@ -837,6 +1448,8 @@ public partial class MainWindow : Window
         Console.WriteLine("[VideoPlayer] Media playing");
         Dispatcher.BeginInvoke(() =>
         {
+            _isPaused = false;
+            UpdatePlaybackToggleButton();
             if (_activePlayCommand is { } command)
                 PositionOnDisplay(command.TargetDisplayIndex);
             ApplyVideoAdjustments();
@@ -851,7 +1464,9 @@ public partial class MainWindow : Window
         Console.WriteLine("[VideoPlayer] Media ended");
         Dispatcher.BeginInvoke(() =>
         {
+            _isPaused = true;
             _playbackProgressTimer.Stop();
+            UpdatePlaybackToggleButton();
             HidePlaybackControls();
             SetPlayerCursorVisible(true);
         });
@@ -863,9 +1478,21 @@ public partial class MainWindow : Window
         Console.WriteLine($"[VideoPlayer] Media FAILED (VLC state={_mediaPlayer?.State})");
         Dispatcher.BeginInvoke(() =>
         {
+            _isPaused = true;
             _playbackProgressTimer.Stop();
+            UpdatePlaybackToggleButton();
             HidePlaybackControls();
             SetPlayerCursorVisible(true);
+        });
+    }
+
+    private void OnMediaPaused(object? sender, EventArgs e)
+    {
+        PlayerDiagnostics.Info("LibVLC event: Paused");
+        Dispatcher.BeginInvoke(() =>
+        {
+            _isPaused = true;
+            UpdatePlaybackToggleButton();
         });
     }
 
@@ -895,6 +1522,7 @@ public partial class MainWindow : Window
         Console.WriteLine("[VideoPlayer] OnClosed triggered");
         Console.WriteLine($"[VideoPlayer] OnClosed stack trace:\n{Environment.StackTrace}");
 
+        ComponentDispatcher.ThreadPreprocessMessage -= ComponentDispatcher_ThreadPreprocessMessage;
         _pointerTrackingTimer.Stop();
         _controlsAutoHideTimer.Stop();
         _playbackProgressTimer.Stop();

@@ -190,6 +190,8 @@ internal sealed class IpcServer : IDisposable
         nameof(StopCommand) => typeof(StopCommand),
         nameof(SeekCommand) => typeof(SeekCommand),
         nameof(SetVolumeCommand) => typeof(SetVolumeCommand),
+        nameof(SetFullscreenControlsSettingsCommand) => typeof(SetFullscreenControlsSettingsCommand),
+        nameof(SetAdjacentVideoTitlesCommand) => typeof(SetAdjacentVideoTitlesCommand),
         nameof(SetBrightnessCommand) => typeof(SetBrightnessCommand),
         nameof(SetSaturationCommand) => typeof(SetSaturationCommand),
         nameof(SetSharpnessCommand) => typeof(SetSharpnessCommand),

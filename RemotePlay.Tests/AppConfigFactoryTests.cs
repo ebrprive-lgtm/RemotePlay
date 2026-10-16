@@ -45,7 +45,9 @@ public sealed class AppConfigFactoryTests
             musicFileExtensions: [],
             maxRequestsPerIpPerWindow: 0,
             rateLimitWindowSeconds: 60,
-            networkShareCredentials: []);
+            networkShareCredentials: [],
+            fullscreenControlsEnabled: false,
+            fullscreenControlsAutoHideDelaySeconds: 4.5);
 
         Assert.Equal(5000, config.Port);
         Assert.True(config.UseHttps);
@@ -54,6 +56,8 @@ public sealed class AppConfigFactoryTests
         Assert.Equal(1.2, config.AudioBoost);
         Assert.Equal(1.1, config.PlaybackSpeed);
         Assert.Equal(1.15, config.Zoom);
+        Assert.False(config.FullscreenControlsEnabled);
+        Assert.Equal(4.5, config.FullscreenControlsAutoHideDelaySeconds);
         Assert.False(config.SubtitlesEnabled);
         Assert.Equal("eng", config.PreferredAudioLanguage);
         Assert.Equal("fra", config.PreferredSubtitleLanguage);

@@ -31,6 +31,7 @@ public partial class MainWindow
 
             nextPath = _playbackQueue[0];
             _playbackQueue.RemoveAt(0);
+            UpdateIsolatedPlayerNavigationTitles();
         });
 
         if (!string.IsNullOrWhiteSpace(nextPath))
@@ -49,6 +50,7 @@ public partial class MainWindow
 
             _playbackQueue.Add(filePath);
             AppendLog($"Queued: {Path.GetFileName(filePath)}");
+            UpdateIsolatedPlayerNavigationTitles();
         });
     }
 
@@ -58,6 +60,7 @@ public partial class MainWindow
         {
             _playbackQueue.Clear();
             AppendLog("Playback queue cleared");
+            UpdateIsolatedPlayerNavigationTitles();
         });
     }
 
@@ -71,6 +74,7 @@ public partial class MainWindow
 
             _playbackQueue.RemoveAt(index);
             AppendLog($"Removed from queue: {Path.GetFileName(filePath)}");
+            UpdateIsolatedPlayerNavigationTitles();
         });
     }
 
@@ -88,6 +92,7 @@ public partial class MainWindow
 
             (_playbackQueue[index], _playbackQueue[targetIndex]) = (_playbackQueue[targetIndex], _playbackQueue[index]);
             AppendLog($"Moved queue item: {Path.GetFileName(filePath)}");
+            UpdateIsolatedPlayerNavigationTitles();
         });
     }
 
@@ -1200,10 +1205,23 @@ public partial class MainWindow
             {
                 Dispatcher.BeginInvoke(() =>
                 {
-                    _adjacentVideoCacheCurrentPath = currentFilePath;
-                    _previousAdjacentVideoPath = previousPath;
-                    _nextAdjacentVideoPath = nextPath;
+                    var isStillCurrentPath = string.Equals(
+                        _currentFilePath,
+                        currentFilePath,
+                        StringComparison.OrdinalIgnoreCase);
+                    if (isStillCurrentPath)
+                    {
+                        _adjacentVideoCacheCurrentPath = currentFilePath;
+                        _previousAdjacentVideoPath = previousPath;
+                        _nextAdjacentVideoPath = nextPath;
+                    }
+
                     Interlocked.Exchange(ref _adjacentVideoCacheRefreshInProgress, 0);
+
+                    if (isStillCurrentPath)
+                        UpdateIsolatedPlayerNavigationTitles();
+                    else if (!string.IsNullOrWhiteSpace(_currentFilePath))
+                        RefreshAdjacentVideoCache(_currentFilePath);
                 });
             }
         });

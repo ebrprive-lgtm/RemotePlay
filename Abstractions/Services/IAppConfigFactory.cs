@@ -36,7 +36,9 @@ internal interface IAppConfigFactory
         string[] musicFileExtensions,
         int maxRequestsPerIpPerWindow,
         int rateLimitWindowSeconds,
-        NetworkShareCredential[] networkShareCredentials);
+        NetworkShareCredential[] networkShareCredentials,
+        bool? fullscreenControlsEnabled = null,
+        double? fullscreenControlsAutoHideDelaySeconds = null);
 
     AppConfig CreateForPlaybackPreferences(
         AppConfig currentConfig,

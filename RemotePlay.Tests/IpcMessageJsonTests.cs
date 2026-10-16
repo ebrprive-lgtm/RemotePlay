@@ -66,4 +66,42 @@ public sealed class IpcMessageJsonTests
         Assert.NotNull(deserialized);
         Assert.Equal(2, deserialized.TargetDisplayIndex);
     }
+
+    [Fact]
+    public void Serialize_SetFullscreenControlsSettingsCommand_PreservesSettings()
+    {
+        IpcMessage command = new SetFullscreenControlsSettingsCommand
+        {
+            MessageType = nameof(SetFullscreenControlsSettingsCommand),
+            Enabled = false,
+            AutoHideDelaySeconds = 5
+        };
+
+        var json = IpcMessageJson.Serialize(command, Options);
+        var deserialized = JsonSerializer.Deserialize<SetFullscreenControlsSettingsCommand>(json, Options);
+
+        Assert.NotNull(deserialized);
+        Assert.False(deserialized.Enabled);
+        Assert.Equal(5, deserialized.AutoHideDelaySeconds);
+    }
+
+    [Fact]
+    public void Serialize_SetAdjacentVideoTitlesCommand_PreservesCurrentPathAndTitles()
+    {
+        IpcMessage command = new SetAdjacentVideoTitlesCommand
+        {
+            MessageType = nameof(SetAdjacentVideoTitlesCommand),
+            FilePath = @"C:\Videos\current.mkv",
+            PreviousTitle = "Previous title",
+            NextTitle = "Next title"
+        };
+
+        var json = IpcMessageJson.Serialize(command, Options);
+        var deserialized = JsonSerializer.Deserialize<SetAdjacentVideoTitlesCommand>(json, Options);
+
+        Assert.NotNull(deserialized);
+        Assert.Equal(@"C:\Videos\current.mkv", deserialized.FilePath);
+        Assert.Equal("Previous title", deserialized.PreviousTitle);
+        Assert.Equal("Next title", deserialized.NextTitle);
+    }
 }
