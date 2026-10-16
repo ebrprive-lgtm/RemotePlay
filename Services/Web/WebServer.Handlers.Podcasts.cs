@@ -14,7 +14,12 @@ namespace RemotePlay;
 internal sealed partial class WebServer
 {
     private const long MaxPodcastFeedCharacters = 10_000_000;
+    private const int MaxPodcastAudioHostsToValidate = 64;
+    private const int PodcastAudioHostValidationConcurrency = 8;
+    private static readonly TimeSpan PodcastFeedRequestTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan PodcastAudioHostValidationTimeout = TimeSpan.FromSeconds(10);
     private static readonly HttpClient _podcastHttpClient = CreatePodcastHttpClient();
+    private static readonly PodcastFeedHttpClient _defaultPodcastFeedHttpClient = PodcastFeedHttpClient.CreateDefault();
     private static readonly ConcurrentDictionary<string, PodcastSearchCacheEntry> _podcastSearchCache = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, PodcastTopPoolCacheEntry> _podcastTopPoolCache = new(StringComparer.Ordinal);
     private static readonly TimeSpan _podcastSearchCacheTtl = TimeSpan.FromDays(1);
@@ -514,7 +519,7 @@ internal sealed partial class WebServer
         return unique.ToArray();
     }
 
-    private void HandlePodcastPlay(HttpListenerContext ctx)
+    private async Task HandlePodcastPlayAsync(HttpListenerContext ctx)
     {
         var rawUrl = (ctx.Request.QueryString["url"] ?? string.Empty).Trim();
         var title = (ctx.Request.QueryString["title"] ?? string.Empty).Trim();
@@ -526,15 +531,25 @@ internal sealed partial class WebServer
         }
 
         if (!Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri)
-            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            || !PodcastFeedHttpClient.IsValidHttpUri(uri))
         {
             TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid url\"}");
             return;
         }
 
-        if (IsPrivateOrLoopbackHost(uri.Host))
+        try
         {
-            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"private/local url is not allowed\"}");
+            await _podcastFeedHttpClient.ValidatePublicUriAsync(uri).ConfigureAwait(false);
+        }
+        catch (PodcastDestinationRejectedException)
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"podcast URL destination is not allowed\"}");
+            return;
+        }
+        catch (PodcastHostResolutionException)
+        {
+            Logger.Warning("Podcasts", "Podcast playback host could not be resolved or validated.");
+            TrySendResponse(ctx, 502, "application/json", "{\"error\":\"podcast URL destination could not be validated\"}");
             return;
         }
 
@@ -610,60 +625,257 @@ internal sealed partial class WebServer
             return;
         }
 
-        var resolvedUrl = await ResolvePodcastFeedUrlIfNeededAsync(url).ConfigureAwait(false);
-
-        if (!Uri.TryCreate(resolvedUrl, UriKind.Absolute, out var feedUri)
-            || (feedUri.Scheme != Uri.UriSchemeHttp && feedUri.Scheme != Uri.UriSchemeHttps))
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var requestedUri)
+            || !PodcastFeedHttpClient.IsValidHttpUri(requestedUri))
         {
             TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid url\"}");
             return;
         }
 
-        if (IsPrivateOrLoopbackHost(feedUri.Host))
+        var resolvedUrl = await ResolvePodcastFeedUrlIfNeededAsync(url).ConfigureAwait(false);
+
+        if (!Uri.TryCreate(resolvedUrl, UriKind.Absolute, out var feedUri)
+            || !PodcastFeedHttpClient.IsValidHttpUri(feedUri))
         {
-            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"private/local url is not allowed\"}");
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid url\"}");
             return;
         }
 
+        using var requestTimeout = new CancellationTokenSource(PodcastFeedRequestTimeout);
         try
         {
-            using var response = await _podcastHttpClient.GetAsync(feedUri, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
-            {
-                TrySendResponse(ctx, 502, "application/json", "{\"error\":\"podcast feed unavailable\"}");
-                return;
-            }
-
-            await using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-            var settings = new System.Xml.XmlReaderSettings
-            {
-                Async = true,
-                DtdProcessing = System.Xml.DtdProcessing.Prohibit,
-                XmlResolver = null,
-                MaxCharactersInDocument = MaxPodcastFeedCharacters,
-            };
-            using var reader = System.Xml.XmlReader.Create(stream, settings);
-            var xml = await XDocument.LoadAsync(reader, LoadOptions.None, CancellationToken.None).ConfigureAwait(false);
-            var allEpisodes = ParsePodcastEpisodes(xml);
+            await _podcastFeedHttpClient
+                .ValidatePublicUriAsync(feedUri, requestTimeout.Token)
+                .ConfigureAwait(false);
+            var parsedEpisodes = await _podcastFeedCache.GetOrRefreshAsync(
+                feedUri,
+                (validators, cancellationToken) => FetchPodcastFeedForCacheAsync(
+                    feedUri,
+                    validators,
+                    cancellationToken),
+                requestTimeout.Token).ConfigureAwait(false);
+            var allEpisodes = await ValidatePodcastEpisodeAudioUrlsAsync(
+                parsedEpisodes,
+                requestTimeout.Token).ConfigureAwait(false);
             var episodes = allEpisodes.Skip(offset).Take(limit).ToArray();
             var hasMore = allEpisodes.Length > offset + episodes.Length;
             var total = allEpisodes.Length;
             TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { episodes, hasMore, total }));
+        }
+        catch (PodcastDestinationRejectedException)
+        {
+            Logger.Warning("Podcasts", "Podcast feed request was rejected by the URL destination policy.");
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"podcast URL destination is not allowed\"}");
+        }
+        catch (PodcastHostResolutionException)
+        {
+            Logger.Warning("Podcasts", "Podcast feed host could not be resolved or validated.");
+            TrySendResponse(ctx, 502, "application/json", "{\"error\":\"podcast feed address unavailable\"}");
+        }
+        catch (PodcastFeedTooLargeException)
+        {
+            Logger.Warning("Podcasts", "Podcast feed exceeded the response size limit.");
+            TrySendResponse(ctx, 502, "application/json", "{\"error\":\"podcast feed exceeds size limit\"}");
+        }
+        catch (PodcastFeedTooManyAudioHostsException)
+        {
+            Logger.Warning("Podcasts", "Podcast feed exceeded the audio host validation limit.");
+            TrySendResponse(ctx, 502, "application/json", "{\"error\":\"podcast feed contains too many audio hosts\"}");
+        }
+        catch (PodcastFeedContentRejectedException)
+        {
+            Logger.Warning("Podcasts", "Podcast feed contained no safely reachable episode audio.");
+            TrySendResponse(ctx, 502, "application/json", "{\"error\":\"podcast feed contains no safe episode audio\"}");
+        }
+        catch (OperationCanceledException)
+        {
+            TrySendResponse(ctx, 504, "application/json", "{\"error\":\"podcast feed timeout\"}");
         }
         catch (HttpRequestException ex)
         {
             Logger.Warning("Podcasts", $"Podcast feed request failed: {ex.Message}");
             TrySendResponse(ctx, 502, "application/json", "{\"error\":\"podcast feed unavailable\"}");
         }
-        catch (TaskCanceledException)
-        {
-            TrySendResponse(ctx, 504, "application/json", "{\"error\":\"podcast feed timeout\"}");
-        }
         catch (System.Xml.XmlException ex)
         {
             Logger.Warning("Podcasts", $"Podcast feed XML parse failed: {ex.Message}");
             TrySendResponse(ctx, 502, "application/json", "{\"error\":\"podcast feed parse failure\"}");
         }
+    }
+
+    private async Task<PodcastFeedCacheRefreshResult> FetchPodcastFeedForCacheAsync(
+        Uri feedUri,
+        PodcastFeedValidators? validators,
+        CancellationToken cancellationToken)
+    {
+        using var refreshTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        refreshTimeout.CancelAfter(PodcastFeedRequestTimeout);
+        var refreshCancellationToken = refreshTimeout.Token;
+
+        using var response = await _podcastFeedHttpClient
+            .GetAsync(
+                feedUri,
+                HttpCompletionOption.ResponseHeadersRead,
+                refreshCancellationToken,
+                validators)
+            .ConfigureAwait(false);
+        var finalUri = PodcastFeedCache.NormalizeUri(
+            response.RequestMessage?.RequestUri ?? feedUri);
+        var noStore = response.Headers.CacheControl?.NoStore == true
+                      || response.Headers.Vary.Any(value => string.Equals(value.Trim(), "*", StringComparison.Ordinal));
+        var freshnessLifetime = GetPodcastFeedFreshnessLifetime(response);
+
+        if (response.StatusCode == HttpStatusCode.NotModified)
+        {
+            if (validators is null
+                || !validators.HasValidators
+                || !finalUri.Equals(PodcastFeedCache.NormalizeUri(validators.Uri)))
+            {
+                throw new HttpRequestException("Podcast feed returned 304 without matching cached validators.");
+            }
+
+            var refreshedValidators = new PodcastFeedValidators(
+                finalUri,
+                response.Headers.ETag ?? validators.ETag,
+                response.Content.Headers.LastModified ?? validators.LastModified);
+            return new PodcastFeedCacheRefreshResult(
+                null,
+                refreshedValidators,
+                NotModified: true,
+                noStore,
+                freshnessLifetime);
+        }
+
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException($"Podcast feed returned HTTP {(int)response.StatusCode}.");
+
+        using var stream = await PodcastFeedHttpClient
+            .ReadBoundedContentAsync(
+                response.Content,
+                PodcastFeedHttpClient.MaxResponseBytes,
+                refreshCancellationToken)
+            .ConfigureAwait(false);
+        var settings = new System.Xml.XmlReaderSettings
+        {
+            Async = true,
+            DtdProcessing = System.Xml.DtdProcessing.Prohibit,
+            XmlResolver = null,
+            MaxCharactersInDocument = MaxPodcastFeedCharacters,
+        };
+        using var reader = System.Xml.XmlReader.Create(stream, settings);
+        var xml = await XDocument.LoadAsync(reader, LoadOptions.None, refreshCancellationToken).ConfigureAwait(false);
+        var episodes = ParsePodcastEpisodes(xml);
+        var entityTag = response.Headers.ETag;
+        var lastModified = response.Content.Headers.LastModified;
+        var newValidators = entityTag is null && !lastModified.HasValue
+            ? null
+            : new PodcastFeedValidators(finalUri, entityTag, lastModified);
+
+        return new PodcastFeedCacheRefreshResult(
+            episodes,
+            newValidators,
+            NotModified: false,
+            noStore,
+            freshnessLifetime);
+    }
+
+    private TimeSpan? GetPodcastFeedFreshnessLifetime(HttpResponseMessage response)
+    {
+        var cacheControl = response.Headers.CacheControl;
+        if (cacheControl?.NoCache == true)
+            return TimeSpan.Zero;
+
+        var now = _podcastFeedCacheTimeProvider.GetUtcNow();
+        var age = response.Headers.Age ?? TimeSpan.Zero;
+        if (response.Headers.Date is { } responseDate)
+        {
+            var apparentAge = now - responseDate;
+            if (apparentAge > age)
+                age = apparentAge;
+        }
+
+        if (age < TimeSpan.Zero)
+            age = TimeSpan.Zero;
+
+        if (cacheControl?.MaxAge is { } maxAge)
+            return age >= maxAge ? TimeSpan.Zero : maxAge - age;
+
+        if (response.Content.Headers.Expires is { } expires)
+        {
+            var date = response.Headers.Date ?? now;
+            var lifetime = expires - date;
+            return age >= lifetime ? TimeSpan.Zero : lifetime - age;
+        }
+
+        return null;
+    }
+
+    private async Task<PodcastEpisodeDto[]> ValidatePodcastEpisodeAudioUrlsAsync(
+        PodcastEpisodeDto[] episodes,
+        CancellationToken cancellationToken)
+    {
+        var parsedEpisodes = episodes
+            .Select(episode => Uri.TryCreate(episode.AudioUrl, UriKind.Absolute, out var uri)
+                               && PodcastFeedHttpClient.IsSyntacticallyPublicUrl(episode.AudioUrl)
+                ? (Episode: episode, Uri: uri)
+                : ((PodcastEpisodeDto Episode, Uri Uri)?)null)
+            .Where(item => item.HasValue)
+            .Select(item => item!.Value)
+            .ToArray();
+        var hostUris = parsedEpisodes
+            .GroupBy(item => item.Uri.DnsSafeHost, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First().Uri)
+            .ToArray();
+
+        if (hostUris.Length > MaxPodcastAudioHostsToValidate)
+            throw new PodcastFeedTooManyAudioHostsException();
+
+        var safeHosts = new ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(PodcastAudioHostValidationTimeout);
+        using var throttle = new SemaphoreSlim(PodcastAudioHostValidationConcurrency);
+        await Task.WhenAll(hostUris.Select(async uri =>
+        {
+            var host = uri.DnsSafeHost;
+            try
+            {
+                await throttle.WaitAsync(timeout.Token).ConfigureAwait(false);
+                try
+                {
+                    await _podcastFeedHttpClient.ValidatePublicUriAsync(uri, timeout.Token).ConfigureAwait(false);
+                    safeHosts[host] = true;
+                }
+                finally
+                {
+                    throttle.Release();
+                }
+            }
+            catch (PodcastDestinationRejectedException)
+            {
+                safeHosts[host] = false;
+            }
+            catch (PodcastHostResolutionException)
+            {
+                safeHosts[host] = false;
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                safeHosts[host] = false;
+            }
+        })).ConfigureAwait(false);
+
+        var safeEpisodes = parsedEpisodes
+            .Where(item => safeHosts.TryGetValue(item.Uri.DnsSafeHost, out var isSafe) && isSafe)
+            .Select(item => item.Episode)
+            .ToArray();
+        var omittedCount = episodes.Length - safeEpisodes.Length;
+        if (omittedCount > 0)
+            Logger.Warning("Podcasts", $"Omitted {omittedCount} episodes with unsafe or unresolvable audio destinations.");
+
+        if (episodes.Length > 0 && safeEpisodes.Length == 0)
+            throw new PodcastFeedContentRejectedException();
+
+        return safeEpisodes;
     }
 
     private async Task<string> ResolvePodcastFeedUrlIfNeededAsync(string rawUrl)
@@ -734,11 +946,10 @@ internal sealed partial class WebServer
             .Select(item =>
             {
                 var audioUrl = GetPodcastAudioUrl(item);
-                if (string.IsNullOrWhiteSpace(audioUrl)
-                    || !Uri.TryCreate(audioUrl, UriKind.Absolute, out var audioUri)
-                    || !IsValidPublicPodcastFeedUrl(audioUrl))
+                if (string.IsNullOrWhiteSpace(audioUrl))
                     return null;
 
+                Uri.TryCreate(audioUrl, UriKind.Absolute, out var audioUri);
                 var title = GetPodcastElementValue(item, "title");
                 var description = GetPodcastElementValue(item, "description")
                                   ?? GetPodcastElementValue(item, "summary")
@@ -759,8 +970,10 @@ internal sealed partial class WebServer
 
                 return new PodcastEpisodeDto
                 {
-                    Title = string.IsNullOrWhiteSpace(title) ? Path.GetFileName(audioUri.LocalPath) : title.Trim(),
-                    AudioUrl = audioUri.ToString(),
+                    Title = string.IsNullOrWhiteSpace(title)
+                        ? Path.GetFileName(audioUri?.LocalPath ?? audioUrl)
+                        : title.Trim(),
+                    AudioUrl = audioUrl,
                     Description = (description ?? string.Empty).Trim(),
                     PublishedUtc = publishedUtc,
                     DurationSeconds = ParsePodcastDurationSeconds(durationRaw),
@@ -855,14 +1068,7 @@ internal sealed partial class WebServer
     }
 
     private static bool IsValidPublicPodcastFeedUrl(string? url)
-    {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-            return false;
-        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
-            return false;
-
-        return !IsPrivateOrLoopbackHost(uri.Host);
-    }
+        => PodcastFeedHttpClient.IsSyntacticallyPublicUrl(url);
 
     private sealed class ItunesPodcastSearchResponse
     {
@@ -952,24 +1158,6 @@ internal sealed partial class WebServer
 
         [JsonPropertyName("country")]
         public string Country { get; init; } = string.Empty;
-    }
-
-    private sealed class PodcastEpisodeDto
-    {
-        [JsonPropertyName("title")]
-        public string Title { get; init; } = string.Empty;
-
-        [JsonPropertyName("audioUrl")]
-        public string AudioUrl { get; init; } = string.Empty;
-
-        [JsonPropertyName("description")]
-        public string Description { get; init; } = string.Empty;
-
-        [JsonPropertyName("publishedUtc")]
-        public DateTimeOffset? PublishedUtc { get; init; }
-
-        [JsonPropertyName("durationSeconds")]
-        public int? DurationSeconds { get; init; }
     }
 
     private sealed record PodcastSearchCacheEntry(string ResponseJson, DateTimeOffset ExpiresUtc);

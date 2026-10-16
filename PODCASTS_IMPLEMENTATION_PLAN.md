@@ -38,11 +38,13 @@ be checked off only after their acceptance criteria pass.
 
 ### Baseline verification
 
-The focused podcast API tests previously passed (3 passed). The broader
+Before Phase 1, the focused podcast API tests passed (3 passed). The broader
 `WebServerApiTests` run had 27 passing tests and one rate-limit test failure
 (expected HTTP 429, received HTTP 200); that same failure reproduced when the
-test was run alone. Treat it as a known baseline issue unless a planned change
-touches the rate-limit behavior.
+test was run alone. Phase 1 verification then passed all 63 podcast-focused
+tests. The broader API/unit selection passed 85 tests and reproduced only that
+same rate-limit failure, including when run alone. Treat it as a known baseline
+issue unless a planned change touches rate-limit behavior.
 
 There is no JavaScript test runner or JS test file pattern currently wired into
 the repository. Earlier frontend checks were run with Deno as targeted syntax
@@ -62,48 +64,64 @@ redirect destination or protect against DNS rebinding.
 **Primary files:** [Services/Web/WebServer.Handlers.Podcasts.cs](./Services/Web/WebServer.Handlers.Podcasts.cs),
 [RemotePlay.Tests/WebServerApiTests.cs](./RemotePlay.Tests/WebServerApiTests.cs).
 
-- [ ] Add the narrowest practical injection seam for the feed HTTP transport
+- [x] Add the narrowest practical injection seam for the feed HTTP transport
   and DNS/connect validation so tests can use deterministic fake upstream
   responses. Keep iTunes lookup throttling and existing catalog behavior
   intact.
-- [ ] Restrict feed and episode URLs to absolute HTTP/HTTPS URLs; reject
+- [x] Restrict feed and episode URLs to absolute HTTP/HTTPS URLs; reject
   malformed URLs, user-info credentials, and non-public destinations.
-- [ ] Replace automatic redirect following for arbitrary feeds with a bounded
+- [x] Replace automatic redirect following for arbitrary feeds with a bounded
   redirect loop (recommended maximum: 5 hops). Resolve relative `Location`
   values and validate every destination before requesting it. Reject redirect
   loops and, by default, HTTPS-to-HTTP downgrades.
-- [ ] Validate resolved IPv4 and IPv6 addresses, not just host text. Reject
+- [x] Validate resolved IPv4 and IPv6 addresses, not just host text. Reject
   loopback, private, link-local, unspecified, multicast, metadata-service, and
   other non-global addresses, including IPv4-mapped IPv6 forms. Fail closed
   when DNS resolution cannot be validated.
-- [ ] Prevent DNS rebinding by ensuring the connection uses an address that
-  was validated for that request (or an equivalent transport-level defense),
-  while preserving correct Host and TLS certificate/SNI validation.
-- [ ] Apply the network/DNS destination policy to server-fetched feeds and
-  server-side play requests. Continue rejecting unsafe enclosure URLs before
-  returning them to the browser; document that browser-followed audio
-  redirects cannot be DNS-pinned by this server. Add audio proxying only if
-  protecting those client-side redirects is an explicit requirement.
-- [ ] Preserve the existing XML DTD prohibition, 15-second timeout, and feed
-  size bound. Enforce a response-byte limit while streaming, before buffering
-  or parsing the full body.
-- [ ] Return an explicit client error for rejected user-supplied destinations;
+- [x] Prevent DNS rebinding for feed requests by ensuring each direct socket
+  connection uses an address validated for that request, while preserving
+  correct Host and TLS certificate/SNI validation.
+- [x] Apply the public-destination policy to server-fetched feeds and
+  server-side play requests. Validate episode audio hosts before returning
+  enclosures to the browser; cap validation at 64 distinct hosts and 10
+  seconds per feed, omitting unsafe episodes and returning an error if no safe
+  playable episode remains.
+- [x] Preserve the XML DTD prohibition, 15-second timeout, and existing
+  character bound. Enforce a 20 MiB response-byte limit while streaming,
+  before buffering or parsing the full body.
+- [x] Return an explicit client error for rejected user-supplied destinations;
   log upstream/redirect failures without exposing internal addresses or
   credentials in responses.
 
 **Acceptance checks**
 
-- [ ] No outbound request is made for a literal private/loopback URL or a
+- [x] No outbound request is made for a literal private/loopback URL or a
   hostname resolving to a non-public address.
-- [ ] A public feed redirecting to a private address is rejected before the
+- [x] A public feed redirecting to a private address is rejected before the
   redirected request is sent.
-- [ ] Relative redirects to valid public URLs work; loops, excessive hops,
+- [x] Relative redirects to valid public URLs work; loops, excessive hops,
   invalid `Location` values, and HTTPS downgrades are rejected.
-- [ ] Feed requests and `/api/podcasts/play` enforce the validated
+- [x] Feed requests and `/api/podcasts/play` enforce the validated
   destination policy; unsafe enclosure URLs are not returned to the browser.
-- [ ] Existing DTD, size-limit, country-list, and private-host tests still
+- [x] Existing DTD, size-limit, country-list, and private-host tests still
   pass; new tests use fake upstreams and do not depend on live podcast
   providers.
+
+**Phase 1 implementation notes and limits**
+
+- The pinned feed client bypasses system proxies for arbitrary feed URLs;
+  otherwise the proxy could resolve the destination outside the validated
+  connection path. Environments that require an outbound proxy will need
+  explicit proxy support compatible with address pinning.
+- `/api/podcasts/play` checks DNS immediately before invoking the player, but
+  `RadioPlayer`/Media Foundation creates its own connection and can resolve the
+  host again. That connection is destination-checked but not DNS-pinned;
+  eliminating this remaining rebinding window requires player transport
+  support or a streaming relay.
+- Enclosure URLs are checked before being returned, but the browser performs
+  the audio request and may follow redirects that this server cannot pin.
+  Audio proxying remains out of scope unless that protection is explicitly
+  required.
 
 ### Phase 2 — Cache RSS responses with validators and bounded storage
 
@@ -115,31 +133,61 @@ feed.
 **Primary files:** [Services/Web/WebServer.Handlers.Podcasts.cs](./Services/Web/WebServer.Handlers.Podcasts.cs),
 [RemotePlay.Tests/WebServerApiTests.cs](./RemotePlay.Tests/WebServerApiTests.cs).
 
-- [ ] Add a feed cache keyed by a normalized, validated feed URL. Store
+- [x] Add a feed cache keyed by a normalized, validated feed URL. Store
   validators and the bounded parsed feed data needed to serve offset pages.
-- [ ] Send `If-None-Match` and/or `If-Modified-Since` when validators are
+- [x] Send `If-None-Match` and/or `If-Modified-Since` when validators are
   available; on `304 Not Modified`, refresh cache freshness and serve the
   cached feed without reparsing.
-- [ ] Respect upstream `Cache-Control: no-store` and revalidate `no-cache`
+- [x] Respect upstream `Cache-Control: no-store` and revalidate `no-cache`
   responses. Select and document a conservative freshness interval and
   maximum entry/aggregate memory limits; do not cache an entry that exceeds
   those limits.
-- [ ] Coalesce concurrent requests for the same feed so simultaneous page
+- [x] Coalesce concurrent requests for the same feed so simultaneous page
   requests do not trigger duplicate downloads.
-- [ ] Do not silently return stale content indefinitely after an upstream
+- [x] Do not silently return stale content indefinitely after an upstream
   error. Surface fetch/parse failures through the existing API error behavior.
-- [ ] Ensure cache keys and cached data cannot cross-contaminate different
+- [x] Ensure cache keys and cached data cannot cross-contaminate different
   feed URLs, query parameters, or paging offsets.
 
 **Acceptance checks**
 
-- [ ] A repeated request within the freshness interval is served from cache.
-- [ ] An expired entry sends validators; a `304` serves the prior parsed
+- [x] A repeated request within the freshness interval is served from cache.
+- [x] An expired entry sends validators; a `304` serves the prior parsed
   content, while a changed `200` replaces it.
-- [ ] `no-store`, oversized responses, eviction, concurrent requests, and
+- [x] `no-store`, oversized responses, eviction, concurrent requests, and
   upstream failures have deterministic tests.
-- [ ] Feed pagination returns the same `episodes`, `hasMore`, and `total`
+- [x] Feed pagination returns the same `episodes`, `hasMore`, and `total`
   contract before and after caching.
+
+**Phase 2 implementation notes and limits**
+
+- The cache is in-memory and scoped to each `WebServer` instance. Its key
+  canonicalizes scheme/host/default port, removes URL fragments, and preserves
+  the path and query; pagination parameters are deliberately not part of the
+  feed key.
+- Freshness defaults to five minutes and is capped at five minutes even when
+  the origin requests a longer lifetime. `no-cache` is immediately stale.
+  `max-age`, `Age`, `Date`, and `Expires` are considered; when the origin gives
+  no freshness metadata, the conservative five-minute default is used.
+- Cache storage is bounded to an estimated 4 MiB per entry, 32 MiB total, and
+  128 entries, with least-recently-used eviction. Oversized entries are served
+  to the current request but not retained. `no-store` and `Vary: *` responses
+  evict any prior representation and are not retained.
+- Validators are associated with the final URI after redirects and are sent
+  only on the redirect hop matching that URI. Concurrent callers share one
+  refresh; cancelling one caller cancels only its wait, not the shared fetch.
+  A refresh has a 15-second timeout. Failed refreshes propagate through the
+  existing API errors rather than serving expired content.
+- Feed host and episode audio host destinations are revalidated for every
+  API request, including cache hits, preserving the Phase 1 public-destination
+  policy.
+
+**Phase 2 verification**
+
+- [x] Podcast-focused API and cache tests passed: 78 passed, 0 failed.
+- [x] The complete `WebServerApiTests` selection ran: 54 passed; the existing
+  rate-limit test still fails with expected HTTP 429 / actual HTTP 200, matching
+  the previously documented baseline failure.
 
 ### Phase 3 — Balance global top-podcast discovery across countries
 
@@ -226,7 +274,7 @@ the episodes already loaded, even when the feed has another page.
 - [ ] Run the focused podcast API tests:
 
   ```powershell
-  dotnet test .\RemotePlay.Tests\RemotePlay.Tests.csproj --filter "FullyQualifiedName~Podcasts"
+  dotnet test .\RemotePlay.Tests\RemotePlay.Tests.csproj --filter "FullyQualifiedName~Podcast"
   ```
 
 - [ ] Run the complete API test class and compare failures with the documented

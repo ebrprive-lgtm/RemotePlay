@@ -18,11 +18,25 @@ public sealed class WebServerApiTests : IDisposable
 {
     private readonly WebServer _server;
     private readonly HttpClient _client;
+    private readonly HttpClient _podcastUpstreamClient;
+    private readonly TestPodcastHttpMessageHandler _podcastHttpHandler;
+    private readonly TestPodcastHostResolver _podcastHostResolver;
+    private readonly TestPodcastCacheTimeProvider _podcastCacheTimeProvider;
+    private readonly List<(string Url, string Title)> _radioPlayRequests = [];
 
     public WebServerApiTests()
     {
         var port = FindFreePort();
-        _server = new WebServer(new AppConfig { Port = port }, BuildStubCallbacks());
+        _podcastHttpHandler = new TestPodcastHttpMessageHandler();
+        _podcastHostResolver = new TestPodcastHostResolver();
+        _podcastCacheTimeProvider = new TestPodcastCacheTimeProvider();
+        _podcastUpstreamClient = new HttpClient(_podcastHttpHandler);
+        var podcastFeedHttpClient = new PodcastFeedHttpClient(_podcastUpstreamClient, _podcastHostResolver);
+        _server = new WebServer(
+            new AppConfig { Port = port },
+            BuildStubCallbacks((url, title) => _radioPlayRequests.Add((url, title))),
+            podcastFeedHttpClient: podcastFeedHttpClient,
+            podcastFeedCacheTimeProvider: _podcastCacheTimeProvider);
         _server.Start();
         _client = new HttpClient { BaseAddress = new Uri($"http://localhost:{port}") };
     }
@@ -31,6 +45,7 @@ public sealed class WebServerApiTests : IDisposable
     {
         _server.Stop();
         _client.Dispose();
+        _podcastUpstreamClient.Dispose();
     }
 
     // â”€â”€ /api/status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -364,6 +379,7 @@ public sealed class WebServerApiTests : IDisposable
         var response = await _client.GetAsync("/api/podcasts/feed?url=http%3A%2F%2F127.0.0.1%2Ffeed.xml");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(_podcastHttpHandler.RequestedUris);
     }
 
     [Fact]
@@ -373,9 +389,646 @@ public sealed class WebServerApiTests : IDisposable
         var response = await _client.PostAsync("/api/podcasts/play?url=http%3A%2F%2F127.0.0.1%2Fepisode.mp3", content);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(_radioPlayRequests);
     }
 
-    private static int FindFreePort()
+    [Fact]
+    public async Task PodcastsFeed_RejectsUserInfoWithoutMakingAnUpstreamRequest()
+    {
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://user:secret@feed.test/feed.xml"));
+        var json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(_podcastHttpHandler.RequestedUris);
+        Assert.DoesNotContain("secret", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RejectsHostnameResolvingToPrivateAddressBeforeRequest()
+    {
+        _podcastHostResolver.Set("private.test", IPAddress.Parse("10.20.30.40"));
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://private.test/feed.xml"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(_podcastHttpHandler.RequestedUris);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RejectsMixedPublicAndPrivateDnsResults()
+    {
+        _podcastHostResolver.Set(
+            "mixed.test",
+            IPAddress.Parse("93.184.216.34"),
+            IPAddress.Parse("10.20.30.40"));
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://mixed.test/feed.xml"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(_podcastHttpHandler.RequestedUris);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_ReturnsBadGatewayWhenDnsCannotBeValidated()
+    {
+        _podcastHostResolver.Set("unresolved.test");
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://unresolved.test/feed.xml"));
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Empty(_podcastHttpHandler.RequestedUris);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_DoesNotFollowUnsupportedOrCredentialedRedirects()
+    {
+        _podcastHttpHandler.ResponseFactory = _ =>
+        {
+            var redirect = new HttpResponseMessage(HttpStatusCode.Redirect);
+            redirect.Headers.Location = new Uri("ftp://user:password@feed.test/file.xml");
+            return redirect;
+        };
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/start"));
+        var json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Single(_podcastHttpHandler.RequestedUris);
+        Assert.DoesNotContain("password", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RejectsRedirectToPrivateAddressBeforeFollowing()
+    {
+        _podcastHostResolver.Set("private.test", IPAddress.Parse("192.168.1.10"));
+        _podcastHttpHandler.ResponseFactory = _ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Redirect);
+            response.Headers.Location = new Uri("https://private.test/feed.xml");
+            return response;
+        };
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/start"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Single(_podcastHttpHandler.RequestedUris);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_FollowsRelativePublicRedirect()
+    {
+        _podcastHttpHandler.ResponseFactory = request =>
+        {
+            if (request.RequestUri!.AbsolutePath == "/series/start")
+            {
+                var redirect = new HttpResponseMessage(HttpStatusCode.Redirect);
+                redirect.Headers.Location = new Uri("../feed.xml", UriKind.Relative);
+                return redirect;
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("<rss><channel><item><title>Episode</title><enclosure url=\"https://audio.test/episode.mp3\" /></item></channel></rss>"),
+            };
+        };
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/series/start"));
+        var json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, _podcastHttpHandler.RequestedUris.Count);
+        Assert.Equal("/feed.xml", _podcastHttpHandler.RequestedUris[1].AbsolutePath);
+        using var document = JsonDocument.Parse(json);
+        Assert.Equal("Episode", document.RootElement.GetProperty("episodes")[0].GetProperty("title").GetString());
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RejectsHttpsDowngrade()
+    {
+        _podcastHttpHandler.ResponseFactory = _ =>
+        {
+            var redirect = new HttpResponseMessage(HttpStatusCode.Redirect);
+            redirect.Headers.Location = new Uri("http://feed.test/insecure");
+            return redirect;
+        };
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/start"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Single(_podcastHttpHandler.RequestedUris);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RejectsRedirectLoop()
+    {
+        _podcastHttpHandler.ResponseFactory = _ =>
+        {
+            var redirect = new HttpResponseMessage(HttpStatusCode.Redirect);
+            redirect.Headers.Location = new Uri("/start", UriKind.Relative);
+            return redirect;
+        };
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/start"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Single(_podcastHttpHandler.RequestedUris);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RejectsMoreThanFiveRedirects()
+    {
+        _podcastHttpHandler.ResponseFactory = request =>
+        {
+            var currentNumber = int.Parse(request.RequestUri!.AbsolutePath.TrimStart('/'));
+            var redirect = new HttpResponseMessage(HttpStatusCode.Redirect);
+            redirect.Headers.Location = new Uri($"/{currentNumber + 1}", UriKind.Relative);
+            return redirect;
+        };
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/0"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(6, _podcastHttpHandler.RequestedUris.Count);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RejectsOversizedResponse()
+    {
+        _podcastHttpHandler.ResponseFactory = _ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent([]),
+            };
+            response.Content.Headers.ContentLength = PodcastFeedHttpClient.MaxResponseBytes + 1;
+            return response;
+        };
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/feed.xml"));
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_CachesParsedFeedAcrossOffsetPages()
+    {
+        _podcastHttpHandler.ResponseFactory = _ => PodcastFeedResponse(
+            "<rss><channel>" +
+            "<item><title>First</title><enclosure url=\"https://audio.test/first.mp3\" /></item>" +
+            "<item><title>Second</title><enclosure url=\"https://audio.test/second.mp3\" /></item>" +
+            "</channel></rss>");
+
+        var feedUrl = Uri.EscapeDataString("https://feed.test/feed.xml");
+        using var firstResponse = await _client.GetAsync(
+            $"/api/podcasts/feed?url={feedUrl}&limit=1&offset=0");
+        var firstJson = await firstResponse.Content.ReadAsStringAsync();
+        using var secondResponse = await _client.GetAsync(
+            $"/api/podcasts/feed?url={feedUrl}&limit=1&offset=1");
+        var secondJson = await secondResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        using var firstDocument = JsonDocument.Parse(firstJson);
+        using var secondDocument = JsonDocument.Parse(secondJson);
+        Assert.Equal("First", firstDocument.RootElement.GetProperty("episodes")[0].GetProperty("title").GetString());
+        Assert.Equal("Second", secondDocument.RootElement.GetProperty("episodes")[0].GetProperty("title").GetString());
+        Assert.True(firstDocument.RootElement.GetProperty("hasMore").GetBoolean());
+        Assert.False(secondDocument.RootElement.GetProperty("hasMore").GetBoolean());
+        Assert.Equal(2, secondDocument.RootElement.GetProperty("total").GetInt32());
+        Assert.Single(_podcastHttpHandler.RequestedUris);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_CacheKeyNormalizesHostAndPortButKeepsQueryParameters()
+    {
+        _podcastHttpHandler.ResponseFactory = request =>
+        {
+            var title = request.RequestUri!.Query.Contains("edition=b", StringComparison.Ordinal)
+                ? "Edition B"
+                : "Edition A";
+            return PodcastFeedResponse(
+                $"<rss><channel><item><title>{title}</title><enclosure url=\"https://audio.test/{title.Replace(' ', '-').ToLowerInvariant()}.mp3\" /></item></channel></rss>");
+        };
+
+        using var firstResponse = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://FEED.test:443/feed.xml?edition=a"));
+        using var normalizedResponse = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/feed.xml?edition=a"));
+        using var differentQueryResponse = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/feed.xml?edition=b"));
+        var normalizedJson = await normalizedResponse.Content.ReadAsStringAsync();
+        var differentQueryJson = await differentQueryResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, normalizedResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, differentQueryResponse.StatusCode);
+        using var normalizedDocument = JsonDocument.Parse(normalizedJson);
+        using var differentQueryDocument = JsonDocument.Parse(differentQueryJson);
+        Assert.Equal("Edition A", normalizedDocument.RootElement.GetProperty("episodes")[0].GetProperty("title").GetString());
+        Assert.Equal("Edition B", differentQueryDocument.RootElement.GetProperty("episodes")[0].GetProperty("title").GetString());
+        Assert.Equal(2, _podcastHttpHandler.RequestedUris.Count);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RevalidatesExpiredCacheWithEntityTagAndLastModified()
+    {
+        var lastModified = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
+        var responseDate = _podcastCacheTimeProvider.GetUtcNow().AddSeconds(-10);
+        var requestCount = 0;
+        _podcastHttpHandler.ResponseFactory = _ =>
+        {
+            requestCount++;
+            if (requestCount == 1)
+                return PodcastFeedResponse(
+                    "<rss><channel><item><title>Cached</title><enclosure url=\"https://audio.test/cached.mp3\" /></item></channel></rss>",
+                    cacheControl: "max-age=30",
+                    etag: "\"revision-1\"",
+                    lastModified: lastModified,
+                    responseDate: responseDate,
+                    age: TimeSpan.FromSeconds(15));
+
+            var notModified = new HttpResponseMessage(HttpStatusCode.NotModified);
+            notModified.Headers.TryAddWithoutValidation("Cache-Control", "max-age=30");
+            return notModified;
+        };
+
+        var feedUrl = Uri.EscapeDataString("https://feed.test/conditional.xml");
+        using var firstResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        _podcastCacheTimeProvider.Advance(TimeSpan.FromSeconds(16));
+        using var secondResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        var secondJson = await secondResponse.Content.ReadAsStringAsync();
+        using var thirdResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, thirdResponse.StatusCode);
+        Assert.Equal("\"revision-1\"", _podcastHttpHandler.RequestedRequests[1].IfNoneMatch);
+        Assert.Equal(lastModified, _podcastHttpHandler.RequestedRequests[1].IfModifiedSince);
+        using var document = JsonDocument.Parse(secondJson);
+        Assert.Equal("Cached", document.RootElement.GetProperty("episodes")[0].GetProperty("title").GetString());
+        Assert.Equal(2, _podcastHttpHandler.RequestedUris.Count);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_ReplacesExpiredEntryWhenFeedChanges()
+    {
+        var requestCount = 0;
+        _podcastHttpHandler.ResponseFactory = _ =>
+        {
+            requestCount++;
+            return requestCount == 1
+                ? PodcastFeedResponse(
+                    "<rss><channel><item><title>Old</title><enclosure url=\"https://audio.test/old.mp3\" /></item></channel></rss>",
+                    cacheControl: "max-age=1",
+                    etag: "\"revision-1\"")
+                : PodcastFeedResponse(
+                    "<rss><channel><item><title>New</title><enclosure url=\"https://audio.test/new.mp3\" /></item></channel></rss>",
+                    cacheControl: "max-age=30",
+                    etag: "\"revision-2\"");
+        };
+
+        var feedUrl = Uri.EscapeDataString("https://feed.test/changed.xml");
+        using var firstResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        _podcastCacheTimeProvider.Advance(TimeSpan.FromSeconds(2));
+        using var secondResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        using var thirdResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        var secondJson = await secondResponse.Content.ReadAsStringAsync();
+        var thirdJson = await thirdResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, thirdResponse.StatusCode);
+        Assert.Equal("\"revision-1\"", _podcastHttpHandler.RequestedRequests[1].IfNoneMatch);
+        Assert.Equal(2, _podcastHttpHandler.RequestedUris.Count);
+        using var secondDocument = JsonDocument.Parse(secondJson);
+        using var thirdDocument = JsonDocument.Parse(thirdJson);
+        Assert.Equal("New", secondDocument.RootElement.GetProperty("episodes")[0].GetProperty("title").GetString());
+        Assert.Equal("New", thirdDocument.RootElement.GetProperty("episodes")[0].GetProperty("title").GetString());
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RevalidatesRedirectedFeedAtValidatorUriOnly()
+    {
+        var finalResponseCount = 0;
+        _podcastHttpHandler.ResponseFactory = request =>
+        {
+            if (request.RequestUri!.Host.Equals("feed.test", StringComparison.OrdinalIgnoreCase))
+            {
+                return new HttpResponseMessage(HttpStatusCode.Redirect)
+                {
+                    Headers = { Location = new Uri("https://cdn.test/final.xml?edition=1") },
+                };
+            }
+
+            finalResponseCount++;
+            return finalResponseCount == 1
+                ? PodcastFeedResponse(
+                    "<rss><channel><item><title>Redirected</title><enclosure url=\"https://audio.test/redirected.mp3\" /></item></channel></rss>",
+                    cacheControl: "max-age=1",
+                    etag: "\"redirect-tag\"")
+                : new HttpResponseMessage(HttpStatusCode.NotModified);
+        };
+
+        var feedUrl = Uri.EscapeDataString("https://feed.test/redirect.xml");
+        using var firstResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        _podcastCacheTimeProvider.Advance(TimeSpan.FromSeconds(2));
+        using var secondResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        Assert.Equal(4, _podcastHttpHandler.RequestedRequests.Count);
+        Assert.Null(_podcastHttpHandler.RequestedRequests[0].IfNoneMatch);
+        Assert.Null(_podcastHttpHandler.RequestedRequests[1].IfNoneMatch);
+        Assert.Null(_podcastHttpHandler.RequestedRequests[2].IfNoneMatch);
+        Assert.Equal("\"redirect-tag\"", _podcastHttpHandler.RequestedRequests[3].IfNoneMatch);
+        Assert.Equal("cdn.test", _podcastHttpHandler.RequestedRequests[3].Uri.Host);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_UsesExpiresHeaderWhenNoMaxAgeIsPresent()
+    {
+        var expiresAt = _podcastCacheTimeProvider.GetUtcNow().AddSeconds(10);
+        var requestCount = 0;
+        _podcastHttpHandler.ResponseFactory = _ =>
+        {
+            requestCount++;
+            return requestCount == 1
+                ? PodcastFeedResponse(
+                    "<rss><channel><item><title>Expires</title><enclosure url=\"https://audio.test/expires.mp3\" /></item></channel></rss>",
+                    etag: "\"expires-tag\"",
+                    expires: expiresAt)
+                : new HttpResponseMessage(HttpStatusCode.NotModified);
+        };
+
+        var feedUrl = Uri.EscapeDataString("https://feed.test/expires.xml");
+        using var firstResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        _podcastCacheTimeProvider.Advance(TimeSpan.FromSeconds(11));
+        using var secondResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        Assert.Equal(2, _podcastHttpHandler.RequestedUris.Count);
+        Assert.Equal("\"expires-tag\"", _podcastHttpHandler.RequestedRequests[1].IfNoneMatch);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RechecksFeedHostBeforeServingCachedContent()
+    {
+        _podcastHttpHandler.ResponseFactory = _ => PodcastFeedResponse(
+            "<rss><channel><item><title>Cached</title><enclosure url=\"https://audio.test/cached.mp3\" /></item></channel></rss>");
+        var feedUrl = Uri.EscapeDataString("https://feed.test/rebound.xml");
+
+        using var firstResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        _podcastHostResolver.Set("feed.test", IPAddress.Parse("192.168.1.20"));
+        using var secondResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        var secondJson = await secondResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, secondResponse.StatusCode);
+        Assert.Contains("destination is not allowed", secondJson, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(_podcastHttpHandler.RequestedUris);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_NoCacheDirectiveRevalidatesOnEveryRequest()
+    {
+        var requestCount = 0;
+        _podcastHttpHandler.ResponseFactory = _ =>
+        {
+            requestCount++;
+            if (requestCount == 1)
+                return PodcastFeedResponse(
+                    "<rss><channel><item><title>Revalidated</title><enclosure url=\"https://audio.test/revalidated.mp3\" /></item></channel></rss>",
+                    cacheControl: "no-cache",
+                    etag: "\"no-cache-tag\"");
+
+            return new HttpResponseMessage(HttpStatusCode.NotModified);
+        };
+
+        var feedUrl = Uri.EscapeDataString("https://feed.test/no-cache.xml");
+        using var firstResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        using var secondResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        using var thirdResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, thirdResponse.StatusCode);
+        Assert.Null(_podcastHttpHandler.RequestedRequests[0].IfNoneMatch);
+        Assert.Equal("\"no-cache-tag\"", _podcastHttpHandler.RequestedRequests[1].IfNoneMatch);
+        Assert.Equal("\"no-cache-tag\"", _podcastHttpHandler.RequestedRequests[2].IfNoneMatch);
+        Assert.Equal(3, _podcastHttpHandler.RequestedUris.Count);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_NoStoreResponseEvictsPriorEntryAndIsNotCached()
+    {
+        var requestCount = 0;
+        _podcastHttpHandler.ResponseFactory = _ =>
+        {
+            requestCount++;
+            return requestCount switch
+            {
+                1 => PodcastFeedResponse(
+                    "<rss><channel><item><title>First</title><enclosure url=\"https://audio.test/first.mp3\" /></item></channel></rss>",
+                    cacheControl: "max-age=1",
+                    etag: "\"revision-1\""),
+                2 => PodcastFeedResponse(
+                    "<rss><channel><item><title>NoStore</title><enclosure url=\"https://audio.test/no-store.mp3\" /></item></channel></rss>",
+                    cacheControl: "no-store",
+                    etag: "\"revision-2\""),
+                _ => PodcastFeedResponse(
+                    "<rss><channel><item><title>Fresh</title><enclosure url=\"https://audio.test/fresh.mp3\" /></item></channel></rss>"),
+            };
+        };
+
+        var feedUrl = Uri.EscapeDataString("https://feed.test/no-store.xml");
+        using var firstResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        _podcastCacheTimeProvider.Advance(TimeSpan.FromSeconds(2));
+        using var secondResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        using var thirdResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, thirdResponse.StatusCode);
+        Assert.Equal("\"revision-1\"", _podcastHttpHandler.RequestedRequests[1].IfNoneMatch);
+        Assert.Null(_podcastHttpHandler.RequestedRequests[2].IfNoneMatch);
+        Assert.Equal(3, _podcastHttpHandler.RequestedUris.Count);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_DoesNotServeStaleCacheWhenUpstreamRefreshFails()
+    {
+        var requestCount = 0;
+        _podcastHttpHandler.ResponseFactory = _ =>
+        {
+            requestCount++;
+            return requestCount == 1
+                ? PodcastFeedResponse(
+                    "<rss><channel><item><title>Stale item</title><enclosure url=\"https://audio.test/stale.mp3\" /></item></channel></rss>",
+                    cacheControl: "max-age=1",
+                    etag: "\"stale-tag\"")
+                : new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        };
+
+        var feedUrl = Uri.EscapeDataString("https://feed.test/failing-refresh.xml");
+        using var firstResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        _podcastCacheTimeProvider.Advance(TimeSpan.FromSeconds(2));
+        using var failedResponse = await _client.GetAsync($"/api/podcasts/feed?url={feedUrl}");
+        var failedJson = await failedResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.BadGateway, failedResponse.StatusCode);
+        Assert.DoesNotContain("Stale item", failedJson, StringComparison.Ordinal);
+        Assert.Equal(2, _podcastHttpHandler.RequestedUris.Count);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RejectsFeedWithOnlyPrivateResolvedAudioHosts()
+    {
+        _podcastHostResolver.Set("private-audio.test", IPAddress.Parse("10.10.10.10"));
+        _podcastHttpHandler.ResponseFactory = _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("<rss><channel><item><title>Unsafe</title><enclosure url=\"https://private-audio.test/episode.mp3\" /></item></channel></rss>"),
+        };
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/feed.xml"));
+        var json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.DoesNotContain("private-audio.test", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RejectsFeedWithOnlyPrivateLiteralAudioUrls()
+    {
+        _podcastHttpHandler.ResponseFactory = _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                "<rss><channel><item><title>Unsafe</title><enclosure url=\"http://127.0.0.1/episode.mp3\" /></item></channel></rss>"),
+        };
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/feed.xml"));
+        var json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.DoesNotContain("127.0.0.1", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_OmitsUnsafeEpisodeButKeepsSafeEpisodes()
+    {
+        _podcastHostResolver.Set("private-audio.test", IPAddress.Parse("10.10.10.10"));
+        _podcastHttpHandler.ResponseFactory = _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                "<rss><channel>" +
+                "<item><title>Safe</title><enclosure url=\"https://audio.test/safe.mp3\" /></item>" +
+                "<item><title>Unsafe</title><enclosure url=\"https://private-audio.test/unsafe.mp3\" /></item>" +
+                "</channel></rss>"),
+        };
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/feed.xml"));
+        var json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(json);
+        var episodes = document.RootElement.GetProperty("episodes");
+        Assert.Equal("Safe", episodes[0].GetProperty("title").GetString());
+        Assert.Equal(1, document.RootElement.GetProperty("total").GetInt32());
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RejectsTooManyDistinctAudioHosts()
+    {
+        var items = string.Join(
+            string.Empty,
+            Enumerable.Range(0, 65).Select(index =>
+                $"<item><title>Episode {index}</title><enclosure url=\"https://audio{index}.test/{index}.mp3\" /></item>"));
+        _podcastHttpHandler.ResponseFactory = _ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent($"<rss><channel>{items}</channel></rss>"),
+        };
+
+        var response = await _client.GetAsync(
+            "/api/podcasts/feed?url=" + Uri.EscapeDataString("https://feed.test/feed.xml"));
+        var json = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+        Assert.Contains("too many audio hosts", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(_podcastHttpHandler.RequestedUris);
+    }
+
+    [Fact]
+    public async Task PodcastsPlay_RejectsHostnameResolvingToPrivateAddress()
+    {
+        _podcastHostResolver.Set("private.test", IPAddress.Parse("172.16.0.10"));
+        using var content = new StringContent(string.Empty);
+
+        var response = await _client.PostAsync(
+            "/api/podcasts/play?url=" + Uri.EscapeDataString("https://private.test/episode.mp3"),
+            content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(_radioPlayRequests);
+    }
+
+    [Fact]
+    public async Task PodcastsPlay_AllowsPublicHostname()
+    {
+        using var content = new StringContent(string.Empty);
+
+        var response = await _client.PostAsync(
+            "/api/podcasts/play?url=" + Uri.EscapeDataString("https://feed.test/episode.mp3"),
+            content);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("https://feed.test/episode.mp3", Assert.Single(_radioPlayRequests).Url);
+    }
+
+    private static HttpResponseMessage PodcastFeedResponse(
+        string xml,
+        string? cacheControl = null,
+        string? etag = null,
+        DateTimeOffset? lastModified = null,
+        DateTimeOffset? responseDate = null,
+        TimeSpan? age = null,
+        DateTimeOffset? expires = null)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(xml),
+        };
+        if (cacheControl is not null)
+            response.Headers.TryAddWithoutValidation("Cache-Control", cacheControl);
+        if (etag is not null)
+            response.Headers.TryAddWithoutValidation("ETag", etag);
+        if (lastModified.HasValue)
+            response.Content.Headers.LastModified = lastModified;
+        if (responseDate.HasValue)
+            response.Headers.Date = responseDate;
+        if (age.HasValue)
+            response.Headers.Age = age;
+        if (expires.HasValue)
+            response.Content.Headers.Expires = expires;
+
+        return response;
+    }
+
+    internal static int FindFreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
@@ -384,7 +1037,7 @@ public sealed class WebServerApiTests : IDisposable
         return port;
     }
 
-    private static WebServerCallbacks BuildStubCallbacks() => new()
+    internal static WebServerCallbacks BuildStubCallbacks(Action<string, string>? radioPlay = null) => new()
     {
         Play                  = _ => { },
         Stop                  = () => { },
@@ -433,7 +1086,7 @@ public sealed class WebServerApiTests : IDisposable
         RadioTopStations      = (_, _) => Task.FromResult(new List<RadioStation>()),
         RadioGetTags          = _ => Task.FromResult(new List<string>()),
         RadioGetCountries     = () => Task.FromResult(new List<(string Code, string Name)>()),
-        RadioPlay             = (_, _) => { },
+        RadioPlay             = radioPlay ?? ((_, _) => { }),
         RadioStop             = () => { },
         RadioSetVolume        = _ => { },
         RadioSetBoost         = _ => { },
@@ -454,4 +1107,69 @@ public sealed class WebServerApiTests : IDisposable
         RestartApp            = () => { },
                 RestartServer         = () => { },
     };
+
+    private sealed class TestPodcastHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly object _requestGate = new();
+
+        internal List<Uri> RequestedUris { get; } = [];
+        internal List<(Uri Uri, string? IfNoneMatch, DateTimeOffset? IfModifiedSince)> RequestedRequests { get; } = [];
+
+        internal Func<HttpRequestMessage, HttpResponseMessage> ResponseFactory { get; set; } =
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("<rss><channel /></rss>"),
+            };
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            lock (_requestGate)
+            {
+                RequestedUris.Add(request.RequestUri!);
+                RequestedRequests.Add((
+                    request.RequestUri!,
+                    request.Headers.IfNoneMatch.FirstOrDefault()?.ToString(),
+                    request.Headers.IfModifiedSince));
+            }
+
+            return Task.FromResult(ResponseFactory(request));
+        }
+    }
+
+    private sealed class TestPodcastHostResolver : IPodcastHostResolver
+    {
+        private readonly Dictionary<string, IPAddress[]> _addresses = new(StringComparer.OrdinalIgnoreCase);
+
+        internal void Set(string host, params IPAddress[] addresses)
+            => _addresses[host] = addresses;
+
+        public Task<IPAddress[]> ResolveAsync(string host, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var addresses = _addresses.TryGetValue(host, out var configured)
+                ? configured
+                : [IPAddress.Parse("93.184.216.34")];
+            return Task.FromResult(addresses);
+        }
+    }
+
+    private sealed class TestPodcastCacheTimeProvider : TimeProvider
+    {
+        private readonly object _gate = new();
+        private DateTimeOffset _utcNow = DateTimeOffset.UtcNow;
+
+        public override DateTimeOffset GetUtcNow()
+        {
+            lock (_gate)
+                return _utcNow;
+        }
+
+        internal void Advance(TimeSpan amount)
+        {
+            lock (_gate)
+                _utcNow += amount;
+        }
+    }
 }

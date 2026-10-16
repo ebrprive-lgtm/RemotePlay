@@ -706,7 +706,7 @@ internal sealed partial class WebServer
                 break;
 
             case "/api/podcasts/play":
-                HandlePodcastPlay(ctx);
+                await HandlePodcastPlayAsync(ctx).ConfigureAwait(false);
                 break;
 
             // ── Radio ─────────────────────────────────────────────────────────────
