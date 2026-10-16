@@ -297,6 +297,84 @@ public sealed class WebServerApiTests : IDisposable
         Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
     }
 
+    [Fact]
+    public async Task SettingsTestNetworkShare_RejectsNonUncPathWithoutExposingPassword()
+    {
+        const string password = "must-not-be-returned";
+        using var content = new StringContent(
+            """{"path":"not-a-unc-path","username":"test-user","password":"must-not-be-returned"}""",
+            System.Text.Encoding.UTF8, "application/json");
+
+        var response = await _client.PostAsync("/api/settings/test-network-share", content);
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Contains("UNC", doc.RootElement.GetProperty("error").GetString());
+        Assert.DoesNotContain(password, json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SettingsPost_RetainsNetworkShareCredentialsForSubsequentGet()
+    {
+        using var content = new StringContent(
+            """{"networkShareCredentials":[{"path":"\\\\fse\\Music","username":"test-user","password":"test-password"}]}""",
+            System.Text.Encoding.UTF8, "application/json");
+
+        var saveResponse = await _client.PostAsync("/api/settings", content);
+        Assert.Equal(HttpStatusCode.OK, saveResponse.StatusCode);
+
+        var getResponse = await _client.GetAsync("/api/settings");
+        var json = await getResponse.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var credential = Assert.Single(doc.RootElement.GetProperty("networkShareCredentials").EnumerateArray());
+
+        Assert.Equal(HttpStatusCode.OK, getResponse.StatusCode);
+        Assert.Equal(@"\\fse\Music", credential.GetProperty("path").GetString());
+        Assert.Equal("test-user", credential.GetProperty("username").GetString());
+        Assert.Equal("test-password", credential.GetProperty("password").GetString());
+    }
+
+    [Fact]
+    public async Task PodcastsCountries_ReturnsCountryDirectory()
+    {
+        var response = await _client.GetAsync("/api/podcasts/countries");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(json);
+        var hasUnitedStates = false;
+
+        foreach (var country in doc.RootElement.EnumerateArray())
+        {
+            if (country.GetProperty("code").GetString() == "US")
+            {
+                hasUnitedStates = true;
+                break;
+            }
+        }
+
+        Assert.True(hasUnitedStates);
+    }
+
+    [Fact]
+    public async Task PodcastsFeed_RejectsPrivateHost()
+    {
+        var response = await _client.GetAsync("/api/podcasts/feed?url=http%3A%2F%2F127.0.0.1%2Ffeed.xml");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task PodcastsPlay_RejectsPrivateHost()
+    {
+        using var content = new StringContent(string.Empty);
+        var response = await _client.PostAsync("/api/podcasts/play?url=http%3A%2F%2F127.0.0.1%2Fepisode.mp3", content);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     private static int FindFreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);

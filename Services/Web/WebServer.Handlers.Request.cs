@@ -374,6 +374,10 @@ internal sealed partial class WebServer
                 HandleApiSettingsTestPath(ctx);
                 break;
 
+            case "/api/settings/test-network-share":
+                HandleApiSettingsTestNetworkShare(ctx);
+                break;
+
             case "/api/settings/test-url":
                 HandleApiSettingsTestUrl(ctx);
                 break;

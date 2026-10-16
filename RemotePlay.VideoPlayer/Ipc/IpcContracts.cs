@@ -39,6 +39,7 @@ public static class RemotePlayCommandPipe
     public const char ArgumentSeparator = '\u001f';
     public const string FullscreenPlayerNextArgument = "--fullscreen-player-next";
     public const string FullscreenPlayerPreviousArgument = "--fullscreen-player-previous";
+    public const string FullscreenPlayerEscapeArgument = "--fullscreen-player-escape";
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

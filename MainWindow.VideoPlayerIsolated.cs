@@ -340,7 +340,7 @@ public partial class MainWindow
         }
     }
 
-    private async void StopVideoIsolated()
+    private async Task StopVideoIsolatedAsync()
     {
         if (_videoPlayerManager is null)
             return;
@@ -357,6 +357,28 @@ public partial class MainWindow
         catch (Exception ex)
         {
             Logger.Error("[Video] Stop error", ex);
+        }
+    }
+
+    private async Task ReturnToFullscreenQrAfterIsolatedPlayerEscapeAsync()
+    {
+        try
+        {
+            await StopVideoIsolatedAsync();
+            StopVideoPlayerHealthMonitoring();
+            ResetPlaybackState();
+            RestoreWindowForPlayback();
+
+            if (_isVideoMode)
+                ShowIdleOverlay();
+            else
+                await EnterFullscreenCleanAsync();
+
+            Activate();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("VideoPlayback", "Failed to return to the fullscreen QR screen after Escape.", ex);
         }
     }
 

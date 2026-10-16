@@ -2421,6 +2421,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (args.Count == 1 && args[0] == RemotePlayCommandPipe.FullscreenPlayerEscapeArgument)
+        {
+            _ = ReturnToFullscreenQrAfterIsolatedPlayerEscapeAsync();
+            return;
+        }
+
         RestoreWindowForPlayback();
 
         if (TryGetCommandArgument(args, "--create-link", out var createLinkTarget))

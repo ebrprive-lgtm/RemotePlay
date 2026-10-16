@@ -444,7 +444,7 @@ public partial class MainWindow
                 if (_videoPlayerManager is not null && _videoPlayerManager.IsProcessRunning)
                 {
                     SaveCurrentPlaybackPosition();
-                    StopVideoIsolated();
+                    _ = StopVideoIsolatedAsync();
                     ResetPlaybackState();
                     AppendLog("Playback stopped");
                     Logger.Info("[Video Isolated] Playback stopped");

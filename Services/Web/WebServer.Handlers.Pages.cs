@@ -1210,6 +1210,7 @@ internal sealed partial class WebServer
         .path-row input{flex:1;min-width:0;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:.34rem .6rem;color:#c9d1d9;font-size:.86rem}
         .test-btn{cursor:pointer;border:1px solid #30363d;border-radius:6px;padding:.3rem .6rem;background:#21262d;color:#c9d1d9;font-size:.8rem;white-space:nowrap;transition:background .13s}
         .test-btn:hover{background:#30363d}
+        .test-pending{color:#8b949e;font-size:.79rem}
         .test-ok{color:#4ade80;font-size:.79rem}
         .test-err{color:#f87171;font-size:.79rem}
         /* ── buttons ── */
@@ -1240,13 +1241,21 @@ internal sealed partial class WebServer
         .list-entries{display:flex;flex-direction:column;gap:.32rem;margin-bottom:.4rem}
         .list-entry{display:flex;gap:.4rem;align-items:center}
         .list-entry input{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:.3rem .52rem;color:#c9d1d9;font-size:.84rem}
-        .list-entry button{cursor:pointer;border:1px solid #30363d;border-radius:6px;padding:.26rem .52rem;background:#21262d;color:#f87171;font-size:.8rem}
-        .list-entry button:hover{background:#30363d}
+        .list-entry button,.cred-row .remove-entry-btn{cursor:pointer;border:1px solid #30363d;border-radius:6px;padding:.26rem .52rem;background:#21262d;color:#f87171;font-size:.8rem}
+        .list-entry button:hover,.cred-row .remove-entry-btn:hover{background:#30363d}
         .add-entry-btn{cursor:pointer;border:1px dashed #30363d;border-radius:6px;padding:.28rem .65rem;background:none;color:#58a6ff;font-size:.81rem;transition:border-color .13s}
         .add-entry-btn:hover{border-color:#388bfd}
         /* ── credentials ── */
-        .cred-row{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:.4rem;margin-bottom:.32rem}
+        .cred-header{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) auto minmax(0,1fr) auto;gap:.35rem .4rem;margin-bottom:.35rem;padding:0 .1rem}
+        .cred-header span{font-size:.75rem}
+        .cred-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) auto minmax(0,1fr) auto;gap:.4rem;margin-bottom:.32rem}
         .cred-row input{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:.3rem .5rem;color:#c9d1d9;font-size:.82rem}
+        .cred-row .test-btn{border-color:#7f1d1d;background:#7f1d1d;color:#fee2e2}
+        .cred-row .test-btn:hover{border-color:#991b1b;background:#991b1b}
+        .cred-test-result{min-width:0;font-size:.79rem;line-height:1.35;overflow-wrap:anywhere}
+        .cred-test-result:empty{display:none}
+        .cred-save-row{display:flex;align-items:center;gap:.6rem;margin-top:.3rem;flex-wrap:wrap}
+        .cred-save-status{min-height:1.1rem;font-size:.79rem}
         /* ── overview ── */
         .ov-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem .7rem;margin-top:.2rem}
         .ov-item{background:rgba(255,255,255,.025);border:1px solid #30363d;border-radius:10px;padding:.52rem .7rem}
@@ -1290,6 +1299,9 @@ internal sealed partial class WebServer
           .cat-btn{justify-content:center;padding:.48rem}.cat-btn .ico{width:auto}
           .row label{width:100%}.hint{padding-left:0}
           .ov-grid{grid-template-columns:1fr}
+          .cred-header{display:none}
+          .cred-row{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto minmax(0,1fr) auto}
+          .cred-row [data-cred=path]{grid-column:1/-1}
         }
         </style>
         </head>
@@ -1343,14 +1355,19 @@ internal sealed partial class WebServer
               <div class="card">
                 <h2>&#128101; Network share credentials</h2>
                 <div class="callout"><span class="ico">&#128274;</span> Credentials are stored in plain text in the config file. Keep the config file private and accessible only to the service account.</div>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:.35rem .4rem;margin-bottom:.35rem;padding:0 .1rem">
+                <div class="cred-header">
                   <span class="muted" style="font-size:.75rem">UNC path prefix</span>
                   <span class="muted" style="font-size:.75rem">Username</span>
                   <span class="muted" style="font-size:.75rem">Password</span>
                   <span></span>
+                  <span></span>
+                  <span></span>
                 </div>
                 <div id="cred-list"></div>
-                <button class="add-entry-btn" onclick="addCredRow()">+ Add credentials</button>
+                <div class="cred-save-row">
+                  <button class="add-entry-btn" onclick="addCredRow()">+ Add credentials</button>
+                  <span id="cred-save-status" class="cred-save-status" role="status" aria-live="polite"></span>
+                </div>
               </div>
               </div>
 
@@ -1881,7 +1898,7 @@ internal sealed partial class WebServer
           const rid='lr-'+Math.random().toString(36).slice(2);
           row.innerHTML=`<input type="text" data-key="${key}" value="${escAttr(value||'')}" placeholder="path..." />`
             +(isPath?`<button class="test-btn" onclick="testPathEntry(this,'${rid}')">Test</button><span id="${rid}" class="test-ok" style="font-size:.78rem"></span>`:'')
-            +`<button onclick="this.closest('.list-entry').remove()" title="Remove">&#10005;</button>`;
+            +`<button class="remove-entry-btn" onclick="this.closest('.list-entry').remove()" title="Remove">&#10005;</button>`;
           el.appendChild(row);
         }
         function populateCredentials(creds) {
@@ -1890,11 +1907,50 @@ internal sealed partial class WebServer
         }
         function addCredRow(path,user,pass) {
           const el=document.getElementById('cred-list'); const row=document.createElement('div'); row.className='cred-row';
-          row.innerHTML=`<input type="text" data-cred="path" value="${escAttr(path||'')}" placeholder="\\\\server\\share" />`
-            +`<input type="text" data-cred="username" value="${escAttr(user||'')}" placeholder="Username" />`
-            +`<input type="password" data-cred="password" value="${escAttr(pass||'')}" placeholder="Password" />`
-            +`<button onclick="this.closest('.cred-row').remove()" title="Remove">&#10005;</button>`;
+          row.innerHTML=`<input type="text" data-cred="path" value="${escAttr(path||'')}" placeholder="\\\\server\\share" oninput="clearCredentialTest(this)" />`
+            +`<input type="text" data-cred="username" value="${escAttr(user||'')}" placeholder="Username" oninput="clearCredentialTest(this)" />`
+            +`<input type="password" data-cred="password" value="${escAttr(pass||'')}" placeholder="Password" oninput="clearCredentialTest(this)" />`
+            +`<button type="button" class="test-btn" onclick="testCredentialEntry(this)">Test</button>`
+            +`<span class="cred-test-result"></span>`
+            +`<button type="button" class="remove-entry-btn" onclick="this.closest('.cred-row').remove()" title="Remove">&#10005;</button>`;
           el.appendChild(row);
+        }
+        function clearCredentialTest(input) {
+          const result=input.closest('.cred-row')?.querySelector('.cred-test-result');
+          if(result){result.textContent='';result.className='cred-test-result';}
+        }
+        async function testCredentialEntry(btn) {
+          const row=btn.closest('.cred-row');
+          const result=row?.querySelector('.cred-test-result');
+          if(!row||!result)return;
+          const credentials={
+            path:row.querySelector('[data-cred=path]')?.value.trim()||'',
+            username:row.querySelector('[data-cred=username]')?.value.trim()||'',
+            password:row.querySelector('[data-cred=password]')?.value||''
+          };
+          btn.disabled=true;
+          try{
+            const saved=await flushLibrarySave();
+            if(!saved){
+              result.textContent='\u26a0 Credentials could not be saved; test was not run.';
+              result.className='cred-test-result test-err';
+              return;
+            }
+            result.textContent='Testing\u2026';
+            result.className='cred-test-result test-pending';
+            const response=await fetch('/api/settings/test-network-share',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(credentials)});
+            const data=await response.json();
+            if(!response.ok||!data.ok){
+              result.textContent='\u26a0 '+(data.error||'Connection test failed.');
+              result.className='cred-test-result test-err';
+              return;
+            }
+            result.textContent='\u2714 Connection successful';
+            result.className='cred-test-result test-ok';
+          }catch(e){
+            result.textContent='\u26a0 '+(e?.message||'Could not test the network share.');
+            result.className='cred-test-result test-err';
+          }finally{btn.disabled=false;}
         }
         const CAT_FIELDS={
           library:[],   // handled entirely by list/cred collectors in collectCategory
@@ -1919,26 +1975,84 @@ internal sealed partial class WebServer
           if(cat==='server'){const v=readField('ServerInstanceName');if(v!==undefined)p['InstanceName']=v;const r1=readField('MaxRequestsPerIpPerWindow');if(r1!==undefined)p['MaxRequestsPerIpPerWindow']=r1;const r2=readField('RateLimitWindowSeconds');if(r2!==undefined)p['RateLimitWindowSeconds']=r2;if(_portTested){const pv=readField('Port');if(pv!==undefined&&pv!==null)p['Port']=pv;}}
           return p;
         }
-        let _autoSaveTimer=null;
+        const _autoSaveTimers=new Map();
+        let _librarySaveRevision=0;
+        let _librarySavedRevision=0;
+        let _librarySavePromise=null;
+        let _librarySavePromiseRevision=-1;
+        function setLibrarySaveStatus(text,state) {
+          const el=document.getElementById('cred-save-status');
+          if(!el)return;
+          el.textContent=text;
+          el.className='cred-save-status'+(state?' '+state:'');
+        }
         function scheduleAutoSave(cat){
-          clearTimeout(_autoSaveTimer);
-          _autoSaveTimer=setTimeout(()=>saveCategory(cat),600);
+          const previousTimer=_autoSaveTimers.get(cat);
+          if(previousTimer)clearTimeout(previousTimer);
+          const revision=cat==='library'?++_librarySaveRevision:undefined;
+          if(cat==='library')setLibrarySaveStatus('Unsaved changes\u2026','test-pending');
+          _autoSaveTimers.set(cat,setTimeout(()=>{
+            _autoSaveTimers.delete(cat);
+            saveCategory(cat,revision);
+          },600));
         }
         function bindCategoryAutoSave(cat){
           const panel=document.getElementById('panel-'+cat);
           if(!panel)return;
-          panel.querySelectorAll('input,select,textarea').forEach(el=>{
+          const handleControlChange=event=>{
+            const el=event.target;
+            if(!(el instanceof HTMLInputElement||el instanceof HTMLSelectElement||el instanceof HTMLTextAreaElement))return;
             if(el.id==='Port')return; // Port requires Test before save, excluded from auto-save
-            const evt=el.type==='range'?'change':(el.type==='text'||el.type==='number'||el.tagName==='TEXTAREA'?'change':'change');
-            el.addEventListener(evt,()=>scheduleAutoSave(cat));
-          });
+            scheduleAutoSave(cat);
+          };
+          panel.addEventListener('change',handleControlChange);
+          if(cat==='library'){
+            panel.addEventListener('input',handleControlChange);
+            panel.addEventListener('click',event=>{
+              if(event.target instanceof Element&&event.target.closest('.remove-entry-btn'))
+                scheduleAutoSave(cat);
+            });
+          }
         }
-        async function saveCategory(cat){
-          try{
-            const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collectCategory(cat))});
-            const d=await r.json();
-            if(d.ok&&d.settings)populate(d.settings);
-          }catch(e){console.warn('Auto-save failed:',e);}
+        async function saveCategory(cat,revision=cat==='library'?_librarySaveRevision:undefined){
+          if(cat==='library'&&_librarySavePromise&&_librarySavePromiseRevision===revision)
+            return _librarySavePromise;
+          const savePromise=(async()=>{
+            if(cat==='library')setLibrarySaveStatus('Saving\u2026','test-pending');
+            try{
+              const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(collectCategory(cat))});
+              const d=await r.json();
+              if(!r.ok||!d.ok)throw new Error(d.error||('HTTP '+r.status));
+              if(d.settings&&cat!=='library')populate(d.settings);
+              if(cat==='library'&&revision===_librarySaveRevision){
+                _librarySavedRevision=revision;
+                setLibrarySaveStatus('Saved','test-ok');
+              }
+              return true;
+            }catch(e){
+              console.warn('Auto-save failed:',e);
+              if(cat==='library'&&revision===_librarySaveRevision)
+                setLibrarySaveStatus('Save failed: '+(e?.message||'Request failed.'),'test-err');
+              return false;
+            }
+          })();
+          if(cat==='library'){
+            _librarySavePromise=savePromise;
+            _librarySavePromiseRevision=revision;
+          }
+          try{return await savePromise;}
+          finally{
+            if(cat==='library'&&_librarySavePromise===savePromise){
+              _librarySavePromise=null;
+              _librarySavePromiseRevision=-1;
+            }
+          }
+        }
+        async function flushLibrarySave(){
+          const timer=_autoSaveTimers.get('library');
+          if(timer){clearTimeout(timer);_autoSaveTimers.delete('library');}
+          if(_librarySavedRevision===_librarySaveRevision)return true;
+          return await saveCategory('library',_librarySaveRevision);
         }
         async function testPath(inputId,resultId){
           const val=document.getElementById(inputId)?.value.trim();

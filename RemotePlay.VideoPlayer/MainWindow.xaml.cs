@@ -60,6 +60,7 @@ public partial class MainWindow : Window
     private bool _hasSubtitles;
     private bool _isSeeking;
     private double? _pendingSeekSeconds;
+    private long _pendingSeekStartedAt;
     private long _pendingSeekExpiresAt;
     private long _pendingSeekFallbackAt;
     private long _pendingSeekConfirmAfter;
@@ -385,10 +386,14 @@ public partial class MainWindow : Window
 
         if (key == Key.Escape)
         {
-            PlayerDiagnostics.Info("Escape pressed; minimizing player window");
+            PlayerDiagnostics.Info("Escape pressed; stopping playback and returning to the QR screen");
+            StopPlayback();
             HidePlaybackControls(animate: false);
             SetPlayerCursorVisible(true);
             WindowState = WindowState.Minimized;
+            _ = SendMainApplicationCommandAsync(
+                RemotePlayCommandPipe.FullscreenPlayerEscapeArgument,
+                "return to the fullscreen QR screen");
             return true;
         }
 
@@ -637,7 +642,18 @@ public partial class MainWindow : Window
         if (!_isSeeking && _pendingSeekSeconds is double pendingSeek)
         {
             var now = Environment.TickCount64;
-            if (now < _pendingSeekConfirmAfter || Math.Abs(position - pendingSeek) > 1.5)
+            var expectedPosition = pendingSeek;
+            if (!_isPaused && _mediaPlayer?.IsPlaying == true)
+            {
+                var elapsedSinceSeekSeconds = Math.Max(0, now - _pendingSeekStartedAt) / 1000.0;
+                expectedPosition = Math.Clamp(
+                    pendingSeek + elapsedSinceSeekSeconds * _playbackSpeed,
+                    0,
+                    duration);
+            }
+
+            var positionIsNearExpected = Math.Abs(position - expectedPosition) <= 1.5;
+            if (now < _pendingSeekConfirmAfter || !positionIsNearExpected)
             {
                 _pendingSeekConfirmSamples = 0;
                 _pendingSeekLastConfirmSampleAt = 0;
@@ -657,15 +673,19 @@ public partial class MainWindow : Window
                 else
                     PlayerDiagnostics.Info($"Seek to {pendingSeek:0.##}s was not confirmed; player remains at {position:0.##}s");
                 _pendingSeekSeconds = null;
+                _pendingSeekStartedAt = 0;
                 _pendingSeekPositionFallbackAttempted = false;
                 _pendingSeekConfirmSamples = 0;
                 _pendingSeekLastConfirmSampleAt = 0;
             }
             else
             {
-                if (!_pendingSeekPositionFallbackAttempted && now >= _pendingSeekFallbackAt)
+                if (!_pendingSeekPositionFallbackAttempted
+                    && now >= _pendingSeekFallbackAt
+                    && !positionIsNearExpected)
                 {
                     _pendingSeekPositionFallbackAttempted = true;
+                    _pendingSeekStartedAt = now;
                     _pendingSeekConfirmAfter = now + 600;
                     _pendingSeekConfirmSamples = 0;
                     _pendingSeekLastConfirmSampleAt = 0;
@@ -674,7 +694,8 @@ public partial class MainWindow : Window
                         try
                         {
                             _mediaPlayer.Position = (float)Math.Clamp(pendingSeek / duration, 0, 1);
-                            PlayerDiagnostics.Info($"Retrying seek to {pendingSeek:0.##}s through LibVLC normalized position");
+                            PlayerDiagnostics.Info(
+                                $"Retrying seek to {pendingSeek:0.##}s through LibVLC normalized position; observed={position:0.##}s, expected={expectedPosition:0.##}s");
                         }
                         catch (Exception ex)
                         {
@@ -803,6 +824,7 @@ public partial class MainWindow : Window
         _isTrackClickSeek = false;
         _pendingSeekSeconds = targetSeconds;
         var now = Environment.TickCount64;
+        _pendingSeekStartedAt = now;
         _pendingSeekFallbackAt = now + 750;
         _pendingSeekConfirmAfter = now + 600;
         _pendingSeekExpiresAt = now + 7000;
@@ -835,9 +857,14 @@ public partial class MainWindow : Window
         await RequestAdjacentVideoAsync(RemotePlayCommandPipe.FullscreenPlayerNextArgument);
     }
 
-    private async Task RequestAdjacentVideoAsync(string commandArgument)
+    private Task RequestAdjacentVideoAsync(string commandArgument)
     {
         ShowPlaybackControls();
+        return SendMainApplicationCommandAsync(commandArgument, "adjacent video playback");
+    }
+
+    private async Task SendMainApplicationCommandAsync(string commandArgument, string requestDescription)
+    {
         try
         {
             using var client = new NamedPipeClientStream(
@@ -859,7 +886,7 @@ public partial class MainWindow : Window
             or UnauthorizedAccessException
             or InvalidOperationException)
         {
-            PlayerDiagnostics.Error("Could not request adjacent video playback from the main app", ex);
+            PlayerDiagnostics.Error($"Could not request {requestDescription} from the main app", ex);
         }
     }
 
@@ -999,6 +1026,7 @@ public partial class MainWindow : Window
         _hasSubtitles = false;
         _isSeeking = false;
         _pendingSeekSeconds = null;
+        _pendingSeekStartedAt = 0;
         _pendingSeekPositionFallbackAttempted = false;
         _pendingSeekConfirmSamples = 0;
         _pendingSeekLastConfirmSampleAt = 0;
@@ -1223,6 +1251,7 @@ public partial class MainWindow : Window
         _lastSubtitleTrackId = cmd.PreferredSubtitleTrack;
         _isPaused = false;
         _pendingSeekSeconds = null;
+        _pendingSeekStartedAt = 0;
         _pendingSeekPositionFallbackAttempted = false;
         _pendingSeekConfirmSamples = 0;
         _pendingSeekLastConfirmSampleAt = 0;

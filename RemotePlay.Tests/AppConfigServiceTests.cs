@@ -52,7 +52,20 @@ public class AppConfigServiceTests : IDisposable
     public void Save_ThenLoad_RoundTripsConfig()
     {
         var service = new AppConfigService();
-        var original = new AppConfig { Port = 7777, InstanceName = "TestInstance" };
+        var original = new AppConfig
+        {
+            Port = 7777,
+            InstanceName = "TestInstance",
+            NetworkShareCredentials =
+            [
+                new NetworkShareCredential
+                {
+                    Path = @"\\testserver\share",
+                    Username = "test-user",
+                    Password = "test-password",
+                },
+            ],
+        };
 
         try
         {
@@ -67,6 +80,10 @@ public class AppConfigServiceTests : IDisposable
 
         Assert.Equal(7777, loaded.Port);
         Assert.Equal("TestInstance", loaded.InstanceName);
+        var credential = Assert.Single(loaded.NetworkShareCredentials);
+        Assert.Equal(@"\\testserver\share", credential.Path);
+        Assert.Equal("test-user", credential.Username);
+        Assert.Equal("test-password", credential.Password);
     }
 
     [Fact]

@@ -28,10 +28,10 @@
             <Border x:Name="PlaybackControls"
                 HorizontalAlignment="Stretch"
                 Padding="22,14,22,12"
-                Background="#66000000"
+                Background="#BB000000"
                 BorderBrush="#66FFFFFF"
-                BorderThickness="3"
-                CornerRadius="14"
+                BorderThickness="4"
+                CornerRadius="16"
                 Visibility="Collapsed">
             <Grid>
                 <Grid.RowDefinitions>

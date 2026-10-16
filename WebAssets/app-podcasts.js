@@ -5,16 +5,22 @@ let _podcastEpisodes = [];
 let _podcastSelectedShow = null;
 let _podcastDirectory = [];
 let _podcastDirectoryLoading = false;
+let _podcastDirectoryRequestId = 0;
 let _podcastLastSearch = { query: '', topic: '', country: '' };
 let _podcastShowsOffset = 0;
 let _podcastShowsHasMore = false;
 let _podcastShowsTotal = null;
+let _podcastShowsRequestId = 0;
+let _podcastShowsLoadMoreRequestId = null;
 const _podcastShowsPageSize = 50;
 let _podcastEpisodesOffset = 0;
 let _podcastEpisodesHasMore = false;
 let _podcastEpisodesTotal = null;
+let _podcastEpisodesRequestId = 0;
+let _podcastEpisodesLoadMoreRequestId = null;
 const _podcastEpisodesPageSize = 80;
 let _podcastCurrentEpisodeIndex = -1;
+let _podcastPlaybackEpisodes = [];
 let _podcastCountryNames = new Map([['US', 'United States']]);
 let _podcastFavoriteShowFeeds = [];
 let _podcastFavoritesOnly = false;
@@ -56,9 +62,6 @@ function podcastsInit() {
   const root = document.getElementById('podcasts-browser');
   if (!root) return;
 
-  _podcastFavoritesOnly = true;
-  _syncPodcastRoute(_podcastSelectedShow?.feedUrl || '', _podcastSelectedShow?.title || '');
-
   _syncPodcastCommandBar();
   _syncPodcastPlaybackControls();
 
@@ -70,7 +73,10 @@ function podcastsInit() {
     _loadPodcastTopics();
 
     if (_podcastFavoritesOnly) _renderPodcastShows();
-    else _renderPodcastDirectoryLoading();
+    else {
+      _podcastDirectoryLoading = true;
+      _renderPodcastDirectoryLoading();
+    }
 
     _loadPodcastCountries().finally(() => {
       _loadPodcastDirectory();
@@ -90,6 +96,17 @@ function _podcastNormalizeFeedUrl(url) {
 
 function _podcastNormalizeFilterValue(value) {
   return String(value || '').trim();
+}
+
+// Encode a JSON string literal for a double-quoted inline HTML attribute.
+function _podcastInlineArg(value) {
+  return JSON.stringify(String(value ?? ''))
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;');
 }
 
 function _podcastLoadFavoriteShows() {
@@ -238,6 +255,9 @@ function podcastToggleTopicFavorite(topic, evt) {
 
 function podcastsToggleFavoritesFilter() {
   _podcastFavoritesOnly = !_podcastFavoritesOnly;
+  _podcastShowsRequestId++;
+  _podcastDirectoryRequestId++;
+  _podcastDirectoryLoading = false;
   _syncPodcastRoute(_podcastSelectedShow?.feedUrl || '', _podcastSelectedShow?.title || '');
   _syncPodcastCommandBar();
 
@@ -314,12 +334,15 @@ async function podcastApplyRouteFromUrl() {
   const params = new URLSearchParams(window.location.search || '');
 
   const fav = (params.get('fav') || '').trim().toLowerCase();
-  if (fav === '1' || fav === 'true' || fav === 'yes' || fav === 'on') {
-    _podcastFavoritesOnly = true;
-  }
+  _podcastFavoritesOnly = fav === '1' || fav === 'true' || fav === 'yes' || fav === 'on';
 
   const feedUrl = (params.get('feed') || '').trim();
   if (!feedUrl) {
+    if (_podcastFavoritesOnly) {
+      _podcastDirectoryRequestId++;
+      _podcastDirectoryLoading = false;
+    }
+    _syncPodcastRoute('', '');
     _renderPodcastsCurrentView();
     return;
   }
@@ -505,49 +528,55 @@ async function _loadPodcastCountries() {
   const heart = document.getElementById('pcb-country-heart');
   if (!select) return;
 
+  let selected = (select.value || '').trim();
   _podcastCountryNames = new Map([['US', 'United States']]);
-  select.innerHTML = '<option value="">All countries</option><option value="US">United States</option>';
-  select.value = '';
+  if (!select.options.length) {
+    select.innerHTML = '<option value="">All countries</option><option value="US">United States</option>';
+    selected = (select.value || '').trim();
+  }
 
   try {
     const r = await fetch('/api/podcasts/countries');
-    if (!r.ok) return;
-    const countries = await r.json();
-    if (!Array.isArray(countries) || countries.length === 0) return;
-
-    const selected = select.value || '';
-    const options = ['<option value="">All countries</option>'];
-    const entries = [];
-    countries.forEach((c) => {
-      const code = (c.code || '').trim();
-      const name = (c.name || '').trim();
-      if (!code || !name) return;
-      _podcastCountryNames.set(code.toUpperCase(), name);
-      entries.push({ code: code.toUpperCase(), name });
-    });
-
-    const favorites = entries.filter((c) => podcastIsCountryFavorite(c.code));
-    const others = entries.filter((c) => !podcastIsCountryFavorite(c.code));
-    if (favorites.length && others.length) {
-      options.push('<optgroup label="❤ Favorites">');
-      favorites.forEach((c) => {
-        options.push(`<option value="${esc(c.code)}">${esc(c.name)}</option>`);
-      });
-      options.push('</optgroup><optgroup label="─────">');
-      others.forEach((c) => {
-        options.push(`<option value="${esc(c.code)}">${esc(c.name)}</option>`);
-      });
-      options.push('</optgroup>');
+    if (!r.ok) {
+      console.warn(`Failed to load podcast countries (${r.status})`);
     } else {
-      [...favorites, ...others].forEach((c) => {
-        options.push(`<option value="${esc(c.code)}">${esc(c.name)}</option>`);
-      });
-    }
+      const countries = await r.json();
+      if (Array.isArray(countries) && countries.length > 0) {
+        selected = (select.value || '').trim();
+        const options = ['<option value="">All countries</option>'];
+        const entries = [];
+        countries.forEach((c) => {
+          const code = (c.code || '').trim();
+          const name = (c.name || '').trim();
+          if (!code || !name) return;
+          _podcastCountryNames.set(code.toUpperCase(), name);
+          entries.push({ code: code.toUpperCase(), name });
+        });
 
-    select.innerHTML = options.join('');
-    select.value = selected;
-  } catch {
-    // Keep fallback options when country list cannot be loaded.
+        const favorites = entries.filter((c) => podcastIsCountryFavorite(c.code));
+        const others = entries.filter((c) => !podcastIsCountryFavorite(c.code));
+        if (favorites.length && others.length) {
+          options.push('<optgroup label="❤ Favorites">');
+          favorites.forEach((c) => {
+            options.push(`<option value="${esc(c.code)}">${esc(c.name)}</option>`);
+          });
+          options.push('</optgroup><optgroup label="─────">');
+          others.forEach((c) => {
+            options.push(`<option value="${esc(c.code)}">${esc(c.name)}</option>`);
+          });
+          options.push('</optgroup>');
+        } else {
+          [...favorites, ...others].forEach((c) => {
+            options.push(`<option value="${esc(c.code)}">${esc(c.name)}</option>`);
+          });
+        }
+
+        select.innerHTML = options.join('');
+        select.value = selected;
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to load podcast countries', error);
   }
 
   if (heart) {
@@ -569,22 +598,34 @@ async function podcastsSearch() {
   const country = (document.getElementById('pcb-country')?.value || '').trim();
   _podcastLastSearch = { query: search, topic, country };
   const hasFilters = Boolean(search || topic || country);
+  const requestId = ++_podcastShowsRequestId;
+  _podcastDirectoryRequestId++;
+  _podcastDirectoryLoading = false;
+  _podcastEpisodesRequestId++;
+  _podcastSelectedShow = null;
+  _podcastEpisodes = [];
+  _podcastEpisodesOffset = 0;
+  _podcastEpisodesHasMore = false;
+  _podcastEpisodesTotal = null;
   _podcastShowsOffset = 0;
   _podcastShowsHasMore = false;
   _podcastShowsTotal = null;
+  _syncPodcastRoute('', '');
+  _syncPodcastPlaybackControls();
 
   root.innerHTML = '<div style="padding:.8rem;color:var(--muted,#9aa8c2)">Searching podcasts…</div>';
 
   try {
-    await _loadPodcastShowsPage({ append: false });
-    _podcastEpisodes = [];
-    _podcastSelectedShow = null;
+    const loaded = await _loadPodcastShowsPage({ append: false, requestId });
+    if (!loaded || requestId !== _podcastShowsRequestId) return;
+
     if (_podcastShows.length > 0 || hasFilters) _renderPodcastShows();
     else _renderPodcastDirectory();
     if (typeof setStatus === 'function') {
       setStatus(_podcastShows.length > 0 ? `Found ${_podcastShows.length} podcast show(s).` : 'No podcasts found for this search.');
     }
   } catch (error) {
+    if (requestId !== _podcastShowsRequestId) return;
     const details = error?.message ? ` (${error.message})` : '';
     console.error('Podcast search failed', {
       error,
@@ -597,7 +638,7 @@ async function podcastsSearch() {
   }
 }
 
-async function _loadPodcastShowsPage({ append }) {
+async function _loadPodcastShowsPage({ append, requestId = _podcastShowsRequestId }) {
   const search = (_podcastLastSearch.query || '').trim();
   const topic = (_podcastLastSearch.topic || '').trim();
   const country = (_podcastLastSearch.country || '').trim();
@@ -630,6 +671,7 @@ async function _loadPodcastShowsPage({ append }) {
   try {
     data = await requestPage({ includeTerm: true });
   } catch (error) {
+    if (requestId !== _podcastShowsRequestId) return false;
     console.warn('Primary podcast search request failed, trying fallback request without term', {
       error,
       query: _podcastLastSearch,
@@ -640,6 +682,7 @@ async function _loadPodcastShowsPage({ append }) {
 
     try {
       const fallbackData = await requestPage({ includeTerm: false });
+      if (requestId !== _podcastShowsRequestId) return false;
       const fallbackShows = Array.isArray(fallbackData.shows) ? fallbackData.shows : [];
       const filtered = fallbackShows.filter((s) => {
         const haystack = `${s?.title || ''} ${s?.author || ''} ${s?.genre || ''}`.toLowerCase();
@@ -656,9 +699,12 @@ async function _loadPodcastShowsPage({ append }) {
     }
   }
 
+  if (requestId !== _podcastShowsRequestId) return false;
+
   if (topicOnlySearch && (!Array.isArray(data?.shows) || data.shows.length === 0)) {
     try {
       const fallbackData = await requestPage({ includeTerm: false });
+      if (requestId !== _podcastShowsRequestId) return false;
       const fallbackShows = Array.isArray(fallbackData.shows) ? fallbackData.shows : [];
       const term = topic.toLowerCase();
       const filtered = fallbackShows.filter((s) => {
@@ -676,9 +722,11 @@ async function _loadPodcastShowsPage({ append }) {
     }
   }
 
-  const page = Array.isArray(data.shows) ? data.shows : [];
-  const hasMore = Boolean(data.hasMore);
-  const total = _toOptionalNumber(data.total);
+  if (requestId !== _podcastShowsRequestId) return false;
+
+  const page = Array.isArray(data?.shows) ? data.shows : [];
+  const hasMore = Boolean(data?.hasMore) && page.length > 0;
+  const total = _toOptionalNumber(data?.total);
 
   if (append) {
     const seen = new Set(_podcastShows.map((s) => ((s.feedUrl || s.title || '').trim().toLowerCase())));
@@ -700,20 +748,27 @@ async function _loadPodcastShowsPage({ append }) {
     _podcastShows = unique;
   }
 
-  _podcastShowsOffset += _podcastShowsPageSize;
+  _podcastShowsOffset += page.length;
   _podcastShowsHasMore = hasMore;
   _podcastShowsTotal = total;
+  return true;
 }
 
 async function podcastLoadMoreShows() {
-  if (!_podcastShowsHasMore) return;
+  const requestId = _podcastShowsRequestId;
+  if (!_podcastShowsHasMore || _podcastShowsLoadMoreRequestId === requestId) return;
 
+  _podcastShowsLoadMoreRequestId = requestId;
   try {
-    await _loadPodcastShowsPage({ append: true });
-    _renderPodcastShows();
+    const loaded = await _loadPodcastShowsPage({ append: true, requestId });
+    if (loaded && requestId === _podcastShowsRequestId) _renderPodcastShows();
   } catch (error) {
-    console.error('Failed to load more podcasts', error);
-    if (typeof setStatus === 'function') setStatus('Failed to load more podcasts.');
+    if (requestId === _podcastShowsRequestId) {
+      console.error('Failed to load more podcasts', error);
+      if (typeof setStatus === 'function') setStatus('Failed to load more podcasts.');
+    }
+  } finally {
+    if (_podcastShowsLoadMoreRequestId === requestId) _podcastShowsLoadMoreRequestId = null;
   }
 }
 
@@ -723,21 +778,29 @@ async function podcastOpenShow(feedUrl, showTitle, artworkUrl) {
   const root = document.getElementById('podcasts-browser');
   if (!root) return;
 
+  const requestId = ++_podcastEpisodesRequestId;
+  _podcastShowsRequestId++;
+  _podcastDirectoryRequestId++;
+  _podcastDirectoryLoading = false;
+  _podcastShowsLoadMoreRequestId = null;
   root.innerHTML = '<div style="padding:.8rem;color:var(--muted,#9aa8c2)">Loading episodes…</div>';
 
+  const knownArt = (artworkUrl || '').trim()
+    || ((_podcastShows.find((s) => (s.feedUrl || '').trim() === feedUrl)?.artworkUrl || '').trim());
+  _podcastSelectedShow = { title: showTitle || 'Podcast', feedUrl, artworkUrl: knownArt };
+  _podcastEpisodes = [];
+  _podcastEpisodesOffset = 0;
+  _podcastEpisodesHasMore = false;
+  _podcastEpisodesTotal = null;
+  _syncPodcastPlaybackControls();
+
   try {
-    const knownArt = (artworkUrl || '').trim()
-      || ((_podcastShows.find((s) => (s.feedUrl || '').trim() === feedUrl)?.artworkUrl || '').trim());
-    _podcastSelectedShow = { title: showTitle || 'Podcast', feedUrl, artworkUrl: knownArt };
-    _podcastEpisodes = [];
-    _podcastCurrentEpisodeIndex = -1;
-    _podcastEpisodesOffset = 0;
-    _podcastEpisodesHasMore = false;
-    _podcastEpisodesTotal = null;
-    await _loadPodcastEpisodesPage({ append: false });
+    const loaded = await _loadPodcastEpisodesPage({ append: false, requestId });
+    if (!loaded || requestId !== _podcastEpisodesRequestId) return;
     _syncPodcastRoute(feedUrl, showTitle || 'Podcast');
     _renderPodcastEpisodes();
   } catch (error) {
+    if (requestId !== _podcastEpisodesRequestId) return;
     console.error('Failed to load podcast episodes', {
       error,
       feedUrl,
@@ -751,11 +814,13 @@ async function podcastOpenShow(feedUrl, showTitle, artworkUrl) {
   }
 }
 
-async function _loadPodcastEpisodesPage({ append }) {
-  if (!_podcastSelectedShow?.feedUrl) return;
+async function _loadPodcastEpisodesPage({ append, requestId = _podcastEpisodesRequestId }) {
+  const show = _podcastSelectedShow;
+  if (!show?.feedUrl) return false;
+  const feedUrl = show.feedUrl;
 
   const query = new URLSearchParams({
-    url: _podcastSelectedShow.feedUrl,
+    url: feedUrl,
     limit: String(_podcastEpisodesPageSize),
     offset: String(_podcastEpisodesOffset),
   });
@@ -771,8 +836,10 @@ async function _loadPodcastEpisodesPage({ append }) {
   }
 
   const data = await r.json();
+  if (requestId !== _podcastEpisodesRequestId || _podcastSelectedShow?.feedUrl !== feedUrl) return false;
+
   const page = Array.isArray(data.episodes) ? data.episodes : [];
-  const hasMore = Boolean(data.hasMore);
+  const hasMore = Boolean(data.hasMore) && page.length > 0;
   const total = _toOptionalNumber(data.total);
 
   if (append) _podcastEpisodes.push(...page);
@@ -781,23 +848,69 @@ async function _loadPodcastEpisodesPage({ append }) {
   _podcastEpisodesOffset += page.length;
   _podcastEpisodesHasMore = hasMore;
   _podcastEpisodesTotal = total;
+  return true;
 }
 
 async function podcastLoadMoreEpisodes() {
-  if (!_podcastEpisodesHasMore) return;
+  const requestId = _podcastEpisodesRequestId;
+  if (!_podcastEpisodesHasMore || _podcastEpisodesLoadMoreRequestId === requestId) return;
 
+  _podcastEpisodesLoadMoreRequestId = requestId;
   try {
-    await _loadPodcastEpisodesPage({ append: true });
-    _renderPodcastEpisodes();
-  } catch {
-    if (typeof setStatus === 'function') setStatus('Failed to load more episodes.');
+    const loaded = await _loadPodcastEpisodesPage({ append: true, requestId });
+    if (loaded && requestId === _podcastEpisodesRequestId) _renderPodcastEpisodes();
+  } catch (error) {
+    if (requestId === _podcastEpisodesRequestId) {
+      console.error('Failed to load more podcast episodes', error);
+      if (typeof setStatus === 'function') setStatus('Failed to load more episodes.');
+    }
+  } finally {
+    if (_podcastEpisodesLoadMoreRequestId === requestId) _podcastEpisodesLoadMoreRequestId = null;
   }
 }
 
+function podcastsBackToDirectory() {
+  _podcastShowsRequestId++;
+  _podcastEpisodesRequestId++;
+  _podcastDirectoryRequestId++;
+  _podcastDirectoryLoading = true;
+  _podcastFavoritesOnly = false;
+  _podcastSelectedShow = null;
+  _podcastShows = [];
+  _podcastShowsOffset = 0;
+  _podcastShowsHasMore = false;
+  _podcastShowsTotal = null;
+  _podcastEpisodes = [];
+  _podcastEpisodesOffset = 0;
+  _podcastEpisodesHasMore = false;
+  _podcastEpisodesTotal = null;
+  _podcastShowsLoadMoreRequestId = null;
+  _podcastEpisodesLoadMoreRequestId = null;
+  _podcastDirectory = [];
+  _podcastLastSearch = {
+    query: '',
+    topic: '',
+    country: (document.getElementById('pcb-country')?.value || '').trim(),
+  };
+  const search = document.getElementById('pcb-search');
+  const topic = document.getElementById('pcb-topic');
+  if (search) search.value = '';
+  if (topic) topic.value = '';
+  _syncPodcastRoute('', '');
+  _syncPodcastCommandBar();
+  _syncPodcastPlaybackControls();
+  _renderPodcastDirectoryLoading();
+  _loadPodcastDirectory();
+}
+
 function podcastBackToShows() {
+  _podcastEpisodesRequestId++;
   _podcastSelectedShow = null;
   _podcastEpisodes = [];
-  _podcastCurrentEpisodeIndex = -1;
+  _podcastEpisodesOffset = 0;
+  _podcastEpisodesHasMore = false;
+  _podcastEpisodesTotal = null;
+  _podcastEpisodesLoadMoreRequestId = null;
   _syncPodcastPlaybackControls();
   _syncPodcastRoute(null, null);
   if (_podcastFavoritesOnly) _renderPodcastShows();
@@ -809,13 +922,18 @@ async function podcastPlayEpisode(episodeIndex) {
   const index = Number(episodeIndex);
   if (!Number.isInteger(index) || index < 0 || index >= _podcastEpisodes.length) return false;
 
-  const episode = _podcastEpisodes[index] || null;
+  return _podcastPlayEpisodeFromQueue(_podcastEpisodes, index);
+}
+
+async function _podcastPlayEpisodeFromQueue(episodes, index) {
+  if (!Array.isArray(episodes) || !Number.isInteger(index) || index < 0 || index >= episodes.length) return false;
+
+  const episode = episodes[index] || null;
   const audioUrl = (episode?.audioUrl || '').trim();
   const title = (episode?.title || '').trim() || 'Podcast episode';
   if (!audioUrl) return false;
 
   try {
-    _podcastCurrentEpisodeIndex = index;
     const playLocal = typeof isPlayLocal === 'function' && isPlayLocal();
 
     // Podcasts share the radio player bar (both local and server playback).
@@ -845,7 +963,7 @@ async function podcastPlayEpisode(episodeIndex) {
 
       localPlay(audioUrl, title, 'Podcast');
     } else {
-      if (typeof localStop === 'function') localStop();
+      if (typeof localStop === 'function') await localStop();
 
       const query = new URLSearchParams({ url: audioUrl, title });
       const r = await fetch('/api/podcasts/play?' + query.toString(), { method: 'POST' });
@@ -869,12 +987,17 @@ async function podcastPlayEpisode(episodeIndex) {
       if (typeof startRadioStatusPoll === 'function') startRadioStatusPoll();
     }
 
+    _podcastPlaybackEpisodes = episodes;
+    _podcastCurrentEpisodeIndex = index;
     _syncPodcastPlaybackControls();
 
     if (typeof setStatus === 'function') setStatus('Playing podcast episode…');
     return true;
-  } catch {
-    if (typeof setStatus === 'function') setStatus('Podcast playback failed.');
+  } catch (error) {
+    console.error('Podcast playback failed', error);
+    if (typeof setStatus === 'function') {
+      setStatus('Podcast playback failed.' + (error?.message ? ` ${error.message}` : ''));
+    }
     return false;
   }
 }
@@ -885,19 +1008,23 @@ async function podcastPrevEpisode() {
     return false;
   }
 
-  return podcastPlayEpisode(_podcastCurrentEpisodeIndex - 1);
+  return _podcastPlayEpisodeFromQueue(_podcastPlaybackEpisodes, _podcastCurrentEpisodeIndex - 1);
 }
 
 async function podcastNextEpisode(options) {
   const autoAdvance = Boolean(options && options.autoAdvance);
   const nextIndex = _podcastCurrentEpisodeIndex + 1;
-  if (nextIndex < 0 || nextIndex >= _podcastEpisodes.length) {
+  if (nextIndex < 0 || nextIndex >= _podcastPlaybackEpisodes.length) {
+    if (autoAdvance && typeof localStop === 'function') {
+      await localStop();
+      _podcastPlaybackEpisodes = [];
+      _podcastCurrentEpisodeIndex = -1;
+    }
     _syncPodcastPlaybackControls();
-    if (autoAdvance && typeof localStop === 'function') localStop();
     return false;
   }
 
-  return podcastPlayEpisode(nextIndex);
+  return _podcastPlayEpisodeFromQueue(_podcastPlaybackEpisodes, nextIndex);
 }
 
 function _syncPodcastPlaybackControls() {
@@ -905,7 +1032,7 @@ function _syncPodcastPlaybackControls() {
   const nextBtn = document.getElementById('local-podcast-next');
   const indexLabel = document.getElementById('local-podcast-index');
   const isPodcast = typeof _localMediaType !== 'undefined' && (_localMediaType === 'Podcast' || _localMediaType === 'PodcastServer');
-  const total = _podcastEpisodes.length;
+  const total = _podcastPlaybackEpisodes.length;
   const active = _podcastCurrentEpisodeIndex >= 0 && _podcastCurrentEpisodeIndex < total;
 
   if (prevBtn) prevBtn.style.display = isPodcast && total > 0 ? '' : 'none';
@@ -933,16 +1060,31 @@ function podcastsResetFilters() {
 
   if (search) search.value = '';
   if (topic) topic.value = '';
-  if (country) country.value = 'US';
+  if (country) country.value = '';
+  if (_podcastSearchDebounceTimer) {
+    clearTimeout(_podcastSearchDebounceTimer);
+    _podcastSearchDebounceTimer = null;
+  }
 
-  _podcastLastSearch = { query: '', topic: '', country: country?.value || '' };
+  _podcastFavoritesOnly = false;
+  _podcastLastSearch = { query: '', topic: '', country: '' };
+  _podcastShowsRequestId++;
+  _podcastEpisodesRequestId++;
+  _podcastDirectoryRequestId++;
+  _podcastDirectoryLoading = true;
   _podcastShows = [];
   _podcastShowsOffset = 0;
   _podcastShowsHasMore = false;
   _podcastShowsTotal = null;
   _podcastSelectedShow = null;
   _podcastEpisodes = [];
-  _podcastCurrentEpisodeIndex = -1;
+  _podcastEpisodesOffset = 0;
+  _podcastEpisodesHasMore = false;
+  _podcastEpisodesTotal = null;
+  _podcastShowsLoadMoreRequestId = null;
+  _podcastEpisodesLoadMoreRequestId = null;
+  _podcastDirectory = [];
+  _syncPodcastRoute('', '');
   _syncPodcastPlaybackControls();
 
   _renderPodcastDirectoryLoading();
@@ -950,41 +1092,59 @@ function podcastsResetFilters() {
 }
 
 async function _loadPodcastDirectory() {
-  if (_podcastDirectoryLoading) return;
-  _podcastDirectoryLoading = true;
-
-  const country = (document.getElementById('pcb-country')?.value || '').trim();
-  const topicLimit = 12;
-
-  try {
-    const sections = [];
-
-    const topShows = await _fetchPodcastShows({ country, limit: 40 });
-    if (topShows.length > 0) {
-      sections.push({ topic: 'Top Podcasts', shows: topShows.slice(0, 12) });
-    }
-
-    // Fetch a few topic sections sequentially to reduce upstream throttling.
-    for (const topic of _podcastQuickTopics.slice(0, 4)) {
-      const shows = await _fetchPodcastShows({ country, topic, limit: topicLimit });
-      if (shows.length > 0) {
-        sections.push({ topic, shows: shows.slice(0, 8) });
-      }
-    }
-
-    _podcastDirectory = sections;
-  } finally {
+  if (_podcastSelectedShow || _podcastFavoritesOnly) {
     _podcastDirectoryLoading = false;
-  }
-
-  if (_podcastSelectedShow) return;
-
-  if (_podcastFavoritesOnly) {
-    _renderPodcastShows();
     return;
   }
 
-  if (_podcastShows.length === 0) _renderPodcastDirectory();
+  const requestId = ++_podcastDirectoryRequestId;
+  _podcastDirectoryLoading = true;
+  _podcastDirectory = [];
+  const country = (document.getElementById('pcb-country')?.value || '').trim();
+  const topicLimit = 12;
+  let failedSections = 0;
+  const sections = [];
+
+  _renderPodcastDirectory();
+
+  try {
+    const loadSection = async (topic, limit, take) => {
+      try {
+        const shows = await _fetchPodcastShows({ country, topic, limit });
+        if (requestId !== _podcastDirectoryRequestId) return false;
+        if (shows.length > 0) {
+          sections.push({ topic: topic || 'Top Podcasts', shows: shows.slice(0, take) });
+        }
+        _podcastDirectory = sections.slice();
+        if (!_podcastSelectedShow && !_podcastFavoritesOnly) _renderPodcastDirectory();
+        return true;
+      } catch (error) {
+        failedSections++;
+        console.warn('Failed to load podcast directory section', { topic: topic || 'Top Podcasts', error });
+        return requestId === _podcastDirectoryRequestId;
+      }
+    };
+
+    if (!await loadSection('', 40, 12)) return;
+
+    for (const topic of _podcastQuickTopics.slice(0, 4)) {
+      if (requestId !== _podcastDirectoryRequestId) return;
+      if (!await loadSection(topic, topicLimit, 8)) return;
+    }
+  } finally {
+    if (requestId === _podcastDirectoryRequestId) {
+      _podcastDirectoryLoading = false;
+      if (!_podcastSelectedShow) {
+        if (_podcastFavoritesOnly) _renderPodcastShows();
+        else _renderPodcastDirectory();
+        if (failedSections > 0 && typeof setStatus === 'function') {
+          setStatus(_podcastDirectory.length > 0
+            ? 'Some podcast recommendations could not be loaded.'
+            : 'Podcast discovery is unavailable right now.');
+        }
+      }
+    }
+  }
 }
 
 async function _fetchPodcastShows({ country, topic = '', limit = 12 }) {
@@ -993,21 +1153,30 @@ async function _fetchPodcastShows({ country, topic = '', limit = 12 }) {
   if (topic) query.set('topic', topic);
   query.set('limit', String(limit));
 
-  try {
-    const r = await fetch('/api/podcasts/search?' + query.toString());
-    if (!r.ok) return [];
-    const data = await r.json();
-    return Array.isArray(data.shows) ? data.shows : [];
-  } catch {
-    return [];
-  }
+  const url = '/api/podcasts/search?' + query.toString();
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`podcast discovery request failed (${r.status})`);
+  const data = await r.json();
+  return Array.isArray(data.shows) ? data.shows : [];
 }
 
 function _renderPodcastDirectoryLoading() {
   const root = document.getElementById('podcasts-browser');
   if (!root) return;
 
-  root.innerHTML = '<div style="padding:.8rem;color:var(--muted,#9aa8c2)">Loading podcast topics…</div>';
+  const topicChips = _podcastTopicChipsHtml();
+  root.innerHTML = `
+    <section class="card" style="padding:.8rem">
+      <h3 style="margin:.1rem 0 .5rem">Browse by topic</h3>
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap">${topicChips}</div>
+      <div style="margin-top:.7rem;color:var(--muted,#9aa8c2)">Loading podcast recommendations…</div>
+    </section>`;
+}
+
+function _podcastTopicChipsHtml() {
+  return _podcastQuickTopics
+    .map((topic) => `<button class="btn btn-dim" type="button" onclick="podcastPickTopic(${_podcastInlineArg(topic)})">${esc(topic)}</button>`)
+    .join('');
 }
 
 function _renderPodcastDirectory() {
@@ -1016,33 +1185,21 @@ function _renderPodcastDirectory() {
 
   _syncPodcastCommandBar();
 
-  if (_podcastDirectoryLoading) {
-    _renderPodcastHeader({
-      breadcrumb: '<span class="crumb-current">Podcasts</span>',
-      countText: 'Loading topics…',
-      showBack: false,
-    });
-    _renderPodcastDirectoryLoading();
-    return;
-  }
-
   const totalShows = _podcastDirectory.reduce((sum, section) => sum + (section.shows?.length || 0), 0);
   _renderPodcastHeader({
     breadcrumb: '<span class="crumb-current">Podcasts</span><span> &rsaquo; </span><span class="crumb-current">Directory</span>',
-    countText: `${_podcastDirectory.length} topic section${_podcastDirectory.length === 1 ? '' : 's'}, ${totalShows} show${totalShows === 1 ? '' : 's'}`,
+    countText: `${_podcastDirectory.length} topic section${_podcastDirectory.length === 1 ? '' : 's'}, ${totalShows} show${totalShows === 1 ? '' : 's'}${_podcastDirectoryLoading ? ' · Loading more…' : ''}`,
     showBack: false,
   });
 
-  const topicChips = _podcastQuickTopics
-    .map((topic) => `<button class="btn btn-dim" type="button" onclick="podcastPickTopic('${jsStr(topic)}')">${esc(topic)}</button>`)
-    .join('');
+  const topicChips = _podcastTopicChipsHtml();
 
   if (_podcastDirectory.length === 0) {
     root.innerHTML = `
       <section class="card" style="padding:.8rem">
         <h3 style="margin:.1rem 0 .5rem">Browse by topic</h3>
         <div style="display:flex;gap:.4rem;flex-wrap:wrap">${topicChips}</div>
-        <div style="margin-top:.7rem;color:var(--muted,#9aa8c2)">No topic directory entries were loaded. Try selecting a topic above.</div>
+        <div style="margin-top:.7rem;color:var(--muted,#9aa8c2)">${_podcastDirectoryLoading ? 'Loading podcast recommendations…' : 'No topic directory entries were loaded. Try selecting a topic above.'}</div>
       </section>`;
     return;
   }
@@ -1061,13 +1218,13 @@ function _renderPodcastDirectory() {
           return `
             <article class="movie-card" style="padding:.55rem">
               <div style="display:flex;gap:.55rem;align-items:flex-start">
-                <div onclick="podcastOpenShow('${jsStr(show.feedUrl || '')}','${jsStr(title)}','${jsStr(art)}')" style="cursor:pointer;width:${isList ? '44px' : '58px'};height:${isList ? '44px' : '58px'};flex:0 0 auto;border-radius:.4rem;overflow:hidden;background:#1b1b2c;display:flex;align-items:center;justify-content:center">
+                <div onclick="podcastOpenShow(${_podcastInlineArg(show.feedUrl || '')},${_podcastInlineArg(title)},${_podcastInlineArg(art)})" style="cursor:pointer;width:${isList ? '44px' : '58px'};height:${isList ? '44px' : '58px'};flex:0 0 auto;border-radius:.4rem;overflow:hidden;background:#1b1b2c;display:flex;align-items:center;justify-content:center">
                   ${art ? `<img src="${esc(art)}" alt="" style="width:100%;height:100%;display:block;object-fit:cover;object-position:center;filter:${isList ? 'brightness(.88) saturate(.9)' : 'brightness(.78) saturate(.85)'}" loading="lazy"/>` : '<span style="opacity:.6">🎙️</span>'}
                 </div>
                 <div style="min-width:0;flex:1;display:grid;gap:.22rem">
                   <div style="display:flex;align-items:center;gap:.35rem;justify-content:space-between;min-width:0">
-                    <button type="button" onclick="podcastOpenShow('${jsStr(show.feedUrl || '')}','${jsStr(title)}','${jsStr(art)}')" style="all:unset;cursor:pointer;font-weight:650;line-height:1.2;text-decoration:underline;text-decoration-color:transparent;min-width:0" onmouseover="this.style.textDecorationColor='currentColor'" onmouseout="this.style.textDecorationColor='transparent'">${esc(title)}</button>
-                    <button type="button" class="radio-fav-btn${isFav ? ' active' : ''}" onclick="podcastToggleShowFavorite('${jsStr(show.feedUrl || '')}',event)" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}" aria-label="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#10084;' : '&#9825;'}</button>
+                    <button type="button" onclick="podcastOpenShow(${_podcastInlineArg(show.feedUrl || '')},${_podcastInlineArg(title)},${_podcastInlineArg(art)})" style="all:unset;cursor:pointer;font-weight:650;line-height:1.2;text-decoration:underline;text-decoration-color:transparent;min-width:0" onmouseover="this.style.textDecorationColor='currentColor'" onmouseout="this.style.textDecorationColor='transparent'">${esc(title)}</button>
+                    <button type="button" class="radio-fav-btn${isFav ? ' active' : ''}" onclick="podcastToggleShowFavorite(${_podcastInlineArg(show.feedUrl || '')},event)" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}" aria-label="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#10084;' : '&#9825;'}</button>
                   </div>
                   ${author ? `<div style="font-size:.84rem;color:var(--muted,#9aa8c2)">${esc(author)}</div>` : ''}
                 </div>
@@ -1082,7 +1239,7 @@ function _renderPodcastDirectory() {
         <section class="card" style="padding:.65rem">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:.6rem;margin-bottom:.45rem">
             <h3 style="margin:0">${esc(section.topic)}</h3>
-            <button class="btn btn-dim" type="button" onclick="podcastPickTopic('${jsStr(section.topic)}')">View more</button>
+            <button class="btn btn-dim" type="button" onclick="podcastPickTopic(${_podcastInlineArg(section.topic)})">View more</button>
           </div>
           <div class="movie-grid${_viewMode.podcasts === 'list' ? ' podcast-directory-list' : ''}" style="gap:.45rem">${cards}</div>
         </section>`;
@@ -1094,7 +1251,8 @@ function _renderPodcastDirectory() {
       <h3 style="margin:.1rem 0 .5rem">Browse by topic</h3>
       <div style="display:flex;gap:.4rem;flex-wrap:wrap">${topicChips}</div>
     </section>
-    <div style="display:grid;gap:.65rem">${sections}</div>`;
+    <div style="display:grid;gap:.65rem">${sections}</div>
+    ${_podcastDirectoryLoading ? '<div style="padding:.6rem;color:var(--muted,#9aa8c2)">Loading more recommendations…</div>' : ''}`;
 }
 
 function _renderPodcastShows() {
@@ -1103,7 +1261,7 @@ function _renderPodcastShows() {
 
   _syncPodcastCommandBar();
 
-  const crumbs = ['<a onclick="_podcastShows=[];_renderPodcastDirectory();">Podcasts</a>'];
+  const crumbs = ['<a onclick="podcastsBackToDirectory()">Podcasts</a>'];
   const query = (_podcastLastSearch.query || '').trim();
   const topic = (_podcastLastSearch.topic || '').trim();
   const country = (_podcastLastSearch.country || '').trim();
@@ -1120,10 +1278,7 @@ function _renderPodcastShows() {
     breadcrumb: crumbs.join('<span> &rsaquo; </span>'),
     countText: _buildPodcastCountHtml(_podcastShows.length, _podcastShowsTotal, _podcastShowsHasMore, 'podcastLoadMoreShows()'),
     showBack: !_podcastFavoritesOnly && Boolean(topic || query || country),
-    backHandler: () => {
-      _podcastShows = [];
-      _renderPodcastDirectory();
-    },
+    backHandler: podcastsBackToDirectory,
   });
 
   if (!_podcastFavoritesOnly) {
@@ -1160,7 +1315,7 @@ function _renderPodcastShows() {
 
       if (isList) {
         return `
-      <article class="podcast-list-row" style="cursor:pointer" onclick="podcastOpenShow('${jsStr(show.feedUrl || '')}','${jsStr(title)}','${jsStr(art)}')">
+      <article class="podcast-list-row" style="cursor:pointer" onclick="podcastOpenShow(${_podcastInlineArg(show.feedUrl || '')},${_podcastInlineArg(title)},${_podcastInlineArg(art)})">
         <div class="podcast-list-row-main">
           <div class="podcast-list-primary">
             <div class="podcast-list-art">
@@ -1169,7 +1324,7 @@ function _renderPodcastShows() {
             <div class="podcast-list-text">
               <div style="display:flex;align-items:center;gap:.4rem;justify-content:space-between;min-width:0">
                 <div class="podcast-list-title">${esc(title)}</div>
-                <button type="button" class="radio-fav-btn${isFav ? ' active' : ''}" onclick="podcastToggleShowFavorite('${jsStr(show.feedUrl || '')}',event)" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}" aria-label="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#10084;' : '&#9825;'}</button>
+                <button type="button" class="radio-fav-btn${isFav ? ' active' : ''}" onclick="podcastToggleShowFavorite(${_podcastInlineArg(show.feedUrl || '')},event)" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}" aria-label="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#10084;' : '&#9825;'}</button>
               </div>
               ${author ? `<div class="podcast-list-author">${esc(author)}</div>` : ''}
             </div>
@@ -1181,13 +1336,13 @@ function _renderPodcastShows() {
       }
 
       return `
-      <article class="movie-card" style="padding:.65rem;cursor:pointer" onclick="podcastOpenShow('${jsStr(show.feedUrl || '')}','${jsStr(title)}','${jsStr(art)}')">
+      <article class="movie-card" style="padding:.65rem;cursor:pointer" onclick="podcastOpenShow(${_podcastInlineArg(show.feedUrl || '')},${_podcastInlineArg(title)},${_podcastInlineArg(art)})">
         <div style="display:grid;gap:.5rem">
           <div style="position:relative;width:100%;aspect-ratio:1/1;border-radius:.5rem;overflow:hidden;background:#1b1b2c;display:flex;align-items:center;justify-content:center">
             ${art
               ? `<img src="${esc(art)}" alt="" style="width:100%;height:100%;display:block;object-fit:cover;object-position:center;filter:brightness(.74) saturate(.85)" loading="lazy"/><div style="position:absolute;inset:0;background:linear-gradient(135deg, rgba(233,69,96,.22), rgba(37,99,235,.18));mix-blend-mode:screen;pointer-events:none"></div>`
               : '<span style="opacity:.6;font-size:1.8rem">🎙️</span>'}
-            <button type="button" class="radio-fav-btn${isFav ? ' active' : ''}" onclick="podcastToggleShowFavorite('${jsStr(show.feedUrl || '')}',event)" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}" aria-label="${isFav ? 'Remove from favorites' : 'Add to favorites'}" style="position:absolute;top:.35rem;right:.35rem;background:rgba(10,10,20,.6);border-radius:999px;padding:.12rem .34rem">${isFav ? '&#10084;' : '&#9825;'}</button>
+            <button type="button" class="radio-fav-btn${isFav ? ' active' : ''}" onclick="podcastToggleShowFavorite(${_podcastInlineArg(show.feedUrl || '')},event)" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}" aria-label="${isFav ? 'Remove from favorites' : 'Add to favorites'}" style="position:absolute;top:.35rem;right:.35rem;background:rgba(10,10,20,.6);border-radius:999px;padding:.12rem .34rem">${isFav ? '&#10084;' : '&#9825;'}</button>
           </div>
           <div style="min-width:0;display:grid;gap:.25rem">
             <div style="font-weight:700;line-height:1.25;text-decoration:underline;text-decoration-color:transparent">${esc(title)}</div>
@@ -1280,9 +1435,8 @@ function _podcastPlainText(value) {
   if (!raw) return '';
 
   try {
-    const temp = document.createElement('div');
-    temp.innerHTML = raw;
-    return (temp.textContent || temp.innerText || '').trim();
+    const parsed = new DOMParser().parseFromString(raw, 'text/html');
+    return (parsed.body?.textContent || '').trim();
   } catch {
     return raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   }

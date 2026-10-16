@@ -200,11 +200,11 @@
                 <input id="pcb-search" class="command-search-input" type="search" placeholder="Search podcasts" aria-label="Search podcasts" />
                 <button id="pcb-fav-pill" class="vcb-pill" type="button" onclick="podcastsToggleFavoritesFilter()">&#10084; Favorites</button>
                 <div class="radio-fav-select-wrap">
-                  <select id="pcb-topic" aria-label="Podcast topic" onchange="podcastsSearch()"></select>
+                  <select id="pcb-topic" aria-label="Podcast topic"></select>
                   <button id="pcb-topic-heart" class="radio-fav-select-heart-inline" type="button" onclick="podcastToggleTopicFavorite(document.getElementById('pcb-topic')?.value,event)" title="Toggle selected topic as favorite" aria-label="Toggle selected topic as favorite">&#10084;</button>
                 </div>
                 <div class="radio-fav-select-wrap">
-                  <select id="pcb-country" aria-label="Podcast country" onchange="podcastsSearch()"></select>
+                  <select id="pcb-country" aria-label="Podcast country"></select>
                   <button id="pcb-country-heart" class="radio-fav-select-heart-inline" type="button" onclick="podcastToggleCountryFavorite(document.getElementById('pcb-country')?.value,event)" title="Toggle selected country as favorite" aria-label="Toggle selected country as favorite">&#10084;</button>
                 </div>
                 <button id="pcb-reset-btn" class="cb-reset cb-reset-btn" type="button" onclick="podcastsResetFilters()" title="Reset filters">&#10005; Reset filters</button>
@@ -432,7 +432,10 @@
             <div class="transport-controls">
               <canvas id="radio-waveform" class="radio-waveform" width="60" height="32" aria-hidden="true"></canvas>
               <div class="button-group transport-main-group">
+                <button id="local-podcast-prev" class="btn btn-dim" type="button" onclick="podcastPrevEpisode()" title="Previous episode" aria-label="Previous episode" style="display:none">&#9198; Prev</button>
                 <button id="radio-btn-play" class="btn btn-red" onclick="radioToggle()">&#9654; Play</button>
+                <button id="local-podcast-next" class="btn btn-dim" type="button" onclick="podcastNextEpisode()" title="Next episode" aria-label="Next episode" style="display:none">Next &#9197;</button>
+                <span id="local-podcast-index" style="display:none;font-size:.75rem;color:var(--muted,#9aa8c2);white-space:nowrap"></span>
                 <button id="radio-btn-stop" class="btn btn-stop" onclick="radioDismiss()" title="Stop and close player">&#9632; Stop</button>
               </div>
             </div>

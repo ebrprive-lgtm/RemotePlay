@@ -2158,7 +2158,11 @@ function switchMode(mode, skipInitialBrowse = false) {
     const badge = document.getElementById('indexing-badge');
     if (badge) badge.style.display = 'none';
     stopMusicStatusPoll();
-    stopRadioStatusPoll();
+    if (typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer') {
+      startRadioStatusPoll();
+    } else {
+      stopRadioStatusPoll();
+    }
     setMusicHeaderForMode('podcasts');
     if (typeof podcastsInit === 'function') podcastsInit();
   } else if (mode === 'radio') {

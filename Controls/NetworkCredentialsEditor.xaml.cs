@@ -7,8 +7,6 @@ using TextChangedEventArgs = System.Windows.Controls.TextChangedEventArgs;
 using PasswordBox = System.Windows.Controls.PasswordBox;
 using Grid = System.Windows.Controls.Grid;
 using ContentPresenter = System.Windows.Controls.ContentPresenter;
-using System.IO;
-using System.Runtime.InteropServices;
 using MessageBox = System.Windows.MessageBox;
 using Border = System.Windows.Controls.Border;
 
@@ -296,101 +294,6 @@ public sealed partial class NetworkCredentialsEditor : System.Windows.Controls.U
 
     private static async Task<(bool Success, string ErrorMessage)> TestNetworkShareAsync(string path, string username, string password)
     {
-        return await Task.Run(() =>
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(path))
-                    return (false, "Network share path is empty");
-
-                // Validate UNC path format
-                if (!path.StartsWith(@"\\"))
-                    return (false, "Path must be a UNC path (e.g., \\\\server\\share)");
-
-                // Try to connect with credentials if provided
-                if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrWhiteSpace(password))
-                {
-                    var connectionResult = ConnectToNetworkShare(path, username, password);
-                    if (!connectionResult.Success)
-                        return connectionResult;
-                }
-
-                // Test if we can access the share
-                if (!Directory.Exists(path))
-                    return (false, "Cannot access the network share. It may not exist or you don't have permission.");
-
-                // Try to enumerate to verify read access
-                try
-                {
-                    Directory.GetFileSystemEntries(path, "*", new EnumerationOptions { MaxRecursionDepth = 0, RecurseSubdirectories = false });
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    return (false, "Access denied. Please check your credentials.");
-                }
-
-                return (true, string.Empty);
-            }
-            catch (Exception ex)
-            {
-                return (false, ex.Message);
-            }
-        });
-    }
-
-    [DllImport("mpr.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern int WNetAddConnection2(ref NetResource netResource, string password, string username, int flags);
-
-    [DllImport("mpr.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern int WNetCancelConnection2(string name, int flags, bool force);
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct NetResource
-    {
-        public int Scope;
-        public int Type;
-        public int DisplayType;
-        public int Usage;
-        public string LocalName;
-        public string RemoteName;
-        public string Comment;
-        public string Provider;
-    }
-
-    private static (bool Success, string ErrorMessage) ConnectToNetworkShare(string path, string username, string password)
-    {
-        try
-        {
-            var netResource = new NetResource
-            {
-                Scope = 2,
-                Type = 1,
-                DisplayType = 3,
-                Usage = 1,
-                LocalName = null,
-                RemoteName = path,
-                Comment = null,
-                Provider = null
-            };
-
-            int result = WNetAddConnection2(ref netResource, password, username, 0);
-
-            if (result == 0)
-                return (true, string.Empty);
-
-            return result switch
-            {
-                5 => (false, "Access denied. Invalid username or password."),
-                53 => (false, "Network path not found. Check the server name."),
-                86 => (false, "Invalid password."),
-                1219 => (true, string.Empty), // Already connected
-                1326 => (false, "Login failure. Invalid username or password."),
-                _ => (false, $"Failed to connect. Error code: {result}")
-            };
-        }
-        catch (Exception ex)
-        {
-            return (false, $"Connection error: {ex.Message}");
-        }
+        return await Task.Run(() => RemotePlay.NetworkShareHelper.TestConnection(path, username, password));
     }
 }

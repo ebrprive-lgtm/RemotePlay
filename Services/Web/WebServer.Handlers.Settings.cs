@@ -218,6 +218,54 @@ internal sealed partial class WebServer
         }
     }
 
+    // ── POST /api/settings/test-network-share
+    private static void HandleApiSettingsTestNetworkShare(HttpListenerContext ctx)
+    {
+        if (!ctx.Request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Response.Headers["Allow"] = "POST";
+            TrySendResponse(ctx, 405, "application/json",
+                "{\"ok\":false,\"error\":\"Use POST to test network share credentials.\"}");
+            return;
+        }
+
+        NetworkShareTestRequest? request;
+        try
+        {
+            using var reader = new StreamReader(ctx.Request.InputStream, ctx.Request.ContentEncoding);
+            var body = reader.ReadToEnd();
+            request = JsonSerializer.Deserialize<NetworkShareTestRequest>(body, SettingsJsonOptions);
+        }
+        catch (JsonException)
+        {
+            TrySendResponse(ctx, 400, "application/json",
+                "{\"ok\":false,\"error\":\"Invalid JSON request body.\"}");
+            return;
+        }
+        catch (IOException)
+        {
+            TrySendResponse(ctx, 400, "application/json",
+                "{\"ok\":false,\"error\":\"Could not read request body.\"}");
+            return;
+        }
+
+        if (request is null)
+        {
+            TrySendResponse(ctx, 400, "application/json",
+                "{\"ok\":false,\"error\":\"Empty network share test request.\"}");
+            return;
+        }
+
+        var result = NetworkShareHelper.TestConnection(
+            request.Path?.Trim() ?? string.Empty,
+            request.Username?.Trim() ?? string.Empty,
+            request.Password ?? string.Empty);
+        var json = JsonSerializer.Serialize(
+            new { ok = result.Success, error = result.Success ? null : result.ErrorMessage },
+            SettingsJsonOptions);
+        TrySendResponse(ctx, 200, "application/json; charset=utf-8", json);
+    }
+
     // ── GET /api/settings/test-url?url=<encoded> ───────────────────────────────
     private static async void HandleApiSettingsTestUrl(HttpListenerContext ctx)
     {
@@ -343,5 +391,12 @@ internal sealed partial class WebServer
         public string Path     { get; set; } = string.Empty;
         public string Username { get; set; } = string.Empty;
         public string Password { get; set; } = string.Empty;
+    }
+
+    private sealed class NetworkShareTestRequest
+    {
+        public string? Path     { get; set; }
+        public string? Username { get; set; }
+        public string? Password { get; set; }
     }
 }

@@ -1027,7 +1027,11 @@ async function radioStop() {
   await fetch('/api/radio/stop', { method: 'POST' });
   _radioIsPlaying = false;
   // Only stop local audio when in local-play mode; server-mode stop has nothing local to clean up.
-  if (isPlayLocal()) localStop();
+  if (isPlayLocal()
+      && !(typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer')
+      && typeof localStop === 'function') {
+    await localStop();
+  }
   // Keep radio-player-docked so the bar stays visible — the user can resume from here.
   updateRadioBar(
     _radioCurrentName,
@@ -1058,6 +1062,10 @@ async function radioDismiss() {
   document.body.classList.remove('radio-player-docked');
   stopGlobeAnim();
   _globeHasStation = false;
+  if (typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer') {
+    _localMediaType = 'Local';
+  }
+  if (typeof _syncPodcastPlaybackControls === 'function') _syncPodcastPlaybackControls();
 }
 
 const _debouncedRadioVolumeApi = debounce((v) => fetch('/api/radio/volume?v=' + v, { method: 'POST' }), 150);

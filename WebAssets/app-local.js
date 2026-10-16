@@ -130,6 +130,7 @@ async function localStop(keepPlayerVisible = false) {
     _clearLocalPlayerMeta();
     _localSeekDragging = false;
     _localMediaType = 'Local';
+    if (typeof _syncPodcastPlaybackControls === 'function') _syncPodcastPlaybackControls();
     return;
   }
 
@@ -163,6 +164,7 @@ async function localStop(keepPlayerVisible = false) {
   _clearLocalPlayerMeta();
   if (wasActive) _postLog(`Stopping ${_localMediaType} on Local`);
   _localMediaType = 'Local';
+  if (typeof _syncPodcastPlaybackControls === 'function') _syncPodcastPlaybackControls();
 }
 
 // Plays a short 440 Hz beep via Web Audio API — completely independent of the <audio> element

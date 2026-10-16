@@ -13,6 +13,7 @@ namespace RemotePlay;
 
 internal sealed partial class WebServer
 {
+    private const long MaxPodcastFeedCharacters = 10_000_000;
     private static readonly HttpClient _podcastHttpClient = CreatePodcastHttpClient();
     private static readonly ConcurrentDictionary<string, PodcastSearchCacheEntry> _podcastSearchCache = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, PodcastTopPoolCacheEntry> _podcastTopPoolCache = new(StringComparer.Ordinal);
@@ -183,7 +184,7 @@ internal sealed partial class WebServer
                 : "No explicit query/topic provided with country=ALL. Using multi-country discovery search.");
         }
 
-        if (!hasSupportedCountryFilter && string.IsNullOrWhiteSpace(q))
+        if (!hasSupportedCountryFilter && !hasExplicitSearch)
         {
             Logger.Info("Podcasts", "Using fast all-country top-pool search path (cached daily) to reduce iTunes load.");
             await SendFallbackSearchPageAsync("fast all-country top-pool").ConfigureAwait(false);
@@ -475,6 +476,9 @@ internal sealed partial class WebServer
 
                     uniqueShows.Add(show);
                 }
+
+                if (uniqueShows.Count >= targetCount)
+                    break;
             }
 
             if (!hadFetchableCountry || uniqueShows.Count == beforeWaveCount)
@@ -631,7 +635,15 @@ internal sealed partial class WebServer
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-            var xml = await XDocument.LoadAsync(stream, LoadOptions.None, CancellationToken.None).ConfigureAwait(false);
+            var settings = new System.Xml.XmlReaderSettings
+            {
+                Async = true,
+                DtdProcessing = System.Xml.DtdProcessing.Prohibit,
+                XmlResolver = null,
+                MaxCharactersInDocument = MaxPodcastFeedCharacters,
+            };
+            using var reader = System.Xml.XmlReader.Create(stream, settings);
+            var xml = await XDocument.LoadAsync(reader, LoadOptions.None, CancellationToken.None).ConfigureAwait(false);
             var allEpisodes = ParsePodcastEpisodes(xml);
             var episodes = allEpisodes.Skip(offset).Take(limit).ToArray();
             var hasMore = allEpisodes.Length > offset + episodes.Length;
@@ -722,9 +734,9 @@ internal sealed partial class WebServer
             .Select(item =>
             {
                 var audioUrl = GetPodcastAudioUrl(item);
-                if (string.IsNullOrWhiteSpace(audioUrl) || !Uri.TryCreate(audioUrl, UriKind.Absolute, out var audioUri))
-                    return null;
-                if (audioUri.Scheme != Uri.UriSchemeHttp && audioUri.Scheme != Uri.UriSchemeHttps)
+                if (string.IsNullOrWhiteSpace(audioUrl)
+                    || !Uri.TryCreate(audioUrl, UriKind.Absolute, out var audioUri)
+                    || !IsValidPublicPodcastFeedUrl(audioUrl))
                     return null;
 
                 var title = GetPodcastElementValue(item, "title");
