@@ -397,13 +397,16 @@
         <div id="podcasts-browser" style="display:none"></div>        
         <div id="radio-browser" style="display:none"></div>
         <div id="live-tv-browser" style="display:none"></div>
-        <div id="radio-player-bar" style="display:none" aria-label="Radio player">
+        <div id="radio-player-bar" style="display:none" role="region" aria-label="Radio player" aria-busy="false">
           <div class="player-top">
-              <div id="radio-player-summary">
-              <div id="radio-bar-favicon-wrap" style="flex-shrink:0;display:none"><img id="radio-bar-favicon" src="" alt="" style="width:36px;height:36px;border-radius:5px;object-fit:contain" /></div>
+            <div id="radio-player-summary">
+              <div id="radio-bar-art-wrap" style="display:none" aria-hidden="true">
+                <img id="radio-bar-art" alt="" decoding="async" />
+                <span id="radio-bar-art-placeholder" class="radio-bar-art-placeholder">&#127911;</span>
+              </div>
               <div id="radio-bar-info">
-                <div id="radio-bar-title-row" style="display:flex;align-items:center;gap:.4rem;min-width:0">
-                  <div id="radio-health-dot" class="radio-health-dot" title="Stream health"></div>
+                <div id="radio-bar-title-row">
+                  <div id="radio-health-dot" class="radio-health-dot" title="Stream health" role="img" aria-label="Stream status: idle"></div>
                   <div id="radio-bar-title">—</div>
                   <button id="radio-bar-fav-btn" class="radio-bar-fav-btn" onclick="radioToggleCurrentFav()" title="Add to favorites" aria-label="Add to favorites" aria-pressed="false">&#9825;</button>
                 </div>
@@ -418,56 +421,83 @@
                   </div>
                   <ul id="radio-title-history-list" class="radio-title-history-list"></ul>
                 </div>
-                <div id="radio-bar-meta" style="font-size:.75rem;color:var(--muted,#9aa8c2)"></div>
-                <div id="radio-bar-tech" style="font-size:.72rem;color:var(--muted,#9aa8c2);margin-top:.1rem;display:flex;align-items:center;gap:.4rem">
+                <div id="radio-bar-meta"></div>
+                <div id="radio-bar-tech">
                   <span id="radio-bar-quality-badge" class="radio-quality-badge" style="display:none"></span>
+                  <span id="radio-bar-reconnect-status" class="radio-reconnect-status" aria-live="off" hidden></span>
+                  <span id="radio-bar-live" class="radio-live-indicator" hidden><span class="radio-live-dot" aria-hidden="true"></span>Live</span>
                   <span id="radio-bar-tech-text"></span>
                   <span id="radio-bar-elapsed" class="radio-elapsed" style="display:none"></span>
                 </div>
-                <div id="radio-bar-tags" style="font-size:.72rem;color:var(--muted,#9aa8c2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
-                <div id="radio-bar-pop" style="font-size:.72rem;color:var(--muted,#9aa8c2)"></div>
-                <div id="radio-bar-homepage" style="font-size:.72rem;margin-top:.15rem"></div>
+                <div id="radio-bar-progress-row" class="podcast-progress-row" hidden>
+                  <input id="radio-bar-seek" type="range" min="0" max="0" value="0" step="0.1"
+                         oninput="previewPodcastSeek(this.value)" onchange="commitPodcastSeek(this.value)"
+                         aria-label="Podcast playback position" aria-valuetext="0:00 of 0:00" disabled/>
+                  <span id="radio-bar-progress-time">0:00 / 0:00</span>
+                </div>
+                <div id="radio-bar-tags"></div>
+                <div id="radio-bar-pop"></div>
+                <div id="radio-bar-homepage"></div>
               </div>
             </div>
             <div class="transport-controls">
               <canvas id="radio-waveform" class="radio-waveform" width="60" height="32" aria-hidden="true"></canvas>
               <div class="button-group transport-main-group">
                 <button id="local-podcast-prev" class="btn btn-dim" type="button" onclick="podcastPrevEpisode()" title="Previous episode" aria-label="Previous episode" style="display:none">&#9198; Prev</button>
-                <button id="radio-btn-play" class="btn btn-red" onclick="radioToggle()">&#9654; Play</button>
+                <button id="radio-btn-play" class="btn btn-red" onclick="radioToggle()" aria-label="Play radio playback" aria-pressed="false">&#9654; Play</button>
                 <button id="local-podcast-next" class="btn btn-dim" type="button" onclick="podcastNextEpisode()" title="Next episode" aria-label="Next episode" style="display:none">Next &#9197;</button>
                 <span id="local-podcast-index" style="display:none;font-size:.75rem;color:var(--muted,#9aa8c2);white-space:nowrap"></span>
-                <button id="radio-btn-stop" class="btn btn-stop" onclick="radioDismiss()" title="Stop and close player">&#9632; Stop</button>
+                <button id="radio-btn-stop" class="btn btn-stop" onclick="radioDismiss()" title="Stop and close player" aria-label="Stop playback and close player">&#9632; Stop</button>
               </div>
               <span id="local-podcast-page-status" role="status" aria-live="polite" style="display:none;flex-basis:100%;font-size:.72rem;color:var(--muted,#9aa8c2)"></span>
             </div>
           </div>
+          <span id="radio-player-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
           <div id="radio-media-controls" style="display:flex;flex-direction:column;gap:.55rem;margin-top:.1rem;padding-top:.55rem;border-top:1px solid var(--player-card-border,#292941)">
-            <div class="control-card" style="width:100%;box-sizing:border-box">
+            <div class="control-card audio-volume-card" style="width:100%;box-sizing:border-box">
+              <div class="control-title">Volume</div>
               <div class="radio-sliders-wrap">
-                <span class="slider-wrap">
-                  <button class="radio-slider-label-btn" onclick="radioCombinedReset()" title="Click to reset to 80%">Volume</button>
-                  <input id="radio-bar-combined" type="range" min="0" max="1.3" step="0.01" value="0.8"
+                <div class="slider-wrap">
+                  <label class="radio-slider-static-label" for="radio-bar-volume">Volume</label>
+                  <input id="radio-bar-volume" type="range" min="0" max="1" step="0.01" value="0.8"
                          class="combined-vol-slider"
-                         oninput="radioCombinedSlider(this.value)" aria-label="Radio volume / boost"/>
-                  <button class="radio-slider-reset-btn" id="radio-combined-label" onclick="radioCombinedReset()" title="Click to reset to 80%">80%</button>
-                </span>
-                <div class="eq-reverb-row">
-                  <div id="radio-eq-select-wrap" class="eq-select-wrap" style="display:none">
-                    <label class="eq-select-label" for="radio-eq-select">EQ</label>
-                    <div class="eq-select-inner">
-                       <select id="radio-eq-select" class="track-select" onchange="setEqPreset(+this.value)" aria-label="Equalizer preset"></select>
-                       <canvas id="radio-eq-sparkline" class="eq-sparkline" width="52" height="22" aria-hidden="true"></canvas>
-                    </div>
-                  </div>
-                  <div id="radio-reverb-select-wrap" class="eq-select-wrap" style="display:none">
-                    <label class="eq-select-label" for="radio-reverb-select">Room</label>
-                    <select id="radio-reverb-select" class="track-select" onchange="setReverbPreset(+this.value,'radio')" aria-label="Reverb room preset"></select>
-                  </div>
+                         oninput="radioVolume(this.value)" aria-label="Radio volume"/>
+                  <output class="radio-slider-value" id="radio-volume-label" for="radio-bar-volume">80%</output>
+                  <button class="radio-slider-reset-btn" id="radio-audio-reset" type="button" onclick="radioResetAudioDefaults()" title="Reset volume to 80% and boost to 0 dB" aria-label="Reset radio volume to 80 percent and boost to 0 decibels">Reset</button>
                 </div>
               </div>
             </div>
-            </div>
-          <div id="radio-bar-geo"
+            <details id="radio-audio-settings" class="audio-settings-disclosure">
+              <summary>Audio settings</summary>
+              <div class="control-card audio-settings-card" style="width:100%;box-sizing:border-box">
+                <div class="control-title">Boost and effects</div>
+                <div class="radio-sliders-wrap">
+                  <div class="slider-wrap">
+                    <label class="radio-slider-static-label" for="radio-bar-boost">Boost</label>
+                    <input id="radio-bar-boost" type="range" min="1" max="3" step="0.01" value="1"
+                           class="audio-boost-slider" oninput="radioBoost(this.value)" aria-label="Radio audio boost"/>
+                    <output class="radio-slider-value" id="radio-boost-label" for="radio-bar-boost">0 dB</output>
+                    <button class="radio-slider-reset-btn" id="radio-boost-reset" type="button" onclick="radioBoostReset()" title="Reset boost to 0 dB" aria-label="Reset radio boost to 0 decibels">Reset</button>
+                  </div>
+                  <div class="audio-control-hint">Boost adds up to 3× gain (about +9.5 dB) and may distort loud audio.</div>
+                  <div class="eq-reverb-row">
+                    <div id="radio-eq-select-wrap" class="eq-select-wrap" style="display:none">
+                      <label class="eq-select-label" for="radio-eq-select">EQ</label>
+                      <div class="eq-select-inner">
+                         <select id="radio-eq-select" class="track-select" onchange="setEqPreset(+this.value)" aria-label="Equalizer preset"></select>
+                         <canvas id="radio-eq-sparkline" class="eq-sparkline" width="52" height="22" aria-hidden="true"></canvas>
+                      </div>
+                    </div>
+                    <div id="radio-reverb-select-wrap" class="eq-select-wrap" style="display:none">
+                      <label class="eq-select-label" for="radio-reverb-select">Room</label>
+                      <select id="radio-reverb-select" class="track-select" onchange="setReverbPreset(+this.value,'radio')" aria-label="Reverb room preset"></select>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
+          </div>
+          <div id="radio-bar-geo">
             <div style="position:relative;display:inline-block">
               <canvas id="radio-globe-canvas" width="180" height="180" aria-hidden="true" style="display:block;border-radius:50%;cursor:crosshair" onclick="radioGlobeClick(event)" onmousemove="radioGlobeMouseMove(event)" onmouseleave="radioGlobeMouseLeave()"></canvas>
               <div id="radio-globe-tooltip"></div>
@@ -478,10 +508,10 @@
             <div id="radio-geo-label" style="font-size:.72rem;color:var(--muted,#9aa8c2);text-align:center;line-height:1.5"></div>
           </div>
         </div>
-        <div id="music-player-bar" style="display:none" aria-label="Music player">
+        <div id="music-player-bar" style="display:none" role="region" aria-label="Music player" aria-busy="false">
           <div class="player-top">
             <div id="music-player-summary">
-              <div id="music-bar-art-wrap" onclick="openArtistWiki()" title="Search Wikipedia for artist">
+              <div id="music-bar-art-wrap" role="button" tabindex="0" aria-label="Search Wikipedia for artist" onkeydown="activateKeyboardClick(event,this)" onclick="openArtistWiki()" title="Search Wikipedia for artist">
                 <div id="music-bar-art" class="music-bar-art-empty" aria-hidden="true">
                   <div id="music-bar-art-bars" class="music-bar-art-bars" aria-hidden="true" style="display:none"><span></span><span></span><span></span></div>
                 </div>
@@ -489,49 +519,72 @@
               </div>
               <div id="music-bar-info">
                 <div id="music-bar-title">—</div>
-                <div id="music-bar-artist" onclick="openArtistWiki()" title="Search Wikipedia for artist" style="cursor:pointer"></div>
+                <div id="music-bar-artist" role="button" tabindex="0" aria-label="Search Wikipedia for artist" onkeydown="activateKeyboardClick(event,this)" onclick="openArtistWiki()" title="Search Wikipedia for artist" style="cursor:pointer"></div>
                 <div id="music-bar-album"></div>
                 <div id="music-bar-badge"></div>
                 <div id="music-bar-genreyear" style="display:none"></div>
+                <div id="music-bar-state-status" class="player-state-status" aria-live="off" hidden></div>
               </div>
             </div>
-            <div class="transport-controls">
+            <div class="transport-controls music-transport-controls">
               <div class="button-group transport-nav-group" id="music-nav-normal">
-                <button id="music-btn-prev" class="btn btn-nav" onclick="musicPrev()" title="Previous"><span class="nav-main">&#9664;&#9664; Prev</span><span class="nav-title" id="music-prev-title"></span></button>
-                <button id="music-btn-next" class="btn btn-nav" onclick="musicNext()" title="Next"><span class="nav-main">Next &#9654;&#9654;</span><span class="nav-title" id="music-next-title"></span></button>
+                <button id="music-btn-prev" class="btn btn-nav" onclick="musicPrev()" title="Previous" aria-label="Previous track"><span class="nav-main">&#9664;&#9664; Prev</span><span class="nav-title" id="music-prev-title"></span></button>
+                <button id="music-btn-next" class="btn btn-nav" onclick="musicNext()" title="Next" aria-label="Next track"><span class="nav-main">Next &#9654;&#9654;</span><span class="nav-title" id="music-next-title"></span></button>
               </div>
               <button id="music-btn-queue-next" class="btn btn-nav queue-mode" style="display:none" onclick="musicNext()" title="Play next queued track"><span class="nav-main">&#9654; Next Queued</span><span class="nav-title" id="music-queue-next-title"></span></button>
-              <div class="button-group transport-main-group">
-                <button id="music-btn-play" class="btn btn-red" onclick="musicToggle()">&#9654; Play</button>
-                <button id="music-btn-stop" class="btn btn-stop" onclick="musicStop()">&#9632; STOP</button>
+              <div class="button-group transport-main-group" id="music-transport-main-group">
+                <button id="music-btn-play" class="btn btn-red" onclick="musicToggle()" aria-label="Play music" aria-pressed="false">&#9654; Play</button>
+                <button id="music-btn-stop" class="btn btn-stop" onclick="musicStop()" title="Stop music" aria-label="Stop music playback">&#9632; STOP</button>
               </div>
             </div>
           </div>
-          <div id="music-progress-row" style="display:grid">
+          <span id="music-player-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
+          <div id="music-progress-row" style="display:none">
             <input id="music-seek" type="range" min="0" max="0" value="0" step="0.1"
-                   onpointerdown="onMusicSeekDrag()" onpointerup="onMusicSeekCommit()" ontouchend="onMusicSeekCommit()" aria-label="Music position"/>
+                   oninput="onMusicSeekDrag()" onchange="onMusicSeekCommit()" onpointerdown="onMusicSeekDrag()" onpointerup="onMusicSeekCommit()" ontouchend="onMusicSeekCommit()" aria-label="Music position" disabled/>
             <span id="music-time-label">0:00 / 0:00</span>
           </div>
           <div id="music-media-controls" style="display:grid;grid-template-columns:minmax(150px,1fr);gap:.55rem;margin-top:.1rem;padding-top:.55rem;border-top:1px solid var(--player-card-border,#292941)">
             <div class="control-card">
               <div class="control-title">Options</div>
               <div id="music-option-btns" style="display:flex;gap:.45rem;flex-wrap:wrap;margin-bottom:.45rem">
-                <button id="music-btn-autoplay" class="btn music-opt-btn active"    onclick="toggleMusicAutoPlay()" title="Automatically play next track">&#9193; Play Next</button>
-                <button id="music-btn-shuffle"  class="btn music-opt-btn"        onclick="toggleMusicShuffle()"  title="Shuffle songs in current folder">&#128256; Shuffle</button>
-                <button id="music-btn-repeat"   class="btn music-opt-btn"        onclick="toggleMusicRepeat()"   title="Repeat: Off / Repeat All / Repeat One">&#128257; Repeat</button>
+                <button id="music-btn-autoplay" class="btn music-opt-btn active"    onclick="toggleMusicAutoPlay()" title="Automatically play next track" aria-label="Automatically play next track" aria-pressed="true">&#9193; Play Next</button>
+                <button id="music-btn-shuffle"  class="btn music-opt-btn"        onclick="toggleMusicShuffle()"  title="Shuffle songs in current folder" aria-label="Shuffle songs in current folder" aria-pressed="false">&#128256; Shuffle</button>
+                <button id="music-btn-repeat"   class="btn music-opt-btn"        onclick="toggleMusicRepeat()"   title="Repeat: Off / Repeat All / Repeat One" aria-label="Repeat mode: off" aria-pressed="false">&#128257; Repeat</button>
                 <button id="music-btn-lyrics"   class="btn music-opt-btn"        onclick="toggleMusicLyricsPanel()" title="Show lyrics" style="display:none">&#127908; Lyrics</button>
               </div>
             </div>
-            <div class="control-card">
-              <div class="control-title">Audio Effects</div>
+            <div class="control-card audio-volume-card">
+              <div class="control-title">Volume</div>
               <div class="radio-sliders-wrap">
-                <span class="slider-wrap">
-                  <button class="radio-slider-label-btn" onclick="musicCombinedReset()" title="Click to reset to 80%">Volume</button>
-                  <input id="music-bar-combined" type="range" min="0" max="1.3" step="0.01" value="0.8"
+                <div class="slider-wrap">
+                  <label class="radio-slider-static-label" for="music-bar-volume">Volume</label>
+                  <input id="music-bar-volume" type="range" min="0" max="1" step="0.01" value="0.8"
                          class="combined-vol-slider"
-                         oninput="musicCombinedSlider(this.value)" aria-label="Volume / boost"/>
-                  <button class="radio-slider-reset-btn" id="music-combined-label" onclick="musicCombinedReset()" title="Click to reset to 80%">80%</button>
-                </span>
+                         oninput="musicVolume(this.value)" aria-label="Music volume"/>
+                  <output class="radio-slider-value" id="music-volume-label" for="music-bar-volume">80%</output>
+                  <button class="radio-slider-reset-btn" id="music-audio-reset" type="button" onclick="musicResetAudioDefaults()" title="Reset volume to 80% and boost to 0 dB" aria-label="Reset music volume to 80 percent and boost to 0 decibels">Reset</button>
+                </div>
+              </div>
+            </div>
+            <div id="music-effects-status" class="music-effects-status" aria-live="polite">
+              <span id="music-effect-chip-eq" class="music-effect-chip inactive">EQ: Off</span>
+              <span id="music-effect-chip-room" class="music-effect-chip inactive">Room: Off</span>
+              <span id="music-effect-chip-vocal" class="music-effect-chip inactive">Vocal: Off</span>
+            </div>
+            <details id="music-audio-settings" class="audio-settings-disclosure">
+              <summary>Audio settings</summary>
+              <div class="control-card audio-settings-card">
+                <div class="control-title">Boost and effects</div>
+                <div class="radio-sliders-wrap">
+                  <div class="slider-wrap">
+                    <label class="radio-slider-static-label" for="music-bar-boost">Boost</label>
+                    <input id="music-bar-boost" type="range" min="1" max="3" step="0.01" value="1"
+                           class="audio-boost-slider" oninput="musicBoost(this.value)" aria-label="Music audio boost"/>
+                    <output class="radio-slider-value" id="music-boost-label" for="music-bar-boost">0 dB</output>
+                    <button class="radio-slider-reset-btn" id="music-boost-reset" type="button" onclick="musicBoostReset()" title="Reset boost to 0 dB" aria-label="Reset music boost to 0 decibels">Reset</button>
+                  </div>
+                  <div class="audio-control-hint">Boost adds up to 3× gain (about +9.5 dB) and may distort loud audio.</div>
                 <div class="eq-reverb-row audio-filters-grid">
                   <div class="audio-filter-stack" id="music-effects-left-stack">
                     <div id="music-eq-select-wrap" class="eq-select-wrap audio-filter-control" style="display:none">
@@ -579,17 +632,13 @@
                     <div id="music-reverb-hint" class="audio-filter-hint">Enable a Room preset to adjust strength, dry blend, and pre-delay.</div>
                   </div>
                 </div>
-                <div id="music-effects-status" class="music-effects-status" aria-live="polite">
-                  <span id="music-effect-chip-eq" class="music-effect-chip inactive">EQ: Off</span>
-                  <span id="music-effect-chip-room" class="music-effect-chip inactive">Room: Off</span>
-                  <span id="music-effect-chip-vocal" class="music-effect-chip inactive">Vocal: Off</span>
-                </div>
                 <div class="music-effects-actions">
                   <button class="btn btn-dim" type="button" onclick="resetMusicEffects()" title="Reset EQ, Room, and Vocal filters to defaults">Reset Effects</button>
                   <button class="btn btn-dim" type="button" onclick="saveMusicEffectsDefaults()" title="Save current EQ, Room, and Vocal settings as defaults on this device">Save Defaults</button>
                 </div>
               </div>
-            </div>
+              </div>
+            </details>
             <div class="control-card" id="music-queue-peek-card" style="display:none">              
               <div id="music-queue-peek-list"></div>
             </div>

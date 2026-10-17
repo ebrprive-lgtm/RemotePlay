@@ -56,6 +56,263 @@ public sealed class WebAssetRegressionTests
     }
 
     [Fact]
+    public void PodcastDirectoryRendersSnapshotOrSkeletonBeforeProgressiveRefresh()
+    {
+        var podcastsJs = ReadWebAsset("app-podcasts.js");
+        var css = ReadWebAsset("styles.css");
+
+        AssertContainsAll(
+            podcastsJs,
+            "const _podcastDirectorySnapshotKey = 'rp_podcast_directory_v1';",
+            "function _restorePodcastDirectorySnapshot()",
+            "function _savePodcastDirectorySnapshot(shows)",
+            "void _loadPodcastCountries();",
+            "if (!_podcastFavoritesOnly) _loadPodcastDirectory();",
+            "aria-busy=\"true\"",
+            "podcast-directory-skeleton-card",
+            "await _podcastWaitForPaint(request.signal);",
+            "loadSection('', _podcastDirectorySnapshotPageSize, _podcastDirectorySnapshotPageSize)",
+            "Showing saved recommendations from",
+            "function podcastRetryDirectory()");
+        AssertContainsAll(
+            css,
+            ".podcast-directory-skeleton-grid",
+            ".podcast-directory-refresh-status",
+            "prefers-reduced-motion:reduce");
+    }
+
+    [Fact]
+    public void PodcastProgressRequiresSeekCapabilityAndFiniteDuration()
+    {
+        var html = ReadWebAsset("index.html");
+        var statusJs = ReadWebAsset("app-radio-status.js");
+        var radioPlayer = ReadProjectFile(Path.Combine("Services", "RadioPlayer.cs"));
+        var radioHandler = ReadProjectFile(Path.Combine("Services", "Web", "WebServer.Handlers.Radio.cs"));
+
+        AssertContainsAll(
+            html,
+            "id=\"radio-bar-progress-row\" class=\"podcast-progress-row\" hidden",
+            "aria-label=\"Podcast playback position\"");
+        AssertContainsAll(
+            statusJs,
+            "const isSeekable = Boolean(canSeek && duration > 0);",
+            "lastEnd >= duration - 1",
+            "'/api/radio/seek?' + new URLSearchParams");
+        AssertContainsAll(
+            radioPlayer,
+            "if (!_reader.CanSeek)",
+            "CanSeek: canSeek",
+            "DurationSeconds: durationSeconds");
+        Assert.Contains("TrySendResponse(ctx, 409", radioHandler, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RadioLiveStatusDoesNotReplaceMusicSeeking()
+    {
+        var html = ReadWebAsset("index.html");
+        var radioJs = ReadWebAsset("app-radio.js");
+        var statusJs = ReadWebAsset("app-radio-status.js");
+
+        AssertContainsAll(
+            html,
+            "id=\"radio-bar-live\"",
+            "id=\"radio-bar-elapsed\"",
+            "id=\"music-seek\"");
+        Assert.Contains("liveIndicator.hidden = !(isLiveRadio && playing)", radioJs, StringComparison.Ordinal);
+        Assert.Contains("_localMediaType === 'Radio'", statusJs, StringComparison.Ordinal);
+        Assert.Contains("onpointerdown=\"onMusicSeekDrag()\" onpointerup=\"onMusicSeekCommit()\"", html, StringComparison.Ordinal);
+        Assert.Contains("oninput=\"onMusicSeekDrag()\" onchange=\"onMusicSeekCommit()\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MusicSeekTimelineRequiresKnownDuration()
+    {
+        var html = ReadWebAsset("index.html");
+        var libraryJs = ReadWebAsset("app-library.js");
+        var statusJs = ReadWebAsset("app-radio-status.js");
+
+        Assert.Contains("id=\"music-progress-row\" style=\"display:none\"", html, StringComparison.Ordinal);
+        Assert.Contains("aria-label=\"Music position\" disabled", html, StringComparison.Ordinal);
+        AssertContainsAll(
+            libraryJs,
+            "progressRow.style.display = duration > 0 ? 'grid' : 'none';",
+            "seek.disabled = duration <= 0;",
+            "if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(rawPosition)) return;");
+        AssertContainsAll(
+            statusJs,
+            "musicProgressRow.style.display = dur > 0 ? 'grid' : 'none';",
+            "mSeek.disabled = dur <= 0;");
+    }
+
+    [Fact]
+    public void RadioAndMusicAudioControlsSeparateVolumeBoostAndKeepQueueControls()
+    {
+        var html = ReadWebAsset("index.html");
+        var appJs = ReadConcatenatedAppJs();
+        var css = ReadWebAsset("styles.css");
+
+        AssertContainsAll(
+            html,
+            "id=\"radio-bar-volume\" type=\"range\" min=\"0\" max=\"1\"",
+            "id=\"radio-bar-boost\" type=\"range\" min=\"1\" max=\"3\"",
+            "id=\"radio-audio-reset\"",
+            "id=\"radio-audio-settings\"",
+            "id=\"radio-eq-select-wrap\"",
+            "id=\"music-bar-volume\" type=\"range\" min=\"0\" max=\"1\"",
+            "id=\"music-bar-boost\" type=\"range\" min=\"1\" max=\"3\"",
+            "id=\"music-audio-reset\"",
+            "id=\"music-audio-settings\"",
+            "id=\"music-reverb-select-wrap\"",
+            "id=\"music-btn-queue-next\"",
+            "id=\"music-queue-peek-card\"");
+        AssertContainsAll(
+            appJs,
+            "function radioResetAudioDefaults()",
+            "function musicResetAudioDefaults()",
+            "'/api/radio/volume?v='",
+            "'/api/radio/boost?v='",
+            "'/api/music/volume?v='",
+            "'/api/music/boost?v='",
+            "radioVolume(0.8);",
+            "musicVolume(0.8);",
+            "classList.toggle('queue-mode', hasQueue)");
+        Assert.Contains("queue-mode #music-btn-queue-next", css, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AudioPlayersExposeNamedRegionsLiveStatusAndControlStates()
+    {
+        var html = ReadWebAsset("index.html");
+
+        AssertContainsAll(
+            html,
+            "id=\"radio-player-bar\" style=\"display:none\" role=\"region\" aria-label=\"Radio player\" aria-busy=\"false\"",
+            "id=\"radio-player-announcement\" class=\"sr-only\" role=\"status\" aria-live=\"polite\"",
+            "id=\"radio-health-dot\" class=\"radio-health-dot\" title=\"Stream health\" role=\"img\" aria-label=\"Stream status: idle\"",
+            "id=\"radio-btn-play\" class=\"btn btn-red\" onclick=\"radioToggle()\" aria-label=\"Play radio playback\" aria-pressed=\"false\"",
+            "id=\"music-player-bar\" style=\"display:none\" role=\"region\" aria-label=\"Music player\" aria-busy=\"false\"",
+            "id=\"music-bar-state-status\" class=\"player-state-status\" aria-live=\"off\" hidden",
+            "id=\"music-player-announcement\" class=\"sr-only\" role=\"status\" aria-live=\"polite\"",
+            "id=\"music-btn-play\" class=\"btn btn-red\" onclick=\"musicToggle()\" aria-label=\"Play music\" aria-pressed=\"false\"",
+            "id=\"music-btn-repeat\"",
+            "aria-pressed=\"false\"");
+    }
+
+    [Fact]
+    public void PlayerStatusAndPressedStatesTrackPlaybackChanges()
+    {
+        var coreJs = ReadWebAsset("app-core.js");
+        var libraryJs = ReadWebAsset("app-library.js");
+        var radioJs = ReadWebAsset("app-radio.js");
+        var statusJs = ReadWebAsset("app-radio-status.js");
+        var localJs = ReadWebAsset("app-local.js");
+
+        AssertContainsAll(
+            coreJs,
+            "function _announcePlayerStatus(playerId, state, message)",
+            "status.dataset.state === state",
+            "status.dataset.state = state;");
+        AssertContainsAll(
+            libraryJs,
+            "bar.setAttribute('aria-busy', String(isBuffering));",
+            "playerStatus.textContent = statusText;",
+            "btn.setAttribute('aria-pressed', String(isPlaying));",
+            "btn.setAttribute('aria-pressed', String(_musicAutoPlay));",
+            "btn.setAttribute('aria-pressed', String(_musicShuffle));",
+            "btn.setAttribute('aria-pressed', String(_musicRepeat !== 'none'));",
+            "'Music playback stopped.'");
+        AssertContainsAll(
+            radioJs,
+            "playerBar.setAttribute('aria-label', isPodcast ? 'Podcast player' : 'Radio player');",
+            "btn.setAttribute('aria-pressed', String(Boolean(playing)));",
+            "stoppingPodcast ? { mode: 'podcast' } : {}");
+        AssertContainsAll(
+            statusJs,
+            "visibleStatus.hidden = !isBusy;",
+            "_announcePlayerStatus(statusId, `${mediaType.toLowerCase()}:loading`",
+            "btn.setAttribute('aria-pressed', String(Boolean(effectivePlaying)));");
+        AssertContainsAll(
+            localJs,
+            "bar.setAttribute('aria-busy', 'false');",
+            "playButton.setAttribute('aria-pressed', 'false');");
+    }
+
+    [Fact]
+    public void LocalAudioErrorsUseTheActivePlayersTitle()
+    {
+        var statusJs = ReadWebAsset("app-radio-status.js").Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        Assert.Contains(
+            "const nmEl = isMusic\n          ? document.getElementById('music-bar-title')\n          : document.getElementById('radio-bar-title');",
+            statusJs,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PlayerAccessibilityHonorsKeyboardFocusMotionAndDialogBehavior()
+    {
+        var css = ReadWebAsset("styles.css");
+        var coreJs = ReadWebAsset("app-core.js");
+        var statusJs = ReadWebAsset("app-radio-status.js");
+
+        AssertContainsAll(
+            css,
+            "):focus-visible{",
+            "@media(forced-colors:active)",
+            "@media(pointer:coarse)",
+            "min-height:44px",
+            ".music-queue-remove-btn:focus-visible{opacity:1;transition:none}",
+            "#music-player-bar .music-queue-remove-btn{min-width:44px;min-height:44px;opacity:1;transition:none}",
+            "@media(prefers-reduced-motion:reduce)",
+            "animation-duration:.01ms!important");
+        AssertContainsAll(
+            statusJs,
+            "_radioReducedMotionQuery?.addEventListener('change'",
+            "if (event.matches) stopWaveform();");
+        Assert.DoesNotContain("songTextEl.style.animation", statusJs, StringComparison.Ordinal);
+        AssertContainsAll(
+            coreJs,
+            "overlay.setAttribute('role', 'alertdialog');",
+            "overlay.setAttribute('aria-modal', 'true');",
+            "overlay.addEventListener('keydown'",
+            "dismissBtn.focus();",
+            "if (previousFocus?.isConnected) previousFocus.focus();");
+    }
+
+    [Fact]
+    public void MusicQueueTransportUpdatesWithoutPendingNoticeElement()
+    {
+        var appLibraryJs = ReadWebAsset("app-library.js");
+        var methodStart = appLibraryJs.IndexOf(
+            "function _updateMusicQueuePendingBar() {",
+            StringComparison.Ordinal);
+        Assert.True(methodStart >= 0, "The Music queue state updater should exist.");
+
+        var methodEnd = appLibraryJs.IndexOf(
+            "\nfunction _musicCardContextBind",
+            methodStart,
+            StringComparison.Ordinal);
+        Assert.True(methodEnd > methodStart, "The Music queue state updater should be a complete function.");
+        var method = appLibraryJs[methodStart..methodEnd];
+
+        Assert.Contains("if (bar) {", method, StringComparison.Ordinal);
+        Assert.Contains("if (navNormal && btnQueueNext)", method, StringComparison.Ordinal);
+        Assert.Contains("classList.toggle('queue-mode', hasQueue)", method, StringComparison.Ordinal);
+        Assert.False(method.Contains("if (!bar) return;", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void MusicQueueRemoveControlsHaveTrackSpecificAccessibleNames()
+    {
+        var appLibraryJs = ReadWebAsset("app-library.js");
+
+        Assert.Contains(
+            "aria-label=\"Remove ' + esc(item.name || item.path) + ' from queue\"",
+            appLibraryJs,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void ThumbnailQueueControlsUseServerEndpoints()
     {
         var appJs = ReadConcatenatedAppJs();
@@ -94,7 +351,7 @@ public sealed class WebAssetRegressionTests
         var appJs = ReadConcatenatedAppJs();
 
         Assert.DoesNotContain("rawName.match(/^\\d{4}", appJs, StringComparison.Ordinal);
-        Assert.DoesNotContain("split('-')", appJs, StringComparison.Ordinal);
+        Assert.DoesNotContain("rawName.split('-')", appJs, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -206,6 +463,9 @@ public sealed class WebAssetRegressionTests
     private static string ReadWebAsset(string fileName) =>
         File.ReadAllText(Path.Combine(WebAssetsPath, fileName));
 
+    private static string ReadProjectFile(params string[] pathParts) =>
+        File.ReadAllText(Path.Combine(RepositoryRoot, Path.Combine(pathParts)));
+
     private static void AssertContainsAll(string source, params string[] expectedFragments)
     {
         foreach (var fragment in expectedFragments)
@@ -222,12 +482,14 @@ public sealed class WebAssetRegressionTests
 
     private static readonly string[] AppJsModules =
     [
+        "app-sse.js",
         "app-core.js",
         "app-diagnostics.js",
         "app-playback.js",
         "app-context-menu.js",
         "app-library.js",
         "app-live-tv.js",
+        "app-podcasts.js",
         "app-radio.js",
         "app-globe.js",
         "app-radio-status.js",

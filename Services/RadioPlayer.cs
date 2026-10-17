@@ -25,6 +25,7 @@ internal sealed class RadioPlayer : IDisposable
     private DateTime _playStartUtc = DateTime.MinValue;
     private DateTime _lastSampleUtc = DateTime.MinValue; // updated when audio data flows
     private int  _reconnectAttempts = 0;
+    private bool   _seekInfoFailureLogged;
     private const int MaxReconnectAttempts = 5;
     private const int ReconnectDelayMs     = 4_000;
 
@@ -61,6 +62,7 @@ internal sealed class RadioPlayer : IDisposable
             _streamTitle        = string.Empty;
             _playStartUtc       = DateTime.UtcNow;
             _lastSampleUtc      = DateTime.UtcNow;
+            _seekInfoFailureLogged = false;
             _currentUrl         = streamUrl;
             _currentName        = stationName;
             _isPlaying          = false; // will flip to true once stream opens
@@ -184,24 +186,32 @@ internal sealed class RadioPlayer : IDisposable
         }
     }
 
-    public void Seek(double seconds)
+    public bool Seek(double seconds)
     {
         lock (_lock)
         {
-            if (_reader is null)
-                return;
+            if (_reader is null || !double.IsFinite(seconds))
+                return false;
 
             var targetSeconds = Math.Max(0, seconds);
             try
             {
+                if (!_reader.CanSeek)
+                    return false;
+
+                var durationSeconds = _reader.TotalTime.TotalSeconds;
+                if (double.IsFinite(durationSeconds) && durationSeconds > 0)
+                    targetSeconds = Math.Min(targetSeconds, durationSeconds);
+
                 _reader.CurrentTime = TimeSpan.FromSeconds(targetSeconds);
                 _playStartUtc = DateTime.UtcNow - TimeSpan.FromSeconds(targetSeconds);
                 _lastSampleUtc = DateTime.UtcNow;
+                return true;
             }
             catch (Exception ex)
             {
-                _lastError = ex.Message;
                 Logger.Warning("Radio", $"Seek failed for '{_currentName}': {ex.Message}");
+                return false;
             }
         }
     }
@@ -230,6 +240,7 @@ internal sealed class RadioPlayer : IDisposable
             var stalled = _isPlaying
                 && _lastSampleUtc != DateTime.MinValue
                 && (DateTime.UtcNow - _lastSampleUtc).TotalSeconds > 8;
+            var (canSeek, durationSeconds) = GetSeekInfoLocked();
             return new RadioStatus(
                 IsPlaying:   _isPlaying,
                 StationUrl:  _currentUrl,
@@ -241,7 +252,36 @@ internal sealed class RadioPlayer : IDisposable
                 IsStalled:   stalled,
                 Error:       _lastError,
                 EqPreset:    _eqPreset,
-                ReverbPreset: _reverbPreset);
+                ReverbPreset: _reverbPreset,
+                CanSeek: canSeek,
+                DurationSeconds: durationSeconds);
+        }
+    }
+
+    private (bool CanSeek, double DurationSeconds) GetSeekInfoLocked()
+    {
+        if (_reader is null)
+            return (false, 0);
+
+        try
+        {
+            if (!_reader.CanSeek)
+                return (false, 0);
+
+            var durationSeconds = _reader.TotalTime.TotalSeconds;
+            return double.IsFinite(durationSeconds) && durationSeconds > 0
+                ? (true, durationSeconds)
+                : (false, 0);
+        }
+        catch (Exception ex)
+        {
+            if (!_seekInfoFailureLogged)
+            {
+                _seekInfoFailureLogged = true;
+                Logger.Detail("Radio", $"Seek capability unavailable for '{_currentName}': {ex.Message}");
+            }
+
+            return (false, 0);
         }
     }
 
@@ -333,4 +373,6 @@ internal sealed record RadioStatus(
     bool   IsStalled,
     string Error,
     int    EqPreset,
-    int    ReverbPreset);
+    int    ReverbPreset,
+    bool   CanSeek = false,
+    double DurationSeconds = 0);

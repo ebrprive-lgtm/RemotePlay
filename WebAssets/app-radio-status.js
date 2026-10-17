@@ -4,48 +4,28 @@ let _radioElapsedPollTime = 0; // performance.now() when that poll landed
 let _radioElapsedTick = null;
 let _podcastServerElapsedBase = 0;
 let _podcastServerElapsedPollTime = 0;
+let _podcastServerDuration = 0;
+let _podcastServerCanSeek = false;
+let _podcastSeekDragging = false;
 let _radioRetryCount = 0;
 let _radioWaveformId = null;
 let _radioWaveformPhase = 0;
-const _debouncedPodcastServerVolumeApi = debounce((v) =>
-  fetch('/api/radio/volume?v=' + v, { method: 'POST' }).catch(() => {}), 150);
-const _debouncedPodcastServerBoostApi = debounce((v) =>
-  fetch('/api/radio/boost?v=' + v, { method: 'POST' }).catch(() => {}), 150);
 
-function _updateLocalCombinedSliderVisual(value) {
-  const val = parseFloat(value);
-  if (isNaN(val)) return;
-
-  const slider = document.getElementById('radio-bar-combined');
-  if (!slider) return;
-  if (typeof updateRadioCombinedSliderVisual === 'function') updateRadioCombinedSliderVisual(val);
-}
-
-function _setLocalCombinedSliderLabel(combinedValue, boostValue) {
-  const lbl = document.getElementById('radio-combined-label');
-  if (!lbl) return;
-
-  const combined = Math.max(0, Math.min(1.3, parseFloat(combinedValue) || 0));
-  if (combined <= 1.0) {
-    lbl.textContent = Math.round(combined * 100) + '%';
-    return;
+function _initRadioAudioSliderVisuals() {
+  const volume = parseFloat(document.getElementById('radio-bar-volume')?.value);
+  const boost = parseFloat(document.getElementById('radio-bar-boost')?.value);
+  if (typeof syncRadioAudioControls === 'function') {
+    syncRadioAudioControls(
+      Number.isFinite(volume) ? volume : 0.8,
+      Number.isFinite(boost) ? boost : 1
+    );
   }
-
-  const boost = Math.max(0, parseFloat(boostValue) || 1);
-  const db = Math.round(20 * Math.log10(boost));
-  lbl.textContent = '100% +' + db + 'dB';
-}
-
-function _initLocalCombinedSliderVisual() {
-  const slider = document.getElementById('radio-bar-combined');
-  if (!slider) return;
-  _updateLocalCombinedSliderVisual(parseFloat(slider.value) || 1);
 }
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', _initLocalCombinedSliderVisual);
+  document.addEventListener('DOMContentLoaded', _initRadioAudioSliderVisuals);
 } else {
-  _initLocalCombinedSliderVisual();
+  _initRadioAudioSliderVisuals();
 }
 
 // ── Stream title history (feature #3) ────────────────────────────────
@@ -120,12 +100,20 @@ function startElapsedTick() {
   stopElapsedTick();
   _radioElapsedTick = setInterval(() => {
     if (!_radioIsPlaying) return;
+    if (typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer') {
+      const elapsed = _podcastServerElapsedBase
+        + Math.max(0, Math.round((performance.now() - _podcastServerElapsedPollTime) / 1000));
+      _updatePodcastProgress(elapsed, _podcastServerDuration, _podcastServerCanSeek);
+      return;
+    }
     const secNow =
       _radioElapsedBase + Math.round((performance.now() - _radioElapsedPollTime) / 1000);
     const el = document.getElementById('radio-bar-elapsed');
     if (el) {
       el.textContent = fmtSec(secNow);
       el.style.display = '';
+      const techRow = document.getElementById('radio-bar-tech');
+      if (techRow) techRow.hidden = false;
     }
   }, 1000);
 }
@@ -143,24 +131,150 @@ function fmtSec(s) {
   return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
-function _syncPodcastServerProgress(elapsedSeconds, playing) {
+function _updatePodcastProgress(currentSeconds, durationSeconds, canSeek) {
+  const row = document.getElementById('radio-bar-progress-row');
+  const seek = document.getElementById('radio-bar-seek');
+  const time = document.getElementById('radio-bar-progress-time');
+  const techText = document.getElementById('radio-bar-tech-text');
+  const duration = Number.isFinite(durationSeconds) && durationSeconds > 0
+    ? durationSeconds
+    : 0;
+  let current = Number.isFinite(currentSeconds) ? Math.max(0, currentSeconds) : 0;
+  if (duration > 0) current = Math.min(current, duration);
+  const isSeekable = Boolean(canSeek && duration > 0);
+
+  if (row) row.hidden = !isSeekable;
+  if (seek) {
+    seek.disabled = !isSeekable;
+    if (isSeekable) {
+      seek.max = String(duration);
+      if (!_podcastSeekDragging) seek.value = String(current);
+      seek.setAttribute('aria-valuetext', `${fmtSec(current)} of ${fmtSec(duration)}`);
+    }
+  }
+  if (time) {
+    time.textContent = `${fmtSec(current)} / ${isSeekable ? fmtSec(duration) : '--:--'}`;
+  }
+  if (techText) {
+    techText.textContent = isSeekable || current <= 0
+      ? 'Podcast'
+      : `Podcast · ${fmtSec(current)}`;
+  }
+  if (typeof _syncRadioBarTechRow === 'function') _syncRadioBarTechRow();
+}
+
+function _resetPodcastProgress() {
+  _podcastSeekDragging = false;
+  _podcastServerElapsedBase = 0;
+  _podcastServerElapsedPollTime = 0;
+  _podcastServerDuration = 0;
+  _podcastServerCanSeek = false;
+
+  const row = document.getElementById('radio-bar-progress-row');
+  const seek = document.getElementById('radio-bar-seek');
+  const time = document.getElementById('radio-bar-progress-time');
+  if (row) row.hidden = true;
+  if (seek) {
+    seek.disabled = true;
+    seek.max = '0';
+    seek.value = '0';
+    seek.setAttribute('aria-valuetext', '0:00 of 0:00');
+  }
+  if (time) time.textContent = '0:00 / 0:00';
+}
+
+function _localPodcastSeekInfo(audio) {
+  const duration = audio && Number.isFinite(audio.duration) && audio.duration > 0
+    ? audio.duration
+    : 0;
+  let canSeek = false;
+  const ranges = audio?.seekable;
+  if (duration > 0 && ranges && ranges.length > 0) {
+    const firstStart = ranges.start(0);
+    const lastEnd = ranges.end(ranges.length - 1);
+    canSeek = Number.isFinite(firstStart)
+      && Number.isFinite(lastEnd)
+      && firstStart <= 0.5
+      && lastEnd >= duration - 1;
+  }
+  return { duration, canSeek };
+}
+
+function previewPodcastSeek(value) {
+  const seek = document.getElementById('radio-bar-seek');
+  const target = Number(value);
+  const duration = seek ? Number(seek.max) : 0;
+  if (!seek || seek.disabled || !Number.isFinite(target) || !Number.isFinite(duration)) return;
+  _podcastSeekDragging = true;
+  _updatePodcastProgress(target, duration, true);
+}
+
+async function commitPodcastSeek(value) {
+  const seek = document.getElementById('radio-bar-seek');
+  const target = Number(value);
+  const duration = seek ? Number(seek.max) : 0;
+  if (!seek || !Number.isFinite(target) || !Number.isFinite(duration) || duration <= 0) return;
+
+  const seconds = Math.max(0, Math.min(duration, target));
+  _podcastSeekDragging = false;
+  if (typeof _localMediaType !== 'undefined' && _localMediaType === 'Podcast') {
+    const audio = _getLocalAudio();
+    const seekInfo = _localPodcastSeekInfo(audio);
+    if (!seekInfo.canSeek) return;
+
+    try {
+      audio.currentTime = seconds;
+      _updatePodcastProgress(seconds, seekInfo.duration, true);
+    } catch (error) {
+      console.error('Could not seek local podcast playback', error);
+      if (typeof setStatus === 'function') setStatus('Could not seek this podcast episode.');
+    }
+    return;
+  }
+
+  if (typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer'
+      && _podcastServerCanSeek) {
+    _podcastServerElapsedBase = seconds;
+    _podcastServerElapsedPollTime = performance.now();
+    _updatePodcastProgress(seconds, _podcastServerDuration, true);
+    try {
+      const response = await fetch(
+        '/api/radio/seek?' + new URLSearchParams({ v: String(seconds) }),
+        { method: 'POST' }
+      );
+      if (!response.ok) {
+        console.warn('Server rejected podcast seek', response.status);
+        if (typeof setStatus === 'function') setStatus('Could not seek this podcast episode.');
+      }
+    } catch (error) {
+      console.error('Could not seek server podcast playback', error);
+      if (typeof setStatus === 'function') setStatus('Could not seek this podcast episode.');
+    }
+  }
+}
+
+function _syncPodcastServerProgress(elapsedSeconds, playing, durationSeconds, canSeek) {
   if (typeof _localMediaType === 'undefined' || _localMediaType !== 'PodcastServer') return;
 
   const now = performance.now();
   const rawElapsed = Number.isFinite(elapsedSeconds) ? Math.max(0, elapsedSeconds) : 0;
+  const duration = Number.isFinite(durationSeconds) && durationSeconds > 0
+    ? durationSeconds
+    : 0;
 
   if (rawElapsed > 0 || _podcastServerElapsedPollTime <= 0) {
     _podcastServerElapsedBase = rawElapsed;
     _podcastServerElapsedPollTime = now;
   }
+  _podcastServerDuration = duration;
+  _podcastServerCanSeek = Boolean(canSeek && duration > 0);
 
   const assumeRunning = playing || (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying);
   const elapsed = assumeRunning && _podcastServerElapsedPollTime > 0
     ? _podcastServerElapsedBase + Math.max(0, Math.round((now - _podcastServerElapsedPollTime) / 1000))
     : rawElapsed;
 
-  const techText = document.getElementById('radio-bar-tech-text');
-  if (techText) techText.textContent = elapsed > 0 ? `Podcast • ${fmtSec(elapsed)}` : 'Podcast';
+  _updatePodcastProgress(elapsed, _podcastServerDuration, _podcastServerCanSeek);
 }
 
 // ── Waveform animator ────────────────────────────────────────────────
@@ -199,8 +313,9 @@ function _ensureWaveformAnalyser() {
 function startWaveform() {
   const cv = document.getElementById('radio-waveform');
   if (!cv) return;
-  cv.classList.add('active');
   stopWaveform();
+  if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  cv.classList.add('active');
 
   const analyser = isPlayLocal() ? _ensureWaveformAnalyser() : null;
   const freqData = analyser ? new Uint8Array(analyser.frequencyBinCount) : null;
@@ -256,6 +371,12 @@ function stopWaveform() {
   }
 }
 
+const _radioReducedMotionQuery = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+_radioReducedMotionQuery?.addEventListener('change', (event) => {
+  if (event.matches) stopWaveform();
+  else if (_radioIsPlaying) startWaveform();
+});
+
 // ── Health dot ───────────────────────────────────────────────────────
 function setRadioHealthDot(state) {
   // 'ok'|'warn'|'error'|'off'
@@ -264,14 +385,37 @@ function setRadioHealthDot(state) {
   dot.className = 'radio-health-dot';
   if (state === 'ok') dot.classList.add('ok');
   else if (state === 'error') dot.classList.add('error');
+  const status = state === 'ok'
+    ? 'connected'
+    : state === 'error'
+      ? 'error'
+      : state === 'off'
+        ? 'off'
+        : 'idle or reconnecting';
+  dot.setAttribute('aria-label', `Stream status: ${status}`);
   // 'warn' = default amber; 'off' = hidden via amber (same visual as warn)
 }
 
 async function radioStatusTick() {
   try {
+    const podcastServer = typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer';
     const r = await fetch('/api/radio/playback-status');
     if (!r.ok) {
       setRadioHealthDot('error');
+      const playerType = podcastServer ? 'Podcast' : 'Radio';
+      const reconnectStatus = document.getElementById('radio-bar-reconnect-status');
+      if (reconnectStatus) {
+        reconnectStatus.hidden = false;
+        reconnectStatus.textContent = `${playerType} status unavailable.`;
+      }
+      const playerBar = document.getElementById('radio-player-bar');
+      if (playerBar) playerBar.setAttribute('aria-busy', 'false');
+      if (typeof _syncRadioBarTechRow === 'function') _syncRadioBarTechRow();
+      _announcePlayerStatus(
+        'radio-player-announcement',
+        `${playerType.toLowerCase()}:status-error`,
+        `${playerType} status is unavailable.`
+      );
       return;
     }
     const s = await r.json();
@@ -281,10 +425,12 @@ async function radioStatusTick() {
     const url = s.stationUrl || s.StationUrl || '';
     const songTitle = s.streamTitle || s.StreamTitle || '';
     const elapsed = s.elapsedSeconds || s.ElapsedSeconds || 0;
+    const durationSeconds = Number(s.durationSeconds ?? s.DurationSeconds ?? 0);
+    const canSeek = s.canSeek === true || s.CanSeek === true;
     const err = s.error || s.Error || '';
     if (url) _radioCurrentUrl = url;
 
-    _syncPodcastServerProgress(elapsed, playing);
+    _syncPodcastServerProgress(elapsed, playing, durationSeconds, canSeek);
     if (typeof podcastHandleServerPlaybackStatus === 'function') {
       podcastHandleServerPlaybackStatus(playing, stalled, err);
     }
@@ -298,17 +444,56 @@ async function radioStatusTick() {
 
     // Health dot — in local mode, server reports not-playing so drive from local flag
     const effectivePlaying = isPlayLocal() ? _radioIsPlaying : playing;
+    if (podcastServer) {
+      const playerBar = document.getElementById('radio-player-bar');
+      if (playerBar) playerBar.setAttribute('aria-busy', String(Boolean(stalled)));
+      const btn = document.getElementById('radio-btn-play');
+      if (btn) {
+        const action = effectivePlaying ? 'Pause' : 'Play';
+        btn.innerHTML = effectivePlaying ? '\u23F8 Pause' : '\u25B6 Play';
+        btn.setAttribute('aria-label', `${action} podcast playback`);
+        btn.setAttribute('aria-pressed', String(Boolean(effectivePlaying)));
+        btn.title = `${action} podcast playback`;
+      }
+      const reconnectStatus = document.getElementById('radio-bar-reconnect-status');
+      if (reconnectStatus) {
+        reconnectStatus.hidden = !stalled;
+        reconnectStatus.textContent = stalled ? 'Reconnecting…' : '';
+      }
+      if (stalled) {
+        _announcePlayerStatus(
+          'radio-player-announcement',
+          'podcast:loading',
+          'Podcast stream is reconnecting.'
+        );
+      } else if (!err || effectivePlaying) {
+        const playbackState = effectivePlaying ? 'playing' : 'stopped';
+        _announcePlayerStatus(
+          'radio-player-announcement',
+          `podcast:${playbackState}`,
+          `Podcast playback ${playbackState}.`
+        );
+      }
+      if (typeof _syncRadioBarTechRow === 'function') _syncRadioBarTechRow();
+    }
     if (!effectivePlaying && err) {
       setRadioHealthDot('error');
+      _announcePlayerStatus(
+        'radio-player-announcement',
+        `${podcastServer ? 'podcast' : 'radio'}:error`,
+        ''
+      );
       // Show themed popup with the server-reported error reason
       const stationLabel = name ? `"${name}"` : 'Station';
-      showPlaybackErrorPopup('Radio', `${stationLabel} stopped playing.\n\n${err}`);
+      showPlaybackErrorPopup(podcastServer ? 'Podcast' : 'Radio', `${stationLabel} stopped playing.\n\n${err}`);
     } else if (stalled && !isPlayLocal()) {
       setRadioHealthDot('warn');
     } else if (effectivePlaying) {
       setRadioHealthDot('ok');
       // Playback is healthy — allow the error popup to reappear if a new error occurs
-      if (typeof clearPlaybackErrorDedup === 'function') clearPlaybackErrorDedup('Radio');
+      if (typeof clearPlaybackErrorDedup === 'function') {
+        clearPlaybackErrorDedup(podcastServer ? 'Podcast' : 'Radio');
+      }
     } else {
       setRadioHealthDot('warn');
     }
@@ -317,6 +502,12 @@ async function radioStatusTick() {
     if (!isPlayLocal()) {
       const qBadge = document.getElementById('radio-bar-quality-badge');
       if (qBadge) {
+        const quality = qBadge.textContent.trim();
+        const qualityLabel = quality ? `Stream quality ${quality}` : 'Stream quality';
+        qBadge.setAttribute(
+          'aria-label',
+          stalled ? `${qualityLabel}; reconnecting` : qualityLabel
+        );
         if (stalled) {
           qBadge.dataset.stalled = '1';
           qBadge.title = 'Stream stalled — reconnecting…';
@@ -327,34 +518,36 @@ async function radioStatusTick() {
           qBadge.classList.remove('stalled');
         }
       }
+      const reconnectStatus = document.getElementById('radio-bar-reconnect-status');
+      if (reconnectStatus) {
+        if (stalled) {
+          if (reconnectStatus.hidden || reconnectStatus.textContent !== 'Reconnecting…') {
+            reconnectStatus.hidden = false;
+            reconnectStatus.textContent = 'Reconnecting…';
+          }
+        } else if (!reconnectStatus.hidden) {
+          reconnectStatus.hidden = true;
+          reconnectStatus.textContent = '';
+        }
+      }
+      if (typeof _syncRadioBarTechRow === 'function') _syncRadioBarTechRow();
     }
 
     // Sync podcast-server local bar volume/boost from server state.
     if (!isPlayLocal() && typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer') {
       const vol = Math.max(0, Math.min(1, s.volume ?? s.Volume ?? 0.8));
-      const boost = Math.max(0, s.boost ?? s.Boost ?? 1.0);
-      const combined = boost > 1.0 ? Math.min(1.3, 1.0 + (boost - 1) * (0.3 / 2)) : Math.min(1.0, vol);
-      const slider = document.getElementById('radio-bar-combined');
-      _updateLocalCombinedSliderVisual(combined);
-
-      if (slider && Math.abs((parseFloat(slider.value) || 0) - combined) > 0.015) {
-        slider.value = combined;
-      }
-
-      _setLocalCombinedSliderLabel(combined, boost);
+      const boost = Math.max(1, Math.min(3, s.boost ?? s.Boost ?? 1.0));
+      if (typeof syncRadioAudioControls === 'function') syncRadioAudioControls(vol, boost);
     }
 
-    // Song title marquee (server mode only — local streams rarely carry ICY metadata via proxy)
+    // Stream title (server mode only — local streams rarely carry ICY metadata via proxy)
     const songEl = document.getElementById('radio-bar-song');
     const songTextEl = document.getElementById('radio-bar-song-text');
     if (songEl && songTextEl) {
       if (songTitle && playing) {
         songTextEl.textContent = songTitle;
+        songTextEl.title = songTitle;
         songEl.style.display = '';
-        // Restart animation so new title is visible from the start
-        songTextEl.style.animation = 'none';
-        void songTextEl.offsetWidth; // reflow
-        songTextEl.style.animation = '';
         _pushTitleHistory(name, songTitle);
       } else if (!isPlayLocal()) {
         songEl.style.display = 'none';
@@ -399,26 +592,20 @@ async function radioStatusTick() {
         );
         if (match) _radioCurrentStation = match;
       }
-      updateRadioBar(name, _radioCurrentCountry, _radioCurrentTag, playing, _radioCurrentStation);
+      updateRadioBar(
+        name,
+        _radioCurrentCountry,
+        _radioCurrentTag,
+        playing,
+        _radioCurrentStation,
+        { isStalled: stalled, hasError: Boolean(err && !effectivePlaying) }
+      );
     }
     // Sync combined volume/boost slider from server state
     if (!isPlayLocal() && !(typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer')) {
       const vol   = s.volume ?? s.Volume ?? 0.8;
       const boost = s.boost  ?? s.Boost  ?? 1.0;
-      // Map back to combined slider position (0–1.0 = volume, 1.0–1.3 = boost zone)
-      const combined = boost > 1.0 ? Math.min(1.3, 1.0 + (boost - 1) * (0.3 / 2)) : Math.min(1.0, vol);
-      const cSlider = document.getElementById('radio-bar-combined');
-      const cLabel  = document.getElementById('radio-combined-label');
-      if (typeof updateRadioCombinedSliderVisual === 'function') updateRadioCombinedSliderVisual(combined);
-      if (cSlider && Math.abs(parseFloat(cSlider.value) - combined) > 0.015) {
-        cSlider.value = combined;
-        if (combined > 1.0) {
-          const db = Math.round(20 * Math.log10(boost));
-          if (cLabel) cLabel.textContent = '100% +' + db + 'dB';
-        } else {
-          if (cLabel) cLabel.textContent = Math.round(combined * 100) + '%';
-        }
-      }
+      if (typeof syncRadioAudioControls === 'function') syncRadioAudioControls(vol, boost);
     }
 
     // Sync EQ and reverb selectors from server state without resetting user selection
@@ -464,6 +651,31 @@ function _fmtTime(s) {
     sec = Math.floor(s % 60);
   return m + ':' + (sec < 10 ? '0' : '') + sec;
 }
+function _setLocalAudioBusy(isBusy, refreshPlayerState = true) {
+  const mediaType = typeof _localMediaType !== 'undefined' ? _localMediaType : '';
+  const isMusic = mediaType === 'Music';
+  const isRadioPlayer = mediaType === 'Radio' || mediaType === 'Podcast';
+  if (!isMusic && !isRadioPlayer) return;
+
+  const label = mediaType === 'Podcast' ? 'Podcast' : isMusic ? 'Music' : 'Radio';
+  const barId = isMusic ? 'music-player-bar' : 'radio-player-bar';
+  const statusId = isMusic ? 'music-player-announcement' : 'radio-player-announcement';
+  const bar = document.getElementById(barId);
+  if (bar) bar.setAttribute('aria-busy', String(isBusy));
+  const visibleStatus = document.getElementById(
+    isMusic ? 'music-bar-state-status' : 'radio-bar-reconnect-status'
+  );
+  if (visibleStatus) {
+    visibleStatus.hidden = !isBusy;
+    visibleStatus.textContent = isBusy ? 'Buffering…' : '';
+  }
+  if (isRadioPlayer && typeof _syncRadioBarTechRow === 'function') _syncRadioBarTechRow();
+  if (isBusy) {
+    _announcePlayerStatus(statusId, `${mediaType.toLowerCase()}:loading`, `${label} playback is buffering.`);
+  } else if (refreshPlayerState) {
+    _localAudioUpdate();
+  }
+}
 function _getLocalAudio() {
   if (!_localAudio) {
     _localAudio = document.getElementById('local-audio');
@@ -478,8 +690,9 @@ function _getLocalAudio() {
         let acState = 'n/a';
         try { const AC = window.AudioContext || window.webkitAudioContext; if (AC) { const ctx = new AC(); acState = ctx.state; ctx.close(); } } catch (e) { acState = 'err'; }
         fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=playing vol=${vol} muted=${muted} readyState=${rs} networkState=${ns} acState=${acState} currentTime=${_localAudio.currentTime.toFixed(2)}` }).catch(()=>{});
+        _setLocalAudioBusy(false, false);
       });
-      _localAudio.addEventListener('pause',   () => { fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=pause src=${_localAudio.src}` }).catch(()=>{}); _localAudioUpdate(); });
+      _localAudio.addEventListener('pause',   () => { fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=pause src=${_localAudio.src}` }).catch(()=>{}); _setLocalAudioBusy(false); });
       _localAudio.addEventListener('ended',   () => {
         fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=ended` }).catch(()=>{});
         // Auto-advance to the next music track when playing locally; otherwise just stop.
@@ -494,9 +707,22 @@ function _getLocalAudio() {
           localStop();
         }
       });
-      _localAudio.addEventListener('stalled', () => { fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=stalled` }).catch(()=>{}); });
-      _localAudio.addEventListener('waiting', () => { fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=waiting` }).catch(()=>{}); });
-      _localAudio.addEventListener('canplay', () => { fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=canplay` }).catch(()=>{}); });
+      _localAudio.addEventListener('stalled', () => {
+        fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=stalled` }).catch(()=>{});
+        _setLocalAudioBusy(true);
+      });
+      _localAudio.addEventListener('waiting', () => {
+        fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=waiting` }).catch(()=>{});
+        _setLocalAudioBusy(true);
+      });
+      _localAudio.addEventListener('canplay', () => {
+        fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=canplay` }).catch(()=>{});
+        _setLocalAudioBusy(false, false);
+        _localTimeUpdate();
+      });
+      _localAudio.addEventListener('durationchange', _localTimeUpdate);
+      _localAudio.addEventListener('progress', _localTimeUpdate);
+      _localAudio.addEventListener('seeked', _localTimeUpdate);
       _localAudio.addEventListener('emptied', () => { fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=emptied — src was cleared` }).catch(()=>{}); });
       // Log the first timeupdate where currentTime advances — proves data is actually decoded and rendered
       let _timeupdateLogged = false;
@@ -511,11 +737,24 @@ function _getLocalAudio() {
       _localAudio.addEventListener('error', () => {
         // Ignore the benign empty-src error fired when localStop() sets a.src = ''
         if (!_localAudio.src || _localAudio.src === window.location.href) return;
+        _setLocalAudioBusy(false);
         const errCode = _localAudio.error ? _localAudio.error.code : '?';
         const errMsg = _localAudio.error ? _localAudio.error.message : 'unknown';
         const detail = `Media error ${errCode}: ${errMsg}`;
         fetch('/api/log', { method: 'POST', body: `Local audio error — ${_localMediaType}: ${detail} (src: ${_localAudio.src || 'none'})` }).catch(() => {});
-        const nmEl = document.getElementById('radio-bar-title') || document.getElementById('music-bar-title');
+        const isMusic = _localMediaType === 'Music';
+        const isRadioPlayer = _localMediaType === 'Radio' || _localMediaType === 'Podcast';
+        if ((isMusic || isRadioPlayer) && typeof _announcePlayerStatus === 'function') {
+          const type = isMusic ? 'Music' : _localMediaType;
+          _announcePlayerStatus(
+            isMusic ? 'music-player-announcement' : 'radio-player-announcement',
+            `${type.toLowerCase()}:error`,
+            ''
+          );
+        }
+        const nmEl = isMusic
+          ? document.getElementById('music-bar-title')
+          : document.getElementById('radio-bar-title');
         const nm = nmEl ? nmEl.textContent : '';
         if (typeof showPlaybackErrorPopup === 'function') {
           const label = nm ? `"${nm}"` : 'Stream';
@@ -529,14 +768,44 @@ function _getLocalAudio() {
 function _localAudioUpdate() {
   const a = _getLocalAudio();
   if (!a) return;
+  const hasSource = Boolean(a.currentSrc || (a.src && a.src !== window.location.href));
+  const playing = !a.paused && !a.ended;
   const rBtn = document.getElementById('radio-btn-play');
   if (rBtn && (typeof _localMediaType !== 'undefined' && (_localMediaType === 'Radio' || _localMediaType === 'Podcast'))) {
     rBtn.innerHTML = a.paused ? '&#9654; Play' : '&#9646;&#9646; Pause';
+    rBtn.setAttribute('aria-label', `${a.paused ? 'Play' : 'Pause'} ${_localMediaType === 'Podcast' ? 'podcast' : 'radio'} playback`);
+    rBtn.setAttribute('aria-pressed', String(playing));
   }
   // Mirror into music bar when in local music mode
   if (typeof _localMediaType !== 'undefined' && _localMediaType === 'Music') {
     const mBtn = document.getElementById('music-btn-play');
-    if (mBtn) mBtn.innerHTML = a.paused ? '&#9654; Play' : '&#9646;&#9646; Pause';
+    if (mBtn) {
+      mBtn.innerHTML = a.paused ? '&#9654; Play' : '&#9646;&#9646; Pause';
+      mBtn.setAttribute('aria-label', `${a.paused ? 'Play' : 'Pause'} music`);
+      mBtn.setAttribute('aria-pressed', String(playing));
+    }
+  }
+  if (hasSource) {
+    const mediaType = typeof _localMediaType !== 'undefined' ? _localMediaType : '';
+    const isMusic = mediaType === 'Music';
+    const isRadioPlayer = mediaType === 'Radio' || mediaType === 'Podcast';
+    if (isMusic || isRadioPlayer) {
+      const label = mediaType === 'Podcast' ? 'Podcast' : isMusic ? 'Music' : 'Radio';
+      const statusId = isMusic ? 'music-player-announcement' : 'radio-player-announcement';
+      const state = a.ended ? 'stopped' : a.paused ? 'paused' : 'playing';
+      if (isMusic) {
+        const playerStatus = document.getElementById('music-bar-state-status');
+        if (playerStatus) {
+          playerStatus.textContent = state === 'stopped' ? 'Stopped' : state === 'paused' ? 'Paused' : 'Playing';
+          playerStatus.hidden = false;
+        }
+      }
+      _announcePlayerStatus(
+        statusId,
+        `${mediaType.toLowerCase()}:${state}`,
+        `${label} playback ${state}.`
+      );
+    }
   }
   if (typeof _syncPodcastPlaybackControls === 'function') _syncPodcastPlaybackControls();
 }
@@ -553,16 +822,38 @@ function _localTimeUpdate() {
     seek.value = a.currentTime || 0;
   }
   if (lbl) lbl.textContent = _fmtTime(a.currentTime) + ' / ' + _fmtTime(dur);
+  if (typeof _localMediaType !== 'undefined' && _localMediaType === 'Podcast') {
+    const seekInfo = _localPodcastSeekInfo(a);
+    _updatePodcastProgress(a.currentTime, seekInfo.duration, seekInfo.canSeek);
+  } else if (typeof _localMediaType !== 'undefined' && _localMediaType === 'Radio') {
+    const elapsed = document.getElementById('radio-bar-elapsed');
+    if (elapsed && !a.paused && Number.isFinite(a.currentTime)) {
+      elapsed.textContent = fmtSec(a.currentTime);
+      elapsed.style.display = '';
+      if (typeof _syncRadioBarTechRow === 'function') _syncRadioBarTechRow();
+    }
+  }
   // Mirror into music bar when in local music mode
   if (typeof _localMediaType !== 'undefined' && _localMediaType === 'Music') {
     const mSeek = document.getElementById('music-seek');
-    if (mSeek && typeof _musicSeekDragging !== 'undefined' && !_musicSeekDragging) {
+    const musicProgressRow = document.getElementById('music-progress-row');
+    const musicPosition = Number.isFinite(a.currentTime) ? Math.max(0, a.currentTime) : 0;
+    if (musicProgressRow) musicProgressRow.style.display = dur > 0 ? 'grid' : 'none';
+    if (mSeek) {
+      mSeek.disabled = dur <= 0;
       if (dur > 0) mSeek.max = dur;
-      mSeek.value = a.currentTime || 0;
+      else mSeek.max = 0;
+    }
+    if (mSeek && typeof _musicSeekDragging !== 'undefined' && !_musicSeekDragging) {
+      mSeek.value = dur > 0 ? Math.min(musicPosition, dur) : 0;
       if (typeof _updateMusicSeekFill !== 'undefined') _updateMusicSeekFill();
     }
     const mLbl = document.getElementById('music-time-label');
-    if (mLbl) mLbl.textContent = _fmtTime(a.currentTime) + ' / ' + _fmtTime(dur);
+    if (mLbl) {
+      mLbl.textContent = dur > 0
+        ? _fmtTime(Math.min(musicPosition, dur)) + ' / ' + _fmtTime(dur)
+        : '';
+    }
   }
 }
 function localSeekDrag() {
@@ -612,20 +903,5 @@ async function localSeekCommit() {
   if (a && seek) a.currentTime = parseFloat(seek.value) || 0;
 }
 function localVolume(v) {
-  const combined = Math.min(1.3, Math.max(0, parseFloat(v) || 0));
-  const vol = combined <= 1.0 ? combined : 1.0;
-  const boost = combined > 1.0 ? 1 + (combined - 1) * (2 / 0.3) : 1.0;
-
-  _updateLocalCombinedSliderVisual(combined);
-  _setLocalCombinedSliderLabel(combined, boost);
-
-  if (typeof _localMediaType !== 'undefined' && _localMediaType === 'PodcastServer') {
-    _debouncedPodcastServerVolumeApi(vol.toFixed(3));
-    _debouncedPodcastServerBoostApi(boost.toFixed(3));
-  } else {
-    const a = _getLocalAudio();
-    if (a) a.volume = vol;
-    const gainNode = typeof _ensureLocalBoostGraph === 'function' ? _ensureLocalBoostGraph() : null;
-    if (gainNode) gainNode.gain.value = Math.max(0, boost);
-  }
+  if (typeof radioVolume === 'function') radioVolume(v);
 }

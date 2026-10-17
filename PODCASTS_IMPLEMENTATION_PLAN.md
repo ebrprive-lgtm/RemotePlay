@@ -16,6 +16,12 @@ Checkboxes in **Current baseline** are verified as already implemented.
 Unchecked items in **Remaining implementation** are follow-up work and should
 be checked off only after their acceptance criteria pass.
 
+**Status:** Phases 1–6 are implemented and their documented checks are
+complete. Phase 6 adds first-card and directory-completion timing in the
+browser, plus server cache and source-fetch timing diagnostics. The original
+baseline is qualitative; collect live catalog timings from a deployed instance
+for a numeric production comparison.
+
 ## Current baseline
 
 - [x] Podcasts opens with discovery content (including topic/country
@@ -360,6 +366,123 @@ the episodes already loaded, even when the feed has another page.
 - `git diff --check` passed. The temporary browser mock server was removed;
   no JavaScript test dependency or permanent test harness was added.
 
+### Phase 6 — Show the initial podcast directory promptly
+
+**Why:** The Podcasts entry view currently waits for the country list before
+starting the default directory request. On a cold server process, the default
+all-country request can then build a 200-show pool by fetching ten country
+charts sequentially. The browser receives no shows until that work completes;
+it then loads four topic sections one after another. The screenshot's
+`0 topic sections, 0 shows · Loading more…` state is the result: topic chips
+are visible, but there are no recommendation cards or skeletons.
+
+**Verified baseline (2026-10-17)**
+
+- [x] `podcastsInit()` starts `_loadPodcastDirectory()` only after
+  `_loadPodcastCountries()` settles, although the default all-country
+  directory does not depend on the country selector.
+- [x] `_loadPodcastDirectory()` requests 40 shows for the first section,
+  displays at most 12, then awaits four quick-topic searches sequentially.
+  The first cards are rendered only after the default search returns.
+- [x] The default search path uses `_podcastSearchCache` and
+  `_podcastTopPoolCache`, both process-memory caches with a one-day TTL. A
+  process restart loses both; a top-pool cache miss fetches the ten configured
+  country charts sequentially before merging the balanced pool.
+- [x] When every top-chart source fails, `FetchTopPodcastsAsync()` returns an
+  empty list and the current fallback path can cache that empty pool and
+  response for a day. A transient upstream outage can therefore extend the
+  empty-list experience beyond the original request.
+- [x] While the first response is pending, the directory renderer exposes a
+  zero-result count and text-only loading message instead of retaining prior
+  results or showing card-shaped placeholders.
+
+**Primary files:** [WebAssets/app-podcasts.js](./WebAssets/app-podcasts.js),
+[Services/Web/WebServer.Handlers.Podcasts.cs](./Services/Web/WebServer.Handlers.Podcasts.cs),
+[RemotePlay.Tests/WebAssetRegressionTests.cs](./RemotePlay.Tests/WebAssetRegressionTests.cs),
+and [RemotePlay.Tests/WebServerApiTests.cs](./RemotePlay.Tests/WebServerApiTests.cs).
+
+- [x] Instrument cold-process, warm-process, and browser re-entry time from
+  `podcastsInit()` to the first card and to directory completion. Browser logs
+  record first-card and completion timings; server logs record top-pool cache
+  hits/misses, per-country source timings, and refresh duration. The delayed
+  browser simulation verifies the snapshot and first-page paths while requests
+  are pending. The baseline above is qualitative rather than a saved numeric
+  benchmark; actual Apple-catalog timings remain available from these probes.
+- [x] Start the default all-country directory request immediately and load
+  country options concurrently. Restore any route or saved country filter
+  before issuing a country-specific search; changing the selector must still
+  issue the correctly filtered request.
+- [x] Keep existing directory cards visible while refreshing. On a browser
+  re-entry, render a small, versioned last-successful first-page snapshot
+  synchronously before awaiting network work; bound the snapshot to the first
+  page and public show metadata only. If no snapshot exists, render
+  card-shaped skeletons immediately, retain the topic chips, expose an
+  accessible busy state, and do not present a misleading zero-results count.
+- [x] Revalidate cached results in the background, update the visible list
+  when fresh results arrive, and retain the last successful list if refresh
+  fails. Show a quiet stale/refreshing state and an actionable retry instead
+  of clearing the directory.
+- [x] Persist the server's last-known-good global top pool in a bounded,
+  versioned cache under the existing application-data location so a server
+  restart does not force the ten-country cold fetch before serving the first
+  page. Load it at startup; write replacements atomically; keep stale data
+  available during a refresh; and use a single-flight refresh to avoid
+  duplicate source sweeps.
+- [x] Do not promote an empty or failed refresh to a fresh one-day cache entry.
+  Preserve a non-empty last-known-good pool on total failure, and define how
+  partial source failures affect freshness without discarding usable shows.
+- [x] Render the first recommendation section as soon as it is available;
+  move secondary topic sections out of the first-paint critical path and load
+  them after the initial cards are visible (or as they approach the viewport).
+  Keep the existing sequential upstream request/rate-limit policy rather than
+  parallelizing all country or topic searches as a latency shortcut.
+- [x] Reduce the first API page from 40 to the 12 cards
+  actually shown without changing pagination, result ordering, or
+  `hasMore`/`total` semantics.
+
+**Acceptance checks**
+
+- [x] With a saved browser snapshot, recommendation cards are visible within
+  250 ms of entering Podcasts, before the country or recommendation requests
+  finish; freshness is indicated without hiding the cards.
+- [x] With no browser snapshot, skeleton cards appear in the first rendered
+  frame, and the UI never shows `0 topic sections, 0 shows` as if loading were
+  a completed empty result.
+- [x] With a warm or persisted server cache, the first page is served without
+  waiting for external catalog calls. After a process restart, a valid
+  last-known-good cache remains available while it refreshes.
+- [x] With delayed country, default-search, and topic responses, country
+  loading does not block the default request; first cards render before topic
+  enrichment completes; stale results survive refresh failure; retry and
+  request-cancellation behavior remain correct.
+- [x] A process-memory cold-start test confirms a persisted last-known-good
+  pool is served immediately while the full balanced pool refreshes in the
+  background. A true first run with no snapshot shows skeletons until initial
+  data arrives; source calls remain sequential.
+- [x] Empty/all-failed upstream results are not cached as successful fresh
+  data. Partial results remain usable and do not erase a better last-known-good
+  pool.
+- [x] Existing topic/country filters, favorites, direct routes, stable
+  multi-country ordering, deduplication, and podcast playback/queue behavior
+  remain unchanged.
+- [x] Run focused podcast API and web-asset tests, delayed-response browser
+  checks, JavaScript syntax checks, and `git diff --check`. Cold/warm and
+  persisted-cache paths are covered by deterministic tests; browser/server
+  timing probes are available for live comparison against the qualitative
+  baseline recorded above.
+
+**Phase 6 verification**
+
+- Podcast-focused tests:
+  `dotnet test .\RemotePlay.Tests\RemotePlay.Tests.csproj --filter "FullyQualifiedName~Podcast" --no-build --no-restore`
+  — 85 passed, 0 failed.
+- `deno check --no-config WebAssets\app-podcasts.js` passed.
+- The temporary delayed-response Deno browser simulation passed checks for
+  parallel country/default requests, immediate skeleton/snapshot rendering,
+  first-page-before-topic enrichment, sequential topic loading, bounded
+  snapshots, and immediate re-entry. The temporary harness was removed.
+- `git diff --check` passed.
+
 ## Dependencies and delivery order
 
 1. Phase 1's injectable test boundary is the foundation for deterministic
@@ -371,6 +494,8 @@ the episodes already loaded, even when the feed has another page.
    queue semantics while adding cancellation and page continuation.
 5. Complete Phase 5 after all implementation phases; compare full-suite
    results against the baseline recorded above.
+6. Phase 6 builds on Phase 3's balanced global ordering and cache; keep source
+   calls sequential while making a last-known-good page available immediately.
 
 ## Risks and constraints
 
@@ -383,6 +508,13 @@ the episodes already loaded, even when the feed has another page.
   than the current early-return path. Bound the source/sample budget, preserve
   the existing throttle and daily cache, and verify the added cold-cache
   latency.
+- A persisted or browser-stored snapshot can become stale or malformed. Keep
+  the cache bounded and versioned, sanitize data through existing render
+  helpers, display its age, and never overwrite a usable snapshot with an
+  empty/error response.
+- A cold first-ever run has no last-known-good data to show. Provide an honest
+  immediate skeleton and render the first usable results progressively; do
+  not label a single-country interim result as the balanced global directory.
 - Playback paging must remain independent from browse state. Do not remove or
   replace the underlying queue behavior while updating its visible controls.
 - The existing rate-limit API test failure is documented above; distinguish

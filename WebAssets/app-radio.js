@@ -1063,7 +1063,8 @@ async function radioStop(options = {}) {
     _radioCurrentCountry,
     _radioCurrentTag,
     false,
-    _radioCurrentStation
+    _radioCurrentStation,
+    stoppingPodcast ? { mode: 'podcast' } : {}
   );
 }
 
@@ -1098,13 +1099,17 @@ const _debouncedRadioVolumeApi = debounce((v) => fetch('/api/radio/volume?v=' + 
 const _debouncedRadioBoostApi  = debounce((v) => fetch('/api/radio/boost?v='  + v, { method: 'POST' }), 150);
 
 function radioVolume(v) {
-  const vol = parseFloat(v);
-  if (isNaN(vol)) return;
+  const parsed = parseFloat(v);
+  if (!Number.isFinite(parsed)) return;
+  const vol = Math.min(1, Math.max(0, parsed));
+  const slider = document.getElementById('radio-bar-volume');
+  if (slider) slider.value = String(vol);
+  updateRadioVolumeSliderVisual(vol);
   const lbl = document.getElementById('radio-volume-label');
   if (lbl) lbl.textContent = Math.round(vol * 100) + '%';
   if (isPlayLocal()) {
     const a = typeof _getLocalAudio !== 'undefined' ? _getLocalAudio() : null;
-    if (a) a.volume = Math.min(1, Math.max(0, vol));
+    if (a) a.volume = vol;
     return;
   }
   _debouncedRadioVolumeApi(vol.toFixed(3));
@@ -1117,49 +1122,49 @@ function radioVolumeReset() {
   }
 }
 
-function updateRadioCombinedSliderVisual(value) {
-  const val = parseFloat(value);
-  if (isNaN(val)) return;
-  const slider = document.getElementById('radio-bar-combined');
+function updateRadioVolumeSliderVisual(value) {
+  const parsed = parseFloat(value);
+  if (!Number.isFinite(parsed)) return;
+  const slider = document.getElementById('radio-bar-volume');
   if (!slider) return;
-  const totalRange = 1.3;
-  const fillPct = (Math.max(0, Math.min(totalRange, val)) / totalRange * 100).toFixed(2) + '%';
-  if (val <= 1.0) {
-    slider.classList.remove('slider-boosting');
-    slider.style.setProperty('--cvs-vol', fillPct);
-    slider.style.setProperty('--cvs-boost', fillPct);
-    slider.style.setProperty('--cvs-thumb', 'var(--player-accent,#e94560)');
-  } else {
-    slider.classList.add('slider-boosting');
-    slider.style.setProperty('--cvs-vol', '76.92%');
-    slider.style.setProperty('--cvs-boost', fillPct);
-    slider.style.setProperty('--cvs-thumb', '#f97316');
+  const vol = Math.min(1, Math.max(0, parsed));
+  const fillPct = (vol * 100).toFixed(2) + '%';
+  slider.classList.remove('slider-boosting');
+  slider.style.setProperty('--cvs-vol', fillPct);
+  slider.style.setProperty('--cvs-boost', fillPct);
+  slider.style.setProperty('--cvs-thumb', 'var(--player-accent,#e94560)');
+  slider.setAttribute('aria-valuetext', Math.round(vol * 100) + '%');
+}
+
+function syncRadioAudioControls(volume, boost) {
+  const vol = Math.min(1, Math.max(0, Number(volume) || 0));
+  const gain = Math.min(3, Math.max(1, Number(boost) || 1));
+  const volumeSlider = document.getElementById('radio-bar-volume');
+  const boostSlider = document.getElementById('radio-bar-boost');
+
+  if (volumeSlider) {
+    if (!volumeSlider.matches(':active')) volumeSlider.value = String(vol);
+    updateRadioVolumeSliderVisual(vol);
+  }
+  if (boostSlider) {
+    if (!boostSlider.matches(':active')) boostSlider.value = String(gain);
+    const db = Math.round(20 * Math.log10(gain) * 10) / 10;
+    boostSlider.setAttribute('aria-valuetext', `${gain.toFixed(2)}× gain, ${db > 0 ? '+' : ''}${db} dB`);
+  }
+
+  const volumeLabel = document.getElementById('radio-volume-label');
+  if (volumeLabel) volumeLabel.textContent = Math.round(vol * 100) + '%';
+  const boostLabel = document.getElementById('radio-boost-label');
+  if (boostLabel) {
+    const db = 20 * Math.log10(gain);
+    const roundedDb = Math.round(db * 10) / 10;
+    boostLabel.textContent = roundedDb > 0 ? `+${roundedDb} dB` : '0 dB';
   }
 }
 
-// Combined volume/boost slider (0–1.0 = volume, 1.0–1.3 = boost zone)
-function radioCombinedSlider(v) {
-  const val = parseFloat(v);
-  if (isNaN(val)) return;
-  const lbl    = document.getElementById('radio-combined-label');
-  updateRadioCombinedSliderVisual(val);
-  if (val <= 1.0) {
-    // Volume zone
-    if (lbl) lbl.textContent = Math.round(val * 100) + '%';
-    radioVolume(val);
-    radioBoost(1.0);
-  } else {
-    // Boost zone: map 1.0–1.3 → gain 1–3
-    const gain = 1 + (val - 1) * (2 / 0.3);
-    const db = Math.round(20 * Math.log10(gain));
-    if (lbl) lbl.textContent = '100% +' + db + 'dB';
-    radioVolume(1.0);
-    radioBoost(gain);
-  }
-}
-function radioCombinedReset() {
-  const slider = document.getElementById('radio-bar-combined');
-  if (slider) { slider.value = 0.8; radioCombinedSlider(0.8); }
+function radioResetAudioDefaults() {
+  radioVolume(0.8);
+  radioBoost(1);
 }
 
 // Persistent Web Audio graph for local boost: AudioContext → MediaElementSourceNode → GainNode → destination
@@ -1197,17 +1202,19 @@ function _ensureLocalBoostGraph() {
 }
 
 function radioBoost(v) {
-  const boost = parseFloat(v);
-  if (isNaN(boost)) return;
+  const parsed = parseFloat(v);
+  if (!Number.isFinite(parsed)) return;
+  const boost = Math.min(3, Math.max(1, parsed));
+  const db = Math.round(20 * Math.log10(boost) * 10) / 10;
+  const slider = document.getElementById('radio-bar-boost');
+  if (slider) slider.value = String(boost);
+  if (slider) slider.setAttribute('aria-valuetext', `${boost.toFixed(2)}× gain, ${db > 0 ? '+' : ''}${db} dB`);
   const lbl = document.getElementById('radio-boost-label');
-  if (lbl) {
-    const db = boost > 0 ? Math.round(20 * Math.log10(boost)) : -Infinity;
-    lbl.textContent = isFinite(db) ? (db >= 0 ? '+' : '') + db + ' dB' : '—';
-  }
+  if (lbl) lbl.textContent = `${db > 0 ? '+' : ''}${db} dB`;
   if (isPlayLocal()) {
     // In local mode, drive the Web Audio GainNode so we can boost above 1.0
     const gainNode = _ensureLocalBoostGraph();
-    if (gainNode) gainNode.gain.value = Math.max(0, boost);
+    if (gainNode) gainNode.gain.value = boost;
     return;
   }
   _debouncedRadioBoostApi(boost.toFixed(3));
@@ -1246,26 +1253,143 @@ function _radioUpdateBarFavBtn() {
   btn.setAttribute('aria-pressed', String(isFav));
 }
 
-function updateRadioBar(title, country, tag, playing, station) {
+let _radioBarArtworkRequestId = 0;
+
+function _setRadioBarArtwork(artworkUrl, mediaMode) {
+  const wrap = document.getElementById('radio-bar-art-wrap');
+  const image = document.getElementById('radio-bar-art');
+  const placeholder = document.getElementById('radio-bar-art-placeholder');
+  if (!wrap || !image || !placeholder) return;
+
+  const source = typeof artworkUrl === 'string' ? artworkUrl.trim() : '';
+  const currentSource = image.dataset.artworkUrl || '';
+  const showPlaceholder = () => {
+    image.style.display = 'none';
+    placeholder.style.display = 'flex';
+    wrap.dataset.artworkState = 'placeholder';
+  };
+
+  placeholder.textContent = mediaMode === 'podcast' ? '\uD83C\uDF99\uFE0F' : '\uD83D\uDCF6';
+  image.classList.toggle('radio-bar-art-podcast', mediaMode === 'podcast');
+  wrap.style.display = 'flex';
+
+  if (source === currentSource) {
+    if (!source || image.complete) {
+      if (source && image.naturalWidth > 0) {
+        image.style.display = 'block';
+        placeholder.style.display = 'none';
+        wrap.dataset.artworkState = 'loaded';
+      } else {
+        showPlaceholder();
+      }
+    }
+    return;
+  }
+
+  const requestId = ++_radioBarArtworkRequestId;
+  image.dataset.artworkUrl = source;
+  image.dataset.artworkRequestId = String(requestId);
+  image.style.display = 'none';
+  placeholder.style.display = 'flex';
+  wrap.dataset.artworkState = source ? 'loading' : 'placeholder';
+  image.onload = () => {
+    if (image.dataset.artworkRequestId !== String(requestId)) return;
+    if (image.naturalWidth > 0) {
+      image.style.display = 'block';
+      placeholder.style.display = 'none';
+      wrap.dataset.artworkState = 'loaded';
+    } else {
+      showPlaceholder();
+    }
+  };
+  image.onerror = () => {
+    if (image.dataset.artworkRequestId !== String(requestId)) return;
+    showPlaceholder();
+  };
+
+  if (source) image.src = source;
+  else image.removeAttribute('src');
+}
+
+function _syncRadioBarTechRow() {
+  const row = document.getElementById('radio-bar-tech');
+  const badge = document.getElementById('radio-bar-quality-badge');
+  const techText = document.getElementById('radio-bar-tech-text');
+  const elapsed = document.getElementById('radio-bar-elapsed');
+  const live = document.getElementById('radio-bar-live');
+  const reconnectStatus = document.getElementById('radio-bar-reconnect-status');
+  if (!row) return;
+
+  const hasBadge = badge
+    && getComputedStyle(badge).display !== 'none'
+    && badge.textContent.trim();
+  const hasTechText = techText && techText.textContent.trim();
+  const hasElapsed = elapsed
+    && getComputedStyle(elapsed).display !== 'none'
+    && elapsed.textContent.trim();
+  const hasLive = live && !live.hidden && live.textContent.trim();
+  const isReconnecting = reconnectStatus && !reconnectStatus.hidden;
+  row.hidden = !hasBadge && !hasTechText && !hasElapsed && !hasLive && !isReconnecting;
+}
+
+function updateRadioBar(title, country, tag, playing, station, playerMetadata = {}) {
   _radioIsPlaying = playing;
   if (station) _radioCurrentStation = station;
+  const metadata = playerMetadata && typeof playerMetadata === 'object' ? playerMetadata : {};
+  const isPodcast = metadata.mode === 'podcast'
+    || (!station && (
+      document.body.classList.contains('podcast-player-mode')
+      || (typeof _localMediaType !== 'undefined'
+        && (_localMediaType === 'Podcast' || _localMediaType === 'PodcastServer'))
+    ));
+  const playerBar = document.getElementById('radio-player-bar');
+  if (playerBar) {
+    playerBar.setAttribute('aria-label', isPodcast ? 'Podcast player' : 'Radio player');
+    playerBar.setAttribute('aria-busy', String(Boolean(metadata.isStalled)));
+  }
+  const reconnectStatus = document.getElementById('radio-bar-reconnect-status');
+  if (reconnectStatus && !metadata.isStalled) {
+    reconnectStatus.hidden = true;
+    reconnectStatus.textContent = '';
+  }
+  if (isPodcast) {
+    if (typeof _resetPodcastProgress === 'function') _resetPodcastProgress();
+  } else {
+    const progressRow = document.getElementById('radio-bar-progress-row');
+    if (progressRow) progressRow.hidden = true;
+  }
   const t = document.getElementById('radio-bar-title');
   const m = document.getElementById('radio-bar-meta');
   const techText = document.getElementById('radio-bar-tech-text');
   const qBadge = document.getElementById('radio-bar-quality-badge');
+  const liveIndicator = document.getElementById('radio-bar-live');
   const tagsEl = document.getElementById('radio-bar-tags');
   const popEl = document.getElementById('radio-bar-pop');
   const hpEl = document.getElementById('radio-bar-homepage');
-  const favWrap = document.getElementById('radio-bar-favicon-wrap');
-  const favImg = document.getElementById('radio-bar-favicon');
   const btn = document.getElementById('radio-btn-play');
+  const isLiveRadio = !isPodcast && Boolean(
+    station
+    || (typeof _localMediaType !== 'undefined' && _localMediaType === 'Radio')
+    || _radioCurrentUrl
+  );
+  if (liveIndicator) liveIndicator.hidden = !(isLiveRadio && playing);
   if (t) t.textContent = title || '\u2014';
   if (m) {
-    const parts = [country, tag].filter(Boolean);
+    const showTitle = metadata.showTitle
+      || (typeof _podcastPlaybackShowTitle !== 'undefined' ? _podcastPlaybackShowTitle : '')
+      || (typeof _podcastSelectedShow !== 'undefined' ? _podcastSelectedShow?.title : '')
+      || 'Podcast';
+    const parts = isPodcast ? [showTitle] : [country, tag].filter(Boolean);
     m.textContent = parts.length ? parts.join(' \u00b7 ') : '';
   }
+  const podcastArtwork = metadata.artworkUrl
+    || (typeof _podcastPlaybackArtworkUrl !== 'undefined' ? _podcastPlaybackArtworkUrl : '')
+    || (typeof _podcastSelectedShow !== 'undefined' ? _podcastSelectedShow?.artworkUrl : '')
+    || '';
+  const radioArtwork = station && (station.favicon || station.Favicon || '');
+  _setRadioBarArtwork(isPodcast ? podcastArtwork : radioArtwork, isPodcast ? 'podcast' : 'radio');
   // Extra detail from full station object
-  if (station) {
+  if (station && !isPodcast) {
     const codec = (station.codec || station.Codec || '').toUpperCase();
     const bitrate = station.bitrate || station.Bitrate || 0;
     const hls = station.hls || station.Hls || 0;
@@ -1279,7 +1403,6 @@ function updateRadioBar(title, country, tag, playing, station) {
     const votes = station.votes || station.Votes || 0;
     const clicks = station.clickcount || station.ClickCount || 0;
     const homepage = station.homepage || station.Homepage || '';
-    const favicon = station.favicon || station.Favicon || '';
     // Quality badge: codec + bitrate
     if (qBadge) {
       const badgeParts = [codec, bitrate ? bitrate + 'k' : ''].filter(Boolean);
@@ -1308,20 +1431,6 @@ function updateRadioBar(title, country, tag, playing, station) {
         hpEl.textContent = '';
       }
     }
-    if (favImg && favWrap) {
-      if (favicon) {
-        favWrap.style.display = 'none';
-        favImg.onload = () => {
-          favWrap.style.display = '';
-        };
-        favImg.onerror = () => {
-          favWrap.style.display = 'none';
-        };
-        favImg.src = favicon;
-      } else {
-        favWrap.style.display = 'none';
-      }
-    }
     renderRadioGlobeAsync(station).catch(() => {});
   } else {
     if (qBadge) qBadge.style.display = 'none';
@@ -1329,8 +1438,16 @@ function updateRadioBar(title, country, tag, playing, station) {
     if (tagsEl) tagsEl.textContent = '';
     if (popEl) popEl.textContent = '';
     if (hpEl) hpEl.textContent = '';
-    if (favWrap) favWrap.style.display = 'none';
     renderRadioGlobeAsync(null).catch(() => {});
+  }
+  if (isPodcast) {
+    if (techText) techText.textContent = 'Podcast';
+    const elapsed = document.getElementById('radio-bar-elapsed');
+    if (elapsed) elapsed.style.display = 'none';
+    const song = document.getElementById('radio-bar-song');
+    const songText = document.getElementById('radio-bar-song-text');
+    if (song) song.style.display = 'none';
+    if (songText) songText.textContent = '';
   }
   if (!playing) {
     stopWaveform();
@@ -1338,8 +1455,27 @@ function updateRadioBar(title, country, tag, playing, station) {
     const el = document.getElementById('radio-bar-elapsed');
     if (el) el.style.display = 'none';
   }
-  if (btn) btn.innerHTML = playing ? '\u23F8 Pause' : '\u25B6 Play';
+  if (btn) {
+    const action = playing ? 'Pause' : 'Play';
+    btn.innerHTML = playing ? '\u23F8 Pause' : '\u25B6 Play';
+    btn.setAttribute('aria-label', `${action} ${isPodcast ? 'podcast' : 'radio'} playback`);
+    btn.setAttribute('aria-pressed', String(Boolean(playing)));
+    btn.title = `${action} ${isPodcast ? 'podcast' : 'radio'} playback`;
+  }
+  if (typeof _announcePlayerStatus === 'function' && !metadata.hasError) {
+    const playerType = isPodcast ? 'Podcast' : 'Radio';
+    const playbackState = metadata.isStalled ? 'loading' : playing ? 'playing' : 'stopped';
+    const statusText = metadata.isStalled
+      ? `${playerType} stream is reconnecting.`
+      : `${playerType} playback ${playbackState}.`;
+    _announcePlayerStatus(
+      'radio-player-announcement',
+      `${playerType.toLowerCase()}:${playbackState}`,
+      statusText
+    );
+  }
   _radioUpdateBarFavBtn();
+  _syncRadioBarTechRow();
   if (typeof _syncEqWrapVisibility === 'function') _syncEqWrapVisibility();
 }
 

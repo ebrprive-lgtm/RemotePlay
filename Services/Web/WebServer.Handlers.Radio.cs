@@ -117,10 +117,19 @@ internal sealed partial class WebServer
     {
         var raw = ctx.Request.QueryString["v"] ?? "0";
         if (!double.TryParse(raw, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var seconds))
-            seconds = 0;
+                System.Globalization.CultureInfo.InvariantCulture, out var seconds)
+            || !double.IsFinite(seconds))
+        {
+            TrySendResponse(ctx, 400, "application/json", "{\"error\":\"invalid seek position\"}");
+            return;
+        }
 
-        _callbacks.RadioSeek(Math.Max(0, seconds));
+        if (!_callbacks.RadioSeek(Math.Max(0, seconds)))
+        {
+            TrySendResponse(ctx, 409, "application/json", "{\"error\":\"seeking is not supported for this stream\"}");
+            return;
+        }
+
         TrySendResponse(ctx, 200, "application/json", "{\"ok\":true}");
     }
 

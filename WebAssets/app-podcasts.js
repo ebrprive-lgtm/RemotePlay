@@ -6,6 +6,12 @@ let _podcastSelectedShow = null;
 let _podcastDirectory = [];
 let _podcastDirectoryLoading = false;
 let _podcastDirectoryRequestId = 0;
+let _podcastDirectoryCountry = '';
+let _podcastDirectoryIsSnapshot = false;
+let _podcastDirectorySnapshotSavedAt = 0;
+let _podcastDirectoryRefreshFailed = false;
+let _podcastDirectoryEnteredAt = 0;
+let _podcastDirectoryFirstCardLogged = false;
 let _podcastLastSearch = { query: '', topic: '', country: '' };
 let _podcastShowsOffset = 0;
 let _podcastShowsHasMore = false;
@@ -27,6 +33,7 @@ let _podcastCurrentEpisodeIndex = -1;
 let _podcastPlaybackEpisodes = [];
 let _podcastPlaybackFeedUrl = '';
 let _podcastPlaybackShowTitle = '';
+let _podcastPlaybackArtworkUrl = '';
 let _podcastPlaybackOffset = 0;
 let _podcastPlaybackHasMore = false;
 let _podcastPlaybackTotal = null;
@@ -51,6 +58,9 @@ const _podcastFavoriteShowsKey = 'rp_podcast_favorite_shows';
 const _podcastFavoriteShowMapKey = 'rp_podcast_favorite_show_map';
 const _podcastFavoriteCountriesKey = 'rp_podcast_favorite_countries';
 const _podcastFavoriteTopicsKey = 'rp_podcast_favorite_topics';
+const _podcastDirectorySnapshotKey = 'rp_podcast_directory_v1';
+const _podcastDirectorySnapshotVersion = 1;
+const _podcastDirectorySnapshotPageSize = 12;
 
 const _podcastQuickTopics = ['News', 'Technology', 'Business', 'History', 'Science', 'Comedy', 'True Crime', 'Health'];
 const _podcastAllTopics = [
@@ -128,6 +138,8 @@ function podcastsInit() {
   const root = document.getElementById('podcasts-browser');
   if (!root) return;
 
+  _podcastDirectoryEnteredAt = _podcastNow();
+  _podcastDirectoryFirstCardLogged = false;
   _syncPodcastCommandBar();
   _syncPodcastPlaybackControls();
 
@@ -140,13 +152,17 @@ function podcastsInit() {
 
     if (_podcastFavoritesOnly) _renderPodcastShows();
     else {
+      if (!_podcastDirectory.length) _restorePodcastDirectorySnapshot();
       _podcastDirectoryLoading = true;
-      _renderPodcastDirectoryLoading();
+      if (_podcastDirectory.length) {
+        _renderPodcastDirectory();
+        _podcastLogFirstDirectoryCard(_podcastDirectoryIsSnapshot ? 'browser-snapshot' : 'memory');
+      }
+      else _renderPodcastDirectoryLoading();
     }
 
-    _loadPodcastCountries().finally(() => {
-      _loadPodcastDirectory();
-    });
+    void _loadPodcastCountries();
+    if (!_podcastFavoritesOnly) _loadPodcastDirectory();
     return;
   }
 
@@ -154,7 +170,11 @@ function podcastsInit() {
   _podcastBrowseResumeKind = null;
   if (resumeKind === 'directory') {
     _podcastDirectoryLoading = true;
-    _renderPodcastDirectoryLoading();
+    if (_podcastDirectory.length) {
+      _renderPodcastDirectory();
+      _podcastLogFirstDirectoryCard(_podcastDirectoryIsSnapshot ? 'browser-snapshot' : 'memory');
+    }
+    else _renderPodcastDirectoryLoading();
     _loadPodcastDirectory();
     return;
   }
@@ -175,8 +195,13 @@ function podcastsInit() {
     _renderPodcastShows();
   } else if (_podcastDirectory.length) _renderPodcastDirectory();
   else {
+    if (!_podcastDirectory.length) _restorePodcastDirectorySnapshot();
     _podcastDirectoryLoading = true;
-    _renderPodcastDirectoryLoading();
+    if (_podcastDirectory.length) {
+      _renderPodcastDirectory();
+      _podcastLogFirstDirectoryCard(_podcastDirectoryIsSnapshot ? 'browser-snapshot' : 'memory');
+    }
+    else _renderPodcastDirectoryLoading();
     _loadPodcastDirectory();
   }
 }
@@ -1045,6 +1070,7 @@ async function podcastPlayEpisode(episodeIndex) {
   const feedState = {
     feedUrl: (show?.feedUrl || '').trim(),
     showTitle: show?.title || 'Podcast',
+    artworkUrl: (show?.artworkUrl || '').trim(),
     offset: _podcastEpisodesOffset,
     hasMore: _podcastEpisodesHasMore,
     total: _podcastEpisodesTotal,
@@ -1098,6 +1124,22 @@ async function _podcastPlayEpisodeFromQueue(
   const audioUrl = (episode?.audioUrl || '').trim();
   const title = (episode?.title || '').trim() || 'Podcast episode';
   if (!audioUrl) return false;
+  const showTitle = (
+    feedState?.showTitle
+    || _podcastPlaybackShowTitle
+    || _podcastSelectedShow?.title
+    || 'Podcast'
+  ).trim() || 'Podcast';
+  const artworkCandidates = [
+    episode?.artworkUrl,
+    feedState?.artworkUrl,
+    feedState ? _podcastSelectedShow?.artworkUrl : _podcastPlaybackArtworkUrl,
+    _podcastSelectedShow?.artworkUrl,
+  ];
+  const artworkUrl = artworkCandidates.find(
+    (candidate) => typeof candidate === 'string' && candidate.trim()
+  )?.trim() || '';
+  const playerMetadata = { mode: 'podcast', showTitle, artworkUrl };
 
   try {
     const playLocal = typeof isPlayLocal === 'function' && isPlayLocal();
@@ -1128,7 +1170,7 @@ async function _podcastPlayEpisodeFromQueue(
       if (typeof _radioCurrentStation !== 'undefined') _radioCurrentStation = null;
       if (typeof _radioIsPlaying !== 'undefined') _radioIsPlaying = true;
 
-      localPlay(audioUrl, title, 'Podcast');
+      localPlay(audioUrl, title, 'Podcast', playerMetadata);
     } else {
       if (typeof localStop === 'function') {
         await localStop(false, { preservePodcastQueue: true });
@@ -1152,7 +1194,9 @@ async function _podcastPlayEpisodeFromQueue(
       if (typeof _localMediaType !== 'undefined') _localMediaType = 'PodcastServer';
       document.body.classList.add('radio-player-docked');
       document.body.classList.add('podcast-player-mode');
-      if (typeof updateRadioBar === 'function') updateRadioBar(title, '', 'Podcast', true, null);
+      if (typeof updateRadioBar === 'function') {
+        updateRadioBar(title, '', 'Podcast', true, null, playerMetadata);
+      }
 
       if (typeof startRadioStatusPoll === 'function') startRadioStatusPoll();
     }
@@ -1161,7 +1205,8 @@ async function _podcastPlayEpisodeFromQueue(
     _podcastCurrentEpisodeIndex = index;
     if (feedState) {
       _podcastPlaybackFeedUrl = feedState.feedUrl;
-      _podcastPlaybackShowTitle = feedState.showTitle;
+      _podcastPlaybackShowTitle = showTitle;
+      _podcastPlaybackArtworkUrl = artworkUrl;
       _podcastPlaybackOffset = feedState.offset;
       _podcastPlaybackHasMore = Boolean(feedState.feedUrl && feedState.hasMore);
       _podcastPlaybackTotal = feedState.total;
@@ -1330,6 +1375,7 @@ function _clearPodcastPlaybackQueue() {
   _podcastCurrentEpisodeIndex = -1;
   _podcastPlaybackFeedUrl = '';
   _podcastPlaybackShowTitle = '';
+  _podcastPlaybackArtworkUrl = '';
   _podcastPlaybackOffset = 0;
   _podcastPlaybackHasMore = false;
   _podcastPlaybackTotal = null;
@@ -1354,14 +1400,26 @@ function _syncPodcastPlaybackControls() {
   if (nextBtn) nextBtn.style.display = isPodcast && total > 0 ? '' : 'none';
   if (indexLabel) indexLabel.style.display = isPodcast && total > 0 ? '' : 'none';
 
-  if (prevBtn) prevBtn.disabled = !active || _podcastPlaybackBusy || _podcastCurrentEpisodeIndex <= 0;
+  if (prevBtn) {
+    const hasPrevious = active && _podcastCurrentEpisodeIndex > 0;
+    prevBtn.disabled = !hasPrevious || _podcastPlaybackBusy;
+    prevBtn.title = _podcastPlaybackBusy
+      ? 'Podcast playback is changing'
+      : (hasPrevious ? 'Previous episode' : 'No previous episode available');
+    prevBtn.setAttribute('aria-label', prevBtn.title);
+    prevBtn.setAttribute('aria-busy', String(_podcastPlaybackBusy));
+  }
   if (nextBtn) {
     nextBtn.disabled = !active || _podcastPlaybackBusy || (atEnd && !canLoadNextPage);
     nextBtn.title = _podcastPlaybackPageMessage.startsWith('Could not load')
       ? 'Retry loading the next podcast page'
-      : (_podcastPlaybackBusy ? 'Podcast playback is changing' : 'Next episode');
+      : (_podcastPlaybackPageLoading
+        ? 'Loading the next podcast page'
+        : (_podcastPlaybackBusy
+          ? 'Podcast playback is changing'
+          : (active && (atEnd && !canLoadNextPage) ? 'No next episode available' : 'Next episode')));
     nextBtn.setAttribute('aria-label', nextBtn.title);
-    nextBtn.setAttribute('aria-busy', String(_podcastPlaybackPageLoading));
+    nextBtn.setAttribute('aria-busy', String(_podcastPlaybackPageLoading || _podcastPlaybackBusy));
   }
 
   if (indexLabel) {
@@ -1433,10 +1491,136 @@ function podcastsResetFilters() {
   _podcastShowsLoadMoreRequestId = null;
   _podcastEpisodesLoadMoreRequestId = null;
   _podcastDirectory = [];
+  _podcastDirectoryIsSnapshot = false;
+  _podcastDirectorySnapshotSavedAt = 0;
+  _podcastDirectoryRefreshFailed = false;
   _syncPodcastRoute('', '');
   _syncPodcastPlaybackControls();
 
   _renderPodcastDirectoryLoading();
+  _loadPodcastDirectory();
+}
+
+function _podcastNow() {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+function _podcastLogFirstDirectoryCard(source) {
+  if (_podcastDirectoryFirstCardLogged || !_podcastDirectoryEnteredAt) return;
+  _podcastDirectoryFirstCardLogged = true;
+  console.debug('[Podcasts] First directory card ready', {
+    source,
+    elapsedMs: Math.max(0, Math.round(_podcastNow() - _podcastDirectoryEnteredAt)),
+  });
+}
+
+function _podcastNormalizeDirectorySnapshotShow(show) {
+  if (!show || typeof show !== 'object') return null;
+
+  const title = String(show.title || '').trim().slice(0, 300);
+  const feedUrl = String(show.feedUrl || '').trim().slice(0, 2048);
+  if (!title || !feedUrl) return null;
+
+  try {
+    const parsedUrl = new URL(feedUrl);
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') return null;
+  } catch {
+    return null;
+  }
+
+  return {
+    title,
+    author: String(show.author || '').trim().slice(0, 300),
+    feedUrl,
+    artworkUrl: String(show.artworkUrl || '').trim().slice(0, 2048),
+    genre: String(show.genre || '').trim().slice(0, 100),
+    country: String(show.country || '').trim().slice(0, 2),
+  };
+}
+
+function _restorePodcastDirectorySnapshot() {
+  try {
+    const raw = localStorage.getItem(_podcastDirectorySnapshotKey);
+    if (!raw) return false;
+
+    const snapshot = JSON.parse(raw);
+    if (snapshot?.version !== _podcastDirectorySnapshotVersion || !Array.isArray(snapshot.shows)) return false;
+    const shows = snapshot.shows
+      .slice(0, _podcastDirectorySnapshotPageSize)
+      .map(_podcastNormalizeDirectorySnapshotShow)
+      .filter(Boolean);
+    if (!shows.length) return false;
+
+    _podcastDirectory = [{ topic: 'Top Podcasts', shows }];
+    _podcastDirectoryCountry = '';
+    _podcastDirectoryIsSnapshot = true;
+    _podcastDirectorySnapshotSavedAt = Number.isFinite(Number(snapshot.savedAt)) ? Number(snapshot.savedAt) : 0;
+    return true;
+  } catch (error) {
+    console.warn('Failed to restore podcast directory snapshot', error);
+    return false;
+  }
+}
+
+function _savePodcastDirectorySnapshot(shows) {
+  const snapshotShows = (Array.isArray(shows) ? shows : [])
+    .slice(0, _podcastDirectorySnapshotPageSize)
+    .map(_podcastNormalizeDirectorySnapshotShow)
+    .filter(Boolean);
+  if (!snapshotShows.length) return;
+
+  const savedAt = Date.now();
+  try {
+    localStorage.setItem(_podcastDirectorySnapshotKey, JSON.stringify({
+      version: _podcastDirectorySnapshotVersion,
+      savedAt,
+      shows: snapshotShows,
+    }));
+    _podcastDirectorySnapshotSavedAt = savedAt;
+  } catch (error) {
+    console.warn('Failed to save podcast directory snapshot', error);
+  }
+}
+
+function _podcastSnapshotAgeText() {
+  if (!_podcastDirectorySnapshotSavedAt) return 'a previous visit';
+  const minutes = Math.max(0, Math.floor((Date.now() - _podcastDirectorySnapshotSavedAt) / 60000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function _podcastWaitForPaint(signal) {
+  if (signal?.aborted) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    let completed = false;
+    const finish = () => {
+      if (completed) return;
+      completed = true;
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    };
+    signal?.addEventListener('abort', finish, { once: true });
+
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => requestAnimationFrame(finish));
+    } else {
+      setTimeout(finish, 0);
+    }
+  });
+}
+
+function podcastRetryDirectory() {
+  if (_podcastSelectedShow || _podcastFavoritesOnly) return;
+  _podcastDirectoryRefreshFailed = false;
+  _podcastDirectoryLoading = true;
+  if (_podcastDirectory.length) _renderPodcastDirectory();
+  else _renderPodcastDirectoryLoading();
   _loadPodcastDirectory();
 }
 
@@ -1456,13 +1640,21 @@ async function _loadPodcastDirectory() {
   const request = _createPodcastRequest();
   _podcastDirectoryRequest = request;
   _podcastDirectoryLoading = true;
-  _podcastDirectory = [];
+  _podcastDirectoryRefreshFailed = false;
+  const loadStartedAt = _podcastNow();
   const country = (document.getElementById('pcb-country')?.value || '').trim();
   const topicLimit = 12;
   let failedSections = 0;
-  const sections = [];
+  const sections = _podcastDirectoryCountry === country ? _podcastDirectory.slice() : [];
 
-  _renderPodcastDirectory();
+  if (!sections.length) {
+    _podcastDirectory = [];
+    _podcastDirectoryCountry = country;
+    _podcastDirectoryIsSnapshot = false;
+    _podcastDirectorySnapshotSavedAt = 0;
+  }
+  if (_podcastDirectory.length) _renderPodcastDirectory();
+  else _renderPodcastDirectoryLoading();
 
   try {
     const loadSection = async (topic, limit, take) => {
@@ -1470,10 +1662,28 @@ async function _loadPodcastDirectory() {
         const shows = await _fetchPodcastShows({ country, topic, limit, request });
         if (requestId !== _podcastDirectoryRequestId) return false;
         if (shows.length > 0) {
-          sections.push({ topic: topic || 'Top Podcasts', shows: shows.slice(0, take) });
+          const sectionName = topic || 'Top Podcasts';
+          const section = { topic: sectionName, shows: shows.slice(0, take) };
+          const sectionIndex = sections.findIndex((item) => item.topic === sectionName);
+          if (sectionIndex >= 0) sections[sectionIndex] = section;
+          else sections.push(section);
+          _podcastDirectory = sections.slice();
+          _podcastDirectoryCountry = country;
+
+          if (!topic && !country) {
+            _podcastDirectoryIsSnapshot = false;
+            _savePodcastDirectorySnapshot(section.shows);
+          }
+
+          if (!_podcastSelectedShow && !_podcastFavoritesOnly) _renderPodcastDirectory();
+          if (!topic) {
+            _podcastLogFirstDirectoryCard('server');
+            console.debug('[Podcasts] Directory first section refreshed', {
+              elapsedMs: Math.max(0, Math.round(_podcastNow() - loadStartedAt)),
+              shows: section.shows.length,
+            });
+          }
         }
-        _podcastDirectory = sections.slice();
-        if (!_podcastSelectedShow && !_podcastFavoritesOnly) _renderPodcastDirectory();
         return true;
       } catch (error) {
         if (requestId !== _podcastDirectoryRequestId || _podcastRequestWasAborted(error, request)) return false;
@@ -1483,7 +1693,8 @@ async function _loadPodcastDirectory() {
       }
     };
 
-    if (!await loadSection('', 40, 12)) return;
+    if (!await loadSection('', _podcastDirectorySnapshotPageSize, _podcastDirectorySnapshotPageSize)) return;
+    await _podcastWaitForPaint(request.signal);
 
     for (const topic of _podcastQuickTopics.slice(0, 4)) {
       if (requestId !== _podcastDirectoryRequestId) return;
@@ -1493,9 +1704,16 @@ async function _loadPodcastDirectory() {
     if (requestId === _podcastDirectoryRequestId) {
       if (_podcastDirectoryRequest === request) _podcastDirectoryRequest = null;
       _podcastDirectoryLoading = false;
+      _podcastDirectoryRefreshFailed = failedSections > 0;
       if (!_podcastSelectedShow) {
         if (_podcastFavoritesOnly) _renderPodcastShows();
         else _renderPodcastDirectory();
+        console.debug('[Podcasts] Directory enrichment complete', {
+          elapsedMs: Math.max(0, Math.round(_podcastNow() - loadStartedAt)),
+          sections: _podcastDirectory.length,
+          shows: _podcastDirectory.reduce((sum, section) => sum + (section.shows?.length || 0), 0),
+          failedSections,
+        });
         if (failedSections > 0 && typeof setStatus === 'function') {
           setStatus(_podcastDirectory.length > 0
             ? 'Some podcast recommendations could not be loaded.'
@@ -1525,10 +1743,20 @@ function _renderPodcastDirectoryLoading() {
 
   const topicChips = _podcastTopicChipsHtml();
   root.innerHTML = `
-    <section class="card" style="padding:.8rem">
+    <section class="card podcast-directory-loading" style="padding:.8rem" aria-busy="true">
       <h3 style="margin:.1rem 0 .5rem">Browse by topic</h3>
       <div style="display:flex;gap:.4rem;flex-wrap:wrap">${topicChips}</div>
-      <div style="margin-top:.7rem;color:var(--muted,#9aa8c2)">Loading podcast recommendations…</div>
+      <p class="podcast-directory-loading-message" role="status" aria-live="polite">Loading podcast recommendations…</p>
+      <div class="podcast-directory-skeleton-grid" aria-hidden="true">
+        ${Array.from({ length: 6 }, () => `
+          <article class="podcast-directory-skeleton-card">
+            <span class="podcast-directory-skeleton-art"></span>
+            <span class="podcast-directory-skeleton-copy">
+              <span class="podcast-directory-skeleton-line podcast-directory-skeleton-title"></span>
+              <span class="podcast-directory-skeleton-line podcast-directory-skeleton-subtitle"></span>
+            </span>
+          </article>`).join('')}
+      </div>
     </section>`;
 }
 
@@ -1545,9 +1773,17 @@ function _renderPodcastDirectory() {
   _syncPodcastCommandBar();
 
   const totalShows = _podcastDirectory.reduce((sum, section) => sum + (section.shows?.length || 0), 0);
+  if (totalShows === 0 && _podcastDirectoryLoading) {
+    _renderPodcastDirectoryLoading();
+    return;
+  }
+
+  const countText = totalShows === 0
+    ? 'Recommendations unavailable'
+    : `${_podcastDirectory.length} topic section${_podcastDirectory.length === 1 ? '' : 's'}, ${totalShows} show${totalShows === 1 ? '' : 's'}${_podcastDirectoryLoading ? (_podcastDirectoryIsSnapshot ? ' · Refreshing saved list…' : ' · Loading more…') : ''}`;
   _renderPodcastHeader({
     breadcrumb: '<span class="crumb-current">Podcasts</span><span> &rsaquo; </span><span class="crumb-current">Directory</span>',
-    countText: `${_podcastDirectory.length} topic section${_podcastDirectory.length === 1 ? '' : 's'}, ${totalShows} show${totalShows === 1 ? '' : 's'}${_podcastDirectoryLoading ? ' · Loading more…' : ''}`,
+    countText,
     showBack: false,
   });
 
@@ -1558,7 +1794,10 @@ function _renderPodcastDirectory() {
       <section class="card" style="padding:.8rem">
         <h3 style="margin:.1rem 0 .5rem">Browse by topic</h3>
         <div style="display:flex;gap:.4rem;flex-wrap:wrap">${topicChips}</div>
-        <div style="margin-top:.7rem;color:var(--muted,#9aa8c2)">${_podcastDirectoryLoading ? 'Loading podcast recommendations…' : 'No topic directory entries were loaded. Try selecting a topic above.'}</div>
+        <div class="podcast-directory-empty-state" role="status">
+          <span>${_podcastDirectoryRefreshFailed ? 'Podcast recommendations could not be loaded. Try a topic or retry.' : 'No topic directory entries were loaded. Try selecting a topic above.'}</span>
+          ${_podcastDirectoryRefreshFailed ? '<button class="btn btn-dim" type="button" onclick="podcastRetryDirectory()">Retry</button>' : ''}
+        </div>
       </section>`;
     return;
   }
@@ -1605,13 +1844,26 @@ function _renderPodcastDirectory() {
     })
     .join('');
 
+  const directoryNotice = _podcastDirectoryLoading
+    ? `<p class="podcast-directory-refresh-status" role="status" aria-live="polite">${_podcastDirectoryIsSnapshot
+      ? `Showing saved recommendations from ${esc(_podcastSnapshotAgeText())} while refreshing.`
+      : 'Loading more topic recommendations…'}</p>`
+    : _podcastDirectoryRefreshFailed
+      ? `<div class="podcast-directory-refresh-status" role="status">
+          <span>${_podcastDirectoryIsSnapshot
+            ? 'Refresh failed; showing saved recommendations.'
+            : 'Some recommendations could not be refreshed.'}</span>
+          <button class="btn btn-dim" type="button" onclick="podcastRetryDirectory()">Retry</button>
+        </div>`
+      : '';
+
   root.innerHTML = `
     <section class="card" style="padding:.8rem;margin-bottom:.65rem">
       <h3 style="margin:.1rem 0 .5rem">Browse by topic</h3>
       <div style="display:flex;gap:.4rem;flex-wrap:wrap">${topicChips}</div>
     </section>
-    <div style="display:grid;gap:.65rem">${sections}</div>
-    ${_podcastDirectoryLoading ? '<div style="padding:.6rem;color:var(--muted,#9aa8c2)">Loading more recommendations…</div>' : ''}`;
+    <div style="display:grid;gap:.65rem" aria-busy="${_podcastDirectoryLoading ? 'true' : 'false'}">${sections}</div>
+    ${directoryNotice}`;
 }
 
 function _renderPodcastShows() {

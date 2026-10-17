@@ -82,13 +82,13 @@ function _sleepTimerTick() {
 
 function _sleepGetActiveVolume() {
   if (window._radioIsPlaying) {
-    const s = document.getElementById('radio-bar-combined');
-    return s ? Math.min(1.0, parseFloat(s.value)) : 0.8;
+    const s = document.getElementById('radio-bar-volume');
+    return s ? Math.min(1.0, Math.max(0, parseFloat(s.value) || 0)) : 0.8;
   }
   const mb = document.getElementById('music-player-bar');
   if (mb && mb.style.display !== 'none') {
-    const s = document.getElementById('music-bar-combined');
-    return s ? Math.min(1.0, parseFloat(s.value)) : 0.8;
+    const s = document.getElementById('music-bar-volume');
+    return s ? Math.min(1.0, Math.max(0, parseFloat(s.value) || 0)) : 0.8;
   }
   const s = document.getElementById('video-combined-vol');
   return s ? Math.min(1.0, parseFloat(s.value)) : 1.0;
@@ -96,14 +96,14 @@ function _sleepGetActiveVolume() {
 
 function _sleepSetActiveVolume(vol) {
   if (window._radioIsPlaying) {
-    const s = document.getElementById('radio-bar-combined');
-    if (s) { s.value = vol; if (typeof radioCombinedSlider === 'function') radioCombinedSlider(vol); }
+    const s = document.getElementById('radio-bar-volume');
+    if (s) { s.value = vol; if (typeof radioVolume === 'function') radioVolume(vol); }
     return;
   }
   const mb = document.getElementById('music-player-bar');
   if (mb && mb.style.display !== 'none') {
-    const s = document.getElementById('music-bar-combined');
-    if (s) { s.value = vol; if (typeof musicCombinedSlider === 'function') musicCombinedSlider(vol); }
+    const s = document.getElementById('music-bar-volume');
+    if (s) { s.value = vol; if (typeof musicVolume === 'function') musicVolume(vol); }
     return;
   }
   const s = document.getElementById('video-combined-vol');
@@ -691,10 +691,12 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch {}
   })();
 
-  // Initialize the combined volume/boost slider gradient to its default value.
-  if (typeof musicCombinedSlider === 'function') musicCombinedSlider(0.8);
+  // Initialize the independent volume and boost controls to their defaults.
+  if (typeof syncMusicAudioControls === 'function') syncMusicAudioControls(0.8, 1);
+  if (typeof musicVolume === 'function') musicVolume(0.8);
+  if (typeof musicBoost === 'function') musicBoost(1);
   if (typeof setVideoCombinedSlider === 'function') setVideoCombinedSlider(1.0);
-  if (typeof updateRadioCombinedSliderVisual === 'function') updateRadioCombinedSliderVisual(0.8);
+  if (typeof syncRadioAudioControls === 'function') syncRadioAudioControls(0.8, 1);
 
   // Keep --header-h in sync so sticky elements below the header don't overlap it.
   const hdr = document.querySelector('header');
@@ -1179,6 +1181,20 @@ async function pollStatus() {
 // Tracks the last error shown per domain to avoid repeat popups.
 const _pbeLastError = { video: '', music: '', radio: '' };
 let _pbeOverlayEl = null;
+let _pbePreviousFocus = null;
+
+function _announcePlayerStatus(playerId, state, message) {
+  const status = document.getElementById(playerId);
+  if (!status || status.dataset.state === state) return;
+  const previousState = status.dataset.state;
+  status.dataset.state = state;
+  if (!message) {
+    status.textContent = '';
+    return;
+  }
+  if (!previousState && state.endsWith(':stopped')) return;
+  status.textContent = message;
+}
 
 // Translate common Windows HRESULT / media error codes to plain English.
 // Returns { friendly: string, translated: boolean }
@@ -1250,8 +1266,10 @@ function _buildPbeOverlay() {
     justifyContent: 'center',
     background: 'rgba(0,0,0,0.65)',
   });
-  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('role', 'alertdialog');
   overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'pbe-title');
+  overlay.setAttribute('aria-describedby', 'pbe-message');
 
   const card = document.createElement('div');
   card.id = 'playback-error-overlay';
@@ -1274,6 +1292,7 @@ function _buildPbeOverlay() {
 
   const icon = document.createElement('span');
   icon.textContent = '⚠';
+  icon.setAttribute('aria-hidden', 'true');
   Object.assign(icon.style, { fontSize: '1.3rem', color: 'var(--accent, #e94560)', flexShrink: '0' });
 
   const domainEl = document.createElement('span');
@@ -1281,6 +1300,7 @@ function _buildPbeOverlay() {
   Object.assign(domainEl.style, { fontSize: '.78rem', fontWeight: '700', opacity: '.7', letterSpacing: '.05em', textTransform: 'uppercase' });
 
   const title = document.createElement('h2');
+  title.id = 'pbe-title';
   title.textContent = 'Playback stopped';
   Object.assign(title.style, { fontSize: '1.25rem', fontWeight: '800', margin: '0', color: 'var(--title-color, var(--accent, #e94560))' });
 
@@ -1299,6 +1319,8 @@ function _buildPbeOverlay() {
   Object.assign(actions.style, { display: 'flex', justifyContent: 'flex-end' });
 
   const dismissBtn = document.createElement('button');
+  dismissBtn.type = 'button';
+  dismissBtn.className = 'pbe-close-btn';
   dismissBtn.textContent = 'Dismiss';
   Object.assign(dismissBtn.style, {
     background: 'var(--accent, #e94560)',
@@ -1309,6 +1331,7 @@ function _buildPbeOverlay() {
     fontWeight: '700',
     fontSize: '.88rem',
     cursor: 'pointer',
+    minHeight: '44px',
   });
   dismissBtn.onclick = closePlaybackErrorPopup;
   actions.appendChild(dismissBtn);
@@ -1321,12 +1344,21 @@ function _buildPbeOverlay() {
   overlay.appendChild(card);
 
   overlay.addEventListener('click', (e) => { if (e.target === overlay) closePlaybackErrorPopup(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePlaybackErrorPopup(); });
+  overlay.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closePlaybackErrorPopup();
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      dismissBtn.focus();
+    }
+  });
 
   // Store direct references so showPlaybackErrorPopup never needs getElementById
   overlay._domainEl = domainEl;
   overlay._msgEl = msgEl;
   overlay._techEl = techEl;
+  overlay._dismissBtn = dismissBtn;
 
   _pbeOverlayEl = overlay;
   return overlay;
@@ -1340,6 +1372,9 @@ function showPlaybackErrorPopup(domain, message) {
   _pbeLastError[key] = message;
 
   const overlay = _buildPbeOverlay();
+  _pbePreviousFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
   if (overlay._domainEl) overlay._domainEl.textContent = domain || '';
   const { friendly, translated } = _friendlyMediaError(message);
   if (overlay._msgEl) overlay._msgEl.textContent = friendly;
@@ -1351,6 +1386,7 @@ function showPlaybackErrorPopup(domain, message) {
 
   // Always attach as last child of body so nothing can trap it
   document.body.appendChild(overlay);
+  overlay._dismissBtn?.focus({ preventScroll: true });
 }
 
 // Called by domain status pollers when playback resumes successfully,
@@ -1364,6 +1400,9 @@ function closePlaybackErrorPopup() {
   if (_pbeOverlayEl && _pbeOverlayEl.parentNode) {
     _pbeOverlayEl.parentNode.removeChild(_pbeOverlayEl);
   }
+  const previousFocus = _pbePreviousFocus;
+  _pbePreviousFocus = null;
+  if (previousFocus?.isConnected) previousFocus.focus();
   // Do NOT clear _pbeLastError here — keeps the dismissed error suppressed
   // until the domain actually recovers (clearPlaybackErrorDedup is called).
 }

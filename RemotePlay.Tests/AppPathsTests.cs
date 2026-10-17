@@ -48,6 +48,13 @@ public class AppPathsTests
     }
 
     [Fact]
+    public void PodcastTopPoolCacheFile_IsUnderUserDataDirectory()
+    {
+        Assert.StartsWith(AppPaths.UserDataDirectory, AppPaths.PodcastTopPoolCacheFile, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("podcast-top-pool.json", Path.GetFileName(AppPaths.PodcastTopPoolCacheFile));
+    }
+
+    [Fact]
     public void FavoritesFile_IsUnderUserDataDirectory()
     {
         Assert.StartsWith(AppPaths.UserDataDirectory, AppPaths.FavoritesFile, StringComparison.OrdinalIgnoreCase);

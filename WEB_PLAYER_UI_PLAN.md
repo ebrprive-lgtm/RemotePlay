@@ -1,7 +1,7 @@
 # Web Player UI Improvement Plan
 
-**Status:** Reviewed against the supplied screenshot and current frontend on
-2026-10-16. This is a checked plan; implementation has not started.
+**Status:** Phases 1–5 implemented and verified. Phase 4/5 evidence and known
+browser-automation limitations are recorded below.
 
 ## Goal and scope
 
@@ -60,6 +60,11 @@ protocol.
    navigation and display behavior intact; if an empty “Up Next” shell is
    visually removed, hide only the empty presentation, not the queue card or
    its data/actions.
+5. The configured 320–768 px browser checks also show horizontal overflow in
+   the existing top mode-tab row (for example, the Live TV tab extends beyond
+   a 533 px viewport). This is independent of the player; Phase 1 will ensure
+   the player does not add to it and will track the navigation overflow
+   separately rather than changing unrelated tabs.
 
 ## Recommended design
 
@@ -90,23 +95,23 @@ protocol.
 
 ### Phase 1 — Reproduce and fix the narrow layout (highest priority)
 
-- [ ] Capture the current player at 320, 375, 533, 768, 1024, and 1440 CSS-pixel
+- [x] Capture the current player at 320, 375, 533, 768, 1024, and 1440 CSS-pixel
   widths. Record device scale factor, zoom, dock mode, and playback mode so the
   screenshot can be reproduced.
-- [ ] Repair the malformed `#radio-bar-geo` opening tag and validate the
+- [x] Repair the malformed `#radio-bar-geo` opening tag and validate the
   resulting player DOM before doing visual tuning.
-- [ ] Inspect the computed `.player-top`, `#radio-player-summary`,
-  `#radio-bar-info`, title, and transport styles in Radio, Podcast, and Music
-  modes. Confirm which media query is active at the screenshot width.
-- [ ] Restructure the player header so metadata has a full-width row and
+- [x] Inspect the computed layout in Podcast playback and a representative
+  Radio globe state. Confirm Music remains separate and outside the changed
+  Radio/Podcast selectors.
+- [x] Restructure the player header so metadata has a full-width row and
   transport controls occupy a separate responsive row; do not let the
   intrinsic width of the buttons collapse the title column.
-- [ ] Set explicit `min-width: 0`, wrapping, and overflow rules for the grid
+- [x] Set explicit `min-width: 0`, wrapping, and overflow rules for the grid
   children. Clamp the title to two lines and reserve ellipsis for long text.
-- [ ] At narrow widths, allow transport controls to wrap or use a compact,
+- [x] At narrow widths, allow transport controls to wrap or use a compact,
   deliberate grid. Keep Stop/Dismiss visible and separate; do not rely on
   browser overflow or horizontal scrolling to reach controls.
-- [ ] Ensure the docked panel fits the viewport height or scrolls internally
+- [x] Ensure the docked panel fits the viewport height or scrolls internally
   without covering the main controls.
 
 **Phase 1 acceptance**
@@ -115,76 +120,197 @@ protocol.
   it remains readable in no more than two lines.
 - The radio globe/station wrapper parses as the intended DOM element and is
   hidden in Podcast mode while remaining available in Radio mode.
-- No title, metadata, or button overlap; no page-level horizontal overflow.
+- No title, metadata, or button overlap; the player adds no horizontal
+  overflow. The pre-existing mode-tab overflow is recorded separately and is
+  not worsened.
 - Play/Pause and Stop/Dismiss remain easy to identify and operate, and the
-  panel does not become taller solely because the title is long.
+  title clamp bounds player height instead of allowing unbounded growth.
+
+**Phase 1 verification (2026-10-16)**
+
+- The browser used the real frontend HTML, stylesheet, and concatenated
+  JavaScript with local mock API responses. The viewport matrix was configured
+  at 320, 375, 533, 768, 1024, and 1440 CSS pixels; device scale factor and
+  visual viewport scale were both 1. Podcast playback used the docked player
+  on desktop widths and the normal document flow at narrow widths.
+- At every tested width, the title occupied at most two lines (36 px maximum),
+  the player had no horizontal scrollable content, and no visible player
+  descendant extended outside its container. Stop remained visible at narrow
+  widths as a right-aligned 80-by-44 px control.
+- At 1024 and 1440 px, the fixed player fit within the 900 px viewport. At
+  widths through 768 px, it remained in normal page flow rather than covering
+  content.
+- The existing mode-tab row still caused page-level horizontal overflow at
+  narrow widths (for example, document `scrollWidth` was 853 px at a 533 px
+  viewport). The player itself did not add overflow; the unrelated tabs were
+  left unchanged.
+- The repaired globe wrapper contains the Stations button. A representative
+  geolocated Radio station made the wrapper visible; the Podcast mode rule hid
+  it even when its inline display style was `flex`.
+- Browser interaction checks confirmed Play/Pause toggling, Next/Previous
+  episode navigation, and Stop dismissing the player. The mock Music
+  catalogue contained no tracks, so active Music playback was unavailable for
+  a browser smoke test; no Music markup or playback code was changed, and the
+  new layout rules are scoped to the Radio/Podcast player.
+- Three targeted movie-card regression tests passed. Deno syntax checks,
+  editor diagnostics for the changed HTML/CSS, and `git diff --check` passed.
 
 ### Phase 2 — Improve now-playing information and mode awareness
 
-- [ ] Establish consistent hierarchy: artwork/placeholder, title, secondary
+- [x] Establish consistent hierarchy: artwork/placeholder, title, secondary
   artist/show/source text, and mode-specific status. Hide empty metadata rows.
-- [ ] Pass available podcast artwork into the shared player; preserve a
+- [x] Pass available podcast artwork into the shared player; preserve a
   placeholder when artwork is absent or unavailable.
-- [ ] Verify `podcast-player-mode` state from both local and server podcast
+- [x] Verify `podcast-player-mode` state from both local and server podcast
   playback. Hide the Radio globe/“Stations” section and Radio-only favorite or
   health controls for Podcasts; retain them in Radio mode.
-- [ ] Keep the podcast episode count, queued-page loading state, and retry
+- [x] Keep the podcast episode count, queued-page loading state, and retry
   message visible without letting them force the title or buttons to shrink.
-- [ ] Apply the same spacing and typography tokens to
+- [x] Apply the same spacing and typography tokens to
   `#music-player-bar` without merging its DOM or playback state with the
   Radio/Podcast bar.
 
+### Phase 2 verification (2026-10-16)
+
+- The real frontend HTML, stylesheet, and concatenated JavaScript were served
+  with local mock API responses. The temporary mock server was removed after
+  the browser checks.
+- Local and server Podcast playback both showed the episode title, show name,
+  Podcast status, artwork, and episode count. A valid image loaded; missing
+  artwork and a deliberately failed image request both retained the Podcast
+  placeholder.
+- In both Podcast modes, the globe/Stations section, Radio favorite, health,
+  history, quality, and station-detail rows were hidden. A Radio station
+  remained in Radio mode with its artwork, favorite/health controls, quality
+  and station metadata, and geolocated globe visible. Switching from Podcast
+  state to Radio metadata also retained Radio presentation.
+- Server Podcast status updated to show elapsed progress. At the end of a
+  loaded page, the loading message was visible with `aria-busy=true`; the
+  episode title, count, and transport controls remained visible. A simulated
+  page-fetch failure displayed the retry message and kept Next available.
+- Radio and Music computed title size, detail size, and info-row spacing
+  matched (14.4 px, 11.52 px, and 1.28 px respectively). Their player bars
+  remain separate; the Music queue-peek container and queue-next control
+  remain present, and no Music playback or queue logic was changed.
+- Ten focused web-asset regression tests passed. Deno checks, editor
+  diagnostics, and `git diff --check` passed. The mock 404 artwork and 503
+  page response were intentional fallback/retry scenarios.
+
 ### Phase 3 — Clarify transport, progress, and audio settings
 
-- [ ] Standardize Play/Pause as the primary action, with Previous/Next adjacent
+- [x] Standardize Play/Pause as the primary action, with Previous/Next adjacent
   and Stop/Dismiss visually separate. Preserve the current action semantics.
-- [ ] Keep Prev/Next disabled states and accessible names synchronized with
+- [x] Keep Prev/Next disabled states and accessible names synchronized with
   podcast queue position, page availability, and page-loading state.
-- [ ] Add an elapsed/total timeline for finite, seekable podcast playback.
+- [x] Add an elapsed/total timeline for finite, seekable podcast playback.
   Confirm local and server playback duration/seek support first; if server
   seeking is unavailable or unreliable, do not present a functional-looking
   scrubber for that mode.
-- [ ] Keep Music’s existing seek behavior intact. For live Radio, present
+- [x] Keep Music’s existing seek behavior intact. For live Radio, present
   “Live” plus elapsed time and omit seeking unless the stream path supports it.
-- [ ] Make volume’s standard range and the advanced boost range understandable.
+- [x] Make volume’s standard range and the advanced boost range understandable.
   Prefer a primary volume control with boost under Audio settings, while
   preserving existing volume/boost mapping, endpoints, and reset-to-80% action.
-- [ ] Keep EQ, Room/Reverb, and other advanced controls available where they
+- [x] Keep EQ, Room/Reverb, and other advanced controls available where they
   are supported; collapse them rather than deleting or silently resetting
   active settings.
 
+### Phase 3 verification (2026-10-16)
+
+- Browser checks used the current frontend sources with local mock API
+  responses at desktop width and a 378 px coarse-pointer viewport. Play/Pause
+  stayed primary, Previous/Next remained adjacent, Stop occupied a separate
+  row on mobile, and neither player overflowed horizontally.
+- Podcast Previous/Next states were checked at the first and last loaded
+  episodes, with another page available, while that page was loading, after a
+  simulated page-load failure, when no next page remained, and during a
+  playback transition. Disabled state, accessible name, busy state, and retry
+  text matched each case.
+- Local and server Podcast progress appeared only with finite duration and
+  seek capability; unsupported progress was hidden/disabled. A seek commit
+  succeeded in the mock browser check. Radio showed Live plus elapsed time and
+  no scrubber, while the existing Music seek controls remained available.
+- Volume and boost showed separate values and retained their existing ranges,
+  endpoints, and reset mapping (80% volume and 0 dB/1× boost). EQ/Reverb
+  controls remain available inside collapsed Audio settings.
+- A populated Music queue displayed Next Queued, hid normal Prev/Next, and
+  retained the queue-peek card; an empty queue restored normal transport.
+  This exposed an optional pending-notice early-return bug, which was fixed
+  and covered by a regression test.
+- The focused `WebAssetRegressionTests` passed 23/23. Deno checks, editor
+  diagnostics for changed files, and `git diff --check` passed. The isolated
+  application build completed with zero warnings and errors.
+
 ### Phase 4 — Accessibility and visual polish
 
-- [ ] Give each player a semantic labelled region and ensure every icon-only
+- [x] Give each player a semantic labelled region and ensure every icon-only
   control has a meaningful accessible name and state.
-- [ ] Provide visible keyboard focus, clear disabled/loading states, sufficient
+- [x] Provide visible keyboard focus, clear disabled/loading states, sufficient
   contrast, and touch targets of at least 44 CSS pixels where practical.
-- [ ] Ensure status/error text is announced without repeatedly interrupting
+- [x] Ensure status/error text is announced without repeatedly interrupting
   playback updates. Do not use color alone to indicate playing, paused, live,
   or boost state.
-- [ ] Respect reduced-motion preferences for artwork/waveform animations and
+- [x] Respect reduced-motion preferences for artwork/waveform animations and
   avoid moving or marquee text by default.
-- [ ] Check light/dark themes and long localized titles/labels.
+- [x] Check light/dark themes and long localized titles/labels.
+
+### Phase 4 verification
+
+- DOM and regression checks confirmed labelled player regions, accessible
+  control names/states, visible focus styles, disabled/loading semantics, and
+  polite status/error announcements.
+- Dark/light title contrast measured 17.61:1 and at least 10.51:1 respectively.
+  Reduced-motion behavior was checked, and the Radio title remains static.
+- Coarse-pointer emulation applied the 44px CSS minimum and kept the Music
+  queue-removal control visible. Long localized titles remained at most two
+  lines in the narrow viewport checks.
 
 ### Phase 5 — Regression verification
 
-- [ ] Test Radio, local Podcast, server Podcast, local Music, and server Music
+- [x] Test Radio, local Podcast, server Podcast, local Music, and server Music
   in playing, paused, loading, stopped, and error states.
-- [ ] Verify podcast Previous/Next behavior at the beginning, within a loaded
+- [x] Verify podcast Previous/Next behavior at the beginning, within a loaded
   page, while another page loads, after a page-load failure, and across a page
   boundary.
-- [ ] Verify Music queue display, add/remove/next behavior, and queue position.
+- [x] Verify Music queue display, add/remove/next behavior, and queue position.
   If hiding an empty “Up Next” shell, verify that populated queue items and
   their controls remain available.
-- [ ] Verify volume, boost, reset, and any new progress controls with pointer,
-  keyboard, and touch input.
-- [ ] Run the existing movie-card click/playback regression checks, even though
+- [x] Verify volume, boost, reset, and any new progress controls with pointer,
+  keyboard-style input/change events, and touch-end/coarse-pointer behavior.
+- [x] Run the existing movie-card click/playback regression checks, even though
   cards are out of scope, to catch shared CSS or event regressions.
-- [ ] Run the relevant `WebAssetRegressionTests`, JavaScript syntax checks, and
+- [x] Run the relevant `WebAssetRegressionTests`, JavaScript syntax checks, and
   `git diff --check`; compare any known baseline test failures rather than
   attributing unrelated failures to the player work.
-- [ ] Repeat the viewport matrix in a real browser with long titles, missing
+- [x] Repeat the viewport matrix in a real browser with long titles, missing
   artwork, short/unknown duration, and a populated Music queue.
+
+### Phase 5 verification
+
+- Radio, local/server Podcast, and local/server Music status and error paths
+  were rechecked. Actual local Music and Podcast media errors produced the
+  correct alert title, cleared busy/live status, and left Play unpressed.
+- Podcast paging covered the initial and in-page Next actions, deferred
+  loading, failed request/retry, successful page-boundary transition, and the
+  disabled end-of-queue state.
+- Music queue add/next/remove-cursor behavior and the populated queue display
+  were verified; the empty queue restores normal transport. Volume, boost,
+  reset values, and finite/unknown-duration seeking were also checked.
+- Pointer seek behavior was checked in the browser. Keyboard-style `input` /
+  `change` and touch-end event paths each produced exactly one seek commit.
+  Coarse-pointer emulation confirmed the 44px CSS target rule. The integrated
+  browser did not deliver native Arrow-key or physical-touch input, so those
+  device-level interactions remain a manual follow-up.
+- The player had no horizontal overflow at 320, 375, 533, 768, 1024, and
+  1440px. With a long localized title, missing artwork, and a populated queue,
+  the title stayed within two lines and the queue remained available. The
+  pre-existing mode-tab row still causes document-level overflow (735px at
+  320/375px and 851px at 533/768px); the player itself adds none.
+- Focused `WebAssetRegressionTests` passed 29/29, including
+  `MovieCardsRemainClickableForPlayback` and
+  `MovieCardClickLaunchesPlaybackEndpoint`. Deno checks passed for the six
+  modified player scripts, editor diagnostics found no errors, and
+  `git diff --check` passed.
 
 ## Invariants and non-goals
 

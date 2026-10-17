@@ -9,6 +9,7 @@ let musicPlaybackPollTimer = null;
 let musicCurrentPath = null;
 let musicIsPlaying = false;
 let musicCurrentVolume = 0.8;
+let musicCurrentBoost = 1.0;
 // Clear the dynamic-session-browsed flag on every fresh page load so that after
 // a server restart the music tab always starts at root, not at the last dynamic folder.
 try { sessionStorage.removeItem('rpdyn_browsed'); } catch {}
@@ -316,7 +317,29 @@ async function musicStop() {
   _onMusicTrackChangedLyrics(null, '', '');
   _clearMusicPlaybackVisuals();
   const bar = document.getElementById('music-player-bar');
-  if (bar) bar.style.display = 'none';
+  if (bar) {
+    bar.setAttribute('aria-busy', 'false');
+    if (typeof _announcePlayerStatus === 'function') {
+      _announcePlayerStatus(
+        'music-player-announcement',
+        'music:stopped',
+        'Music playback stopped.'
+      );
+    }
+    bar.style.display = 'none';
+  }
+  const playButton = document.getElementById('music-btn-play');
+  if (playButton) {
+    playButton.innerHTML = '&#9654; Play';
+    playButton.setAttribute('aria-label', 'Play music');
+    playButton.setAttribute('aria-pressed', 'false');
+    playButton.title = 'Play music';
+  }
+  const playerStatus = document.getElementById('music-bar-state-status');
+  if (playerStatus) {
+    playerStatus.hidden = true;
+    playerStatus.textContent = '';
+  }
   document.body.classList.remove('music-player-docked');
   stopMusicPlaybackPoll();
   if (!playingPath) releaseWakeLock();
@@ -354,14 +377,18 @@ const _debouncedMusicVolumeApi = debounce((v) => fetch('/api/music/volume?v=' + 
 const _debouncedMusicBoostApi  = debounce((v) => fetch('/api/music/boost?v='  + v), 150);
 
 function musicVolume(v) {
-  const vol = parseFloat(v);
-  if (isNaN(vol)) return;
+  const parsed = parseFloat(v);
+  if (!Number.isFinite(parsed)) return;
+  const vol = Math.min(1, Math.max(0, parsed));
   musicCurrentVolume = vol;
+  const slider = document.getElementById('music-bar-volume');
+  if (slider) slider.value = String(vol);
+  updateMusicVolumeSliderVisual(vol);
   const lbl = document.getElementById('music-volume-label');
   if (lbl) lbl.textContent = Math.round(vol * 100) + '%';
   if (isPlayLocal()) {
     const a = typeof _getLocalAudio !== 'undefined' ? _getLocalAudio() : null;
-    if (a) a.volume = Math.min(1, Math.max(0, vol));
+    if (a) a.volume = vol;
     return;
   }
   _debouncedMusicVolumeApi(vol.toFixed(3));
@@ -371,56 +398,62 @@ function musicVolumeReset() {
   if (slider) { slider.value = 1; musicVolume(1); }
 }
 
-// Combined volume/boost slider (0–1.0 = volume, 1.0–1.3 = boost zone)
-function musicCombinedSlider(v) {
-  const val = parseFloat(v);
-  if (isNaN(val)) return;
-  const slider = document.getElementById('music-bar-combined');
-  const lbl    = document.getElementById('music-combined-label');
-  // Slider range is 0–1.3; convert value to a percentage of total track width
-  const totalRange = 1.3;
-  const volBoundary = (1.0 / totalRange * 100).toFixed(2) + '%';  // ~76.92%
-  const fillPct = (val / totalRange * 100).toFixed(2) + '%';
-  if (val <= 1.0) {
-    // Volume zone: accent color fills up to value; no boost segment
-    if (slider) {
-      slider.style.setProperty('--cvs-vol',   fillPct);
-      slider.style.setProperty('--cvs-boost', fillPct);
-      slider.style.setProperty('--cvs-thumb', 'var(--player-accent,#e94560)');
-    }
-    if (lbl) lbl.textContent = Math.round(val * 100) + '%';
-    musicVolume(val);
-    musicBoost(1.0);
-  } else {
-    // Boost zone: accent fills to 100% boundary; orange fills from there to value
-    const gain = 1 + (val - 1) * (2 / 0.3);
-    if (slider) {
-      slider.style.setProperty('--cvs-vol',   volBoundary);
-      slider.style.setProperty('--cvs-boost', fillPct);
-      slider.style.setProperty('--cvs-thumb', '#f97316');
-    }
-    const db = Math.round(20 * Math.log10(gain));
-    if (lbl) lbl.textContent = '100% +' + db + 'dB';
-    musicVolume(1.0);
-    musicBoost(gain);
-  }
+function updateMusicVolumeSliderVisual(value) {
+  const parsed = parseFloat(value);
+  if (!Number.isFinite(parsed)) return;
+  const slider = document.getElementById('music-bar-volume');
+  if (!slider) return;
+  const vol = Math.min(1, Math.max(0, parsed));
+  const fillPct = (vol * 100).toFixed(2) + '%';
+  slider.classList.remove('slider-boosting');
+  slider.style.setProperty('--cvs-vol', fillPct);
+  slider.style.setProperty('--cvs-boost', fillPct);
+  slider.style.setProperty('--cvs-thumb', 'var(--player-accent,#e94560)');
+  slider.setAttribute('aria-valuetext', Math.round(vol * 100) + '%');
 }
-function musicCombinedReset() {
-  const slider = document.getElementById('music-bar-combined');
-  if (slider) { slider.value = 0.8; musicCombinedSlider(0.8); }
+
+function syncMusicAudioControls(volume, boost) {
+  const vol = Math.min(1, Math.max(0, Number(volume) || 0));
+  const gain = Math.min(3, Math.max(1, Number(boost) || 1));
+  const volumeSlider = document.getElementById('music-bar-volume');
+  const boostSlider = document.getElementById('music-bar-boost');
+
+  if (volumeSlider) {
+    volumeSlider.value = String(vol);
+    updateMusicVolumeSliderVisual(vol);
+  }
+  if (boostSlider) {
+    boostSlider.value = String(gain);
+    const db = Math.round(20 * Math.log10(gain) * 10) / 10;
+    boostSlider.setAttribute('aria-valuetext', `${gain.toFixed(2)}× gain, ${db > 0 ? '+' : ''}${db} dB`);
+  }
+
+  const volumeLabel = document.getElementById('music-volume-label');
+  if (volumeLabel) volumeLabel.textContent = Math.round(vol * 100) + '%';
+  const boostLabel = document.getElementById('music-boost-label');
+  if (boostLabel) {
+    const db = 20 * Math.log10(gain);
+    const roundedDb = Math.round(db * 10) / 10;
+    boostLabel.textContent = roundedDb > 0 ? `+${roundedDb} dB` : '0 dB';
+  }
 }
 
 function musicBoost(v) {
-  const boost = parseFloat(v);
-  if (isNaN(boost)) return;
-  const lbl = document.getElementById('music-boost-label');
-  if (lbl) {
-    const db = boost > 0 ? Math.round(20 * Math.log10(boost)) : -Infinity;
-    lbl.textContent = isFinite(db) ? (db >= 0 ? '+' : '') + db + ' dB' : '—';
+  const parsed = parseFloat(v);
+  if (!Number.isFinite(parsed)) return;
+  const boost = Math.min(3, Math.max(1, parsed));
+  musicCurrentBoost = boost;
+  const db = Math.round(20 * Math.log10(boost) * 10) / 10;
+  const slider = document.getElementById('music-bar-boost');
+  if (slider) {
+    slider.value = String(boost);
+    slider.setAttribute('aria-valuetext', `${boost.toFixed(2)}× gain, ${db > 0 ? '+' : ''}${db} dB`);
   }
+  const lbl = document.getElementById('music-boost-label');
+  if (lbl) lbl.textContent = `${db > 0 ? '+' : ''}${db} dB`;
   if (isPlayLocal()) {
     const gainNode = typeof _ensureLocalBoostGraph !== 'undefined' ? _ensureLocalBoostGraph() : null;
-    if (gainNode) gainNode.gain.value = Math.max(0, boost);
+    if (gainNode) gainNode.gain.value = boost;
     return;
   }
   _debouncedMusicBoostApi(boost.toFixed(3));
@@ -428,6 +461,11 @@ function musicBoost(v) {
 function musicBoostReset() {
   const slider = document.getElementById('music-bar-boost');
   if (slider) { slider.value = 1; musicBoost(1); }
+}
+
+function musicResetAudioDefaults() {
+  musicVolume(0.8);
+  musicBoost(1);
 }
 
 function pathToName(p) {
@@ -512,9 +550,54 @@ function updateMusicBar(s) {
   const bar = document.getElementById('music-player-bar');
   if (!bar) return;
   const active = (s.isPlaying || s.isPaused) && currentMode === 'music';
+  const isPlaying = Boolean(s.isPlaying && !s.isPaused);
+  const isPaused = Boolean(s.isPaused && !s.isPlaying);
+  const isBuffering = Boolean(
+    s.isBuffering || s.IsBuffering || s.isStalled || s.IsStalled || s.isLoading || s.IsLoading
+  );
+  const lastError = String(s.lastError ?? s.LastError ?? '').trim();
+  const playerStatus = document.getElementById('music-bar-state-status');
+  bar.setAttribute('aria-busy', String(isBuffering));
+  if (playerStatus) {
+    const statusText = isBuffering
+      ? 'Buffering…'
+      : lastError && !active
+        ? 'Playback error'
+        : isPlaying
+          ? 'Playing'
+          : isPaused
+            ? 'Paused'
+            : '';
+    playerStatus.textContent = statusText;
+    playerStatus.hidden = !statusText;
+  }
+  const playbackState = isBuffering
+    ? 'loading'
+    : lastError && !active
+      ? 'error'
+      : isPlaying
+        ? 'playing'
+        : isPaused
+          ? 'paused'
+          : 'stopped';
+  if (typeof _announcePlayerStatus === 'function') {
+    const statusMessage = playbackState === 'loading'
+      ? 'Music playback is buffering.'
+      : playbackState === 'error'
+        ? ''
+        : `Music playback ${playbackState}.`;
+    _announcePlayerStatus(
+      'music-player-announcement',
+      `music:${playbackState}`,
+      statusMessage
+    );
+  }
   bar.style.display = active ? 'flex' : 'none';
   const isDocked = active && window.matchMedia('(min-width:900px)').matches;
   document.body.classList.toggle('music-player-docked', isDocked);
+  if (typeof syncMusicAudioControls === 'function') {
+    syncMusicAudioControls(musicCurrentVolume, musicCurrentBoost);
+  }
 
   const isGenericAlbum = (v) => {
     const n = String(v || '').trim().toLowerCase();
@@ -737,21 +820,39 @@ function updateMusicBar(s) {
 
   // Seek bar + filled-track CSS var
   const seek = document.getElementById('music-seek');
-  if (seek && !_musicSeekDragging) {
-    seek.max = s.duration > 0 ? s.duration : (s.durationSec > 0 ? s.durationSec : 0);
-    seek.value = s.position || 0;
+  const duration = Number(s.duration) > 0
+    ? Number(s.duration)
+    : Number(s.durationSec) > 0
+      ? Number(s.durationSec)
+      : 0;
+  const rawPosition = Number(s.position);
+  const position = Number.isFinite(rawPosition) ? Math.max(0, rawPosition) : 0;
+  const progressRow = document.getElementById('music-progress-row');
+  if (progressRow) progressRow.style.display = duration > 0 ? 'grid' : 'none';
+  if (seek) {
+    seek.disabled = duration <= 0;
+    if (!_musicSeekDragging) {
+      seek.max = duration;
+      seek.value = duration > 0 ? Math.min(position, duration) : 0;
+    }
   }
   _updateMusicSeekFill();
 
   // Time label
   const timeEl = document.getElementById('music-time-label');
   if (timeEl)
-    timeEl.textContent =
-      s.duration > 0 ? fmtSec(s.position) + ' / ' + fmtSec(s.duration) : '0:00 / 0:00';
+    timeEl.textContent = duration > 0
+      ? fmtSec(Math.min(position, duration)) + ' / ' + fmtSec(duration)
+      : '';
 
   // Play button label
   const btn = document.getElementById('music-btn-play');
-  if (btn) btn.innerHTML = s.isPaused ? '&#9654; Play' : '&#9646;&#9646; Pause';
+  if (btn) {
+    btn.innerHTML = isPlaying ? '&#9646;&#9646; Pause' : '&#9654; Play';
+    btn.setAttribute('aria-label', `${isPlaying ? 'Pause' : 'Play'} music`);
+    btn.setAttribute('aria-pressed', String(isPlaying));
+    btn.title = `${isPlaying ? 'Pause' : 'Play'} music`;
+  }
 
   // Lyrics — trigger fetch when the track changes
   const lyricsPath = s.currentPath || musicCurrentPath;
@@ -1414,6 +1515,9 @@ try {
 
 let _musicSeekDragging = false;
 function onMusicSeekDrag() {
+  const seek = document.getElementById('music-seek');
+  const duration = Number(seek?.max);
+  if (!seek || seek.disabled || !Number.isFinite(duration) || duration <= 0) return;
   _musicSeekDragging = true;
   _updateMusicSeekFill();
 }
@@ -1422,8 +1526,10 @@ async function onMusicSeekCommit() {
   _musicSeekDragging = false;
   const seek = document.getElementById('music-seek');
   if (!seek) return;
-  const pos = parseFloat(seek.value);
-  if (Number.isNaN(pos)) return;
+  const duration = Number(seek.max);
+  const rawPosition = Number(seek.value);
+  if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(rawPosition)) return;
+  const pos = Math.max(0, Math.min(rawPosition, duration));
   // Local mode: seek the browser audio directly
   if (isPlayLocal() && typeof _localMediaType !== 'undefined' && _localMediaType === 'Music') {
     const a = typeof _getLocalAudio !== 'undefined' ? _getLocalAudio() : null;
@@ -1438,7 +1544,10 @@ async function onMusicSeekCommit() {
 function toggleMusicAutoPlay() {
   _musicAutoPlay = !_musicAutoPlay;
   const btn = document.getElementById('music-btn-autoplay');
-  if (btn) btn.classList.toggle('active', _musicAutoPlay);
+  if (btn) {
+    btn.classList.toggle('active', _musicAutoPlay);
+    btn.setAttribute('aria-pressed', String(_musicAutoPlay));
+  }
 }
 function _buildShuffleOrder() {
   const n = musicTrackList.length;
@@ -1468,7 +1577,10 @@ async function _setMusicShuffleEnabled(enabled) {
   _musicShuffle = next;
   window._musicNextShuffleQueuePick = null; // recompute for new shuffle state
   const btn = document.getElementById('music-btn-shuffle');
-  if (btn) btn.classList.toggle('active', _musicShuffle);
+  if (btn) {
+    btn.classList.toggle('active', _musicShuffle);
+    btn.setAttribute('aria-pressed', String(_musicShuffle));
+  }
 
   if (_musicShuffle) {
     // Load ALL tracks in the current folder before building shuffle order so
@@ -1755,7 +1867,7 @@ function _renderMusicQueuePeek() {
       return '<div class="' + cls + '" data-qi="' + i + '" title="' + esc(item.name || item.path) + '">'
         + '<span class="music-queue-peek-num">' + (i + 1) + '</span>'
         + '<span class="music-queue-peek-name">' + nowIcon + esc(item.name || item.path) + '</span>'
-        + '<button class="music-queue-remove-btn" data-action="remove" data-qi="' + i + '" title="Remove from queue">&#10005;</button>'
+        + '<button class="music-queue-remove-btn" data-action="remove" data-qi="' + i + '" aria-label="Remove ' + esc(item.name || item.path) + ' from queue" title="Remove from queue">&#10005;</button>'
         + '</div>';
     }).join('');
   }
@@ -1821,6 +1933,9 @@ function toggleMusicRepeat() {
   const btn = document.getElementById('music-btn-repeat');
   if (btn) {
     btn.classList.toggle('active', _musicRepeat !== 'none');
+    btn.setAttribute('aria-pressed', String(_musicRepeat !== 'none'));
+    btn.setAttribute('aria-label', `Repeat mode: ${_musicRepeat}`);
+    btn.title = `Repeat mode: ${_musicRepeat}`;
     if (_musicRepeat === 'none') btn.innerHTML = '&#128257; Repeat';
     else if (_musicRepeat === 'all') btn.innerHTML = '&#128257; Repeat All';
     else btn.innerHTML = '&#128257; Repeat One';
@@ -2636,27 +2751,30 @@ function _musicSelectionPlay() {
 
   _musicSelectionClear();
 }
-// Update the pending-queue bar (visible before playback starts)
+// Update the optional pending notice and the queue-next transport state.
 function _updateMusicQueuePendingBar() {
   const bar = document.getElementById('music-queue-pending-bar');
-  if (!bar) return;
   const playerBar = document.getElementById('music-player-bar');
   const playerVisible = playerBar && playerBar.style.display !== 'none';
   const count = window._musicQueue ? window._musicQueue.length : 0;
-  if (!playerVisible && count > 0) {
-    bar.style.display = '';
-    bar.textContent = `\u23F3 ${count} track${count !== 1 ? 's' : ''} queued — start a song to begin playback`;
-  } else {
-    bar.style.display = 'none';
+  if (bar) {
+    if (!playerVisible && count > 0) {
+      bar.style.display = '';
+      bar.textContent = `\u23F3 ${count} track${count !== 1 ? 's' : ''} queued — start a song to begin playback`;
+    } else {
+      bar.style.display = 'none';
+    }
   }
   // Show the yellow queue-next button (replacing Prev/Next) when queue has items
   const navNormal      = document.getElementById('music-nav-normal');
   const btnQueueNext   = document.getElementById('music-btn-queue-next');
   const queueNextTitle = document.getElementById('music-queue-next-title');
+  const transportControls = document.querySelector('#music-player-bar .music-transport-controls');
   if (navNormal && btnQueueNext) {
     const hasQueue = count > 0;
     navNormal.style.display    = hasQueue ? 'none' : '';
     btnQueueNext.style.display = hasQueue ? ''     : 'none';
+    if (transportControls) transportControls.classList.toggle('queue-mode', hasQueue);
     if (queueNextTitle) {
       // Use the same peek logic as the normal Next label so shuffle+queue shows the true upcoming track.
       const peek = hasQueue ? _musicPeekNext() : null;

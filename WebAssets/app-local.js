@@ -62,7 +62,7 @@ async function closeLocalPlayerForNonLocalPlayback() {
   _localMediaType = 'Local';
 }
 
-function localPlay(url, name, type) {
+function localPlay(url, name, type, playerMetadata = null) {
   _localMediaType = type || 'Local';
   _closeNonLocalPlayersForLocalStart(_localMediaType);
   _postLog(`[LOCAL-PLAY] localPlay() called — type=${_localMediaType} name='${name}' url=${url}`);
@@ -78,6 +78,14 @@ function localPlay(url, name, type) {
     _postLog(msg);
     fetch('/api/local-playing', { method: 'POST', body: 'false' }).catch(() => {});
     const errMsg = err && err.message ? err.message : String(err);
+    const statusId = type === 'Music'
+      ? 'music-player-announcement'
+      : type === 'Radio' || type === 'Podcast'
+        ? 'radio-player-announcement'
+        : null;
+    if (statusId && typeof _announcePlayerStatus === 'function') {
+      _announcePlayerStatus(statusId, `${type.toLowerCase()}:error`, '');
+    }
     if (typeof showPlaybackErrorPopup === 'function') {
       showPlaybackErrorPopup(type || 'Media', `"${name}" could not play.\n\n${errMsg}`);
     }
@@ -106,7 +114,7 @@ function localPlay(url, name, type) {
       const country = isPodcast ? '' : (typeof _radioCurrentCountry !== 'undefined' ? _radioCurrentCountry : '');
       const tag = isPodcast ? 'Podcast' : (typeof _radioCurrentTag !== 'undefined' ? _radioCurrentTag : '');
       const station = isPodcast ? null : (typeof _radioCurrentStation !== 'undefined' ? _radioCurrentStation : null);
-      updateRadioBar(resolvedName, country, tag, true, station);
+      updateRadioBar(resolvedName, country, tag, true, station, playerMetadata);
     }
   }
   _localAudioUpdate();
@@ -145,12 +153,43 @@ async function localStop(keepPlayerVisible = false, options = {}) {
   }
 
   const caller = (new Error()).stack ? (new Error()).stack.split('\n').slice(1,3).join(' | ') : 'unknown';
+  const stoppedMediaType = _localMediaType;
   const a = _getLocalAudio();
   const wasActive = a && a.src && !a.paused;
   _postLog(`[LOCAL-STOP] called — wasActive=${wasActive} keepPlayerVisible=${keepPlayerVisible} caller: ${caller}`);
   if (a) {
     a.pause();
     a.src = '';
+  }
+  const isMusic = stoppedMediaType === 'Music';
+  const isRadioPlayer = stoppedMediaType === 'Radio' || stoppedMediaType === 'Podcast';
+  if (isMusic || isRadioPlayer) {
+    const bar = document.getElementById(isMusic ? 'music-player-bar' : 'radio-player-bar');
+    if (bar) bar.setAttribute('aria-busy', 'false');
+    const playButton = document.getElementById(isMusic ? 'music-btn-play' : 'radio-btn-play');
+    if (playButton) {
+      const label = isMusic ? 'Play music' : `Play ${stoppedMediaType.toLowerCase()} playback`;
+      playButton.innerHTML = '&#9654; Play';
+      playButton.setAttribute('aria-label', label);
+      playButton.setAttribute('aria-pressed', 'false');
+      playButton.title = label;
+    }
+    const status = document.getElementById(
+      isMusic ? 'music-bar-state-status' : 'radio-bar-reconnect-status'
+    );
+    if (status) {
+      status.hidden = true;
+      status.textContent = '';
+    }
+    if (typeof _announcePlayerStatus === 'function') {
+      const label = isMusic ? 'Music' : stoppedMediaType;
+      _announcePlayerStatus(
+        isMusic ? 'music-player-announcement' : 'radio-player-announcement',
+        `${stoppedMediaType.toLowerCase()}:stopped`,
+        `${label} playback stopped.`
+      );
+    }
+    if (isRadioPlayer && typeof _syncRadioBarTechRow === 'function') _syncRadioBarTechRow();
   }
   fetch('/api/local-playing', { method: 'POST', body: 'false' }).catch(() => {});
   if (_localMediaType === 'Music') {

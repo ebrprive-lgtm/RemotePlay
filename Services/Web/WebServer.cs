@@ -75,6 +75,7 @@ internal sealed partial class WebServer
     private readonly PodcastFeedHttpClient _podcastFeedHttpClient;
     private readonly PodcastFeedCache _podcastFeedCache;
     private readonly TimeProvider _podcastFeedCacheTimeProvider;
+    private readonly string _podcastTopPoolCacheFilePath;
     private readonly PresenceBroadcaster? _broadcaster;
     private readonly RemotePlay.Services.Discovery.DlnaDiscovery? _dlna;
     private readonly PlaybackHistory _playbackHistory;
@@ -192,7 +193,8 @@ internal sealed partial class WebServer
         RemotePlay.Services.Discovery.DlnaDiscovery? dlna = null,
         PodcastFeedHttpClient? podcastFeedHttpClient = null,
         TimeProvider? podcastFeedCacheTimeProvider = null,
-        System.Net.Http.HttpClient? podcastCatalogHttpClient = null)
+        System.Net.Http.HttpClient? podcastCatalogHttpClient = null,
+        string? podcastTopPoolCacheFilePath = null)
     {
         _config = config;
         _expertMode = config.ExpertMode;
@@ -202,6 +204,10 @@ internal sealed partial class WebServer
         _podcastFeedHttpClient = podcastFeedHttpClient ?? _defaultPodcastFeedHttpClient;
         _podcastFeedCacheTimeProvider = podcastFeedCacheTimeProvider ?? TimeProvider.System;
         _podcastFeedCache = new PodcastFeedCache(_podcastFeedCacheTimeProvider);
+        _podcastTopPoolCacheFilePath = string.IsNullOrWhiteSpace(podcastTopPoolCacheFilePath)
+            ? AppPaths.PodcastTopPoolCacheFile
+            : Path.GetFullPath(podcastTopPoolCacheFilePath);
+        LoadPodcastTopPoolCache();
         _broadcaster = broadcaster;
         _dlna = dlna;
         _playbackHistory = playbackHistory ?? new PlaybackHistory();

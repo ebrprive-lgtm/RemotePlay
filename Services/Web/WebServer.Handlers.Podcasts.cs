@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Xml.Linq;
@@ -21,10 +22,16 @@ internal sealed partial class WebServer
     private static readonly HttpClient _defaultPodcastHttpClient = CreatePodcastHttpClient();
     private readonly HttpClient _podcastHttpClient;
     private static readonly PodcastFeedHttpClient _defaultPodcastFeedHttpClient = PodcastFeedHttpClient.CreateDefault();
-    private static readonly ConcurrentDictionary<string, PodcastSearchCacheEntry> _podcastSearchCache = new(StringComparer.Ordinal);
-    private static readonly ConcurrentDictionary<string, PodcastTopPoolCacheEntry> _podcastTopPoolCache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, PodcastSearchCacheEntry> _podcastSearchCache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, PodcastTopPoolCacheEntry> _podcastTopPoolCache = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Lazy<Task<PodcastShowDto[]>>> _podcastTopPoolRefreshTasks = new(StringComparer.Ordinal);
     private static readonly TimeSpan _podcastSearchCacheTtl = TimeSpan.FromDays(1);
     private static readonly TimeSpan _podcastTopPoolCacheTtl = TimeSpan.FromDays(1);
+    private static readonly TimeSpan _podcastTopPoolPartialCacheTtl = TimeSpan.FromHours(1);
+    private static readonly TimeSpan _podcastTopPoolStaleTtl = TimeSpan.FromDays(7);
+    private const int PodcastTopPoolCacheVersion = 1;
+    private const int PodcastTopPoolMaxResults = 200;
+    private const long PodcastTopPoolMaxCacheFileBytes = 1024 * 1024;
     private static readonly SemaphoreSlim _itunesRequestThrottleGate = new(1, 1);
     private static readonly TimeSpan _itunesMinRequestInterval = TimeSpan.FromMilliseconds(450);
     private static DateTimeOffset _lastItunesRequestUtc = DateTimeOffset.MinValue;
@@ -179,7 +186,6 @@ internal sealed partial class WebServer
             var total = filtered.Length;
             Logger.Warning("Podcasts", $"Using fallback search ({reason}). pool={fallbackPool.Length}, filtered={filtered.Length}, page={page.Length}, hasMore={hasMore}, total={total}");
             var payloadJson = JsonSerializer.Serialize(new { shows = page, hasMore, total });
-            SetCachedPodcastSearchResponse(cacheKey, payloadJson);
             TrySendResponse(ctx, 200, "application/json", payloadJson);
         }
 
@@ -237,24 +243,208 @@ internal sealed partial class WebServer
         }
     }
 
-    private async Task<PodcastShowDto[]> GetFallbackPoolAsync(bool hasSupportedCountryFilter, string country)
+    private async Task<PodcastShowDto[]> GetFallbackPoolAsync(bool hasSupportedCountryFilter, string? country)
     {
+        var normalizedCountry = (country ?? string.Empty).Trim().ToUpperInvariant();
         var key = hasSupportedCountryFilter
-            ? $"country:{(country ?? string.Empty).Trim().ToUpperInvariant()}"
+            ? $"country:{normalizedCountry}"
             : "all";
 
-        if (_podcastTopPoolCache.TryGetValue(key, out var cached)
-            && cached.ExpiresUtc > DateTimeOffset.UtcNow)
+        var now = DateTimeOffset.UtcNow;
+        if (_podcastTopPoolCache.TryGetValue(key, out var cached))
         {
-            return cached.Shows;
+            if (cached.ExpiresUtc > now)
+            {
+                Logger.Detail("Podcasts", $"Top-pool cache hit: key='{key}', shows={cached.Shows.Length}");
+                return cached.Shows;
+            }
+
+            if (cached.Shows.Length > 0 && now - cached.SavedAtUtc <= _podcastTopPoolStaleTtl)
+            {
+                Logger.Info("Podcasts", $"Serving stale top-pool cache: key='{key}', shows={cached.Shows.Length}, age={(now - cached.SavedAtUtc).TotalHours:F1}h; refreshing in background.");
+                _ = RefreshPodcastTopPoolInBackgroundAsync(key, hasSupportedCountryFilter, normalizedCountry);
+                return cached.Shows;
+            }
+
+            _podcastTopPoolCache.TryRemove(key, out _);
         }
 
-        var shows = hasSupportedCountryFilter
-            ? await FetchTopPodcastsAsync(country, 200).ConfigureAwait(false)
-            : await FetchGlobalTopPodcastsAsync(200).ConfigureAwait(false);
+        Logger.Info("Podcasts", $"Top-pool cache miss: key='{key}'.");
+        return await RefreshPodcastTopPoolSingleFlightAsync(key, hasSupportedCountryFilter, normalizedCountry).ConfigureAwait(false);
+    }
 
-        _podcastTopPoolCache[key] = new PodcastTopPoolCacheEntry(shows, DateTimeOffset.UtcNow.Add(_podcastTopPoolCacheTtl));
+    private async Task RefreshPodcastTopPoolInBackgroundAsync(string key, bool hasSupportedCountryFilter, string country)
+    {
+        try
+        {
+            await RefreshPodcastTopPoolSingleFlightAsync(key, hasSupportedCountryFilter, country).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"Background podcast top-pool refresh failed for '{key}'", ex);
+        }
+    }
+
+    private async Task<PodcastShowDto[]> RefreshPodcastTopPoolSingleFlightAsync(
+        string key,
+        bool hasSupportedCountryFilter,
+        string country)
+    {
+        var refresh = _podcastTopPoolRefreshTasks.GetOrAdd(
+            key,
+            _ => new Lazy<Task<PodcastShowDto[]>>(
+                () => RefreshPodcastTopPoolAsync(key, hasSupportedCountryFilter, country),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+
+        try
+        {
+            return await refresh.Value.ConfigureAwait(false);
+        }
+        finally
+        {
+            var entries = (ICollection<KeyValuePair<string, Lazy<Task<PodcastShowDto[]>>>>)_podcastTopPoolRefreshTasks;
+            entries.Remove(new KeyValuePair<string, Lazy<Task<PodcastShowDto[]>>>(key, refresh));
+        }
+    }
+
+    private async Task<PodcastShowDto[]> RefreshPodcastTopPoolAsync(string key, bool hasSupportedCountryFilter, string country)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var fetched = hasSupportedCountryFilter
+            ? await FetchTopPodcastsAsync(country, PodcastTopPoolMaxResults).ConfigureAwait(false)
+            : await FetchGlobalTopPodcastsAsync(PodcastTopPoolMaxResults).ConfigureAwait(false);
+        var shows = NormalizePodcastTopPool(fetched.Shows);
+        var hasPrevious = _podcastTopPoolCache.TryGetValue(key, out var previous)
+            && previous.Shows.Length > 0;
+
+        if (shows.Length == 0 || fetched.SuccessfulSources == 0)
+        {
+            Logger.Warning("Podcasts", $"Top-pool refresh returned no usable shows for '{key}' ({fetched.SuccessfulSources}/{fetched.AttemptedSources} sources succeeded); keeping the previous cache.");
+            return hasPrevious ? previous!.Shows : [];
+        }
+
+        var isPartial = fetched.SuccessfulSources < fetched.AttemptedSources;
+        if (isPartial && hasPrevious)
+        {
+            Logger.Warning("Podcasts", $"Partial top-pool refresh for '{key}' ({fetched.SuccessfulSources}/{fetched.AttemptedSources} sources succeeded); retaining the existing {previous!.Shows.Length}-show pool.");
+            return previous!.Shows;
+        }
+
+        var savedAtUtc = DateTimeOffset.UtcNow;
+        var freshness = isPartial ? _podcastTopPoolPartialCacheTtl : _podcastTopPoolCacheTtl;
+        var entry = new PodcastTopPoolCacheEntry(
+            shows,
+            savedAtUtc + freshness,
+            savedAtUtc,
+            isPartial,
+            fetched.SuccessfulSources,
+            fetched.AttemptedSources);
+        _podcastTopPoolCache[key] = entry;
+        if (key == "all")
+            SavePodcastTopPoolCache(entry);
+
+        Logger.Info("Podcasts", $"Top-pool refresh completed: key='{key}', shows={shows.Length}, sources={fetched.SuccessfulSources}/{fetched.AttemptedSources}, partial={isPartial}, elapsedMs={stopwatch.ElapsedMilliseconds}.");
         return shows;
+    }
+
+    private static PodcastShowDto[] NormalizePodcastTopPool(IEnumerable<PodcastShowDto> shows)
+    {
+        return shows
+            .Where(show => show is not null)
+            .Select(show => new PodcastShowDto
+            {
+                Title = (show.Title ?? string.Empty).Trim(),
+                Author = (show.Author ?? string.Empty).Trim(),
+                FeedUrl = (show.FeedUrl ?? string.Empty).Trim(),
+                ArtworkUrl = (show.ArtworkUrl ?? string.Empty).Trim(),
+                Genre = (show.Genre ?? string.Empty).Trim(),
+                Country = (show.Country ?? string.Empty).Trim(),
+            })
+            .Where(show => !string.IsNullOrWhiteSpace(show.Title))
+            .Where(show => IsValidPublicPodcastFeedUrl(show.FeedUrl))
+            .GroupBy(show => show.FeedUrl, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .Take(PodcastTopPoolMaxResults)
+            .ToArray();
+    }
+
+    private void LoadPodcastTopPoolCache()
+    {
+        try
+        {
+            if (!File.Exists(_podcastTopPoolCacheFilePath))
+                return;
+
+            var fileInfo = new FileInfo(_podcastTopPoolCacheFilePath);
+            if (fileInfo.Length is <= 0 or > PodcastTopPoolMaxCacheFileBytes)
+            {
+                Logger.Warning("Podcasts", $"Ignoring podcast top-pool cache with invalid size ({fileInfo.Length} bytes).");
+                return;
+            }
+
+            var json = File.ReadAllText(_podcastTopPoolCacheFilePath);
+            var cache = JsonSerializer.Deserialize<PodcastTopPoolCacheFile>(json, CaseInsensitiveOptions);
+            var now = DateTimeOffset.UtcNow;
+            if (cache is null
+                || cache.Version != PodcastTopPoolCacheVersion
+                || cache.SavedAtUtc > now.AddMinutes(5)
+                || now - cache.SavedAtUtc > _podcastTopPoolStaleTtl)
+            {
+                Logger.Warning("Podcasts", "Ignoring unsupported or expired podcast top-pool cache.");
+                return;
+            }
+
+            var shows = NormalizePodcastTopPool(cache.Shows ?? []);
+            if (shows.Length == 0)
+            {
+                Logger.Warning("Podcasts", "Ignoring empty podcast top-pool cache.");
+                return;
+            }
+
+            var freshness = cache.IsPartial ? _podcastTopPoolPartialCacheTtl : _podcastTopPoolCacheTtl;
+            _podcastTopPoolCache["all"] = new PodcastTopPoolCacheEntry(
+                shows,
+                cache.SavedAtUtc + freshness,
+                cache.SavedAtUtc,
+                cache.IsPartial,
+                cache.SuccessfulSources,
+                cache.AttemptedSources);
+            Logger.Info("Podcasts", $"Loaded podcast top-pool cache: shows={shows.Length}, age={(now - cache.SavedAtUtc).TotalHours:F1}h, partial={cache.IsPartial}.");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
+        {
+            Logger.Error("Failed to load podcast top-pool cache", ex);
+        }
+    }
+
+    private void SavePodcastTopPoolCache(PodcastTopPoolCacheEntry entry)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(_podcastTopPoolCacheFilePath);
+            if (string.IsNullOrWhiteSpace(directory))
+                throw new IOException("Podcast top-pool cache path has no parent directory.");
+
+            Directory.CreateDirectory(directory);
+            var cache = new PodcastTopPoolCacheFile
+            {
+                Version = PodcastTopPoolCacheVersion,
+                SavedAtUtc = entry.SavedAtUtc,
+                IsPartial = entry.IsPartial,
+                SuccessfulSources = entry.SuccessfulSources,
+                AttemptedSources = entry.AttemptedSources,
+                Shows = entry.Shows.Take(PodcastTopPoolMaxResults).ToArray(),
+            };
+            var json = JsonSerializer.Serialize(cache, IndentedOptions);
+            if (Encoding.UTF8.GetByteCount(json) > PodcastTopPoolMaxCacheFileBytes)
+                throw new IOException("Podcast top-pool cache exceeds its size limit.");
+
+            WriteAllTextAtomic(_podcastTopPoolCacheFilePath, json);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Logger.Error("Failed to save podcast top-pool cache", ex);
+        }
     }
 
     private static string BuildPodcastSearchCacheKey(string country, string term, bool hasExplicitSearch, int offset, int limit)
@@ -264,7 +454,7 @@ internal sealed partial class WebServer
         return $"country={normalizedCountry}|term={normalizedTerm}|explicit={(hasExplicitSearch ? 1 : 0)}|offset={offset}|limit={limit}";
     }
 
-    private static bool TryGetCachedPodcastSearchResponse(string cacheKey, out string responseJson)
+    private bool TryGetCachedPodcastSearchResponse(string cacheKey, out string responseJson)
     {
         responseJson = string.Empty;
         if (!_podcastSearchCache.TryGetValue(cacheKey, out var entry))
@@ -280,7 +470,7 @@ internal sealed partial class WebServer
         return true;
     }
 
-    private static void SetCachedPodcastSearchResponse(string cacheKey, string responseJson)
+    private void SetCachedPodcastSearchResponse(string cacheKey, string responseJson)
     {
         _podcastSearchCache[cacheKey] = new PodcastSearchCacheEntry(responseJson, DateTimeOffset.UtcNow.Add(_podcastSearchCacheTtl));
 
@@ -497,16 +687,18 @@ internal sealed partial class WebServer
         return (page, hasMore, total, scannedCount);
     }
 
-    private async Task<PodcastShowDto[]> FetchGlobalTopPodcastsAsync(int limit)
+    private async Task<PodcastTopPoolFetchResult> FetchGlobalTopPodcastsAsync(int limit)
     {
         var safeLimit = Math.Clamp(limit, 1, 200);
         var countries = new[] { "US", "GB", "CA", "AU", "DE", "FR", "ES", "IT", "NL", "BE" };
         var countryShows = new List<PodcastShowDto[]>(countries.Length);
+        var successfulSources = 0;
 
         foreach (var country in countries)
         {
-            countryShows.Add(
-                await FetchTopPodcastsAsync(country, safeLimit).ConfigureAwait(false));
+            var result = await FetchTopPodcastsAsync(country, safeLimit).ConfigureAwait(false);
+            countryShows.Add(result.Shows);
+            successfulSources += result.SuccessfulSources;
         }
 
         var unique = new List<PodcastShowDto>(safeLimit);
@@ -526,11 +718,11 @@ internal sealed partial class WebServer
 
                 unique.Add(show);
                 if (unique.Count >= safeLimit)
-                    return unique.ToArray();
+                    break;
             }
         }
 
-        return unique.ToArray();
+        return new PodcastTopPoolFetchResult(unique.ToArray(), countries.Length, successfulSources);
     }
 
     private async Task HandlePodcastPlayAsync(HttpListenerContext ctx)
@@ -576,23 +768,31 @@ internal sealed partial class WebServer
         ScheduleSsePush(delayMs: 300);
     }
 
-    private async Task<PodcastShowDto[]> FetchTopPodcastsAsync(string country, int limit)
+    private async Task<PodcastTopPoolFetchResult> FetchTopPodcastsAsync(string country, int limit)
     {
         var safeCountry = NormalizePodcastCountryCode(country);
-        var safeLimit = Math.Clamp(limit <= 0 ? 30 : limit, 1, 200);
+        var safeLimit = Math.Clamp(limit <= 0 ? 30 : limit, 1, PodcastTopPoolMaxResults);
         var endpoint = $"https://rss.applemarketingtools.com/api/v2/{safeCountry.ToLowerInvariant()}/podcasts/top/{safeLimit}/podcasts.json";
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         try
         {
             using var response = await _podcastHttpClient.GetAsync(endpoint, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
-                return [];
+            {
+                Logger.Warning("Podcasts", $"Top podcast chart country='{safeCountry}' returned HTTP {(int)response.StatusCode} in {stopwatch.ElapsedMilliseconds}ms.");
+                return new PodcastTopPoolFetchResult([], 1, 0);
+            }
 
             await using var stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
             var payload = await JsonSerializer.DeserializeAsync<AppleTopPodcastsResponse>(stream, CaseInsensitiveOptions).ConfigureAwait(false);
-            var results = payload?.Feed?.Results ?? [];
+            if (payload?.Feed is null)
+            {
+                Logger.Warning("Podcasts", $"Top podcast chart country='{safeCountry}' returned no feed payload in {stopwatch.ElapsedMilliseconds}ms.");
+                return new PodcastTopPoolFetchResult([], 1, 0);
+            }
 
-            return results
+            var shows = (payload.Feed.Results ?? [])
                 .Select(r => new PodcastShowDto
                 {
                     Title = (r.Name ?? string.Empty).Trim(),
@@ -607,11 +807,14 @@ internal sealed partial class WebServer
                 .GroupBy(s => s.FeedUrl, StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.First())
                 .ToArray();
+
+            Logger.Info("Podcasts", $"Top podcast chart country='{safeCountry}' returned {shows.Length} usable shows in {stopwatch.ElapsedMilliseconds}ms.");
+            return new PodcastTopPoolFetchResult(shows, 1, 1);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
-            Logger.Warning("Podcasts", $"Top podcasts fallback failed for country '{safeCountry}': {ex.Message}");
-            return [];
+            Logger.Warning("Podcasts", $"Top podcasts fallback failed for country '{safeCountry}' after {stopwatch.ElapsedMilliseconds}ms: {ex.Message}");
+            return new PodcastTopPoolFetchResult([], 1, 0);
         }
     }
 
@@ -1175,5 +1378,26 @@ internal sealed partial class WebServer
     }
 
     private sealed record PodcastSearchCacheEntry(string ResponseJson, DateTimeOffset ExpiresUtc);
-    private sealed record PodcastTopPoolCacheEntry(PodcastShowDto[] Shows, DateTimeOffset ExpiresUtc);
+    private sealed class PodcastTopPoolCacheFile
+    {
+        public int Version { get; init; }
+        public DateTimeOffset SavedAtUtc { get; init; }
+        public bool IsPartial { get; init; }
+        public int SuccessfulSources { get; init; }
+        public int AttemptedSources { get; init; }
+        public PodcastShowDto[] Shows { get; init; } = [];
+    }
+
+    private sealed record PodcastTopPoolCacheEntry(
+        PodcastShowDto[] Shows,
+        DateTimeOffset ExpiresUtc,
+        DateTimeOffset SavedAtUtc,
+        bool IsPartial,
+        int SuccessfulSources,
+        int AttemptedSources);
+
+    private sealed record PodcastTopPoolFetchResult(
+        PodcastShowDto[] Shows,
+        int AttemptedSources,
+        int SuccessfulSources);
 }
