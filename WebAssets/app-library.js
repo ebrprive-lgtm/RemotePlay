@@ -4735,7 +4735,10 @@ async function play(p, name, linkPath) {
   const currentFile = _findCurrentVideoFile(p);
   const title = name || currentFile?.displayName || currentFile?.name || '';
   if (isPlayLocal()) {
-    if (_playLocalVideo(p, title, _resolveVideoLinkPath(p, linkPath)) && queuedVideos.has(p)) {
+    if (_playLocalVideo(p, title, _resolveVideoLinkPath(p, linkPath), {
+      resumePositionSeconds: Number(currentFile?.position),
+      resumeDurationSeconds: Number(currentFile?.duration),
+    }) && queuedVideos.has(p)) {
       void _consumeLocalVideoQueueItem(p);
     }
     return;
@@ -4749,7 +4752,6 @@ async function play(p, name, linkPath) {
   playingPath = p;
   setStatus(title ? 'Playing: ' + title : 'Playing...');
   setPlayerPoster(p);
-  markPlayed(p);
   updatePlayingCard(p);
   if (queuedVideos.has(p)) {
     await api('/api/queue/remove?path=' + encodeURIComponent(p));
@@ -4871,16 +4873,19 @@ async function toggleWatchedCard(event, p) {
   closeCardActions(event);
   const target = event.currentTarget;
   const card = target?.closest('.movie-card');
+  const linkPath = card?.dataset.linkPath || '';
   const shouldClear =
     playedVideos.has(p) ||
     Boolean(card?.classList.contains('played')) ||
     Boolean(target?.closest('.continue-card'));
   if (shouldClear) {
-    await api('/api/history/clear?path=' + encodeURIComponent(p));
-    unmarkPlayed(p);
+    const query = new URLSearchParams({ path: p });
+    if (linkPath) query.set('linkPath', linkPath);
+    await api('/api/history/clear?' + query.toString());
+    unmarkPlayed(p, linkPath);
     setStatus('Resume position cleared.');
   } else {
-    markPlayed(p);
+    markPlayed(p, linkPath);
   }
 
   if (card) syncVideoActionButtons(card);
@@ -4912,6 +4917,8 @@ async function playQueueStart() {
       {
         skipServerCleanup: true,
         playbackEndBehavior: _localVideoState?.playbackEndBehavior || '',
+        resumePositionSeconds: Number(file?.position),
+        resumeDurationSeconds: Number(file?.duration),
       }
     );
     if (started) void _consumeLocalVideoQueueItem(first.path);
@@ -4976,20 +4983,26 @@ function savePlayedVideos() {
     encodeURIComponent(JSON.stringify(values)) +
     '; max-age=31536000; path=/; SameSite=Lax';
 }
-function markPlayed(p) {
+function markPlayed(p, linkPath = '', persist = true) {
   playedVideos.add(p);
   savePlayedVideos();
-  api('/api/history/watched/set?path=' + encodeURIComponent(p) + '&watched=true');
+  if (persist) {
+    const query = new URLSearchParams({ path: p, watched: 'true' });
+    if (linkPath) query.set('linkPath', linkPath);
+    api('/api/history/watched/set?' + query.toString());
+  }
   for (const card of getMovieCards(p)) {
     card.classList.add('played');
     syncVideoStateBadges(card);
     syncVideoActionButtons(card);
   }
 }
-function unmarkPlayed(p) {
+function unmarkPlayed(p, linkPath = '') {
   playedVideos.delete(p);
   savePlayedVideos();
-  api('/api/history/watched/set?path=' + encodeURIComponent(p) + '&watched=false');
+  const query = new URLSearchParams({ path: p, watched: 'false' });
+  if (linkPath) query.set('linkPath', linkPath);
+  api('/api/history/watched/set?' + query.toString());
   for (const card of getMovieCards(p)) {
     card.classList.remove('played');
     syncVideoStateBadges(card);

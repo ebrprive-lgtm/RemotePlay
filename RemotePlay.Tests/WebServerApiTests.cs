@@ -28,6 +28,7 @@ public sealed class WebServerApiTests : IDisposable
     private readonly string _podcastTopPoolCacheFile;
     private readonly List<(string Url, string Title)> _radioPlayRequests = [];
     private readonly List<(string Path, double Position)> _videoPositionPlayRequests = [];
+    private PlaybackStatus _playbackStatus = new();
 
     public WebServerApiTests()
     {
@@ -41,6 +42,7 @@ public sealed class WebServerApiTests : IDisposable
         _podcastCatalogHttpHandler = new TestPodcastCatalogHttpMessageHandler();
         _podcastHostResolver = new TestPodcastHostResolver();
         _podcastCacheTimeProvider = new TestPodcastCacheTimeProvider();
+        var playbackHistory = new PlaybackHistory(Path.Combine(_podcastTopPoolCacheDirectory, "history.json"));
         _podcastUpstreamClient = new HttpClient(_podcastHttpHandler);
         _podcastCatalogHttpClient = new HttpClient(_podcastCatalogHttpHandler);
         var podcastFeedHttpClient = new PodcastFeedHttpClient(_podcastUpstreamClient, _podcastHostResolver);
@@ -48,7 +50,9 @@ public sealed class WebServerApiTests : IDisposable
             new AppConfig { Port = port },
             BuildStubCallbacks(
                 (url, title) => _radioPlayRequests.Add((url, title)),
-                (path, position) => _videoPositionPlayRequests.Add((path, position))),
+                (path, position) => _videoPositionPlayRequests.Add((path, position)),
+                () => _playbackStatus),
+            playbackHistory: playbackHistory,
             podcastFeedHttpClient: podcastFeedHttpClient,
             podcastFeedCacheTimeProvider: _podcastCacheTimeProvider,
             podcastCatalogHttpClient: _podcastCatalogHttpClient,
@@ -125,6 +129,71 @@ public sealed class WebServerApiTests : IDisposable
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Empty(_videoPositionPlayRequests);
+    }
+
+    [Fact]
+    public async Task VideoStatus_SavesProgressForTheClientThatStartedServerPlayback()
+    {
+        Directory.CreateDirectory(_podcastTopPoolCacheDirectory);
+        var filePath = Path.Combine(_podcastTopPoolCacheDirectory, "server-progress.mp4");
+        await File.WriteAllBytesAsync(filePath, [0x00]);
+        var encodedPath = WebPathHelpers.EncodePath(filePath);
+
+        using var play = await _client.GetAsync("/api/video/play?path=" + Uri.EscapeDataString(encodedPath));
+        Assert.Equal(HttpStatusCode.OK, play.StatusCode);
+
+        _playbackStatus = new PlaybackStatus
+        {
+            IsPlaying = true,
+            FilePath = filePath,
+            PositionSeconds = 42.5,
+            DurationSeconds = 1800,
+        };
+        using var activeStatus = await _client.GetAsync("/api/status");
+        Assert.Equal(HttpStatusCode.OK, activeStatus.StatusCode);
+
+        _playbackStatus = _playbackStatus with
+        {
+            IsPlaying = false,
+            PositionSeconds = 1790,
+        };
+        using var stoppedStatus = await _client.GetAsync("/api/status");
+        Assert.Equal(HttpStatusCode.OK, stoppedStatus.StatusCode);
+
+        var history = new PlaybackHistory(Path.Combine(_podcastTopPoolCacheDirectory, "history.json"));
+        var entry = Assert.Single(history.GetRecent(10), item => item.FilePath == filePath);
+        Assert.Equal(1800, entry.PositionSeconds);
+        Assert.Contains(filePath, history.GetWatchedSet());
+    }
+
+    [Fact]
+    public async Task VideoStop_SavesLatestProgressForTheClientThatStartedServerPlayback()
+    {
+        Directory.CreateDirectory(_podcastTopPoolCacheDirectory);
+        var filePath = Path.Combine(_podcastTopPoolCacheDirectory, "server-stop-progress.mp4");
+        await File.WriteAllBytesAsync(filePath, [0x00]);
+        var encodedPath = WebPathHelpers.EncodePath(filePath);
+
+        using var play = await _client.GetAsync("/api/video/play?path=" + Uri.EscapeDataString(encodedPath));
+        Assert.Equal(HttpStatusCode.OK, play.StatusCode);
+
+        _playbackStatus = new PlaybackStatus
+        {
+            IsPlaying = true,
+            FilePath = filePath,
+            PositionSeconds = 60,
+            DurationSeconds = 1800,
+        };
+        using var activeStatus = await _client.GetAsync("/api/status");
+        Assert.Equal(HttpStatusCode.OK, activeStatus.StatusCode);
+
+        _playbackStatus = _playbackStatus with { PositionSeconds = 120 };
+        using var stop = await _client.GetAsync("/api/stop");
+        Assert.Equal(HttpStatusCode.OK, stop.StatusCode);
+
+        var history = new PlaybackHistory(Path.Combine(_podcastTopPoolCacheDirectory, "history.json"));
+        var entry = Assert.Single(history.GetRecent(10), item => item.FilePath == filePath);
+        Assert.Equal(120, entry.PositionSeconds);
     }
 
     // â”€â”€ /api/library-status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1616,13 +1685,14 @@ public sealed class WebServerApiTests : IDisposable
 
     internal static WebServerCallbacks BuildStubCallbacks(
         Action<string, string>? radioPlay = null,
-        Action<string, double>? videoPlayAtPosition = null) => new()
+        Action<string, double>? videoPlayAtPosition = null,
+        Func<PlaybackStatus>? getStatus = null) => new()
     {
         Play                  = _ => { },
         PlayAtPosition        = videoPlayAtPosition,
         Stop                  = () => { },
         Pause                 = () => { },
-        GetStatus             = () => new PlaybackStatus(),
+        GetStatus             = getStatus ?? (() => new PlaybackStatus()),
         Seek                  = _ => { },
         Skip                  = _ => { },
         SetVolume             = _ => { },

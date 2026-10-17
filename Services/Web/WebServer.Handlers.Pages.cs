@@ -92,6 +92,7 @@ internal sealed partial class WebServer
     private void HandleStatus(HttpListenerContext ctx)
     {
         var s = _callbacks.GetStatus();
+        RecordVideoProgressForInitiator(s, GetClientIp(ctx));
         var json = JsonSerializer.Serialize(new
         {
             isPlaying = s.IsPlaying,

@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http;
 using System.Linq;
+using System.Globalization;
+using System.Text.Json;
 using RemotePlay;
 using RemotePlay.Models;
 using RemotePlay.Services;
@@ -203,6 +205,142 @@ public sealed class WebServerVideoStreamTests : IClassFixture<VideoStreamTestHos
         Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
         Assert.Equal("GET", Assert.Single(response.Content.Headers.GetValues("Allow")));
     }
+
+    [Fact]
+    public async Task LocalVideoProgress_SavesPositionAndAddsFileToRecent()
+    {
+        var filePath = _host.WriteVideo(_host.AdditionalRoot, "local-progress.mp4", [1, 2, 3]);
+
+        using var response = await _host.Client.PostAsync(
+            _host.GetLocalProgressUrl(filePath, 42.5, 1800),
+            content: null);
+        using var recentResponse = await _host.Client.GetAsync("/api/recent");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, recentResponse.StatusCode);
+        var entry = Assert.Single(_host.History.GetRecent(100), item => item.FilePath == filePath);
+        Assert.Equal(42.5, entry.PositionSeconds);
+        Assert.Equal(1800, entry.DurationSeconds);
+        Assert.DoesNotContain(filePath, _host.History.GetWatchedSet());
+
+        using var recentDocument = JsonDocument.Parse(await recentResponse.Content.ReadAsStringAsync());
+        var encodedPath = WebPathHelpers.EncodePath(filePath);
+        Assert.Contains(
+            recentDocument.RootElement.GetProperty("files").EnumerateArray(),
+            file => file.GetProperty("path").GetString() == encodedPath);
+    }
+
+    [Fact]
+    public async Task LocalVideoProgress_RecordsPlaybackBeforeDurationIsKnown()
+    {
+        var filePath = _host.WriteVideo(_host.PrimaryRoot, "duration-pending.mp4", [1, 2, 3]);
+
+        using var response = await _host.Client.PostAsync(
+            _host.GetLocalProgressUrl(filePath, 0, 0),
+            content: null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var entry = Assert.Single(_host.History.GetRecent(100), item => item.FilePath == filePath);
+        Assert.Equal(0, entry.PositionSeconds);
+        Assert.Equal(0, entry.DurationSeconds);
+        Assert.DoesNotContain(filePath, _host.History.GetWatchedSet());
+    }
+
+    [Fact]
+    public async Task LocalVideoProgress_MarksWatchedOnCompletion()
+    {
+        var filePath = _host.WriteVideo(_host.PrimaryRoot, "completed.mp4", [1, 2, 3]);
+
+        using var response = await _host.Client.PostAsync(
+            _host.GetLocalProgressUrl(filePath, 120, 120, completed: true),
+            content: null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(filePath, _host.History.GetWatchedSet());
+    }
+
+    [Fact]
+    public async Task LocalVideoProgress_RejectsWrongMethodInvalidBoundsAndUnauthorizedPaths()
+    {
+        var filePath = _host.WriteVideo(_host.PrimaryRoot, "invalid-progress.mp4", [1, 2, 3]);
+        var outsidePath = _host.WriteVideo(_host.OutsideRoot, "outside-progress.mp4", [1, 2, 3]);
+        var unsupportedPath = _host.WriteVideo(_host.PrimaryRoot, "unsupported.txt", [1, 2, 3]);
+        var missingPath = Path.Combine(_host.PrimaryRoot, "missing-progress.mp4");
+
+        using var wrongMethod = await _host.Client.GetAsync(_host.GetLocalProgressUrl(filePath, 15, 60));
+        using var missing = await _host.Client.PostAsync("/api/video/local-progress", content: null);
+        using var invalidToken = await _host.Client.PostAsync(
+            "/api/video/local-progress?path=!!!!&pos=15&duration=60",
+            content: null);
+        using var negative = await _host.Client.PostAsync(
+            _host.GetLocalProgressUrl(filePath, "-1", "60"),
+            content: null);
+        using var nonFinite = await _host.Client.PostAsync(
+            _host.GetLocalProgressUrl(filePath, "NaN", "60"),
+            content: null);
+        using var missingDuration = await _host.Client.PostAsync(
+            _host.GetLocalProgressUrl(filePath, 15, 0),
+            content: null);
+        using var beyondDuration = await _host.Client.PostAsync(
+            _host.GetLocalProgressUrl(filePath, 61, 60),
+            content: null);
+        using var outside = await _host.Client.PostAsync(
+            _host.GetLocalProgressUrl(outsidePath, 15, 60),
+            content: null);
+        using var unsupported = await _host.Client.PostAsync(
+            _host.GetLocalProgressUrl(unsupportedPath, 15, 60),
+            content: null);
+        using var notFound = await _host.Client.PostAsync(
+            _host.GetLocalProgressUrl(missingPath, 15, 60),
+            content: null);
+        using var prematureCompletion = await _host.Client.PostAsync(
+            _host.GetLocalProgressUrl(filePath, 0, 60, completed: true),
+            content: null);
+
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, wrongMethod.StatusCode);
+        Assert.Equal("POST", Assert.Single(wrongMethod.Content.Headers.GetValues("Allow")));
+        Assert.Equal(HttpStatusCode.BadRequest, missing.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, invalidToken.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, negative.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, nonFinite.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, missingDuration.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, beyondDuration.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, outside.StatusCode);
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, unsupported.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, notFound.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, prematureCompletion.StatusCode);
+        Assert.DoesNotContain(filePath, _host.History.GetProgressMap().Keys);
+    }
+
+    [Fact]
+    public async Task HistoryClearAndWatchedSet_AuthorizeLinkedVideoContext()
+    {
+        var targetPath = _host.WriteVideo(_host.OutsideRoot, "linked-history.mp4", [1, 2, 3]);
+        var linkPath = Path.Combine(_host.PrimaryRoot, "linked-history.rplink");
+        RplinkHelper.Create(linkPath, targetPath);
+
+        using var progress = await _host.Client.PostAsync(
+            _host.GetLocalProgressUrl(targetPath, 45, 600, linkPath),
+            content: null);
+        var watchedUrl = "/api/history/watched/set?path="
+            + Uri.EscapeDataString(WebPathHelpers.EncodePath(targetPath))
+            + "&linkPath="
+            + Uri.EscapeDataString(WebPathHelpers.EncodePath(linkPath))
+            + "&watched=true";
+        using var watched = await _host.Client.GetAsync(watchedUrl);
+        Assert.Equal(HttpStatusCode.OK, progress.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, watched.StatusCode);
+        Assert.Contains(targetPath, _host.History.GetWatchedSet());
+
+        var clearUrl = "/api/history/clear?path="
+            + Uri.EscapeDataString(WebPathHelpers.EncodePath(targetPath))
+            + "&linkPath="
+            + Uri.EscapeDataString(WebPathHelpers.EncodePath(linkPath));
+        using var clear = await _host.Client.GetAsync(clearUrl);
+
+        Assert.Equal(HttpStatusCode.OK, clear.StatusCode);
+        Assert.DoesNotContain(targetPath, _host.History.GetRecent(100).Select(item => item.FilePath));
+    }
 }
 
 public sealed class VideoStreamTestHost : IDisposable
@@ -225,6 +363,7 @@ public sealed class VideoStreamTestHost : IDisposable
 
         var cacheDirectory = Path.Combine(_temporaryDirectory, "cache");
         var cacheFilePath = Path.Combine(cacheDirectory, "podcast-top-pool.json");
+        History = new PlaybackHistory(Path.Combine(_temporaryDirectory, "history.json"));
         Port = WebServerApiTests.FindFreePort();
         _server = new WebServer(
             new AppConfig
@@ -234,6 +373,7 @@ public sealed class VideoStreamTestHost : IDisposable
                 MaxRequestsPerIpPerWindow = 0,
             },
             WebServerApiTests.BuildStubCallbacks(),
+            playbackHistory: History,
             podcastTopPoolCacheFilePath: cacheFilePath);
         _server.Start();
         Client = new HttpClient { BaseAddress = new Uri($"http://localhost:{Port}") };
@@ -244,6 +384,8 @@ public sealed class VideoStreamTestHost : IDisposable
     public string AdditionalRoot { get; }
 
     public string OutsideRoot { get; }
+
+    internal PlaybackHistory History { get; }
 
     public int Port { get; }
 
@@ -261,6 +403,35 @@ public sealed class VideoStreamTestHost : IDisposable
         var url = $"/api/video/stream?path={Uri.EscapeDataString(WebPathHelpers.EncodePath(filePath))}";
         if (linkPath is not null)
             url += $"&linkPath={Uri.EscapeDataString(WebPathHelpers.EncodePath(linkPath))}";
+        return url;
+    }
+
+    public string GetLocalProgressUrl(
+        string filePath,
+        double position,
+        double duration,
+        string? linkPath = null,
+        bool completed = false) =>
+        GetLocalProgressUrl(
+            filePath,
+            position.ToString("R", CultureInfo.InvariantCulture),
+            duration.ToString("R", CultureInfo.InvariantCulture),
+            linkPath,
+            completed);
+
+    public string GetLocalProgressUrl(
+        string filePath,
+        string position,
+        string duration,
+        string? linkPath = null,
+        bool completed = false)
+    {
+        var url = $"/api/video/local-progress?path={Uri.EscapeDataString(WebPathHelpers.EncodePath(filePath))}"
+            + $"&pos={Uri.EscapeDataString(position)}&duration={Uri.EscapeDataString(duration)}";
+        if (linkPath is not null)
+            url += $"&linkPath={Uri.EscapeDataString(WebPathHelpers.EncodePath(linkPath))}";
+        if (completed)
+            url += "&completed=true";
         return url;
     }
 

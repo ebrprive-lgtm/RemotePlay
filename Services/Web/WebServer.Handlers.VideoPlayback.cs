@@ -1,4 +1,5 @@
-﻿using System.IO;
+﻿using System.Globalization;
+using System.IO;
 using System.Net;
 using System.Text.Json;
 
@@ -92,20 +93,29 @@ internal sealed partial class WebServer
 
     private void HandleRecent(HttpListenerContext ctx)
     {
-        var root = _config.ResolvedMoviesPath;
+        var linkedPaths = _libraryIndex
+            .Where(file => file.IsLink && !string.IsNullOrWhiteSpace(file.LinkSourcePath))
+            .GroupBy(file => file.FilePath, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First().LinkSourcePath!, StringComparer.OrdinalIgnoreCase);
+
         var files = GetHistoryForIp(GetClientIp(ctx)).GetRecent(_config.PlaybackHistoryLimit)
-            .Where(item => WebPathHelpers.IsUnderRoot(item.FilePath, root))
-            .Select(item => new
+            .Where(item => IsUnderConfiguredMovieRoot(item.FilePath) || linkedPaths.ContainsKey(item.FilePath))
+            .Select(item =>
             {
-                name = Path.GetFileNameWithoutExtension(item.FilePath),
-                displayName = CleanDisplayTitle(Path.GetFileNameWithoutExtension(item.FilePath)),
-                path = WebPathHelpers.EncodePath(item.FilePath),
-                favorite = IsFavorite(item.FilePath),
-                position = Math.Round(item.PositionSeconds, 1),
-                duration = Math.Round(item.DurationSeconds, 1),
-                progress = item.DurationSeconds > 0 ? Math.Round(item.PositionSeconds / item.DurationSeconds, 3) : 0,
-                resume = FormatTime(item.PositionSeconds),
-                folder = Path.GetFileName(Path.GetDirectoryName(item.FilePath)) ?? string.Empty
+                linkedPaths.TryGetValue(item.FilePath, out var linkPath);
+                return new
+                {
+                    name = Path.GetFileNameWithoutExtension(item.FilePath),
+                    displayName = CleanDisplayTitle(Path.GetFileNameWithoutExtension(item.FilePath)),
+                    path = WebPathHelpers.EncodePath(item.FilePath),
+                    linkPath = linkPath is null ? null : WebPathHelpers.EncodePath(linkPath),
+                    favorite = IsFavorite(item.FilePath),
+                    position = Math.Round(item.PositionSeconds, 1),
+                    duration = Math.Round(item.DurationSeconds, 1),
+                    progress = item.DurationSeconds > 0 ? Math.Round(item.PositionSeconds / item.DurationSeconds, 3) : 0,
+                    resume = FormatTime(item.PositionSeconds),
+                    folder = Path.GetFileName(Path.GetDirectoryName(item.FilePath)) ?? string.Empty
+                };
             })
             .ToArray();
 
@@ -281,19 +291,8 @@ internal sealed partial class WebServer
 
     private void HandleHistoryWatchedSet(HttpListenerContext ctx)
     {
-        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(encodedPath))
-        {
-            TrySendResponse(ctx, 400, "text/plain", "Missing path");
+        if (!TryGetAuthorizedVideoHistoryPath(ctx, out var filePath))
             return;
-        }
-
-        var filePath = WebPathHelpers.DecodePath(encodedPath);
-        if (!WebPathHelpers.IsUnderRoot(filePath, _config.ResolvedMoviesPath))
-        {
-            TrySendResponse(ctx, 403, "text/plain", "Forbidden");
-            return;
-        }
 
         var watchedParam = ctx.Request.QueryString["watched"] ?? "true";
         var watched = !string.Equals(watchedParam, "false", StringComparison.OrdinalIgnoreCase);
@@ -328,22 +327,143 @@ internal sealed partial class WebServer
 
     private void HandleHistoryClear(HttpListenerContext ctx)
     {
-        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(encodedPath))
-        {
-            TrySendResponse(ctx, 400, "text/plain", "Missing path");
+        if (!TryGetAuthorizedVideoHistoryPath(ctx, out var filePath))
             return;
-        }
-
-        var filePath = WebPathHelpers.DecodePath(encodedPath);
-        if (!WebPathHelpers.IsUnderRoot(filePath, _config.ResolvedMoviesPath))
-        {
-            TrySendResponse(ctx, 403, "text/plain", "Forbidden");
-            return;
-        }
 
         GetHistoryForIp(GetClientIp(ctx)).Clear(filePath);
         TrySendResponse(ctx, 200, "text/plain", "OK");
+    }
+
+    private void HandleLocalVideoProgress(HttpListenerContext ctx)
+    {
+        if (!ctx.Request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Response.Headers["Allow"] = "POST";
+            TrySendResponse(ctx, 405, "text/plain", "Method Not Allowed");
+            return;
+        }
+
+        if (!TryGetAuthorizedVideoHistoryPath(ctx, out var filePath))
+            return;
+
+        if (!_videoExtensions.Contains(Path.GetExtension(filePath)))
+        {
+            TrySendResponse(ctx, 415, "text/plain", "Unsupported media type");
+            return;
+        }
+
+        if (!File.Exists(filePath))
+        {
+            TrySendResponse(ctx, 404, "text/plain", "Video file not found");
+            return;
+        }
+
+        var positionText = ctx.Request.QueryString["pos"];
+        var durationText = ctx.Request.QueryString["duration"];
+        if (!double.TryParse(positionText, NumberStyles.Float, CultureInfo.InvariantCulture, out var position)
+            || !double.TryParse(durationText, NumberStyles.Float, CultureInfo.InvariantCulture, out var duration)
+            || !double.IsFinite(position)
+            || !double.IsFinite(duration)
+            || position < 0
+            || duration < 0
+            || duration >= TimeSpan.MaxValue.TotalSeconds
+            || (duration == 0 && position != 0)
+            || (duration > 0 && position > duration))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Invalid playback position or duration");
+            return;
+        }
+
+        var completedText = ctx.Request.QueryString["completed"];
+        if (!string.IsNullOrWhiteSpace(completedText)
+            && !bool.TryParse(completedText, out _))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Invalid completion flag");
+            return;
+        }
+
+        var completed = bool.TryParse(completedText, out var parsedCompleted) && parsedCompleted;
+        var completionToleranceSeconds = Math.Min(30, Math.Max(1, duration * 0.05));
+        if (completed && (duration <= 0 || position < duration - completionToleranceSeconds))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Completed position must be near the end");
+            return;
+        }
+
+        var history = GetHistoryForIp(GetClientIp(ctx));
+        if (position >= 10 && duration > 0)
+        {
+            history.SavePosition(
+                filePath,
+                TimeSpan.FromSeconds(position),
+                TimeSpan.FromSeconds(duration),
+                _config.PlaybackHistoryLimit);
+        }
+        else
+        {
+            history.RecordPlayed(filePath);
+            history.Trim(_config.PlaybackHistoryLimit);
+        }
+
+        if (completed)
+            history.MarkWatched(filePath, watched: true);
+
+        TrySendResponse(ctx, 200, "application/json", JsonSerializer.Serialize(new { ok = true }));
+    }
+
+    private bool TryGetAuthorizedVideoHistoryPath(HttpListenerContext ctx, out string filePath)
+    {
+        filePath = string.Empty;
+        var encodedPath = ctx.Request.QueryString["path"] ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(encodedPath) || encodedPath.Length > MaxEncodedVideoPathLength)
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Missing or invalid path");
+            return false;
+        }
+
+        string? linkPath = null;
+        var encodedLinkPath = ctx.Request.QueryString["linkPath"];
+        if (!string.IsNullOrWhiteSpace(encodedLinkPath))
+        {
+            if (encodedLinkPath.Length > MaxEncodedVideoPathLength)
+            {
+                TrySendResponse(ctx, 400, "text/plain", "Invalid link path");
+                return false;
+            }
+
+            try
+            {
+                linkPath = WebPathHelpers.DecodePath(encodedLinkPath);
+            }
+            catch (Exception ex) when (ex is FormatException or ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                TrySendResponse(ctx, 400, "text/plain", "Invalid link path");
+                return false;
+            }
+        }
+
+        try
+        {
+            filePath = WebPathHelpers.DecodePath(encodedPath);
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                TrySendResponse(ctx, 400, "text/plain", "Invalid path");
+                return false;
+            }
+
+            if (!IsAuthorizedVideoStreamPath(filePath, linkPath))
+            {
+                TrySendResponse(ctx, 403, "text/plain", "Forbidden");
+                return false;
+            }
+        }
+        catch (Exception ex) when (ex is FormatException or ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Invalid path");
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>Deletes a <c>.rplink</c> file.
@@ -542,11 +662,14 @@ internal sealed partial class WebServer
             return;
         }
 
+        var clientIp = GetClientIp(ctx);
+        RecordVideoProgressForInitiator(_callbacks.GetStatus(), clientIp);
         StopAllServerPlayers(stopVideoPlayer: false);
         if (startPositionSeconds > 0)
             _callbacks.PlayAtPosition!(filePath, startPositionSeconds);
         else
             _callbacks.Play(filePath);
+        SetVideoPlayInitiator(clientIp, filePath);
         Logger.Info("Playback", startPositionSeconds > 0
             ? $"Video playback requested: '{Path.GetFileName(filePath)}' on Server at {startPositionSeconds:0.##}s"
             : $"Video playback requested: '{Path.GetFileName(filePath)}' on Server");

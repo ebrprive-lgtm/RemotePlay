@@ -186,20 +186,25 @@ Focused regression coverage in `WebAssetRegressionTests` and
 
 ### Phase 4: Preserve resume, history, and lifecycle
 
-- Add a client-local Video progress update path (for example,
-  `POST /api/video/local-progress`) that validates the library path, position,
-  and duration, then saves through `GetHistoryForIp` and `PlaybackHistory`.
-- Throttle progress writes; save on a sensible interval and on pause, seek,
-  end, and page exit where possible. Mark watched using existing history
-  semantics rather than treating a card click as completed playback.
-- Adapt Resume and Start from Beginning actions to set `video.currentTime` in
-  Local mode. Keep saved progress, recent items, watched state, and server mode
-  behavior consistent.
-- Ensure local playback cleanup clears the correct player state without
-  stopping unrelated audio queues or allowing a stale server poll to replace
-  the local UI.
-- Use the existing per-IP history behavior. Do not use a single global
-  browser-local flag to merge progress from unrelated clients.
+- [x] Add `POST /api/video/local-progress` with library-root and `.rplink`
+  authorization, finite position/duration validation, and per-client writes via
+  `GetHistoryForIp` and `PlaybackHistory`. Record recent playback before media
+  duration is available; include additional configured roots and authorized
+  linked files in recent results.
+- [x] Throttle Local progress writes to 15 seconds and force saves on play,
+  pause, seek, end, stop/source change, and page exit where supported. Mark
+  Local playback watched only after completion, while retaining explicit
+  watched actions and the server history near-end semantics.
+- [x] Adapt Resume and Start from Beginning to use the Local video's
+  `currentTime`, clear the correct client's saved entry, preserve linked-file
+  context, and keep the resume prompt confined to the Video view.
+- [x] Save progress during Local cleanup without allowing status polling or a
+  failed save to silently replace Local playback state.
+- [x] Use the existing per-IP history behavior; no browser-global progress
+  flag is used to merge progress from unrelated clients.
+- [x] Persist Server progress to the client that initiated playback, so newer
+  Server progress is not shadowed by that client's older Local progress and
+  status polls from other clients do not overwrite its history.
 
 ### Phase 5: Codec compatibility and optional transcoding
 

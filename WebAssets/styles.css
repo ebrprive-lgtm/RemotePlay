@@ -1495,7 +1495,6 @@
           .local-video-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
           #local-video-server-fallback{grid-column:1/-1}
         }
-        body.local-video-active #resume-card,
         body.local-video-active #up-next-card,
         body.local-video-active #chapter-markers,
         body.local-video-active #options-card,

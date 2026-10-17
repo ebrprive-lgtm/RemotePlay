@@ -149,6 +149,12 @@ internal sealed partial class WebServer
     private bool _debugMode;              // updated live when settings change without server restart
     private bool _browserLocalPlaying;   // true while browser is playing audio locally
     private string? _musicPlayInitiatorIp; // IP of the client that last triggered /api/music/play
+    private readonly object _videoPlayInitiatorGate = new();
+    private string? _videoPlayInitiatorIp;
+    private string? _videoPlayInitiatorPath;
+    private DateTimeOffset _videoPlayInitiatorSetAtUtc;
+    private bool _videoPlayInitiatorObservedActive;
+    private bool _videoPlayInitiatorRecorded;
     private string _lastMusicScanError = string.Empty;
     private int _musicScanProgress;
     private string _musicScanFolder = string.Empty;

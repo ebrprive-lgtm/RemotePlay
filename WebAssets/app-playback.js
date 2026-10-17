@@ -4,6 +4,7 @@
   return m + ':' + (s < 10 ? '0' : '') + s;
 }
 
+const LOCAL_VIDEO_PROGRESS_SAVE_INTERVAL_MS = 15000;
 let _localVideoState = null;
 let _localVideoGeneration = 0;
 let _localVideoEventsBound = false;
@@ -130,6 +131,7 @@ function _renderLocalVideoUi() {
   if (surface) surface.setAttribute('aria-busy', state.loading && !state.errorMessage ? 'true' : 'false');
 
   if (typeof currentMode === 'undefined' || currentMode !== 'video') return;
+  _showLocalVideoResumePrompt(state);
 
   const playerTitle = document.getElementById('player-title');
   const playerMeta = document.getElementById('player-meta');
@@ -212,6 +214,74 @@ function _showLocalVideoWarning(message) {
   warning.hidden = !message;
 }
 
+function _saveLocalVideoProgress(state, position, duration, options = {}) {
+  if (!state?.path) return Promise.resolve(false);
+
+  const durationSeconds = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  const positionSeconds = durationSeconds > 0 && Number.isFinite(position)
+    ? Math.max(0, Math.min(position, durationSeconds))
+    : 0;
+  const now = Date.now();
+  if (!options.force && now - state.lastProgressWriteAt < LOCAL_VIDEO_PROGRESS_SAVE_INTERVAL_MS) {
+    return Promise.resolve(false);
+  }
+
+  const query = new URLSearchParams({
+    path: state.path,
+    pos: String(positionSeconds),
+    duration: String(durationSeconds),
+  });
+  if (state.linkPath) query.set('linkPath', state.linkPath);
+  if (options.completed) query.set('completed', 'true');
+  const url = '/api/video/local-progress?' + query.toString();
+  state.lastProgressWriteAt = now;
+  state.lastProgressPositionSeconds = positionSeconds;
+
+  if (options.beacon && typeof navigator.sendBeacon === 'function') {
+    try {
+      const queued = navigator.sendBeacon(url, new Blob([], { type: 'text/plain' }));
+      if (queued) return Promise.resolve(true);
+    } catch (error) {
+      console.warn('Local Video progress beacon failed; falling back to keepalive fetch.', error);
+    }
+  }
+
+  const send = async () => {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        cache: 'no-store',
+        keepalive: options.beacon === true || options.keepalive === true,
+      });
+      if (!response.ok) {
+        throw new Error('Progress save failed (' + response.status + ').');
+      }
+      const warning = document.getElementById('local-video-warning');
+      if (
+        _localVideoState?.generation === state.generation &&
+        warning?.textContent === 'Local video progress could not be saved. Check the connection and try again.'
+      ) {
+        _showLocalVideoWarning('');
+      }
+      return true;
+    } catch (error) {
+      console.error('Could not save Local Video playback progress.', error);
+      if (_localVideoState?.generation === state.generation) {
+        _showLocalVideoWarning('Local video progress could not be saved. Check the connection and try again.');
+      }
+      return false;
+    }
+  };
+
+  const previousSave = state.progressSavePromise;
+  const save = previousSave ? previousSave.catch(() => false).then(send) : send();
+  state.progressSavePromise = save;
+  void save.finally(() => {
+    if (state.progressSavePromise === save) state.progressSavePromise = null;
+  });
+  return save;
+}
+
 function _bindLocalVideoEvents() {
   const video = _getLocalVideoElement();
   if (!video || _localVideoEventsBound) return;
@@ -248,6 +318,7 @@ function _bindLocalVideoEvents() {
           } catch (error) {
             state.seekError = error;
             state.pendingSeek = false;
+            _showLocalVideoWarning('The browser could not seek to the saved video position.');
           }
         }
       }
@@ -263,6 +334,26 @@ function _bindLocalVideoEvents() {
       if (eventName === 'play') {
         state.wasPlayingBeforeHandoff = true;
         requestWakeLock();
+        void _saveLocalVideoProgress(state, video.currentTime, video.duration, { force: true });
+      }
+      if (eventName === 'timeupdate') {
+        void _saveLocalVideoProgress(state, video.currentTime, video.duration);
+      }
+      if (eventName === 'seeked') {
+        void _saveLocalVideoProgress(state, video.currentTime, video.duration, { force: true });
+      }
+      if (eventName === 'pause') {
+        void _saveLocalVideoProgress(state, video.currentTime, video.duration, { force: true });
+      }
+      if (eventName === 'ended') {
+        void _saveLocalVideoProgress(state, video.currentTime, video.duration, {
+          force: true,
+          completed: true,
+        }).then((saved) => {
+          if (saved && typeof markPlayed === 'function') {
+            markPlayed(state.path, state.linkPath, false);
+          }
+        });
       }
       if (eventName === 'pause' || eventName === 'ended') {
         state.wasPlayingBeforeHandoff = false;
@@ -272,6 +363,19 @@ function _bindLocalVideoEvents() {
       if (eventName === 'ended') void _advanceLocalVideoAfterEnd();
     });
   }
+
+  window.addEventListener('pagehide', () => {
+    const state = _localVideoState;
+    const activeVideo = _getLocalVideoElement();
+    if (state?.path && activeVideo) {
+      void _saveLocalVideoProgress(state, activeVideo.currentTime, activeVideo.duration, {
+        force: true,
+        completed: activeVideo.ended,
+        beacon: true,
+        keepalive: true,
+      });
+    }
+  });
 
   video.addEventListener('error', () => {
     const state = _localVideoState;
@@ -306,6 +410,15 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
   const previousServerPath = playingPath;
   if (previousServerPath && previousServerPath !== path) updatePlayingCard(null, previousServerPath);
 
+  const previousState = _localVideoState;
+  const previousVideoPosition = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+  const previousVideoDuration = Number.isFinite(video.duration) ? video.duration : 0;
+  if (previousState?.path) {
+    void _saveLocalVideoProgress(previousState, previousVideoPosition, previousVideoDuration, {
+      force: true,
+    });
+    if (resumePromptPath === previousState.path) _hideResumePrompt();
+  }
   _localVideoState = null;
   video.pause();
   video.removeAttribute('src');
@@ -318,6 +431,14 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
   const startPositionSeconds = Number.isFinite(options.startPositionSeconds)
     ? Math.max(0, options.startPositionSeconds)
     : 0;
+  const savedResumePositionSeconds = Number(options.resumePositionSeconds);
+  const savedResumeDurationSeconds = Number(options.resumeDurationSeconds);
+  const canResume = options.handoff !== 'server-to-local'
+    && Number.isFinite(savedResumePositionSeconds)
+    && savedResumePositionSeconds >= 10
+    && Number.isFinite(savedResumeDurationSeconds)
+    && savedResumeDurationSeconds > 0
+    && savedResumeDurationSeconds - savedResumePositionSeconds >= 30;
   const autoplay = options.autoplay !== false;
   const sliderVolume = Number.parseFloat(document.getElementById('video-combined-vol')?.value);
   const requestedVolume = Number.isFinite(options.volume) ? options.volume : sliderVolume;
@@ -343,6 +464,12 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
     mutedAfterHandoff: options.mutedAfterHandoff === true,
     handoff: options.handoff || '',
     autoAdvance: options.autoAdvance !== false,
+    savedResumePositionSeconds: canResume ? savedResumePositionSeconds : 0,
+    savedResumeDurationSeconds: canResume ? savedResumeDurationSeconds : 0,
+    resumePromptDismissed: false,
+    lastProgressWriteAt: 0,
+    lastProgressPositionSeconds: -1,
+    progressSavePromise: null,
     playPromise: Promise.resolve(true),
   };
 
@@ -353,8 +480,10 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
     Math.min(2, Number(options.playbackSpeed) || Number(currentPlaybackSpeed) || 1)
   );
   _showLocalVideoWarning('');
+  _hideResumePrompt();
   _syncLocalVideoSurfaceVisibility();
   _renderLocalVideoUi();
+  _showLocalVideoResumePrompt(_localVideoState);
 
   const inVideoView = typeof currentMode === 'undefined' || currentMode === 'video';
   if (typeof setPlayerBarVisible === 'function') setPlayerBarVisible(inVideoView);
@@ -367,7 +496,6 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
   document.body.classList.remove('music-player-docked', 'radio-player-docked');
   playingPath = path;
   setPlayerPoster(path);
-  markPlayed(path);
   updatePlayingCard(path);
 
   video.src = source;
@@ -725,6 +853,13 @@ async function _handoffLocalVideoToServer(forcePlay = false) {
 
 function stopLocalVideo() {
   const video = _getLocalVideoElement();
+  const state = _localVideoState;
+  if (state?.path && video) {
+    const position = Number.isFinite(video.currentTime) ? video.currentTime : state.lastPositionSeconds;
+    const duration = Number.isFinite(video.duration) ? video.duration : 0;
+    void _saveLocalVideoProgress(state, position, duration, { force: true });
+    if (resumePromptPath === state.path) _hideResumePrompt();
+  }
   ++_localVideoGeneration;
   _localVideoState = null;
   if (video) {
@@ -803,6 +938,10 @@ async function toggleLocalVideoFullscreen() {
 }
 
 function updateResumePrompt(status) {
+  if (_localVideoHasSource()) {
+    if (!_isLocalVideoActive()) _hideResumePrompt();
+    return;
+  }
   const card = document.getElementById('resume-card');
   if (!card) return;
   const position = Number(status?.resumePosition) || 0;
@@ -820,11 +959,79 @@ function updateResumePrompt(status) {
     'Continue from ' + fmt(position) + ' or start this video from the beginning.';
 }
 
+function _hideResumePrompt() {
+  const card = document.getElementById('resume-card');
+  if (card) card.classList.remove('visible');
+  resumePromptPath = null;
+  resumePromptPosition = 0;
+}
+
+function _showLocalVideoResumePrompt(state) {
+  const card = document.getElementById('resume-card');
+  const position = Number(state?.savedResumePositionSeconds) || 0;
+  const path = state?.path || '';
+  const visible = Boolean(
+    card &&
+    state &&
+    !state.resumePromptDismissed &&
+    typeof currentMode !== 'undefined' &&
+    currentMode === 'video' &&
+    position >= 10 &&
+    state.savedResumeDurationSeconds - position >= 30 &&
+    path
+  );
+  if (!visible) {
+    _hideResumePrompt();
+    return;
+  }
+
+  card.classList.add('visible');
+  resumePromptPath = path;
+  resumePromptPosition = position;
+  document.getElementById('resume-detail').textContent =
+    'Continue from ' + fmt(position) + ' or start this video from the beginning.';
+}
+
 async function resumeFromSavedPosition() {
   if (!resumePromptPath || resumePromptPosition <= 0) return;
   haptic(12);
+  const localState = _isLocalVideoActive() && _localVideoState?.path === resumePromptPath
+    ? _localVideoState
+    : null;
+  if (localState) {
+    const video = _getLocalVideoElement();
+    if (!video) return;
+
+    const position = resumePromptPosition;
+    localState.resumePromptDismissed = true;
+    try {
+      if (video.readyState > 0) {
+        const duration = Number.isFinite(video.duration) ? video.duration : Infinity;
+        video.currentTime = Math.min(position, duration);
+        localState.pendingStartPositionSeconds = 0;
+        localState.pendingSeek = video.currentTime > 0.05;
+        localState.lastPositionSeconds = video.currentTime;
+      } else {
+        localState.pendingStartPositionSeconds = position;
+        localState.pendingSeek = true;
+      }
+      if (video.paused) await video.play();
+    } catch (error) {
+      console.error('Could not resume Local Video at its saved position.', error);
+      localState.resumePromptDismissed = false;
+      localState.savedResumePositionSeconds = position;
+      _showLocalVideoWarning('The saved position could not be reached. Try seeking after the video loads.');
+      return;
+    }
+
+    localState.savedResumePositionSeconds = 0;
+    _hideResumePrompt();
+    setStatus('Resumed from ' + fmt(position) + '.');
+    return;
+  }
+
   await api('/api/seek?pos=' + resumePromptPosition.toFixed(1));
-  updateResumePrompt(null);
+  _hideResumePrompt();
   setStatus('Resumed from ' + fmt(resumePromptPosition) + '.');
   await pollStatus();
 }
@@ -833,10 +1040,48 @@ async function startFromBeginning() {
   if (!resumePromptPath) return;
   const path = resumePromptPath;
   haptic(8);
-  await api('/api/history/clear?path=' + encodeURIComponent(path));
+  const localState = _isLocalVideoActive() && _localVideoState?.path === path
+    ? _localVideoState
+    : null;
+  const linkPath = localState?.linkPath || '';
+  const clearQuery = new URLSearchParams({ path });
+  if (linkPath) clearQuery.set('linkPath', linkPath);
+  try {
+    const response = await fetch('/api/history/clear?' + clearQuery.toString());
+    if (!response.ok) throw new Error('History clear failed (' + response.status + ').');
+  } catch (error) {
+    console.error('Could not clear the saved video position.', error);
+    if (localState) {
+      _showLocalVideoWarning('The saved position could not be cleared. Check the connection and try again.');
+    }
+    setStatus('Could not clear the saved video position.');
+    return;
+  }
+
+  if (localState) {
+    const video = _getLocalVideoElement();
+    localState.savedResumePositionSeconds = 0;
+    localState.resumePromptDismissed = true;
+    localState.pendingStartPositionSeconds = 0;
+    localState.pendingSeek = false;
+    localState.lastPositionSeconds = 0;
+    try {
+      if (video?.readyState > 0) video.currentTime = 0;
+    } catch (error) {
+      console.error('Could not restart Local Video from the beginning.', error);
+      _showLocalVideoWarning('The video could not seek to the beginning. Try using the seek bar.');
+      _hideResumePrompt();
+      return;
+    }
+    _hideResumePrompt();
+    if (typeof unmarkPlayed === 'function') unmarkPlayed(path, linkPath);
+    setStatus('Starting from beginning.');
+    return;
+  }
+
   await api('/api/seek?pos=0');
   unmarkPlayed(path);
-  updateResumePrompt(null);
+  _hideResumePrompt();
   setStatus('Starting from beginning.');
   await pollStatus();
 }
@@ -1434,6 +1679,8 @@ async function _advanceLocalVideoAfterEnd() {
     if (_playLocalVideo(first.path, first.title || file?.displayName || file?.name || '', file?.linkPath || '', {
       skipServerCleanup: true,
       playbackEndBehavior: state.playbackEndBehavior,
+      resumePositionSeconds: Number(file?.position),
+      resumeDurationSeconds: Number(file?.duration),
     })) {
       void _consumeLocalVideoQueueItem(first.path);
     }
@@ -1445,6 +1692,8 @@ async function _advanceLocalVideoAfterEnd() {
   _playLocalVideo(nextFile.path, nextFile.displayName || nextFile.name || '', nextFile.linkPath || '', {
     skipServerCleanup: true,
     playbackEndBehavior: state.playbackEndBehavior,
+    resumePositionSeconds: Number(nextFile.position),
+    resumeDurationSeconds: Number(nextFile.duration),
   });
 }
 
@@ -2362,6 +2611,8 @@ async function playAdjacent(direction) {
     _playLocalVideo(file.path, file.displayName || file.name || '', file.linkPath || '', {
       skipServerCleanup: true,
       playbackEndBehavior: _localVideoState?.playbackEndBehavior || '',
+      resumePositionSeconds: Number(file.position),
+      resumeDurationSeconds: Number(file.duration),
     });
     return;
   }
@@ -2381,7 +2632,6 @@ async function playAdjacent(direction) {
         clearInterval(poll);
         const oldPath = playingPath;
         playingPath = s.filePath;
-        markPlayed(s.filePath);
         updatePlayingCard(s.filePath, oldPath);
       } else if (++tries > 8) {
         clearInterval(poll);

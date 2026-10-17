@@ -63,7 +63,7 @@ public sealed class WebAssetRegressionTests
         AssertContainsAll(
             libraryJs,
             "if (isPlayLocal())",
-            "if (_playLocalVideo(p, title, _resolveVideoLinkPath(p, linkPath)) && queuedVideos.has(p))",
+            "if (_playLocalVideo(p, title, _resolveVideoLinkPath(p, linkPath), {",
             "await api('/api/video/play?path='");
 
         var localPlayStart = playbackJs.IndexOf("function _playLocalVideo(", StringComparison.Ordinal);
@@ -124,6 +124,41 @@ public sealed class WebAssetRegressionTests
         var localQueueBranch = localQueue[localQueueBranchStart..localQueueBranchEnd];
         Assert.Contains("_playLocalVideo(", localQueueBranch, StringComparison.Ordinal);
         Assert.DoesNotContain("/api/adjacent", localQueueBranch, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalVideoProgressAndResumeUseTheBrowserPlaybackPosition()
+    {
+        var playbackJs = ReadWebAsset("app-playback.js");
+        var libraryJs = ReadWebAsset("app-library.js");
+        var css = ReadWebAsset("styles.css");
+
+        AssertContainsAll(
+            playbackJs,
+            "const LOCAL_VIDEO_PROGRESS_SAVE_INTERVAL_MS = 15000;",
+            "function _saveLocalVideoProgress(state, position, duration, options = {})",
+            "'/api/video/local-progress?' + query.toString()",
+            "addEventListener('pagehide'",
+            "completed: true",
+            "function _showLocalVideoResumePrompt(state)",
+            "video.currentTime = Math.min(position, duration)",
+            "video.currentTime = 0",
+            "await fetch('/api/history/clear?' + clearQuery.toString())");
+        Assert.DoesNotContain("body.local-video-active #resume-card", css, StringComparison.Ordinal);
+
+        var localPlayStart = playbackJs.IndexOf("function _playLocalVideo(", StringComparison.Ordinal);
+        var localPlayEnd = localPlayStart < 0
+            ? -1
+            : playbackJs.IndexOf("function stopLocalVideo()", localPlayStart, StringComparison.Ordinal);
+        Assert.True(localPlayStart >= 0 && localPlayEnd > localPlayStart);
+        Assert.DoesNotContain("markPlayed(path);", playbackJs[localPlayStart..localPlayEnd], StringComparison.Ordinal);
+
+        var serverPlayStart = libraryJs.IndexOf("async function play(p, name, linkPath)", StringComparison.Ordinal);
+        var serverPlayEnd = serverPlayStart < 0
+            ? -1
+            : libraryJs.IndexOf("function setPlayerPoster", serverPlayStart, StringComparison.Ordinal);
+        Assert.True(serverPlayStart >= 0 && serverPlayEnd > serverPlayStart);
+        Assert.DoesNotContain("markPlayed(p);", libraryJs[serverPlayStart..serverPlayEnd], StringComparison.Ordinal);
     }
 
     [Fact]

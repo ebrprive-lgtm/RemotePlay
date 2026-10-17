@@ -21,6 +21,86 @@ internal sealed partial class WebServer
             ip => new PlaybackHistory(AppPaths.HistoryFileForIp(ip)));
     }
 
+    private void SetVideoPlayInitiator(string clientIp, string filePath)
+    {
+        lock (_videoPlayInitiatorGate)
+        {
+            _videoPlayInitiatorIp = clientIp;
+            _videoPlayInitiatorPath = filePath;
+            _videoPlayInitiatorSetAtUtc = DateTimeOffset.UtcNow;
+            _videoPlayInitiatorObservedActive = false;
+            _videoPlayInitiatorRecorded = false;
+        }
+    }
+
+    private void RecordVideoProgressForInitiator(PlaybackStatus status, string clientIp)
+    {
+        lock (_videoPlayInitiatorGate)
+        {
+            if (!string.Equals(_videoPlayInitiatorIp, clientIp, StringComparison.Ordinal))
+                return;
+
+            if (!_videoPlayInitiatorObservedActive
+                && DateTimeOffset.UtcNow - _videoPlayInitiatorSetAtUtc > TimeSpan.FromSeconds(30))
+            {
+                ClearVideoPlayInitiator();
+                return;
+            }
+
+            var active = status.IsPlaying || status.IsPaused;
+            if (string.IsNullOrWhiteSpace(status.FilePath))
+            {
+                if (_videoPlayInitiatorObservedActive && !active)
+                    ClearVideoPlayInitiator();
+                return;
+            }
+
+            if (!string.Equals(_videoPlayInitiatorPath, status.FilePath, StringComparison.OrdinalIgnoreCase))
+            {
+                if (_videoPlayInitiatorObservedActive)
+                    ClearVideoPlayInitiator();
+                return;
+            }
+
+            if (!active && !_videoPlayInitiatorObservedActive)
+                return;
+
+            var history = GetHistoryForIp(clientIp);
+            if (double.IsFinite(status.PositionSeconds)
+                && double.IsFinite(status.DurationSeconds)
+                && status.PositionSeconds >= 10
+                && status.DurationSeconds > 0)
+            {
+                history.SavePosition(
+                    status.FilePath,
+                    TimeSpan.FromSeconds(status.PositionSeconds),
+                    TimeSpan.FromSeconds(status.DurationSeconds),
+                    _config.PlaybackHistoryLimit);
+                _videoPlayInitiatorRecorded = true;
+            }
+            else if (active && !_videoPlayInitiatorRecorded)
+            {
+                history.RecordPlayed(status.FilePath);
+                history.Trim(_config.PlaybackHistoryLimit);
+                _videoPlayInitiatorRecorded = true;
+            }
+
+            if (active)
+                _videoPlayInitiatorObservedActive = true;
+            else
+                ClearVideoPlayInitiator();
+        }
+    }
+
+    private void ClearVideoPlayInitiator()
+    {
+        _videoPlayInitiatorIp = null;
+        _videoPlayInitiatorPath = null;
+        _videoPlayInitiatorSetAtUtc = default;
+        _videoPlayInitiatorObservedActive = false;
+        _videoPlayInitiatorRecorded = false;
+    }
+
     /// <summary>
     /// Returns a progress map that merges the shared WPF history with the per-IP history.
     /// The per-IP entry wins when both have a record for the same path.

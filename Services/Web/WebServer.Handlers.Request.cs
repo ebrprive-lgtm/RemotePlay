@@ -267,6 +267,10 @@ internal sealed partial class WebServer
                 HandleHistoryWatchedSet(ctx);
                 break;
 
+            case "/api/video/local-progress":
+                HandleLocalVideoProgress(ctx);
+                break;
+
             case "/api/video/stream":
                 await HandleVideoStreamAsync(ctx).ConfigureAwait(false);
                 break;
@@ -330,6 +334,7 @@ internal sealed partial class WebServer
                 break;
 
             case "/api/stop":
+                RecordVideoProgressForInitiator(_callbacks.GetStatus(), GetClientIp(ctx));
                 _callbacks.Stop();
                 Logger.Info("Playback", "Stopping Video on Server");
                 TrySendResponse(ctx, 200, "text/plain", "OK");
