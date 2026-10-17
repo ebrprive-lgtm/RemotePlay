@@ -1,5 +1,6 @@
 using System.IO;
 using System.Reflection;
+using RemotePlay;
 using RemotePlay.Models;
 using RemotePlay.Services;
 using Xunit;
@@ -22,6 +23,37 @@ public sealed class WebServerIndexTests : IDisposable
     }
 
     public void Dispose() => _server.Stop();
+
+    [Fact]
+    public void RefreshStaleLinkCount_UpdatesAfterLinkIsRetargeted()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        var linkPath = Path.Combine(root, "movie.rplink");
+        var targetPath = Path.Combine(root, "movie.mkv");
+        RplinkHelper.Create(linkPath, Path.Combine(root, "missing.mkv"));
+
+        var server = new WebServer(
+            new AppConfig { Port = 0, AdditionalMoviesPaths = [root] },
+            BuildMinimalCallbacks());
+
+        try
+        {
+            server.RefreshStaleLinkCount();
+            Assert.Equal(1, server.LibraryStatus.StaleLinkCount);
+
+            File.WriteAllText(targetPath, "video");
+            RplinkHelper.Create(linkPath, targetPath);
+
+            server.RefreshStaleLinkCount();
+            Assert.Equal(0, server.LibraryStatus.StaleLinkCount);
+        }
+        finally
+        {
+            server.Stop();
+            Directory.Delete(root, recursive: true);
+        }
+    }
 
     // ── CountIndexedLinksPointingIntoFolder ─────────────────────────────────
 

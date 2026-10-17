@@ -1177,20 +1177,24 @@
                                         Background="Transparent" Foreground="#888"
                                         BorderThickness="0" Padding="6,2" Cursor="Hand"
                                         ToolTip="Hide this panel"/>
-                                <Button Content="🗑️  Delete selected"
-                                        Click="OnDeleteBrokenLink"
-                                        DockPanel.Dock="Right"
-                                        Background="#3a1a1a" Foreground="#E94560"
-                                        BorderThickness="0" Padding="8,3" Margin="0,0,6,0"
-                                        Cursor="Hand"/>
+                                <ProgressBar x:Name="BrokenLinkScanProgress"
+                                             Height="6" Margin="8,0,6,0"
+                                             VerticalAlignment="Center"
+                                             Foreground="#E94560" Background="#2a2a3e"
+                                             Visibility="Collapsed" IsIndeterminate="False"/>
                             </DockPanel>
                             <ListView x:Name="BrokenLinksList" Grid.Row="1"
                                       Background="Transparent" Foreground="#E94560"
-                                      BorderThickness="0" MaxHeight="160">
+                                      BorderThickness="0" MaxHeight="160"
+                                      PreviewMouseRightButtonDown="OnBrokenLinksPreviewMouseRightButtonDown"
+                                      ContextMenuOpening="OnBrokenLinksContextMenuOpening">
                                 <ListView.ContextMenu>
                                     <ContextMenu>
                                         <MenuItem Header="🎯  Retarget broken link…"
                                                   Click="OnRetargetBrokenLinkFromScan"/>
+                                        <Separator/>
+                                        <MenuItem Header="🗑️  Delete broken link"
+                                                  Click="OnDeleteBrokenLink"/>
                                     </ContextMenu>
                                 </ListView.ContextMenu>
                                 <ListView.ItemContainerStyle>

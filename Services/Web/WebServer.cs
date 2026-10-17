@@ -164,6 +164,7 @@ internal sealed partial class WebServer
     private MusicScanJob? _activeMusicScanJob;
     private CancellationTokenSource? _musicScanCts;
     private int _staleLinkCount;
+    private readonly object _staleLinkCheckGate = new();
     private readonly Timer _staleLinkTimer;
     private readonly object _thumbnailQueueGate = new();
     private CancellationTokenSource? _thumbnailQueueCancellation;
@@ -501,12 +502,20 @@ internal sealed partial class WebServer
         }
     }
 
+    /// <summary>Immediately refreshes the stale-link count. Call from a background thread.</summary>
+    public void RefreshStaleLinkCount() => RunStaleLinkCheck();
+
+    private void RunStaleLinkCheck()
+    {
+        lock (_staleLinkCheckGate)
+            RunStaleLinkCheckCore();
+    }
+
     /// <summary>
     /// Scans all .rplink files in the library and counts those whose resolved target no longer exists.
     /// Updates <c>_staleLinkCount</c> which is exposed through <see cref="LibraryStatus"/>.
-    /// Runs on the thread-pool timer thread â€” should never throw or block.
     /// </summary>
-    private void RunStaleLinkCheck()
+    private void RunStaleLinkCheckCore()
     {
         try
         {

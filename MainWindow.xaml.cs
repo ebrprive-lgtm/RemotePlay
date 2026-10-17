@@ -2879,6 +2879,27 @@ public partial class MainWindow : Window
         }
     }
 
+    private async Task RefreshStaleLinkBadgeAsync()
+    {
+        var webServer = _webServer;
+        if (webServer is null)
+        {
+            UpdateStaleLinkBadge();
+            return;
+        }
+
+        try
+        {
+            await Task.Run(webServer.RefreshStaleLinkCount);
+            if (!Dispatcher.HasShutdownStarted && ReferenceEquals(_webServer, webServer))
+                UpdateStaleLinkBadge();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Failed to refresh the broken-link count", ex);
+        }
+    }
+
     /// <summary>Persists both browser directories into config so they survive app restart.</summary>
     private void SaveBrowserDirs()
     {
@@ -3706,6 +3727,8 @@ public partial class MainWindow : Window
         }
 
         RefreshBrowser(isLeft);
+        if (rewrote > 0)
+            _ = RefreshStaleLinkBadgeAsync();
 
         var msg = rewrote > 0
             ? $"Retargeted {rewrote} link(s) to:\n{(string.IsNullOrEmpty(selectedTargetFile) ? newTargetDir : selectedTargetFile)}"
@@ -3775,6 +3798,8 @@ public partial class MainWindow : Window
         });
 
         RefreshBrowser(isLeft);
+        if (rewrote > 0)
+            _ = RefreshStaleLinkBadgeAsync();
 
         var msg = rewrote > 0
             ? $"Retargeted {rewrote} link(s)"
@@ -3829,6 +3854,9 @@ public partial class MainWindow : Window
         {
             RefreshBrowser(isLeft);
         }
+
+        if (deletedLinkPaths.Count > 0)
+            _ = RefreshStaleLinkBadgeAsync();
 
         if (failed > 0)
         {
@@ -4580,6 +4608,16 @@ public partial class MainWindow : Window
         int TotalLinks,
         int BrokenLinks);
 
+    private void SetBrokenLinkScanBusy(bool isBusy)
+    {
+        ScanBrokenLinksButton.Content = isBusy ? "Cancel Scan" : "🔍  Scan broken links";
+        ScanBrokenLinksButton.ToolTip = isBusy
+            ? "Cancel the broken-link scan"
+            : "Scan the entire library for .rplink files whose targets no longer exist";
+        BrokenLinkScanProgress.IsIndeterminate = isBusy;
+        BrokenLinkScanProgress.Visibility = isBusy ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private async void OnScanBrokenLinks(object sender, RoutedEventArgs e)
     {
         if (_brokenLinkScanCts is { } activeScan)
@@ -4605,8 +4643,7 @@ public partial class MainWindow : Window
             new SortDescription(nameof(BrokenScanEntry.LinkFile), ListSortDirection.Ascending));
         BrokenLinksPanel.Visibility = Visibility.Visible;
         BrokenLinksStatus.Text = "Scanning for broken links…";
-        ScanBrokenLinksButton.Content = "Cancel Scan";
-        ScanBrokenLinksButton.ToolTip = "Cancel the broken-link scan";
+        SetBrokenLinkScanBusy(isBusy: true);
 
         Logger.Info("BrokenLinkScan", $"Manual scan requested. Root='{root}'");
 
@@ -4679,8 +4716,7 @@ public partial class MainWindow : Window
             if (ReferenceEquals(_brokenLinkScanCts, scanCts))
             {
                 _brokenLinkScanCts = null;
-                ScanBrokenLinksButton.Content = "🔍  Scan broken links";
-                ScanBrokenLinksButton.ToolTip = "Scan the entire library for .rplink files whose targets no longer exist";
+                SetBrokenLinkScanBusy(isBusy: false);
                 BrokenLinksStatus.Text = finalStatus;
             }
 
@@ -4786,6 +4822,21 @@ public partial class MainWindow : Window
     private void OnHideBrokenLinksPanel(object sender, RoutedEventArgs e)
         => BrokenLinksPanel.Visibility = Visibility.Collapsed;
 
+    private void OnBrokenLinksPreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        var item = e.OriginalSource is DependencyObject source
+            ? ItemsControl.ContainerFromElement(BrokenLinksList, source) as System.Windows.Controls.ListViewItem
+            : null;
+
+        BrokenLinksList.SelectedItem = item?.DataContext as BrokenScanEntry;
+    }
+
+    private void OnBrokenLinksContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        if (BrokenLinksList.SelectedItem is null)
+            e.Handled = true;
+    }
+
     private void OnDeleteBrokenLink(object sender, RoutedEventArgs e)
     {
         if (BrokenLinksList.SelectedItem is not BrokenScanEntry entry) return;
@@ -4862,15 +4913,17 @@ public partial class MainWindow : Window
 
     private void RemoveBrokenScanEntryFromList(string linkFile)
     {
-        if (BrokenLinksList.ItemsSource is not ObservableCollection<BrokenScanEntry> current)
-            return;
+        if (BrokenLinksList.ItemsSource is ObservableCollection<BrokenScanEntry> current)
+        {
+            var entry = current.FirstOrDefault(item =>
+                string.Equals(item.LinkFile, linkFile, StringComparison.OrdinalIgnoreCase));
+            if (entry is not null)
+                current.Remove(entry);
 
-        var entry = current.FirstOrDefault(item =>
-            string.Equals(item.LinkFile, linkFile, StringComparison.OrdinalIgnoreCase));
-        if (entry is not null)
-            current.Remove(entry);
+            UpdateBrokenLinkScanStatus();
+        }
 
-        UpdateBrokenLinkScanStatus();
+        _ = RefreshStaleLinkBadgeAsync();
     }
 
     private string? TryGetExistingLinkTargetPath(string rplinkPath)
