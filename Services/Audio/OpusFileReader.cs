@@ -1,7 +1,6 @@
 using System.IO;
 using Concentus;
 using Concentus.Oggfile;
-using Concentus.Structs;
 using NAudio.Wave;
 
 namespace RemotePlay.Services.Audio;
@@ -37,20 +36,27 @@ internal sealed class OpusFileReader : WaveStream
         _waveFormat  = new WaveFormat(OpusSampleRate, BitsPerSample, Channels);
         _sampleBuffer = new byte[OpusSampleRate * Channels * (BitsPerSample / 8)]; // 1 s buffer
 
-        OpenStream();
+        (_fileStream, _oggStream) = CreateStream();
 
         // Estimate length: decode the whole file once to count frames, then reopen.
         // For large files this might be slow; skip estimation and just use 0 (unknown).
         _length = 0;
     }
 
-    private void OpenStream()
+    private (FileStream FileStream, OpusOggReadStream OggStream) CreateStream()
     {
-        _fileStream  = new FileStream(_filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        var decoder  = new OpusDecoder(OpusSampleRate, Channels); // Concentus.Structs.OpusDecoder
-        _oggStream   = new OpusOggReadStream(decoder, _fileStream);
-        _bufferOffset = 0;
-        _bufferCount  = 0;
+        var fileStream = new FileStream(_filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        try
+        {
+            var decoder = OpusCodecFactory.CreateDecoder(OpusSampleRate, Channels);
+            var oggStream = new OpusOggReadStream(decoder, fileStream);
+            return (fileStream, oggStream);
+        }
+        catch
+        {
+            fileStream.Dispose();
+            throw;
+        }
     }
 
     // ── WaveStream overrides ──────────────────────────────────────────────────
@@ -72,7 +78,7 @@ internal sealed class OpusFileReader : WaveStream
                 _position     = 0;
                 _bufferOffset = 0;
                 _bufferCount  = 0;
-                OpenStream();
+                (_fileStream, _oggStream) = CreateStream();
             }
             // Seek forward: skip decoded bytes
             if (value > _position)
@@ -149,8 +155,8 @@ internal sealed class OpusFileReader : WaveStream
     {
         if (disposing)
         {
-            _oggStream?.Close();
-            _fileStream?.Dispose();
+            _oggStream.Close();
+            _fileStream.Dispose();
         }
         base.Dispose(disposing);
     }

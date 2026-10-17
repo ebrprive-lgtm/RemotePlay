@@ -1,4 +1,6 @@
 let _localMediaType = 'Local';
+let _localPlaybackGeneration = 0;
+let _localPodcastResumeCleanup = null;
 
 function _clearLocalPlayerMeta() {
   // Legacy local-player-bar metadata was removed. Keep as a no-op for compatibility.
@@ -10,6 +12,100 @@ function setLocalPodcastMeta(showTitle, artworkUrl) {
 
 function _postLog(msg) {
   fetch('/api/log', { method: 'POST', body: msg }).catch(() => {});
+}
+
+function _cancelLocalPodcastResume() {
+  const cleanup = _localPodcastResumeCleanup;
+  _localPodcastResumeCleanup = null;
+  if (cleanup) cleanup();
+}
+
+function _prepareLocalPodcastResume(audio, requestedPosition, generation) {
+  audio.muted = true;
+  let completed = false;
+  let timeoutId = null;
+  let metadataHandled = false;
+
+  const cleanup = () => {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+    audio.removeEventListener('seeked', finish);
+    audio.removeEventListener('error', finish);
+  };
+  const finish = () => {
+    if (completed) return;
+    completed = true;
+    cleanup();
+    if (_localPodcastResumeCleanup === finish) _localPodcastResumeCleanup = null;
+    if (generation === _localPlaybackGeneration && _localMediaType === 'Podcast') {
+      audio.muted = false;
+    }
+  };
+  const onLoadedMetadata = () => {
+    metadataHandled = true;
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    if (generation !== _localPlaybackGeneration || _localMediaType !== 'Podcast') {
+      finish();
+      return;
+    }
+    if (requestedPosition <= 0.5) {
+      finish();
+      return;
+    }
+
+    const duration = audio.duration;
+    if (!Number.isFinite(duration) || duration <= 0) {
+      console.warn('Could not restore local podcast position because the episode duration is unavailable.');
+      if (typeof setStatus === 'function') {
+        setStatus('Could not restore the podcast position; playback is starting from the beginning.');
+      }
+      finish();
+      return;
+    }
+
+    const target = Math.min(requestedPosition, Math.max(0, duration - 0.25));
+    if (Math.abs(audio.currentTime - target) < 0.25) {
+      finish();
+      return;
+    }
+
+    audio.addEventListener('seeked', finish, { once: true });
+    try {
+      audio.currentTime = target;
+    } catch (error) {
+      audio.removeEventListener('seeked', finish);
+      console.warn('Could not restore local podcast position', error);
+      if (typeof setStatus === 'function') {
+        setStatus('Could not restore the podcast position; playback is starting from the beginning.');
+      }
+      finish();
+      return;
+    }
+    if (!audio.seeking) {
+      finish();
+      return;
+    }
+    timeoutId = setTimeout(finish, 1200);
+  };
+
+  _localPodcastResumeCleanup = finish;
+  audio.addEventListener('loadedmetadata', onLoadedMetadata, { once: true });
+  audio.addEventListener('error', finish, { once: true });
+  timeoutId = setTimeout(() => {
+    if (!metadataHandled && requestedPosition > 0.5) {
+      console.warn('Timed out while restoring local podcast position.');
+      if (typeof setStatus === 'function') {
+        setStatus('Could not restore the podcast position; playback is starting from the beginning.');
+      }
+    }
+    finish();
+  }, 5000);
 }
 
 function _closeNonLocalPlayersForLocalStart(localType) {
@@ -63,6 +159,8 @@ async function closeLocalPlayerForNonLocalPlayback() {
 }
 
 function localPlay(url, name, type, playerMetadata = null) {
+  _cancelLocalPodcastResume();
+  const playbackGeneration = ++_localPlaybackGeneration;
   _localMediaType = type || 'Local';
   _closeNonLocalPlayersForLocalStart(_localMediaType);
   _postLog(`[LOCAL-PLAY] localPlay() called — type=${_localMediaType} name='${name}' url=${url}`);
@@ -71,11 +169,36 @@ function localPlay(url, name, type, playerMetadata = null) {
     _postLog(`[LOCAL-PLAY] ERROR: audio element not found — cannot play ${type}: '${name}'`);
     return;
   }
+  const playbackUrl = _localMediaType === 'Podcast'
+    ? '/api/radio/stream-proxy?url=' + encodeURIComponent(url)
+    : url;
+  if (_localMediaType === 'Podcast' && typeof _ensureLocalBoostGraph === 'function') {
+    _ensureLocalBoostGraph();
+  }
+  let podcastResumePosition = null;
+  if (_localMediaType === 'Podcast'
+      && playerMetadata
+      && Object.prototype.hasOwnProperty.call(playerMetadata, 'startAt')) {
+    const startAt = Number(playerMetadata.startAt);
+    if (Number.isFinite(startAt) && startAt >= 0) {
+      podcastResumePosition = startAt;
+      a.muted = true;
+    } else {
+      console.warn('Ignoring invalid local podcast resume position', playerMetadata.startAt);
+      a.muted = false;
+    }
+  }
   _postLog(`[LOCAL-PLAY] setting src and calling play() — muted=${a.muted} volume=${a.volume}`);
-  a.src = url;
-  a.play().catch((err) => {
+  a.src = playbackUrl;
+  if (podcastResumePosition !== null) {
+    _prepareLocalPodcastResume(a, podcastResumePosition, playbackGeneration);
+  }
+  const playPromise = a.play();
+  if (_localMediaType === 'Podcast' && typeof startWaveform === 'function') startWaveform();
+  playPromise.catch((err) => {
     const msg = `[LOCAL-PLAY] play() rejected for '${name}': ${err && err.message ? err.message : err}`;
     _postLog(msg);
+    if (_localMediaType === 'Podcast' && typeof stopWaveform === 'function') stopWaveform();
     fetch('/api/local-playing', { method: 'POST', body: 'false' }).catch(() => {});
     const errMsg = err && err.message ? err.message : String(err);
     const statusId = type === 'Music'
@@ -133,6 +256,7 @@ async function localToggle() {
 }
 async function localStop(keepPlayerVisible = false, options = {}) {
   const preservePodcastQueue = options.preservePodcastQueue === true;
+  _cancelLocalPodcastResume();
   if (_localMediaType === 'PodcastServer') {
     if (!preservePodcastQueue && typeof podcastPlaybackStopped === 'function') podcastPlaybackStopped();
     if (typeof radioDismiss === 'function') {

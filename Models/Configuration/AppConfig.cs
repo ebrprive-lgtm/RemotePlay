@@ -118,7 +118,8 @@ internal sealed record AppConfig
 
     /// <summary>
     /// Maximum number of HTTP requests accepted from a single IP address within
-    /// <see cref="RateLimitWindowSeconds"/>. Set to 0 to disable rate limiting.
+    /// <see cref="RateLimitWindowSeconds"/>. Loopback and private-network addresses
+    /// are exempt. Set to 0 to disable rate limiting.
     /// </summary>
     public int MaxRequestsPerIpPerWindow { get; init; } = 300;
 

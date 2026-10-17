@@ -10,6 +10,7 @@ let _podcastDirectoryCountry = '';
 let _podcastDirectoryIsSnapshot = false;
 let _podcastDirectorySnapshotSavedAt = 0;
 let _podcastDirectoryRefreshFailed = false;
+let _podcastDirectoryTopPoolRefreshing = false;
 let _podcastDirectoryEnteredAt = 0;
 let _podcastDirectoryFirstCardLogged = false;
 let _podcastLastSearch = { query: '', topic: '', country: '' };
@@ -119,6 +120,7 @@ function _invalidatePodcastBrowseRequests({ resumeOnReturn = false } = {}) {
   _podcastShowsRequestId++;
   _podcastEpisodesRequestId++;
   _podcastDirectoryLoading = false;
+  _podcastDirectoryTopPoolRefreshing = false;
   _podcastShowsLoadMoreRequestId = null;
   _podcastEpisodesLoadMoreRequestId = null;
   _podcastBrowseResumeKind = resumeKind;
@@ -1139,10 +1141,12 @@ async function _podcastPlayEpisodeFromQueue(
   const artworkUrl = artworkCandidates.find(
     (candidate) => typeof candidate === 'string' && candidate.trim()
   )?.trim() || '';
-  const playerMetadata = { mode: 'podcast', showTitle, artworkUrl };
+  const description = _podcastPlainText(episode?.description || '');
+  const playerMetadata = { mode: 'podcast', showTitle, artworkUrl, description };
 
   try {
     const playLocal = typeof isPlayLocal === 'function' && isPlayLocal();
+    if (playLocal && typeof _ensureLocalBoostGraph === 'function') _ensureLocalBoostGraph();
 
     // Podcasts share the radio player bar (both local and server playback).
     // Ensure any stale video-player UI is removed before we start the episode.
@@ -1641,10 +1645,13 @@ async function _loadPodcastDirectory() {
   _podcastDirectoryRequest = request;
   _podcastDirectoryLoading = true;
   _podcastDirectoryRefreshFailed = false;
+  _podcastDirectoryTopPoolRefreshing = false;
   const loadStartedAt = _podcastNow();
   const country = (document.getElementById('pcb-country')?.value || '').trim();
   const topicLimit = 12;
   let failedSections = 0;
+  let topPoolRefreshing = false;
+  let topPoolRefreshTask = null;
   const sections = _podcastDirectoryCountry === country ? _podcastDirectory.slice() : [];
 
   if (!sections.length) {
@@ -1659,8 +1666,13 @@ async function _loadPodcastDirectory() {
   try {
     const loadSection = async (topic, limit, take) => {
       try {
-        const shows = await _fetchPodcastShows({ country, topic, limit, request });
+        const result = await _fetchPodcastShows({ country, topic, limit, request });
         if (requestId !== _podcastDirectoryRequestId) return false;
+        const shows = result.shows;
+        if (!topic && !country) {
+          topPoolRefreshing = result.refreshing;
+          _podcastDirectoryTopPoolRefreshing = topPoolRefreshing;
+        }
         if (shows.length > 0) {
           const sectionName = topic || 'Top Podcasts';
           const section = { topic: sectionName, shows: shows.slice(0, take) };
@@ -1695,15 +1707,32 @@ async function _loadPodcastDirectory() {
 
     if (!await loadSection('', _podcastDirectorySnapshotPageSize, _podcastDirectorySnapshotPageSize)) return;
     await _podcastWaitForPaint(request.signal);
+    if (topPoolRefreshing) {
+      topPoolRefreshTask = _refreshPodcastDirectoryTopPoolProgress({
+        country,
+        request,
+        requestId,
+        sections,
+        take: _podcastDirectorySnapshotPageSize,
+        loadStartedAt,
+      });
+    }
 
     for (const topic of _podcastQuickTopics.slice(0, 4)) {
       if (requestId !== _podcastDirectoryRequestId) return;
       if (!await loadSection(topic, topicLimit, 8)) return;
     }
+
+    if (topPoolRefreshTask) {
+      _podcastDirectoryLoading = false;
+      if (!_podcastSelectedShow && !_podcastFavoritesOnly) _renderPodcastDirectory();
+      if (!await topPoolRefreshTask && requestId === _podcastDirectoryRequestId) failedSections++;
+    }
   } finally {
     if (requestId === _podcastDirectoryRequestId) {
       if (_podcastDirectoryRequest === request) _podcastDirectoryRequest = null;
       _podcastDirectoryLoading = false;
+      _podcastDirectoryTopPoolRefreshing = false;
       _podcastDirectoryRefreshFailed = failedSections > 0;
       if (!_podcastSelectedShow) {
         if (_podcastFavoritesOnly) _renderPodcastShows();
@@ -1734,7 +1763,93 @@ async function _fetchPodcastShows({ country, topic = '', limit = 12, request = n
   const r = await fetch(url, request?.signal ? { signal: request.signal } : undefined);
   if (!r.ok) throw new Error(`podcast discovery request failed (${r.status})`);
   const data = await r.json();
-  return Array.isArray(data.shows) ? data.shows : [];
+  return {
+    shows: Array.isArray(data.shows) ? data.shows : [],
+    refreshing: data.refreshing === true,
+  };
+}
+
+async function _refreshPodcastDirectoryTopPoolProgress({
+  country,
+  request,
+  requestId,
+  sections,
+  take,
+  loadStartedAt,
+}) {
+  let delayMs = 900;
+  const deadline = _podcastNow() + 60_000;
+
+  try {
+    while (requestId === _podcastDirectoryRequestId) {
+      if (request?.signal?.aborted
+        || (typeof currentMode !== 'undefined' && currentMode !== 'podcasts')) {
+        return true;
+      }
+
+      const remainingMs = deadline - _podcastNow();
+      if (remainingMs <= 0) {
+        console.warn('Timed out while refreshing worldwide podcast recommendations');
+        _podcastDirectoryTopPoolRefreshing = false;
+        if (!_podcastSelectedShow && !_podcastFavoritesOnly) _renderPodcastDirectory();
+        return false;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, remainingMs)));
+      if (request?.signal?.aborted || requestId !== _podcastDirectoryRequestId) return true;
+
+      const result = await _fetchPodcastShows({
+        country,
+        limit: _podcastDirectorySnapshotPageSize,
+        request,
+      });
+      if (requestId !== _podcastDirectoryRequestId) return true;
+
+      const shows = result.shows.slice(0, take);
+      const sectionName = 'Top Podcasts';
+      const sectionIndex = sections.findIndex((section) => section.topic === sectionName);
+      const previousShows = sectionIndex >= 0 ? sections[sectionIndex].shows : [];
+      const showsChanged = shows.length !== previousShows.length
+        || shows.some((show, index) => (show.feedUrl || '') !== (previousShows[index]?.feedUrl || ''));
+      const refreshStateChanged = _podcastDirectoryTopPoolRefreshing !== result.refreshing;
+      _podcastDirectoryTopPoolRefreshing = result.refreshing;
+
+      if (shows.length > 0 && showsChanged) {
+        const section = { topic: sectionName, shows };
+        if (sectionIndex >= 0) sections[sectionIndex] = section;
+        else sections.unshift(section);
+        _podcastDirectory = sections.slice();
+        _podcastDirectoryCountry = country;
+
+        if (!country) {
+          _podcastDirectoryIsSnapshot = false;
+          _savePodcastDirectorySnapshot(section.shows);
+        }
+
+        console.debug('[Podcasts] Worldwide top-pool progress updated', {
+          elapsedMs: Math.max(0, Math.round(_podcastNow() - loadStartedAt)),
+          shows: section.shows.length,
+        });
+      }
+
+      if (showsChanged || refreshStateChanged) {
+        if (!_podcastSelectedShow && !_podcastFavoritesOnly) _renderPodcastDirectory();
+      }
+
+      if (!result.refreshing) return true;
+      delayMs = Math.min(2000, Math.round(delayMs * 1.5));
+    }
+  } catch (error) {
+    if (_podcastRequestWasAborted(error, request) || requestId !== _podcastDirectoryRequestId)
+      return true;
+
+    console.warn('Failed to refresh worldwide podcast recommendations', error);
+    _podcastDirectoryTopPoolRefreshing = false;
+    if (!_podcastSelectedShow && !_podcastFavoritesOnly) _renderPodcastDirectory();
+    return false;
+  }
+
+  return true;
 }
 
 function _renderPodcastDirectoryLoading() {
@@ -1778,9 +1893,14 @@ function _renderPodcastDirectory() {
     return;
   }
 
+  const countStatus = _podcastDirectoryLoading
+    ? (_podcastDirectoryIsSnapshot ? ' · Refreshing saved list…' : ' · Loading more…')
+    : _podcastDirectoryTopPoolRefreshing
+      ? ' · Updating worldwide recommendations…'
+      : '';
   const countText = totalShows === 0
     ? 'Recommendations unavailable'
-    : `${_podcastDirectory.length} topic section${_podcastDirectory.length === 1 ? '' : 's'}, ${totalShows} show${totalShows === 1 ? '' : 's'}${_podcastDirectoryLoading ? (_podcastDirectoryIsSnapshot ? ' · Refreshing saved list…' : ' · Loading more…') : ''}`;
+    : `${_podcastDirectory.length} topic section${_podcastDirectory.length === 1 ? '' : 's'}, ${totalShows} show${totalShows === 1 ? '' : 's'}${countStatus}`;
   _renderPodcastHeader({
     breadcrumb: '<span class="crumb-current">Podcasts</span><span> &rsaquo; </span><span class="crumb-current">Directory</span>',
     countText,
@@ -1848,14 +1968,16 @@ function _renderPodcastDirectory() {
     ? `<p class="podcast-directory-refresh-status" role="status" aria-live="polite">${_podcastDirectoryIsSnapshot
       ? `Showing saved recommendations from ${esc(_podcastSnapshotAgeText())} while refreshing.`
       : 'Loading more topic recommendations…'}</p>`
-    : _podcastDirectoryRefreshFailed
-      ? `<div class="podcast-directory-refresh-status" role="status">
-          <span>${_podcastDirectoryIsSnapshot
-            ? 'Refresh failed; showing saved recommendations.'
-            : 'Some recommendations could not be refreshed.'}</span>
-          <button class="btn btn-dim" type="button" onclick="podcastRetryDirectory()">Retry</button>
-        </div>`
-      : '';
+    : _podcastDirectoryTopPoolRefreshing
+      ? '<p class="podcast-directory-refresh-status" role="status" aria-live="polite">Updating worldwide recommendations as more country charts load.</p>'
+      : _podcastDirectoryRefreshFailed
+        ? `<div class="podcast-directory-refresh-status" role="status">
+            <span>${_podcastDirectoryIsSnapshot
+              ? 'Refresh failed; showing saved recommendations.'
+              : 'Some recommendations could not be refreshed.'}</span>
+            <button class="btn btn-dim" type="button" onclick="podcastRetryDirectory()">Retry</button>
+          </div>`
+        : '';
 
   root.innerHTML = `
     <section class="card" style="padding:.8rem;margin-bottom:.65rem">

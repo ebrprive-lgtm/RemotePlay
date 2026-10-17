@@ -1,5 +1,4 @@
 using System.IO;
-using System.Text.RegularExpressions;
 using System.Net;
 using System.Net.Http;
 using System.Net.Sockets;
@@ -8,13 +7,11 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using LibVLCSharp.Shared;
-using LibVLCSharp.Shared.Structures;
 using RemotePlay.Helpers;
 using RemotePlay.Models;
 using RemotePlay.Services;
@@ -68,7 +65,7 @@ public partial class MainWindow : Window
     private string _lastPlaybackError = string.Empty;
     private double _brightness;
     private double _sharpness;
-    private double _saturation = 1;
+    private double _saturation;
     private double _zoom = 1;
     private double _volume = 1;
     private double _audioBoost = 1;
@@ -304,13 +301,13 @@ public partial class MainWindow : Window
         ServerStatusText.Text = $"Server starting on {_config.Scheme}://*:{_config.Port}\u2026";
 
         // Keep overlay synced if window moves or resizes
-        this.LocationChanged += (s, e) =>
+        this.LocationChanged += (_, _) =>
         {
             if (_isVideoMode && _videoOverlay != null)
                 _videoOverlay.UpdatePosition(this);
         };
 
-        this.SizeChanged += (s, e) =>
+        this.SizeChanged += (_, _) =>
         {
             if (_isVideoMode && _videoOverlay != null)
                 _videoOverlay.UpdatePosition(this);
@@ -750,13 +747,14 @@ public partial class MainWindow : Window
         }, TaskScheduler.Default);
 
         using var heartbeatCts = new CancellationTokenSource();
+        var heartbeatToken = heartbeatCts.Token;
         var heartbeatTask = Task.Run(async () =>
         {
             try
             {
-                while (!heartbeatCts.IsCancellationRequested)
+                while (!heartbeatToken.IsCancellationRequested)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(5), heartbeatCts.Token).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(5), heartbeatToken).ConfigureAwait(false);
                     Logger.Detail("StartupTimeout", $"[{stepId}] HEARTBEAT '{description}' elapsedMs={sw.ElapsedMilliseconds} taskStatus={startupTask.Status} {GetThreadPoolSnapshot()}");
                 }
             }
@@ -819,13 +817,14 @@ public partial class MainWindow : Window
         }, TaskScheduler.Default);
 
         using var heartbeatCts = new CancellationTokenSource();
+        var heartbeatToken = heartbeatCts.Token;
         var heartbeatTask = Task.Run(async () =>
         {
             try
             {
-                while (!heartbeatCts.IsCancellationRequested)
+                while (!heartbeatToken.IsCancellationRequested)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(5), heartbeatCts.Token).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(5), heartbeatToken).ConfigureAwait(false);
                     Logger.Detail("StartupTimeout", $"[{stepId}] HEARTBEAT<T> '{description}' elapsedMs={sw.ElapsedMilliseconds} taskStatus={startupTask.Status} {GetThreadPoolSnapshot()}");
                 }
             }
@@ -899,11 +898,10 @@ public partial class MainWindow : Window
         {
             await Dispatcher.InvokeAsync(() => AppendLog("Self-test: checking server endpoints…"));
             var baseUrl = $"{activeScheme}://{ip}:{port}";
-            using var handler = new HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
-            };
-            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(5) };
+            using var handler = new HttpClientHandler();
+            handler.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator;
+            using var client = new HttpClient(handler);
+            client.Timeout = TimeSpan.FromSeconds(5);
 
             await CheckEndpointAsync(client, baseUrl, "/health");
             await CheckEndpointAsync(client, baseUrl, "/api/status");
@@ -1264,7 +1262,7 @@ public partial class MainWindow : Window
         // Show banner if media is already playing (delayed slightly to ensure overlay is ready)
         if (_mediaPlayer.IsPlaying)
         {
-            Dispatcher.InvokeAsync(() => ShowBanner(), System.Windows.Threading.DispatcherPriority.Loaded);
+            await Dispatcher.InvokeAsync(() => ShowBanner(), System.Windows.Threading.DispatcherPriority.Loaded);
         }
 
         if (IsIsolatedVideoActive)
@@ -1540,7 +1538,7 @@ public partial class MainWindow : Window
             _                               => "All",
         };
 
-        foreach (var btn in new System.Windows.Controls.Button[] { LogFilterError, LogFilterWarn, LogFilterInfo, LogFilterDetail, LogFilterAll })
+        foreach (var btn in new[] { LogFilterError, LogFilterWarn, LogFilterInfo, LogFilterDetail, LogFilterAll })
         {
             bool active = btn.Tag as string == activeTag;
             var hex = LevelAccentHex(btn.Tag as string ?? "");
@@ -2378,7 +2376,6 @@ public partial class MainWindow : Window
         /// <summary>The display path for the Target column: for file links shows full target path including filename;
         /// for folder links shows the target folder path.</summary>
         public string TargetDisplay => !IsLink ? string.Empty
-            : IsFolderLink ? FullTargetPath
             : FullTargetPath;  // includes filename since FullTargetPath is the raw resolved target
         // Tooltip shown on hover for link rows: shows resolved path with existence indicator
         public string TargetTooltip => !IsLink ? string.Empty
@@ -2916,7 +2913,8 @@ public partial class MainWindow : Window
     }
     // Optimization: Move this to a class field if it doesn't change during runtime 
     // to avoid re-allocating the HashSet on every navigation.
-    private HashSet<string> _videoExtensions;
+    private HashSet<string> _videoExtensions = new(StringComparer.OrdinalIgnoreCase);
+    private bool _videoExtensionsInitialized;
 
     private void PopulateLeftBrowser(string dir)
     {
@@ -2946,11 +2944,11 @@ public partial class MainWindow : Window
         var root = _config.ResolvedMoviesPath;
 
         // Optimization: Logic simplified and shared
-        if (_videoExtensions == null)
+        if (!_videoExtensionsInitialized)
         {
             _videoExtensions = _config.EffectiveVideoFileExtensions
-                .Select(e => e.ToLowerInvariant())
-                .ToHashSet();
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            _videoExtensionsInitialized = true;
         }
 
         var entries = new List<BrowserEntry>();
@@ -2991,7 +2989,7 @@ public partial class MainWindow : Window
 
         // 4. Video files
         var videoFiles = Directory.EnumerateFiles(dir)
-            .Where(f => _videoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+            .Where(f => _videoExtensions.Contains(Path.GetExtension(f)))
             .OrderBy(x => x);
 
         foreach (var f in videoFiles)
@@ -3110,14 +3108,17 @@ public partial class MainWindow : Window
 
         // Reset any previous index-check colouring when the menu re-opens.
         // Rebuild items with Normal IndexState so rows revert to default white.
-        if (lv.ItemsSource is IEnumerable<BrowserEntry> currentItems
-            && currentItems.Any(x => x.IndexState != BrowserIndexState.Normal))
+        if (lv.ItemsSource is IEnumerable<BrowserEntry> currentItems)
         {
-            var reset = currentItems
-                .Select(x => x.IndexState == BrowserIndexState.Normal ? x : x with { IndexState = BrowserIndexState.Normal })
-                .ToList();
-            lv.ItemsSource = null;
-            lv.ItemsSource = reset;
+            var currentItemsSnapshot = currentItems.ToArray();
+            if (currentItemsSnapshot.Any(x => x.IndexState != BrowserIndexState.Normal))
+            {
+                var reset = currentItemsSnapshot
+                    .Select(x => x.IndexState == BrowserIndexState.Normal ? x : x with { IndexState = BrowserIndexState.Normal })
+                    .ToList();
+                lv.ItemsSource = null;
+                lv.ItemsSource = reset;
+            }
         }
 
         bool hasAny       = selected.Count > 0;
@@ -3167,7 +3168,6 @@ public partial class MainWindow : Window
                 {
                     "SepFileFolder"  => showFiles && (showLinks || showFolders) ? Visibility.Visible : Visibility.Collapsed,
                     "SepLinkFolder"  => showLinks && showFolders                ? Visibility.Visible : Visibility.Collapsed,
-                    "SepCheckIndex"  => Visibility.Visible,
                     _                => Visibility.Visible
                 };
                 continue;
@@ -3507,9 +3507,6 @@ public partial class MainWindow : Window
 
         if (!DarkMessageBox.Confirm(msg, "Confirm Delete Folder", this)) return;
 
-        int failed = 0;
-        string lastError = string.Empty;
-
         _webServer?.SuppressWatcher(TimeSpan.FromSeconds(10));
         foreach (var file in Directory.EnumerateFiles(folderPath, "*" + RplinkHelper.Extension))
         {
@@ -3518,7 +3515,10 @@ public partial class MainWindow : Window
                 File.Delete(file);
                 _webServer?.IndexRemoveUnderPath(file);
             }
-            catch (Exception ex) { failed++; lastError = ex.Message; }
+            catch (Exception ex)
+            {
+                Logger.Error("FolderDelete", $"Failed while removing link '{file}' before deleting '{folderPath}'.", ex);
+            }
         }
 
         try
@@ -3618,7 +3618,7 @@ public partial class MainWindow : Window
         var isSingleFileLink = links.Count == 1 && !links[0].IsFolderLink;
         var allFolderLinks = links.All(link => link.IsFolderLink);
 
-        var newTargetDir = string.Empty;
+        string newTargetDir;
         var selectedTargetFile = string.Empty;
 
         if (isSingleFileLink)
@@ -4197,7 +4197,7 @@ public partial class MainWindow : Window
             ? Path.GetFileNameWithoutExtension(entry.FullPath)
             : Path.GetFileName(entry.FullPath);
 
-        using var dlg = new RenameDialog(currentName) { Owner = this };
+        var dlg = new RenameDialog(currentName) { Owner = this };
         if (dlg.ShowDialog() != true)
             return;
 
@@ -4237,7 +4237,7 @@ public partial class MainWindow : Window
             else
                 _webServer?.IndexRenameFile(entry.FullPath, destination);
 
-            onDone?.Invoke();
+            onDone();
         }
         catch (Exception ex)
         {
@@ -4554,7 +4554,7 @@ public partial class MainWindow : Window
             var defaultSeriesFolder = Path.Combine(_config.ResolvedMoviesPath, "@Master.Series");
             var fallbackFolder = Directory.Exists(_config.ResolvedMoviesPath) ? _config.ResolvedMoviesPath : string.Empty;
 
-            var newTarget = string.Empty;
+            string newTarget;
             if (isFolderLink)
             {
                 var folderDialog = new Microsoft.Win32.OpenFolderDialog

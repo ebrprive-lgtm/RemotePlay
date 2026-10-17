@@ -1,6 +1,6 @@
 # Web Player UI Improvement Plan
 
-**Status:** Phases 1–5 implemented and verified. Phase 4/5 evidence and known
+**Status:** Phases 1–7 implemented and verified. Phase 4–7 evidence and known
 browser-automation limitations are recorded below.
 
 ## Goal and scope
@@ -80,9 +80,10 @@ protocol.
   accessible, but move infrequent effects/settings into a clearly labelled
   expandable “Audio” section. Show Radio-only globe/station controls only in
   Radio mode.
-- **Add source-aware progress.** Provide a timeline for seekable podcasts and
-  music; show a live indicator and elapsed time for live Radio rather than a
-  misleading or non-functional seek bar. Handle unknown duration without
+- **Add source-aware progress.** Show a timeline when a podcast has finite
+  duration, but enable seeking only when the source exposes reliable seek
+  behavior. Show a live indicator and elapsed time for live Radio rather than
+  a misleading or non-functional seek bar. Handle unknown duration without
   reserving a broken range control.
 - **Use artwork as a supporting cue.** Show available podcast artwork or a
   stable placeholder beside the title; do not block playback on artwork or add
@@ -226,10 +227,10 @@ protocol.
   simulated page-load failure, when no next page remained, and during a
   playback transition. Disabled state, accessible name, busy state, and retry
   text matched each case.
-- Local and server Podcast progress appeared only with finite duration and
-  seek capability; unsupported progress was hidden/disabled. A seek commit
-  succeeded in the mock browser check. Radio showed Live plus elapsed time and
-  no scrubber, while the existing Music seek controls remained available.
+- Local and server Podcast timelines appeared with finite duration and were
+  enabled only when seek capability was confirmed. A seek commit succeeded in
+  the mock browser check. Radio showed Live plus elapsed time and no scrubber,
+  while the existing Music seek controls remained available.
 - Volume and boost showed separate values and retained their existing ranges,
   endpoints, and reset mapping (80% volume and 0 dB/1× boost). EQ/Reverb
   controls remain available inside collapsed Audio settings.
@@ -312,10 +313,89 @@ protocol.
   modified player scripts, editor diagnostics found no errors, and
   `git diff --check` passed.
 
+### Phase 6 — Podcast control polish and local handoff
+
+- [x] Remove duplicate Volume and Boost headings from the shared
+  Radio/Podcast controls without changing Music controls or audio mappings.
+- [x] Present the episode position as a compact badge alongside, not between,
+  the Prev/Play/Next transport group; keep Stop distinct and responsive.
+- [x] Handoff a server Podcast to local playback using its episode URL and
+  Podcast metadata, preserving the queue and current position rather than
+  restarting server live-Radio playback. When duration is not yet known, use
+  the server's elapsed-time estimate as the resume position.
+- [x] Show a timeline whenever duration is finite; disable pointer seeking
+  until the local or server source confirms it is seekable.
+- [x] Add regression checks for the player layout, Podcast-specific handoff,
+  resume-position handling, and finite-duration progress.
+
+### Phase 6 verification
+
+- Source regression tests, JavaScript syntax checks, editor diagnostics, and
+  `git diff --check` passed. The PodcastServer handoff was confirmed to run
+  before the generic Radio path and to use the direct episode URL and
+  Podcast mode metadata.
+- The episode badge occupies a separate secondary transport group. Volume and
+  Boost each have a single visible label in the Radio/Podcast player; Music
+  markup and queue behavior are unchanged.
+- A finite-duration Podcast displays elapsed/total progress even when seeking
+  is unsupported; the range stays disabled until seekability is confirmed.
+- A local static browser preview at 1440 px and 375 px with coarse-pointer
+  emulation confirmed that the primary buttons stay grouped, the episode badge
+  and Stop remain distinct, and no player child overflows the card. At 375 px,
+  the document and player both fit the viewport.
+
+### Phase 7 — Waveform capture and episode details
+
+- [x] Share the persistent local Web Audio source graph between boost and the
+  analyser so the waveform reads the actual audio instead of failing on a
+  duplicate `MediaElementSource`.
+- [x] Use the same-origin stream proxy for local Podcast playback and forward
+  byte ranges, preserving seeking when an episode host supports range
+  requests while avoiding cross-origin audio-analysis silence.
+- [x] Remove the synthetic server-mode waveform; only show bars when the
+  browser has real local audio samples to analyze.
+- [x] Move the episode position into the player metadata row and keep Stop
+  alongside the transport controls.
+- [x] Expose the current episode's complete description in an accessible,
+  expandable player disclosure; keep the episode-list preview compact.
+- [x] Add regression checks for waveform graph reuse, range forwarding,
+  metadata placement, and full description availability.
+
+### Phase 7 verification
+
+- Focused `WebAssetRegressionTests` passed 34/34; Deno JavaScript checks,
+  editor diagnostics, and `git diff --check` passed. Local Podcast playback
+  uses the existing audio graph and range-aware proxy; synthetic server bars
+  are no longer rendered.
+- The episode index now appears with the show metadata above the transport
+  controls. The full, plain-text episode description is available in the
+  player disclosure and updates when navigating the queue.
+- A static browser preview at 360 CSS px confirmed that the episode badge
+  stays in the metadata row, the transport buttons and Stop remain visible,
+  and no player child overflows the card. The existing page-level mode-tab
+  overflow remains outside this player change.
+
+### Phase 8 — Audio player visibility across modes
+
+- [x] Hide the shared Radio/Podcast player in Video and other non-audio modes
+  without stopping playback or changing the Podcast queue.
+- [x] Scope dock layout rules to Radio and Podcasts modes so the player does
+  not reserve space in the Video list.
+- [x] Add regression coverage for audio-mode classes and player visibility.
+
+### Phase 8 verification
+
+- Focused `WebAssetRegressionTests` passed 35/35; `deno check` and editor
+  diagnostics passed.
+- A browser style check confirmed the player is visible in Radio/Podcasts,
+  hidden in Video, and visible again when returning to Podcasts.
+
 ## Invariants and non-goals
 
 - Do not change playback endpoints, queue semantics, or source-selection
-  behavior as part of a visual-only layout change.
+  behavior beyond the local Podcast proxy's byte-range forwarding.
+- Keep the shared Radio/Podcast player out of non-audio modes without stopping
+  active playback or changing the Podcast queue.
 - Preserve podcast paging and queue continuation across feed pages.
 - Preserve Music queue behavior and its populated queue display. Only the
   empty visual “Up Next” presentation may be hidden.

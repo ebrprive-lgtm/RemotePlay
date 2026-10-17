@@ -16,11 +16,15 @@ Checkboxes in **Current baseline** are verified as already implemented.
 Unchecked items in **Remaining implementation** are follow-up work and should
 be checked off only after their acceptance criteria pass.
 
-**Status:** Phases 1–6 are implemented and their documented checks are
-complete. Phase 6 adds first-card and directory-completion timing in the
-browser, plus server cache and source-fetch timing diagnostics. The original
-baseline is qualitative; collect live catalog timings from a deployed instance
-for a numeric production comparison.
+**Status:** Phases 1–6 and the country-storefront discovery follow-up are
+implemented, with their documented checks complete. Phase 6 adds first-card
+and directory-completion timing in the browser, plus server cache and
+source-fetch timing diagnostics. Its cold all-country path now returns the
+first usable chart results while the sequential country refresh continues,
+then updates the browser as the balanced pool grows. Country-only browsing
+also prefers the selected storefront's chart before using generic search as a
+fallback. The original baseline is qualitative; collect live catalog timings
+from a deployed instance for a numeric production comparison.
 
 ## Current baseline
 
@@ -37,6 +41,12 @@ for a numeric production comparison.
   mode transitions.
 - [x] Topic-only all-country search uses the intended search path, and the
   multi-country scan can stop once it has enough unique results.
+- [x] Cold all-country chart discovery uses Apple's current RSS hostname and a
+  per-chart limit of 100 while retaining a 200-show balanced pool. It returns
+  first usable results immediately and refreshes the browser as sequential
+  country results arrive.
+- [x] A supported country selection with no explicit query/topic uses that
+  storefront's chart first, with country-scoped search retained as a fallback.
 - [x] Feed XML parsing prohibits DTDs and limits feed input; private/local
   literal episode and feed URLs are rejected by the current validation.
 - [x] Podcast API tests cover country listing and rejection of private-host
@@ -49,8 +59,11 @@ Before Phase 1, the focused podcast API tests passed (3 passed). The broader
 (expected HTTP 429, received HTTP 200); that same failure reproduced when the
 test was run alone. Phase 1 verification then passed all 63 podcast-focused
 tests. The broader API/unit selection passed 85 tests and reproduced only that
-same rate-limit failure, including when run alone. Treat it as a known baseline
-issue unless a planned change touches rate-limit behavior.
+same failure, including when run alone. Later diagnostics showed that loopback
+and private-network addresses are intentionally exempt from rate limiting, so
+the localhost-based assertion was incorrect. The test now verifies that
+exemption, and a deterministic non-local-address test verifies quota
+enforcement; see Phase 6 verification.
 
 There is no JavaScript test runner or JS test file pattern currently wired into
 the repository. Earlier frontend checks were run with Deno as targeted syntax
@@ -99,7 +112,7 @@ redirect destination or protect against DNS rebinding.
   log upstream/redirect failures without exposing internal addresses or
   credentials in responses.
 
-**Acceptance checks**
+#### Acceptance checks
 
 - [x] No outbound request is made for a literal private/loopback URL or a
   hostname resolving to a non-public address.
@@ -113,7 +126,7 @@ redirect destination or protect against DNS rebinding.
   pass; new tests use fake upstreams and do not depend on live podcast
   providers.
 
-**Phase 1 implementation notes and limits**
+#### Phase 1 implementation notes and limits
 
 - The pinned feed client bypasses system proxies for arbitrary feed URLs;
   otherwise the proxy could resolve the destination outside the validated
@@ -155,7 +168,7 @@ feed.
 - [x] Ensure cache keys and cached data cannot cross-contaminate different
   feed URLs, query parameters, or paging offsets.
 
-**Acceptance checks**
+#### Acceptance checks
 
 - [x] A repeated request within the freshness interval is served from cache.
 - [x] An expired entry sends validators; a `304` serves the prior parsed
@@ -165,7 +178,7 @@ feed.
 - [x] Feed pagination returns the same `episodes`, `hasMore`, and `total`
   contract before and after caching.
 
-**Phase 2 implementation notes and limits**
+#### Phase 2 implementation notes and limits
 
 - The cache is in-memory and scoped to each `WebServer` instance. Its key
   canonicalizes scheme/host/default port, removes URL fragments, and preserves
@@ -188,12 +201,13 @@ feed.
   API request, including cache hits, preserving the Phase 1 public-destination
   policy.
 
-**Phase 2 verification**
+#### Phase 2 verification
 
 - [x] Podcast-focused API and cache tests passed: 78 passed, 0 failed.
 - [x] The complete `WebServerApiTests` selection ran: 54 passed; the existing
-  rate-limit test still fails with expected HTTP 429 / actual HTTP 200, matching
-  the previously documented baseline failure.
+  localhost-based rate-limit assertion still failed at this point, matching
+  the baseline above; this test assumption was later corrected (see Phase 6
+  verification).
 
 ### Phase 3 — Balance global top-podcast discovery across countries
 
@@ -216,7 +230,7 @@ directory.
   search throttle, and stop merging when sources are exhausted or the pool is
   full.
 
-**Acceptance checks**
+#### Acceptance checks
 
 - [x] When multiple country sources have unique results, the global pool
   includes results from multiple sources before any one source fills the pool.
@@ -225,7 +239,7 @@ directory.
 - [x] Explicitly selected country results and current pagination contracts
   remain unchanged.
 
-**Phase 3 implementation notes and limits**
+#### Phase 3 implementation notes and limits
 
 - Global top-pool generation samples the existing fixed order of ten
   countries (`US`, `GB`, `CA`, `AU`, `DE`, `FR`, `ES`, `IT`, `NL`, `BE`).
@@ -243,15 +257,16 @@ directory.
   so the discovery merge can be tested with deterministic Apple RSS/iTunes
   responses without live provider calls.
 
-**Phase 3 verification**
+#### Phase 3 verification
 
 - [x] Podcast-focused tests passed: 80 passed, 0 failed. This includes
   multi-country round ordering, feed-URL deduplication, cached ordering,
   the 200-item pool cap with uneven source exhaustion, fallback pagination,
   and explicit-country pagination.
 - [x] The complete `WebServerApiTests` selection ran: 56 passed; the existing
-  rate-limit test still fails with expected HTTP 429 / actual HTTP 200, matching
-  the previously documented baseline failure.
+  localhost-based rate-limit assertion still failed at this point, matching
+  the baseline above; this test assumption was later corrected (see Phase 6
+  verification).
 
 ### Phase 4 — Cancel superseded requests and continue playback across feed pages
 
@@ -284,7 +299,7 @@ the episodes already loaded, even when the feed has another page.
   returning to the directory, and preserve the existing radio/player mode,
   stop, and polling behavior.
 
-**Acceptance checks**
+#### Acceptance checks
 
 - [x] A slow old search/feed response cannot replace the current selection;
   superseded requests are aborted where supported.
@@ -298,7 +313,7 @@ the episodes already loaded, even when the feed has another page.
 - [x] Browsing, route changes, local/server playback switching, and stop
   behavior do not corrupt or unexpectedly clear the active queue.
 
-**Phase 4 verification**
+#### Phase 4 verification
 
 - [x] Temporary Deno mocked checks passed: 7 playback/cancellation checks,
   plus focused view-exit/re-entry and final local pause/resume checks (1 each).
@@ -334,12 +349,13 @@ the episodes already loaded, even when the feed has another page.
 - [x] Update this plan's checkboxes only after the corresponding behavior and
   tests have been verified.
 
-**Phase 5 verification**
+#### Phase 5 verification
 
 - Podcast API selection: 80 passed, 0 failed.
-- `WebServerApiTests`: 56 passed; the existing rate-limit test still expects
-  HTTP 429 but receives HTTP 200. Running that test alone reproduced the same
-  failure, matching the documented baseline.
+- `WebServerApiTests`: 56 passed; the old localhost-based rate-limit assertion
+  still failed at this point, matching the baseline above. It was later
+  corrected to reflect the local-address exemption, with separate coverage for
+  the non-local request quota.
 
 - Deno syntax checks and editor diagnostics passed for the modified frontend
   and API files. Syntax check command:
@@ -376,7 +392,7 @@ it then loads four topic sections one after another. The screenshot's
 `0 topic sections, 0 shows · Loading more…` state is the result: topic chips
 are visible, but there are no recommendation cards or skeletons.
 
-**Verified baseline (2026-10-17)**
+#### Verified baseline (2026-10-17)
 
 - [x] `podcastsInit()` starts `_loadPodcastDirectory()` only after
   `_loadPodcastCountries()` settles, although the default all-country
@@ -440,7 +456,7 @@ and [RemotePlay.Tests/WebServerApiTests.cs](./RemotePlay.Tests/WebServerApiTests
   actually shown without changing pagination, result ordering, or
   `hasMore`/`total` semantics.
 
-**Acceptance checks**
+#### Acceptance checks
 
 - [x] With a saved browser snapshot, recommendation cards are visible within
   250 ms of entering Podcasts, before the country or recommendation requests
@@ -471,7 +487,7 @@ and [RemotePlay.Tests/WebServerApiTests.cs](./RemotePlay.Tests/WebServerApiTests
   timing probes are available for live comparison against the qualitative
   baseline recorded above.
 
-**Phase 6 verification**
+#### Phase 6 verification
 
 - Podcast-focused tests:
   `dotnet test .\RemotePlay.Tests\RemotePlay.Tests.csproj --filter "FullyQualifiedName~Podcast" --no-build --no-restore`
@@ -481,7 +497,38 @@ and [RemotePlay.Tests/WebServerApiTests.cs](./RemotePlay.Tests/WebServerApiTests
   parallel country/default requests, immediate skeleton/snapshot rendering,
   first-page-before-topic enrichment, sequential topic loading, bounded
   snapshots, and immediate re-entry. The temporary harness was removed.
+- The complete .NET test project passed: 535 passed, 0 failed. Rate-limit
+  coverage verifies both local-address exemption and non-local quota
+  enforcement.
 - `git diff --check` passed.
+
+#### Cold-cache startup follow-up
+
+- A live Apple RSS probe confirmed that the previous hostname redirects to
+  `rss.marketingtools.apple.com`, where chart requests with `limit=200` return
+  HTTP 500 while `limit=100` succeeds. The implementation now uses the
+  canonical hostname and caps each source request at 100; the combined pool
+  still keeps up to 200 shows.
+- Cold-cache regression coverage verifies that the first usable results are
+  returned before the sequential country sweep completes, later requests see
+  progress without starting duplicate fetches, and the completed response has
+  the stable balanced ordering.
+- Podcast API tests: 36 passed, 0 failed. `deno check --no-config
+  WebAssets\app-podcasts.js`, changed-file diagnostics, and `git diff --check`
+  passed.
+
+### Country storefront discovery follow-up
+
+- A live comparison confirmed that Apple's search API can return the same
+  comedy results for different storefronts, even when the country parameter
+  is honored. The same storefronts have distinct top-chart rankings.
+- Country-only browsing now serves the selected storefront's cached Apple
+  chart first. If the chart is empty or unavailable, the existing
+  country-scoped search path remains the fallback.
+- Regression coverage verifies chart-first routing, the selected country in
+  the chart URL/result metadata, and search fallback when the chart fails.
+- The focused country tests passed (3/3), and all podcast-named API tests
+  passed (37/37).
 
 ## Dependencies and delivery order
 
@@ -517,5 +564,6 @@ and [RemotePlay.Tests/WebServerApiTests.cs](./RemotePlay.Tests/WebServerApiTests
   not label a single-country interim result as the balanced global directory.
 - Playback paging must remain independent from browse state. Do not remove or
   replace the underlying queue behavior while updating its visible controls.
-- The existing rate-limit API test failure is documented above; distinguish
-  it from regressions introduced by these phases.
+- The historical rate-limit test failure documented above was caused by the
+  test's localhost assumption and is resolved; future rate-limit changes should
+  continue to test local-address exemption and non-local quota enforcement.

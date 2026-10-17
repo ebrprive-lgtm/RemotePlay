@@ -130,7 +130,6 @@ internal sealed partial class WebServer
     private bool _isIndexing;
     private bool _isMusicIndexing;
     private bool _isMusicEnriching;
-    private bool _isM3uIndexing;    // true while the lightweight M3U-only background scan is running
     private static readonly TimeSpan LiveTvCatalogCacheTtl = TimeSpan.FromDays(7);
     private static readonly TimeSpan LiveTvCatalogRefreshTimeout = TimeSpan.FromSeconds(45);
     private DateTimeOffset? _liveTvCatalogSavedAtUtc;
@@ -1130,13 +1129,14 @@ internal sealed partial class WebServer
             if (cache is null)
                 return;
 
+            var channels = cache.Channels ?? [];
             lock (_liveTvCatalogGate)
             {
-                _liveTvCatalog = cache.Channels ?? [];
+                _liveTvCatalog = channels;
                 _liveTvCatalogSavedAtUtc = cache.SavedAtUtc;
             }
 
-            Logger.Info($"Loaded Live TV catalog cache: {cache.Channels.Length} channels");
+            Logger.Info($"Loaded Live TV catalog cache: {channels.Length} channels");
         }
         catch (Exception ex)
         {
@@ -1414,7 +1414,7 @@ internal sealed partial class WebServer
             || (bytes[0] == 169 && bytes[1] == 254);
     }
 
-    private bool IsRateLimited(string clientIp)
+    internal bool IsRateLimited(string clientIp)
     {
         if (IsLocalAddress(clientIp))
             return false;

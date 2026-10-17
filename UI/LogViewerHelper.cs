@@ -102,7 +102,8 @@ internal static class LogViewerHelper
         {
             // Find the earliest domain keyword occurrence
             int earliest = msg.Length;
-            (string word, SolidColorBrush color) found = default;
+            string? foundWord = null;
+            SolidColorBrush? foundColor = null;
 
             foreach (var kw in DomainKeywords)
             {
@@ -110,11 +111,12 @@ internal static class LogViewerHelper
                 if (idx >= 0 && idx < earliest)
                 {
                     earliest = idx;
-                    found    = kw;
+                    foundWord = kw.word;
+                    foundColor = kw.color;
                 }
             }
 
-            if (earliest == msg.Length)
+            if (foundWord is null || foundColor is null)
             {
                 // No more domain keywords — emit rest of message
                 para.Inlines.Add(new Run(msg[pos..]) { Foreground = baseBrush });
@@ -126,13 +128,13 @@ internal static class LogViewerHelper
                 para.Inlines.Add(new Run(msg[pos..earliest]) { Foreground = baseBrush });
 
             // The keyword itself — colored + bold
-            para.Inlines.Add(new Run(msg.Substring(earliest, found.word.Length))
+            para.Inlines.Add(new Run(msg.Substring(earliest, foundWord.Length))
             {
-                Foreground = found.color,
+                Foreground = foundColor,
                 FontWeight = FontWeights.SemiBold,
             });
 
-            pos = earliest + found.word.Length;
+            pos = earliest + foundWord.Length;
         }
     }
 

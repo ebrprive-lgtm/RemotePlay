@@ -2154,6 +2154,7 @@ function switchMode(mode, skipInitialBrowse = false) {
   }
   if (mode !== 'radio' && !window._radioIsPlaying) document.body.classList.remove('radio-player-docked');
   document.body.classList.toggle('radio-mode', mode === 'radio');
+  document.body.classList.toggle('podcasts-mode', mode === 'podcasts');
   ['video', 'music', 'podcasts', 'radio', 'live-tv'].forEach((m) => {
     const tab = document.getElementById('tab-' + m);
     const browser = document.getElementById(m === 'video' ? 'browser' : m + '-browser');

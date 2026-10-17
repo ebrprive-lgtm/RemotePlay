@@ -9,7 +9,6 @@ let _podcastServerCanSeek = false;
 let _podcastSeekDragging = false;
 let _radioRetryCount = 0;
 let _radioWaveformId = null;
-let _radioWaveformPhase = 0;
 
 function _initRadioAudioSliderVisuals() {
   const volume = parseFloat(document.getElementById('radio-bar-volume')?.value);
@@ -143,20 +142,18 @@ function _updatePodcastProgress(currentSeconds, durationSeconds, canSeek) {
   if (duration > 0) current = Math.min(current, duration);
   const isSeekable = Boolean(canSeek && duration > 0);
 
-  if (row) row.hidden = !isSeekable;
+  if (row) row.hidden = duration <= 0;
   if (seek) {
     seek.disabled = !isSeekable;
-    if (isSeekable) {
-      seek.max = String(duration);
-      if (!_podcastSeekDragging) seek.value = String(current);
-      seek.setAttribute('aria-valuetext', `${fmtSec(current)} of ${fmtSec(duration)}`);
-    }
+    seek.max = String(duration);
+    if (!_podcastSeekDragging) seek.value = String(current);
+    seek.setAttribute('aria-valuetext', `${fmtSec(current)} of ${duration > 0 ? fmtSec(duration) : '0:00'}`);
   }
   if (time) {
-    time.textContent = `${fmtSec(current)} / ${isSeekable ? fmtSec(duration) : '--:--'}`;
+    time.textContent = `${fmtSec(current)} / ${duration > 0 ? fmtSec(duration) : '--:--'}`;
   }
   if (techText) {
-    techText.textContent = isSeekable || current <= 0
+    techText.textContent = duration > 0 || current <= 0
       ? 'Podcast'
       : `Podcast · ${fmtSec(current)}`;
   }
@@ -277,37 +274,16 @@ function _syncPodcastServerProgress(elapsedSeconds, playing, durationSeconds, ca
   _updatePodcastProgress(elapsed, _podcastServerDuration, _podcastServerCanSeek);
 }
 
-// ── Waveform animator ────────────────────────────────────────────────
-// In local mode: real Web Audio AnalyserNode → frequency bars.
-// In server mode: simulated energy bars (existing animation).
-let _waveformAudioCtx = null;
-let _waveformAnalyser = null;
-let _waveformSource = null;   // MediaElementAudioSourceNode
+// ── Waveform visualizer ───────────────────────────────────────────────
+// Only local playback exposes audio samples to the browser; server playback
+// has no client-side audio source to analyze.
 
 function _ensureWaveformAnalyser() {
   const audio = document.getElementById('local-audio');
-  if (!audio || audio.paused || !audio.src) return null;
-  try {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return null;
-    if (!_waveformAudioCtx) {
-      _waveformAudioCtx = new AC();
-    }
-    if (_waveformAudioCtx.state === 'suspended') _waveformAudioCtx.resume().catch(() => {});
-    if (!_waveformSource || _waveformSource._audio !== audio) {
-      if (_waveformSource) { try { _waveformSource.disconnect(); } catch {} }
-      _waveformSource = _waveformAudioCtx.createMediaElementSource(audio);
-      _waveformSource._audio = audio;
-      if (!_waveformAnalyser) {
-        _waveformAnalyser = _waveformAudioCtx.createAnalyser();
-        _waveformAnalyser.fftSize = 64;
-        _waveformAnalyser.smoothingTimeConstant = 0.8;
-      }
-      _waveformSource.connect(_waveformAnalyser);
-      _waveformAnalyser.connect(_waveformAudioCtx.destination);
-    }
-    return _waveformAnalyser;
-  } catch { return null; }
+  if (!isPlayLocal() || !audio || !audio.src || typeof _getLocalAudioAnalyser !== 'function') {
+    return null;
+  }
+  return _getLocalAudioAnalyser();
 }
 
 function startWaveform() {
@@ -315,13 +291,17 @@ function startWaveform() {
   if (!cv) return;
   stopWaveform();
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+  const analyser = _ensureWaveformAnalyser();
+  if (!analyser) return;
   cv.classList.add('active');
 
-  const analyser = isPlayLocal() ? _ensureWaveformAnalyser() : null;
-  const freqData = analyser ? new Uint8Array(analyser.frequencyBinCount) : null;
+  const freqData = new Uint8Array(analyser.frequencyBinCount);
 
   function draw() {
-    _radioWaveformPhase += 0.07;
+    if (!isPlayLocal()) {
+      stopWaveform();
+      return;
+    }
     const ctx = cv.getContext('2d');
     const W = cv.width, H = cv.height;
     ctx.clearRect(0, 0, W, H);
@@ -333,27 +313,19 @@ function startWaveform() {
       getComputedStyle(document.body).getPropertyValue('--player-accent').trim() || '#e94560';
     ctx.fillStyle = accent;
 
-    if (analyser && freqData) {
-      // Real frequency data from the local <audio> element
-      analyser.getByteFrequencyData(freqData);
-      const step = Math.floor(freqData.length / bars);
-      for (let i = 0; i < bars; i++) {
-        const energy = freqData[i * step] / 255;
-        const h = Math.round(3 + energy * (H - 4));
-        const y = Math.round((H - h) / 2);
-        ctx.globalAlpha = 0.55 + energy * 0.45;
-        ctx.fillRect(x0 + i * (bw + gap), y, bw, h);
-      }
-      ctx.globalAlpha = 1;
-    } else {
-      // Simulated animation (server-mode / no analyser available)
-      for (let i = 0; i < bars; i++) {
-        const t = _radioWaveformPhase + i * 0.6;
-        const h = Math.round(4 + Math.abs(Math.sin(t)) * (H - 8));
-        const y = Math.round((H - h) / 2);
-        ctx.fillRect(x0 + i * (bw + gap), y, bw, h);
-      }
+    analyser.getByteFrequencyData(freqData);
+    for (let i = 0; i < bars; i++) {
+      const startBin = Math.floor(i * freqData.length / bars);
+      const endBin = Math.max(startBin + 1, Math.floor((i + 1) * freqData.length / bars));
+      let totalEnergy = 0;
+      for (let bin = startBin; bin < endBin; bin++) totalEnergy += freqData[bin];
+      const energy = totalEnergy / ((endBin - startBin) * 255);
+      const h = Math.round(2 + energy * (H - 4));
+      const y = Math.round((H - h) / 2);
+      ctx.globalAlpha = 0.4 + energy * 0.6;
+      ctx.fillRect(x0 + i * (bw + gap), y, bw, h);
     }
+    ctx.globalAlpha = 1;
     _radioWaveformId = requestAnimationFrame(draw);
   }
   draw();

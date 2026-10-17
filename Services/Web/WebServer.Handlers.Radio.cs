@@ -1,6 +1,7 @@
 ﻿using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using RemotePlay.Services;
 
@@ -199,9 +200,9 @@ internal sealed partial class WebServer
     }
 
     /// <summary>
-    /// Proxies a radio stream to the browser so the same-origin &lt;audio&gt; element
+    /// Proxies an audio stream to the browser so the same-origin &lt;audio&gt; element
     /// can play it without CORS restrictions. Query param: <c>url</c> (encoded stream URL).
-    /// Streams bytes indefinitely; the browser disconnects when it stops listening.
+    /// Forwards byte-range requests for finite media while continuing to stream live sources.
     /// </summary>
     private async Task HandleRadioStreamProxyAsync(HttpListenerContext ctx)
     {
@@ -232,8 +233,25 @@ internal sealed partial class WebServer
         System.Net.Http.HttpResponseMessage? upstream = null;
         try
         {
-            upstream = await _radioStreamProxyHttpClient.GetAsync(
-                streamUri,
+            using var proxyRequest = new HttpRequestMessage(HttpMethod.Get, streamUri);
+            var rangeHeader = ctx.Request.Headers["Range"];
+            if (!string.IsNullOrWhiteSpace(rangeHeader))
+            {
+                if (!RangeHeaderValue.TryParse(rangeHeader, out var range))
+                {
+                    TrySendResponse(ctx, 400, "text/plain", "invalid range");
+                    return;
+                }
+
+                proxyRequest.Headers.Range = range;
+            }
+
+            var ifRangeHeader = ctx.Request.Headers["If-Range"];
+            if (!string.IsNullOrWhiteSpace(ifRangeHeader))
+                proxyRequest.Headers.TryAddWithoutValidation("If-Range", ifRangeHeader);
+
+            upstream = await _radioStreamProxyHttpClient.SendAsync(
+                proxyRequest,
                 System.Net.Http.HttpCompletionOption.ResponseHeadersRead,
                 proxyCts.Token).ConfigureAwait(false);
             Logger.Detail("Playback", $"[PROXY] Upstream responded {(int)upstream.StatusCode}, content-type={upstream.Content.Headers.ContentType}");
@@ -245,7 +263,8 @@ internal sealed partial class WebServer
             return;
         }
 
-        if (!upstream.IsSuccessStatusCode)
+        if (!upstream.IsSuccessStatusCode
+            && upstream.StatusCode != HttpStatusCode.RequestedRangeNotSatisfiable)
         {
             Logger.Detail("Playback", $"[PROXY] Upstream non-success {(int)upstream.StatusCode} for {streamUri}");
             upstream.Dispose();
@@ -254,11 +273,20 @@ internal sealed partial class WebServer
         }
 
         var contentType = upstream.Content.Headers.ContentType?.ToString() ?? "audio/mpeg";
-        ctx.Response.StatusCode = 200;
+        ctx.Response.StatusCode = (int)upstream.StatusCode;
         ctx.Response.ContentType = contentType;
         ctx.Response.Headers["Access-Control-Allow-Origin"] = "*";
         ctx.Response.Headers["Cache-Control"] = "no-cache";
-        ctx.Response.SendChunked = true;
+        if (upstream.Content.Headers.ContentRange is { } contentRange)
+            ctx.Response.Headers["Content-Range"] = contentRange.ToString();
+        if (upstream.Headers.AcceptRanges.Count > 0)
+            ctx.Response.Headers["Accept-Ranges"] = string.Join(", ", upstream.Headers.AcceptRanges);
+        if (upstream.Headers.ETag is { } entityTag)
+            ctx.Response.Headers["ETag"] = entityTag.ToString();
+        if (upstream.Content.Headers.ContentLength is { } contentLength)
+            ctx.Response.ContentLength64 = contentLength;
+        else
+            ctx.Response.SendChunked = true;
 
         long bytesSent = 0;
         try

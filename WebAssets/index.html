@@ -421,7 +421,14 @@
                   </div>
                   <ul id="radio-title-history-list" class="radio-title-history-list"></ul>
                 </div>
-                <div id="radio-bar-meta"></div>
+                <div id="radio-bar-meta-row" class="radio-bar-meta-row">
+                  <div id="radio-bar-meta"></div>
+                  <span id="local-podcast-index" class="podcast-episode-index" style="display:none" role="status" aria-live="polite" aria-label="Podcast episode position"></span>
+                </div>
+                <details id="radio-bar-episode-description" class="podcast-episode-description" hidden>
+                  <summary>Episode description</summary>
+                  <div id="radio-bar-episode-description-text"></div>
+                </details>
                 <div id="radio-bar-tech">
                   <span id="radio-bar-quality-badge" class="radio-quality-badge" style="display:none"></span>
                   <span id="radio-bar-reconnect-status" class="radio-reconnect-status" aria-live="off" hidden></span>
@@ -442,12 +449,15 @@
             </div>
             <div class="transport-controls">
               <canvas id="radio-waveform" class="radio-waveform" width="60" height="32" aria-hidden="true"></canvas>
-              <div class="button-group transport-main-group">
-                <button id="local-podcast-prev" class="btn btn-dim" type="button" onclick="podcastPrevEpisode()" title="Previous episode" aria-label="Previous episode" style="display:none">&#9198; Prev</button>
-                <button id="radio-btn-play" class="btn btn-red" onclick="radioToggle()" aria-label="Play radio playback" aria-pressed="false">&#9654; Play</button>
-                <button id="local-podcast-next" class="btn btn-dim" type="button" onclick="podcastNextEpisode()" title="Next episode" aria-label="Next episode" style="display:none">Next &#9197;</button>
-                <span id="local-podcast-index" style="display:none;font-size:.75rem;color:var(--muted,#9aa8c2);white-space:nowrap"></span>
-                <button id="radio-btn-stop" class="btn btn-stop" onclick="radioDismiss()" title="Stop and close player" aria-label="Stop playback and close player">&#9632; Stop</button>
+              <div class="transport-button-row">
+                <div class="button-group transport-main-group">
+                  <button id="local-podcast-prev" class="btn btn-dim" type="button" onclick="podcastPrevEpisode()" title="Previous episode" aria-label="Previous episode" style="display:none">&#9198; Prev</button>
+                  <button id="radio-btn-play" class="btn btn-red" onclick="radioToggle()" aria-label="Play radio playback" aria-pressed="false">&#9654; Play</button>
+                  <button id="local-podcast-next" class="btn btn-dim" type="button" onclick="podcastNextEpisode()" title="Next episode" aria-label="Next episode" style="display:none">Next &#9197;</button>
+                </div>
+                <div class="transport-secondary-group">
+                  <button id="radio-btn-stop" class="btn btn-stop" onclick="radioDismiss()" title="Stop and close player" aria-label="Stop playback and close player">&#9632; Stop</button>
+                </div>
               </div>
               <span id="local-podcast-page-status" role="status" aria-live="polite" style="display:none;flex-basis:100%;font-size:.72rem;color:var(--muted,#9aa8c2)"></span>
             </div>
@@ -455,7 +465,6 @@
           <span id="radio-player-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
           <div id="radio-media-controls" style="display:flex;flex-direction:column;gap:.55rem;margin-top:.1rem;padding-top:.55rem;border-top:1px solid var(--player-card-border,#292941)">
             <div class="control-card audio-volume-card" style="width:100%;box-sizing:border-box">
-              <div class="control-title">Volume</div>
               <div class="radio-sliders-wrap">
                 <div class="slider-wrap">
                   <label class="radio-slider-static-label" for="radio-bar-volume">Volume</label>
@@ -470,7 +479,6 @@
             <details id="radio-audio-settings" class="audio-settings-disclosure">
               <summary>Audio settings</summary>
               <div class="control-card audio-settings-card" style="width:100%;box-sizing:border-box">
-                <div class="control-title">Boost and effects</div>
                 <div class="radio-sliders-wrap">
                   <div class="slider-wrap">
                     <label class="radio-slider-static-label" for="radio-bar-boost">Boost</label>

@@ -82,7 +82,7 @@ public sealed class WebAssetRegressionTests
     }
 
     [Fact]
-    public void PodcastProgressRequiresSeekCapabilityAndFiniteDuration()
+    public void PodcastProgressShowsKnownDurationAndRequiresSeekCapabilityForSeeking()
     {
         var html = ReadWebAsset("index.html");
         var statusJs = ReadWebAsset("app-radio-status.js");
@@ -96,14 +96,166 @@ public sealed class WebAssetRegressionTests
         AssertContainsAll(
             statusJs,
             "const isSeekable = Boolean(canSeek && duration > 0);",
+            "if (row) row.hidden = duration <= 0;",
+            "seek.disabled = !isSeekable;",
             "lastEnd >= duration - 1",
             "'/api/radio/seek?' + new URLSearchParams");
+        Assert.DoesNotContain("row.hidden = !isSeekable", statusJs, StringComparison.Ordinal);
         AssertContainsAll(
             radioPlayer,
             "if (!_reader.CanSeek)",
             "CanSeek: canSeek",
             "DurationSeconds: durationSeconds");
         Assert.Contains("TrySendResponse(ctx, 409", radioHandler, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PodcastPlayerUsesAnEpisodeBadgeAndAvoidsDuplicateControlHeadings()
+    {
+        var html = ReadWebAsset("index.html");
+        var css = ReadWebAsset("styles.css");
+        var start = html.IndexOf("id=\"radio-player-bar\"", StringComparison.Ordinal);
+        var end = html.IndexOf("id=\"music-player-bar\"", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start, "The Radio/Podcast player markup should be present.");
+        var player = html[start..end];
+
+        AssertContainsAll(
+            player,
+            "class=\"transport-button-row\"",
+            "class=\"button-group transport-main-group\"",
+            "class=\"transport-secondary-group\"",
+            "class=\"radio-bar-meta-row\"",
+            "id=\"local-podcast-index\" class=\"podcast-episode-index\"",
+            "id=\"radio-bar-episode-description\" class=\"podcast-episode-description\" hidden",
+            "Episode description",
+            "id=\"radio-btn-stop\"",
+            "for=\"radio-bar-volume\">Volume</label>",
+            "for=\"radio-bar-boost\">Boost</label>");
+        var episodeIndex = player.IndexOf("id=\"local-podcast-index\"", StringComparison.Ordinal);
+        var transport = player.IndexOf("class=\"transport-button-row\"", StringComparison.Ordinal);
+        Assert.True(episodeIndex >= 0 && episodeIndex < transport,
+            "The episode position should appear in the player metadata above the transport controls.");
+        var secondaryGroup = player.IndexOf("class=\"transport-secondary-group\"", StringComparison.Ordinal);
+        Assert.DoesNotContain("local-podcast-index", player[secondaryGroup..], StringComparison.Ordinal);
+        Assert.DoesNotContain("<div class=\"control-title\">Volume</div>", player, StringComparison.Ordinal);
+        Assert.DoesNotContain("<div class=\"control-title\">Boost and effects</div>", player, StringComparison.Ordinal);
+        AssertContainsAll(
+            css,
+            "#radio-bar-meta-row{display:flex;align-items:center;gap:.4rem;min-width:0}",
+            "#radio-player-bar .podcast-episode-index{",
+            "#radio-player-bar .podcast-episode-description[hidden]{display:none!important}",
+            "#radio-player-bar #radio-btn-stop{flex:0 0 auto;min-width:5rem;min-height:44px;margin-left:0}",
+            "body.phone-remote-only #radio-player-bar .transport-main-group{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))",
+            "body.phone-remote-only #radio-player-bar .transport-secondary-group #radio-btn-stop{width:auto");
+    }
+
+    [Fact]
+    public void RadioPodcastPlayerDockIsHiddenOutsideAudioModes()
+    {
+        var libraryJs = ReadWebAsset("app-library.js");
+        var css = ReadWebAsset("styles.css");
+
+        Assert.Contains(
+            "document.body.classList.toggle('podcasts-mode', mode === 'podcasts');",
+            libraryJs,
+            StringComparison.Ordinal);
+        AssertContainsAll(
+            css,
+            "body:not(.radio-mode):not(.podcasts-mode) #radio-player-bar{display:none!important}",
+            "body.radio-player-docked:is(.radio-mode,.podcasts-mode) #main-layout{grid-template-columns:1fr 280px}",
+            "body.radio-player-docked:is(.radio-mode,.podcasts-mode) #radio-player-bar{display:flex!important}");
+        Assert.DoesNotContain(
+            "body.radio-player-docked #radio-player-bar",
+            css,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PodcastServerLocalHandoffKeepsPodcastModeAndResumePosition()
+    {
+        var coreJs = ReadWebAsset("app-core.js");
+        var localJs = ReadWebAsset("app-local.js");
+        var toggleStart = coreJs.IndexOf("function togglePlayLocal()", StringComparison.Ordinal);
+        var podcastBranch = coreJs.IndexOf("_localMediaType === 'PodcastServer'", toggleStart, StringComparison.Ordinal);
+        var radioBranch = coreJs.IndexOf("} else if (typeof _radioIsPlaying", podcastBranch, StringComparison.Ordinal);
+        Assert.True(toggleStart >= 0 && podcastBranch > toggleStart && radioBranch > podcastBranch,
+            "The Podcast handoff should run before the generic Radio handoff.");
+        var handoff = coreJs[podcastBranch..radioBranch];
+
+        AssertContainsAll(
+            handoff,
+            "const seekDuration = seekEl ? Number(seekEl.max) : 0;",
+            "elapsedBase + elapsedSincePoll",
+            "startAt: resumePos",
+            "mode: 'podcast'",
+            "localPlay(_radioCurrentUrl, handoffName || 'Podcast episode', 'Podcast', podcastMetadata)");
+        Assert.DoesNotContain("stream-proxy", handoff, StringComparison.Ordinal);
+        AssertContainsAll(
+            localJs,
+            "function _prepareLocalPodcastResume(audio, requestedPosition, generation)",
+            "audio.addEventListener('loadedmetadata', onLoadedMetadata, { once: true });",
+            "audio.currentTime = target;",
+            "audio.muted = false;");
+    }
+
+    [Fact]
+    public void LocalPodcastWaveformUsesTheSharedAnalyserAndRangeAwareProxy()
+    {
+        var localJs = ReadWebAsset("app-local.js");
+        var radioJs = ReadWebAsset("app-radio.js");
+        var statusJs = ReadWebAsset("app-radio-status.js");
+        var radioHandler = ReadProjectFile(Path.Combine("Services", "Web", "WebServer.Handlers.Radio.cs"));
+
+        AssertContainsAll(
+            localJs,
+            "const playbackUrl = _localMediaType === 'Podcast'",
+            "'/api/radio/stream-proxy?url=' + encodeURIComponent(url)",
+            "a.src = playbackUrl;");
+        AssertContainsAll(
+            radioJs,
+            "let _localBoostAnalyser = null;",
+            "_localBoostGain.connect(_localBoostAnalyser);",
+            "_localBoostAnalyser.connect(_localBoostCtx.destination);",
+            "function _getLocalAudioAnalyser()");
+        AssertContainsAll(
+            statusJs,
+            "return _getLocalAudioAnalyser();",
+            "analyser.getByteFrequencyData(freqData);");
+        Assert.DoesNotContain("Simulated animation", statusJs, StringComparison.Ordinal);
+        Assert.DoesNotContain("Math.abs(Math.sin(t))", statusJs, StringComparison.Ordinal);
+        AssertContainsAll(
+            radioHandler,
+            "var rangeHeader = ctx.Request.Headers[\"Range\"];",
+            "proxyRequest.Headers.Range = range;",
+            "upstream.StatusCode != HttpStatusCode.RequestedRangeNotSatisfiable",
+            "ctx.Response.Headers[\"Content-Range\"] = contentRange.ToString();",
+            "ctx.Response.ContentLength64 = contentLength;");
+    }
+
+    [Fact]
+    public void PodcastPlayerExposesTheFullCurrentEpisodeDescription()
+    {
+        var html = ReadWebAsset("index.html");
+        var podcastsJs = ReadWebAsset("app-podcasts.js");
+        var radioJs = ReadWebAsset("app-radio.js");
+        var start = html.IndexOf("id=\"radio-player-bar\"", StringComparison.Ordinal);
+        var end = html.IndexOf("id=\"music-player-bar\"", start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start, "The Radio/Podcast player markup should be present.");
+        var player = html[start..end];
+
+        AssertContainsAll(
+            player,
+            "id=\"radio-bar-episode-description\"",
+            "id=\"radio-bar-episode-description-text\"");
+        AssertContainsAll(
+            podcastsJs,
+            "const description = _podcastPlainText(episode?.description || '');",
+            "description };");
+        AssertContainsAll(
+            radioJs,
+            "episodeDescriptionText.textContent = fullEpisodeDescription;",
+            "episodeDescription.hidden = !hasEpisodeDescription;",
+            "episodeDescription.open = false;");
     }
 
     [Fact]

@@ -1167,15 +1167,19 @@ function radioResetAudioDefaults() {
   radioBoost(1);
 }
 
-// Persistent Web Audio graph for local boost: AudioContext → MediaElementSourceNode → GainNode → destination
+// Persistent local audio graph: MediaElementSourceNode → GainNode → AnalyserNode → destination.
 // Once created this graph is NEVER torn down — createMediaElementSource can only be called once per element.
 let _localBoostCtx = null;
 let _localBoostGain = null;
+let _localBoostAnalyser = null;
 let _localBoostGraphBuilt = false;
+let _localBoostGraphFailed = false;
+let _localBoostWarningReported = false;
 
 function _ensureLocalBoostGraph() {
   const a = typeof _getLocalAudio !== 'undefined' ? _getLocalAudio() : null;
   if (!a) return null;
+  if (_localBoostGraphFailed) return null;
   // Graph already built — context is always kept running, just return the gain node.
   if (_localBoostGraphBuilt && _localBoostGain) {
     return _localBoostGain;
@@ -1184,21 +1188,55 @@ function _ensureLocalBoostGraph() {
   if (_localBoostGraphBuilt) return null;
   try {
     const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return null;
+    if (!AC) {
+      if (!_localBoostWarningReported) {
+        console.warn('Web Audio is unavailable; local waveform analysis and boost are disabled.');
+        _localBoostWarningReported = true;
+      }
+      return null;
+    }
     _localBoostCtx = new AC();
     const src = _localBoostCtx.createMediaElementSource(a);
     _localBoostGain = _localBoostCtx.createGain();
+    _localBoostAnalyser = _localBoostCtx.createAnalyser();
     _localBoostGain.gain.value = 1.0;
+    _localBoostAnalyser.fftSize = 64;
+    _localBoostAnalyser.smoothingTimeConstant = 0.8;
     src.connect(_localBoostGain);
-    _localBoostGain.connect(_localBoostCtx.destination);
+    _localBoostGain.connect(_localBoostAnalyser);
+    _localBoostAnalyser.connect(_localBoostCtx.destination);
     _localBoostGraphBuilt = true;
     // Resume from the initial 'suspended' state that autoplay policy creates.
     // After this first resume the context is kept running permanently.
-    _localBoostCtx.resume().catch(() => {});
+    _localBoostCtx.resume().catch((error) => {
+      if (!_localBoostWarningReported) {
+        console.warn('Could not resume the local audio graph.', error);
+        _localBoostWarningReported = true;
+      }
+    });
     return _localBoostGain;
-  } catch {
+  } catch (error) {
+    _localBoostGraphFailed = true;
+    if (!_localBoostWarningReported) {
+      console.warn('Could not initialize the local audio graph.', error);
+      _localBoostWarningReported = true;
+    }
     return null;
   }
+}
+
+function _getLocalAudioAnalyser() {
+  const gainNode = _ensureLocalBoostGraph();
+  if (!gainNode || !_localBoostAnalyser) return null;
+  if (_localBoostCtx?.state === 'suspended') {
+    _localBoostCtx.resume().catch((error) => {
+      if (!_localBoostWarningReported) {
+        console.warn('Could not resume the local audio graph.', error);
+        _localBoostWarningReported = true;
+      }
+    });
+  }
+  return _localBoostAnalyser;
 }
 
 function radioBoost(v) {
@@ -1360,6 +1398,8 @@ function updateRadioBar(title, country, tag, playing, station, playerMetadata = 
   }
   const t = document.getElementById('radio-bar-title');
   const m = document.getElementById('radio-bar-meta');
+  const episodeDescription = document.getElementById('radio-bar-episode-description');
+  const episodeDescriptionText = document.getElementById('radio-bar-episode-description-text');
   const techText = document.getElementById('radio-bar-tech-text');
   const qBadge = document.getElementById('radio-bar-quality-badge');
   const liveIndicator = document.getElementById('radio-bar-live');
@@ -1381,6 +1421,22 @@ function updateRadioBar(title, country, tag, playing, station, playerMetadata = 
       || 'Podcast';
     const parts = isPodcast ? [showTitle] : [country, tag].filter(Boolean);
     m.textContent = parts.length ? parts.join(' \u00b7 ') : '';
+  }
+  const currentPodcastEpisode = typeof _podcastPlaybackEpisodes !== 'undefined'
+    && typeof _podcastCurrentEpisodeIndex !== 'undefined'
+    ? _podcastPlaybackEpisodes[_podcastCurrentEpisodeIndex]
+    : null;
+  const rawEpisodeDescription = typeof metadata.description === 'string'
+    ? metadata.description
+    : currentPodcastEpisode?.description || '';
+  const fullEpisodeDescription = typeof _podcastPlainText === 'function'
+    ? _podcastPlainText(rawEpisodeDescription)
+    : rawEpisodeDescription;
+  if (episodeDescriptionText) episodeDescriptionText.textContent = fullEpisodeDescription;
+  if (episodeDescription) {
+    const hasEpisodeDescription = isPodcast && Boolean(fullEpisodeDescription);
+    episodeDescription.hidden = !hasEpisodeDescription;
+    if (!hasEpisodeDescription) episodeDescription.open = false;
   }
   const podcastArtwork = metadata.artworkUrl
     || (typeof _podcastPlaybackArtworkUrl !== 'undefined' ? _podcastPlaybackArtworkUrl : '')

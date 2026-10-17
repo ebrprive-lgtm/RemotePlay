@@ -475,8 +475,42 @@ function togglePlayLocal() {
   const turningOn = !isPlayLocal();
   setPlayLocal(turningOn);
   if (turningOn) {
-    // If radio is currently playing on the server, hand it off to local immediately
-    if (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying && typeof _radioCurrentUrl !== 'undefined' && _radioCurrentUrl) {
+    // Podcast playback uses its original episode URL and metadata, not the live-radio proxy.
+    if (typeof _localMediaType !== 'undefined'
+        && _localMediaType === 'PodcastServer'
+        && typeof _radioIsPlaying !== 'undefined'
+        && _radioIsPlaying
+        && typeof _radioCurrentUrl !== 'undefined'
+        && _radioCurrentUrl) {
+      const handoffName = typeof _radioCurrentName !== 'undefined' ? _radioCurrentName : '';
+      const seekEl = document.getElementById('radio-bar-seek');
+      const seekDuration = seekEl ? Number(seekEl.max) : 0;
+      const elapsedBase = typeof _podcastServerElapsedBase !== 'undefined'
+        && Number.isFinite(_podcastServerElapsedBase)
+        ? _podcastServerElapsedBase
+        : 0;
+      const elapsedSincePoll = typeof _podcastServerElapsedPollTime !== 'undefined'
+        && Number.isFinite(_podcastServerElapsedPollTime)
+        && _podcastServerElapsedPollTime > 0
+        ? Math.max(0, Math.round((performance.now() - _podcastServerElapsedPollTime) / 1000))
+        : 0;
+      const resumePos = seekEl && Number.isFinite(seekDuration) && seekDuration > 0
+        ? Math.max(0, parseFloat(seekEl.value) || 0)
+        : Math.max(0, elapsedBase + elapsedSincePoll);
+      const activeEpisode = typeof _podcastPlaybackEpisodes !== 'undefined'
+        ? _podcastPlaybackEpisodes[_podcastCurrentEpisodeIndex]
+        : null;
+      const podcastMetadata = {
+        mode: 'podcast',
+        showTitle: typeof _podcastPlaybackShowTitle !== 'undefined' ? _podcastPlaybackShowTitle : '',
+        artworkUrl: activeEpisode?.artworkUrl
+          || (typeof _podcastPlaybackArtworkUrl !== 'undefined' ? _podcastPlaybackArtworkUrl : ''),
+        startAt: resumePos,
+      };
+      localPlay(_radioCurrentUrl, handoffName || 'Podcast episode', 'Podcast', podcastMetadata);
+      if (typeof _syncPodcastPlaybackControls === 'function') _syncPodcastPlaybackControls();
+    } else if (typeof _radioIsPlaying !== 'undefined' && _radioIsPlaying && typeof _radioCurrentUrl !== 'undefined' && _radioCurrentUrl) {
+      // If radio is currently playing on the server, hand it off to local immediately
       const handoffName    = typeof _radioCurrentName !== 'undefined' ? _radioCurrentName : '';
       const handoffCountry = (typeof _radioCurrentCountry !== 'undefined' ? _radioCurrentCountry : '') || '';
       const handoffTag     = (typeof _radioCurrentTag !== 'undefined' ? _radioCurrentTag : '') || '';
