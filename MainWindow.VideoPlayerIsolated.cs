@@ -133,6 +133,17 @@ public partial class MainWindow
         try
         {
             AppendLog($"[Video] PlayMovieIsolated: {System.IO.Path.GetFileName(filePath)}");
+            var previousManager = _videoPlayerManager;
+            if (previousManager is not null
+                && Services.VideoPlayerProcessManager.ShouldRecycleForHttpStreamSwitch(_currentFilePath, filePath))
+            {
+                AppendLog("[Video] Replacing an active HTTP stream; recycling the isolated player before opening the next stream.");
+                StopVideoPlayerHealthMonitoring();
+                _videoPlayerManager = null;
+                _consecutivePingFailures = 0;
+                await Task.Run(previousManager.Dispose);
+            }
+
             StopCompetingPlaybackBeforeVideoStart();
             RestoreWindowForPlayback();
             if (_isVideoMode)
@@ -167,12 +178,13 @@ public partial class MainWindow
                     return;
                 }
 
-                StartVideoPlayerHealthMonitoring();
             }
             else
             {
                 AppendLog("[Video] Reusing existing VideoPlayer process");
             }
+
+            StartVideoPlayerHealthMonitoring();
 
             if (!await _videoPlayerManager.SendSetFullscreenControlsSettingsAsync(
                     _config.FullscreenControlsEnabled,
@@ -342,22 +354,55 @@ public partial class MainWindow
 
     private async Task StopVideoIsolatedAsync()
     {
-        if (_videoPlayerManager is null)
-            return;
-
+        await _videoPlaybackStartLock.WaitAsync();
         try
         {
-            await _videoPlayerManager.SendStopAsync();
-            _currentFilePath = null;
-            _isPaused = false;
-            _historyTimer.Stop();
+            var manager = _videoPlayerManager;
+            if (manager is null)
+                return;
+
             StopVideoPlayerHealthMonitoring();
-            AppendLog("[Video] Stopped");
+            try
+            {
+                await manager.SendStopAsync();
+                AppendLog("[Video] Stopped");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("[Video] Stop error", ex);
+            }
+            finally
+            {
+                try
+                {
+                    await Task.Run(manager.Dispose);
+                    AppendLog("[Video] Isolated player closed");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error("[Video] Could not close isolated player", ex);
+                }
+
+                if (ReferenceEquals(_videoPlayerManager, manager))
+                    _videoPlayerManager = null;
+                _currentFilePath = null;
+                _lastPlaybackError = string.Empty;
+                _isPaused = false;
+                _historyTimer.Stop();
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            Logger.Error("[Video] Stop error", ex);
+            _videoPlaybackStartLock.Release();
         }
+    }
+
+    private async Task StopVideoIsolatedAndResetPlaybackStateAsync()
+    {
+        await StopVideoIsolatedAsync();
+        ResetPlaybackState();
+        AppendLog("Playback stopped");
+        Logger.Info("[Video Isolated] Playback stopped");
     }
 
     private async Task ReturnToFullscreenQrAfterIsolatedPlayerEscapeAsync()

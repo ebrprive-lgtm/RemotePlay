@@ -279,6 +279,59 @@
             </div>
           </div>
           <div id="now-playing-bar">
+            <section id="local-video-surface" class="local-video-surface" aria-labelledby="local-video-heading" hidden>
+              <div class="local-video-header">
+                <div class="local-video-heading-group">
+                  <div class="local-video-eyebrow">Local playback</div>
+                  <h2 id="local-video-heading">Local video</h2>
+                </div>
+                <div class="local-video-state">
+                  <span id="local-video-status" role="status" aria-live="polite">Loading video…</span>
+                  <span id="local-video-time" aria-label="Playback time">0:00 / --:--</span>
+                  <span id="local-video-volume" aria-label="Video volume">Volume 100%</span>
+                </div>
+              </div>
+              <div id="local-video-stage" class="local-video-stage">
+                <video
+                  id="local-video-element"
+                  playsinline
+                  preload="metadata"
+                  aria-label="Local video player"
+                  aria-describedby="local-video-status local-video-error"
+                  title="Local video"></video>
+                <button
+                  id="local-video-expand-overlay"
+                  class="local-video-expand-overlay"
+                  type="button"
+                  onclick="toggleLocalVideoFullscreen()"
+                  aria-label="Expand Local Video to fullscreen"
+                  title="Expand video">
+                  <span id="local-video-expand-prompt" class="local-video-overlay-prompt">
+                    <span class="local-video-expand-icon" aria-hidden="true">&#x26F6;</span>
+                    <span>Tap to expand</span>
+                  </span>
+                </button>
+                <button
+                  id="local-video-thumbnail-overlay"
+                  class="local-video-thumbnail-overlay"
+                  type="button"
+                  onclick="exitLocalVideoFullscreen()"
+                  aria-label="Return to the Local Video thumbnail"
+                  title="Return to thumbnail"
+                  hidden>
+                  <span id="local-video-thumbnail-prompt" class="local-video-overlay-prompt">
+                    <span class="local-video-expand-icon" aria-hidden="true">&#x26F6;</span>
+                    <span id="local-video-thumbnail-prompt-label">Tap to go to thumbnail</span>
+                  </span>
+                </button>
+              </div>
+              <div id="local-video-error" class="local-video-message local-video-error" role="alert" hidden></div>
+              <div id="local-video-warning" class="local-video-message local-video-warning" role="alert" hidden></div>
+              <div class="local-video-actions">
+                <button id="local-video-transcode-cancel" class="btn btn-stop" type="button" onclick="cancelLocalVideoTranscode()" aria-label="Cancel transcoding and stop playback" title="Stop playback and cancel the tablet-compatible audio transcode" hidden>Cancel transcode</button>
+                <button id="local-video-server-fallback" class="btn btn-red" type="button" onclick="playLocalVideoOnServer()" hidden>Play on Server</button>
+              </div>
+            </section>
             <div class="player-top">
               <div id="player-summary"><div id="player-poster"></div><div><div id="player-title">Nothing playing</div><div id="player-meta"></div><div id="connection-status">Connecting...</div><button class="diag-button" onclick="openDiagnostics()">Diagnostics</button></div></div>
               <div class="transport-controls">
@@ -302,7 +355,7 @@
             </div>
             <div id="progress-row">
               <div id="seek-wrapper">
-                <input id="progress" type="range" min="0" max="0" value="0" step="0.1" oninput="onSeekDrag()" onchange="onSeekCommit()" aria-label="Playback position"/>
+                <input id="progress" type="range" min="0" max="0" value="0" step="0.1" oninput="onSeekDrag()" onchange="onSeekCommit()" onpointerdown="onSeekDrag()" onpointerup="onSeekCommit()" ontouchend="onSeekCommit()" aria-label="Playback position"/>
                 <div id="chapter-markers" aria-hidden="true"></div>
               </div>
               <span id="time-label">0:00 / 0:00</span>
@@ -392,35 +445,6 @@
           <div id="live-tv-recent-strip" style="display:none"></div>
           <button id="live-tv-recent-clear" class="vr-clear-btn" style="display:none" title="Clear recent channels" onclick="clearLiveTvRecent()">&#x2715;</button>
         </div>
-        <section id="local-video-surface" class="local-video-surface" aria-labelledby="local-video-heading" hidden>
-          <div class="local-video-header">
-            <div class="local-video-heading-group">
-              <div class="local-video-eyebrow">Local playback</div>
-              <h2 id="local-video-heading">Local video</h2>
-            </div>
-            <div class="local-video-state">
-              <span id="local-video-status" role="status" aria-live="polite">Loading video…</span>
-              <span id="local-video-time" aria-label="Playback time">0:00 / --:--</span>
-              <span id="local-video-volume" aria-label="Video volume">Volume 100%</span>
-            </div>
-          </div>
-          <div id="local-video-stage" class="local-video-stage">
-            <video
-              id="local-video-element"
-              controls
-              playsinline
-              preload="metadata"
-              aria-label="Local video player"
-              aria-describedby="local-video-status local-video-error"></video>
-          </div>
-          <div id="local-video-error" class="local-video-message local-video-error" role="alert" hidden></div>
-          <div id="local-video-warning" class="local-video-message local-video-warning" role="alert" hidden></div>
-          <div class="local-video-actions">
-            <button class="btn btn-stop" type="button" onclick="stop()" aria-label="Stop local video">&#9632; Stop</button>
-            <button id="local-video-fullscreen" class="btn btn-dim" type="button" onclick="toggleLocalVideoFullscreen()" aria-label="Enter fullscreen" title="Enter fullscreen">Fullscreen</button>
-            <button id="local-video-server-fallback" class="btn btn-red" type="button" onclick="playLocalVideoOnServer()" hidden>Play on Server</button>
-          </div>
-        </section>
         <div id="browser"></div>
         <div id="music-browser" style="display:none"></div>
         <div id="podcasts-browser" style="display:none"></div>        

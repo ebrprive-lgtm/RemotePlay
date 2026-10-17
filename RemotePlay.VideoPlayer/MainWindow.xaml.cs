@@ -43,7 +43,10 @@ public partial class MainWindow : Window
     private PlayCommand? _pendingPlayCommand;
     private PlayCommand? _activePlayCommand;
     private bool _isPaused;
+    private bool _playbackStopRequested;
     private string? _currentFilePath;
+    private string _lastPlaybackError = string.Empty;
+    private string _lastVlcErrorMessage = string.Empty;
     private string? _previousVideoTitle;
     private string? _nextVideoTitle;
     private double _volume = 1.0;
@@ -177,6 +180,7 @@ public partial class MainWindow : Window
                 Core.Initialize();
                 Console.WriteLine("[VideoPlayer] [4b] new LibVLC()...");
                 var vlc = new LibVLC();
+                vlc.Log += OnLibVlcLog;
                 PlayerDiagnostics.Info($"LibVLC created. Version: {vlc.Version}");
                 Console.WriteLine($"[VideoPlayer] [4c] LibVLC created — version: {vlc.Version}");
                 var mp = new MediaPlayer(vlc);
@@ -1017,6 +1021,9 @@ public partial class MainWindow : Window
 
     private void StopPlayback()
     {
+        System.Threading.Volatile.Write(ref _playbackStopRequested, true);
+        System.Threading.Volatile.Write(ref _lastPlaybackError, string.Empty);
+        System.Threading.Volatile.Write(ref _lastVlcErrorMessage, string.Empty);
         _mediaPlayer?.Stop();
         _currentFilePath = null;
         _activePlayCommand = null;
@@ -1061,24 +1068,27 @@ public partial class MainWindow : Window
         }, DispatcherPriority.ApplicationIdle);
     }
 
-    private Task<IpcMessage?> HandleIpcMessageAsync(IpcMessage message)
+    private async Task<IpcMessage?> HandleIpcMessageAsync(IpcMessage message)
     {
         try
         {
             PlayerDiagnostics.Info($"IPC received {message.MessageType} ({message.MessageId})");
             Console.WriteLine($"[VideoPlayer] Received: {message.MessageType}");
 
-            // Ping and Status need to return data synchronously — they only read fields.
-            // All playback control commands dispatch work to the UI thread via BeginInvoke
-            // (fire-and-forget) and return an ACK immediately so the pipe loop stays unblocked.
-            IpcMessage response = message switch
+            if (message is PingCommand ping)
             {
-                PingCommand ping => new PongResponse
+                await Dispatcher.InvokeAsync(static () => { }, DispatcherPriority.Send).Task.ConfigureAwait(false);
+                return new PongResponse
                 {
                     MessageType = nameof(PongResponse),
                     RequestId = ping.MessageId
-                },
+                };
+            }
 
+            // Status reads the current playback fields; playback commands dispatch work to the
+            // UI thread via BeginInvoke and return an ACK immediately so the pipe loop stays unblocked.
+            IpcMessage response = message switch
+            {
                 StatusRequestCommand status => new StatusResponse
                 {
                     MessageType = nameof(StatusResponse),
@@ -1091,7 +1101,8 @@ public partial class MainWindow : Window
                     HasSubtitles = _hasSubtitles,
                     CurrentAudioTrack = _lastAudioTrackId,
                     CurrentSubtitleTrack = _lastSubtitleTrackId,
-                    PlayerState = _mediaPlayer?.State.ToString() ?? "Unknown"
+                    PlayerState = _mediaPlayer?.State.ToString() ?? "Unknown",
+                    LastError = System.Threading.Volatile.Read(ref _lastPlaybackError)
                 },
 
                 PlayCommand play => DispatchPlay(play),
@@ -1132,19 +1143,19 @@ public partial class MainWindow : Window
                 }
             };
 
-            return Task.FromResult<IpcMessage?>(response);
+            return response;
         }
         catch (Exception ex)
         {
             PlayerDiagnostics.Error($"IPC command {message.MessageType} failed", ex);
             Console.WriteLine($"[VideoPlayer] Command error: {ex}");
-            return Task.FromResult<IpcMessage?>(new AcknowledgmentResponse
+            return new AcknowledgmentResponse
             {
                 MessageType = nameof(AcknowledgmentResponse),
                 RequestId = message.MessageId,
                 Success = false,
                 ErrorMessage = ex.Message
-            });
+            };
         }
     }
 
@@ -1233,7 +1244,10 @@ public partial class MainWindow : Window
         Console.WriteLine($"[VideoPlayer] DispatchPlay: {Path.GetFileName(cmd.FilePath)}; mediaPlayerReady={_mediaPlayer is not null}");
 
         // Store state fields immediately (thread-safe value types / strings)
+        System.Threading.Volatile.Write(ref _playbackStopRequested, false);
         _currentFilePath = cmd.FilePath;
+        System.Threading.Volatile.Write(ref _lastPlaybackError, string.Empty);
+        System.Threading.Volatile.Write(ref _lastVlcErrorMessage, string.Empty);
         Dispatcher.BeginInvoke(
             () => UpdateAdjacentVideoButtons(null, null),
             DispatcherPriority.Send);
@@ -1301,15 +1315,27 @@ public partial class MainWindow : Window
 
     private void ExecutePlay(PlayCommand cmd)
     {
+        if (System.Threading.Volatile.Read(ref _playbackStopRequested))
+        {
+            PlayerDiagnostics.Info("Ignoring queued playback after an explicit stop");
+            return;
+        }
+
         try
         {
             PlayerDiagnostics.Info($"Executing play: {cmd.FilePath}; fileExists={File.Exists(cmd.FilePath)}; videoViewLoaded={_videoView?.IsLoaded}");
             Console.WriteLine($"[VideoPlayer] ExecutePlay: {Path.GetFileName(cmd.FilePath)} pos={cmd.StartPositionSeconds:0.#}s");
             Console.WriteLine($"[VideoPlayer] VideoView HWND ready: {_videoView?.IsLoaded}");
 
-            _mediaPlayer?.Stop();
+            System.Threading.Volatile.Write(ref _lastPlaybackError, string.Empty);
+            System.Threading.Volatile.Write(ref _lastVlcErrorMessage, string.Empty);
+            var mediaPlayer = _mediaPlayer ?? throw new InvalidOperationException("LibVLC MediaPlayer is not initialized.");
+            var libVlc = _libVlc ?? throw new InvalidOperationException("LibVLC is not initialized.");
+            PlayerDiagnostics.Info("Stopping previous media before playback");
+            mediaPlayer.Stop();
+            PlayerDiagnostics.Info("Previous media stopped");
 
-            using var media = new Media(_libVlc!, new Uri(cmd.FilePath, UriKind.Absolute));
+            using var media = new Media(libVlc, new Uri(cmd.FilePath, UriKind.Absolute));
             media.AddOption(":avcodec-hw=none");
 
             if (_sharpness > 0)
@@ -1338,7 +1364,9 @@ public partial class MainWindow : Window
 
             // Set scale before VLC renders its first frame to avoid a native-size top-left flash.
             ApplyVideoZoom();
-            _mediaPlayer?.Play(media);
+            PlayerDiagnostics.Info("Calling LibVLC Play");
+            if (!mediaPlayer.Play(media))
+                throw new InvalidOperationException("LibVLC rejected the media for playback.");
             _playbackProgressTimer.Start();
             _controlsAutoHideTimer.Stop();
             _controlsAutoHideTimer.Start();
@@ -1360,8 +1388,10 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            var detail = $"Playback start failed ({ex.GetType().Name}): {ex.Message}";
+            System.Threading.Volatile.Write(ref _lastPlaybackError, detail);
             PlayerDiagnostics.Error($"Play execution failed for {cmd.FilePath}", ex);
-            Console.WriteLine($"[VideoPlayer] ExecutePlay error: {ex}");
+            Console.WriteLine($"[VideoPlayer] ExecutePlay error: {detail}");
         }
     }
 
@@ -1433,8 +1463,12 @@ public partial class MainWindow : Window
         if (_mediaPlayer is null)
             return;
 
-        var adjustments = VideoAdjustmentMapper.Map(_brightness, _sharpness, _saturation);
-        _mediaPlayer.SetAdjustInt(VideoAdjustOption.Enable, 1);
+        var adjustments = VideoAdjustmentMapper.Map(_brightness, _saturation);
+        var requiresAdjustment = VideoAdjustmentMapper.RequiresAdjustment(adjustments);
+        _mediaPlayer.SetAdjustInt(VideoAdjustOption.Enable, requiresAdjustment ? 1 : 0);
+        if (!requiresAdjustment)
+            return;
+
         _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Brightness, adjustments.Brightness);
         _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Contrast, adjustments.Contrast);
         _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Gamma, adjustments.Gamma);
@@ -1471,8 +1505,31 @@ public partial class MainWindow : Window
     // LibVLC Event Handlers
     // ═══════════════════════════════════════════════════════════════════════════
 
+    private void OnLibVlcLog(object? sender, LogEventArgs e)
+    {
+        if (e.Level != LogLevel.Error) return;
+
+        var message = e.Message?.Trim();
+        if (string.IsNullOrWhiteSpace(message)) return;
+
+        var module = string.IsNullOrWhiteSpace(e.Module) ? "unknown" : e.Module.Trim();
+        var detail = $"LibVLC [{module}]: {message}";
+        if (!System.Threading.Volatile.Read(ref _playbackStopRequested))
+            System.Threading.Volatile.Write(ref _lastVlcErrorMessage, detail);
+        PlayerDiagnostics.Error(detail);
+        Console.WriteLine($"[VideoPlayer] {detail}");
+    }
+
     private void OnMediaPlaying(object? sender, EventArgs e)
     {
+        if (System.Threading.Volatile.Read(ref _playbackStopRequested))
+        {
+            PlayerDiagnostics.Info("Ignoring late Playing event after an explicit stop");
+            return;
+        }
+
+        System.Threading.Volatile.Write(ref _lastPlaybackError, string.Empty);
+        System.Threading.Volatile.Write(ref _lastVlcErrorMessage, string.Empty);
         PlayerDiagnostics.Info("LibVLC event: Playing");
         Console.WriteLine("[VideoPlayer] Media playing");
         Dispatcher.BeginInvoke(() =>
@@ -1503,8 +1560,19 @@ public partial class MainWindow : Window
 
     private void OnMediaFailed(object? sender, EventArgs e)
     {
-        PlayerDiagnostics.Info($"LibVLC event: EncounteredError; state={_mediaPlayer?.State}");
-        Console.WriteLine($"[VideoPlayer] Media FAILED (VLC state={_mediaPlayer?.State})");
+        if (System.Threading.Volatile.Read(ref _playbackStopRequested))
+        {
+            PlayerDiagnostics.Info("Ignoring playback error reported after an explicit stop");
+            return;
+        }
+
+        var detail = System.Threading.Volatile.Read(ref _lastVlcErrorMessage);
+        if (string.IsNullOrWhiteSpace(detail))
+            detail = $"LibVLC reported EncounteredError (state={_mediaPlayer?.State}); no native error detail was emitted.";
+
+        System.Threading.Volatile.Write(ref _lastPlaybackError, detail);
+        PlayerDiagnostics.Error($"Media playback failed: {detail}");
+        Console.WriteLine($"[VideoPlayer] Media FAILED: {detail}");
         Dispatcher.BeginInvoke(() =>
         {
             _isPaused = true;

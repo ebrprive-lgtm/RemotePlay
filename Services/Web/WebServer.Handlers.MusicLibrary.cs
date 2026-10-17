@@ -716,7 +716,10 @@ internal sealed partial class WebServer
                     ? normalised
                     : Path.GetFullPath(Path.Combine(dir, normalised));
                 if (File.Exists(resolved))
-                    tracks.Add(new { path = WebPathHelpers.EncodePath(resolved), name = Path.GetFileNameWithoutExtension(resolved) });
+                {
+                    var track = new MusicFile(Path.GetFileNameWithoutExtension(resolved), resolved);
+                    tracks.Add(BuildMusicFileObj(track, name));
+                }
             }
         }
         catch (Exception ex)

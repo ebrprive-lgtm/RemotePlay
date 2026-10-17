@@ -195,6 +195,7 @@ public sealed record StatusResponse : IpcMessage
     public int? CurrentAudioTrack { get; init; }
     public int? CurrentSubtitleTrack { get; init; }
     public string PlayerState { get; init; } = "Unknown";
+    public string LastError { get; init; } = string.Empty;
 }
 
 public sealed record PlaybackStartedEvent : IpcMessage

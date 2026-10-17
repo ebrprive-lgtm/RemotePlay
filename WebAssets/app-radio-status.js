@@ -658,9 +658,11 @@ function _getLocalAudio() {
         const muted = _localAudio.muted;
         const rs    = _localAudio.readyState;   // 0-4
         const ns    = _localAudio.networkState; // 0-3
-        // Probe AudioContext state — a suspended AC silences output even when pipeline says 'playing'
-        let acState = 'n/a';
-        try { const AC = window.AudioContext || window.webkitAudioContext; if (AC) { const ctx = new AC(); acState = ctx.state; ctx.close(); } } catch (e) { acState = 'err'; }
+        let acState = 'not-created';
+        try {
+          const graphContext = typeof _localBoostCtx !== 'undefined' ? _localBoostCtx : null;
+          if (graphContext) acState = graphContext.state;
+        } catch (e) { acState = 'err'; }
         fetch('/api/log', { method:'POST', body:`[LOCAL-AUDIO] event=playing vol=${vol} muted=${muted} readyState=${rs} networkState=${ns} acState=${acState} currentTime=${_localAudio.currentTime.toFixed(2)}` }).catch(()=>{});
         _setLocalAudioBusy(false, false);
       });
@@ -786,7 +788,7 @@ function _localTimeUpdate() {
   if (!a) return;
   const seek = document.getElementById('local-seek');
   const lbl = document.getElementById('local-time-label');
-  const dur = isFinite(a.duration) ? a.duration : 0;
+  const dur = Number.isFinite(a.duration) && a.duration > 0 ? a.duration : 0;
   if (seek && !_localSeekDragging) {
     seek.disabled = false;
     seek.removeAttribute('disabled');
@@ -809,21 +811,32 @@ function _localTimeUpdate() {
   if (typeof _localMediaType !== 'undefined' && _localMediaType === 'Music') {
     const mSeek = document.getElementById('music-seek');
     const musicProgressRow = document.getElementById('music-progress-row');
+    const statusDuration = Number(window._lastMusicBarState?.duration);
+    const metadataDuration = Number(window._lastMusicBarState?.durationSec);
+    const musicDuration = dur > 0
+      ? dur
+      : Number.isFinite(statusDuration) && statusDuration > 0
+        ? statusDuration
+        : Number.isFinite(metadataDuration) && metadataDuration > 0
+          ? metadataDuration
+          : 0;
     const musicPosition = Number.isFinite(a.currentTime) ? Math.max(0, a.currentTime) : 0;
-    if (musicProgressRow) musicProgressRow.style.display = dur > 0 ? 'grid' : 'none';
+    const displayPosition = _musicSeekDragging && mSeek
+      ? Math.max(0, Number(mSeek.value) || 0)
+      : musicPosition;
+    if (musicProgressRow) musicProgressRow.style.display = musicDuration > 0 ? 'grid' : 'none';
     if (mSeek) {
-      mSeek.disabled = dur <= 0;
-      if (dur > 0) mSeek.max = dur;
-      else mSeek.max = 0;
+      mSeek.disabled = musicDuration <= 0;
+      mSeek.max = musicDuration;
     }
     if (mSeek && typeof _musicSeekDragging !== 'undefined' && !_musicSeekDragging) {
-      mSeek.value = dur > 0 ? Math.min(musicPosition, dur) : 0;
+      mSeek.value = musicDuration > 0 ? Math.min(musicPosition, musicDuration) : 0;
       if (typeof _updateMusicSeekFill !== 'undefined') _updateMusicSeekFill();
     }
     const mLbl = document.getElementById('music-time-label');
     if (mLbl) {
-      mLbl.textContent = dur > 0
-        ? _fmtTime(Math.min(musicPosition, dur)) + ' / ' + _fmtTime(dur)
+      mLbl.textContent = musicDuration > 0
+        ? _fmtTime(Math.min(displayPosition, musicDuration)) + ' / ' + _fmtTime(musicDuration)
         : '';
     }
   }

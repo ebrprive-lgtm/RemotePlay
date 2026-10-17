@@ -133,13 +133,20 @@ function _closeNonLocalPlayersForLocalStart(localType) {
   if (typeof setPlayerBarVisible === 'function') setPlayerBarVisible(false);
   if (typeof updatePlayingCard === 'function') updatePlayingCard(null, playingPath);
   if (typeof playingPath !== 'undefined') playingPath = null;
+}
 
-  Promise.allSettled([
-    fetch('/api/stop'),
-    fetch('/api/music/stop'),
-    fetch('/api/music/queue-next'),
-    fetch('/api/radio/stop', { method: 'POST' })
-  ]).catch(() => {});
+function _stopRemotePlayersForLocalStart() {
+  const requests = [
+    ['/api/stop'],
+    ['/api/music/stop'],
+    ['/api/music/queue-next'],
+    ['/api/radio/stop', { method: 'POST' }]
+  ];
+  return Promise.allSettled(requests.map(([url, options]) =>
+    fetch(url, options).then((response) => {
+      if (!response.ok) throw new Error(`${url} returned ${response.status}.`);
+    })
+  ));
 }
 
 async function closeLocalPlayerForNonLocalPlayback() {
@@ -158,12 +165,11 @@ async function closeLocalPlayerForNonLocalPlayback() {
   _localMediaType = 'Local';
 }
 
-function localPlay(url, name, type, playerMetadata = null) {
+function localPlay(url, name, type, playerMetadata = null, options = {}) {
   _cancelLocalPodcastResume();
   const playbackGeneration = ++_localPlaybackGeneration;
   _localMediaType = type || 'Local';
   _closeNonLocalPlayersForLocalStart(_localMediaType);
-  _postLog(`[LOCAL-PLAY] localPlay() called — type=${_localMediaType} name='${name}' url=${url}`);
   const a = _getLocalAudio();
   if (!a) {
     _postLog(`[LOCAL-PLAY] ERROR: audio element not found — cannot play ${type}: '${name}'`);
@@ -172,9 +178,11 @@ function localPlay(url, name, type, playerMetadata = null) {
   const playbackUrl = _localMediaType === 'Podcast'
     ? '/api/radio/stream-proxy?url=' + encodeURIComponent(url)
     : url;
-  if (_localMediaType === 'Podcast' && typeof _ensureLocalBoostGraph === 'function') {
+  if ((_localMediaType === 'Music' || _localMediaType === 'Podcast')
+      && typeof _ensureLocalBoostGraph === 'function') {
     _ensureLocalBoostGraph();
   }
+  a.muted = options.startMuted === true;
   let podcastResumePosition = null;
   if (_localMediaType === 'Podcast'
       && playerMetadata
@@ -188,12 +196,29 @@ function localPlay(url, name, type, playerMetadata = null) {
       a.muted = false;
     }
   }
-  _postLog(`[LOCAL-PLAY] setting src and calling play() — muted=${a.muted} volume=${a.volume}`);
   a.src = playbackUrl;
   if (podcastResumePosition !== null) {
     _prepareLocalPodcastResume(a, podcastResumePosition, playbackGeneration);
   }
   const playPromise = a.play();
+  _postLog(`[LOCAL-PLAY] localPlay() called — type=${_localMediaType} name='${name}' url=${url}`);
+  _postLog(`[LOCAL-PLAY] setting src and calling play() — muted=${a.muted} volume=${a.volume}`);
+  const remoteStopPromise = _stopRemotePlayersForLocalStart();
+  void remoteStopPromise.then((results) => {
+    results.forEach((result) => {
+      if (result.status === 'rejected') {
+        console.error('Could not stop a server-side player before Local playback.', result.reason);
+      }
+    });
+    if (!options.unmuteAfterServerStop || playbackGeneration !== _localPlaybackGeneration) return;
+    if (results[1]?.status !== 'fulfilled') {
+      if (typeof setStatus === 'function') {
+        setStatus('Server Music could not be stopped; Local Music remains muted to prevent overlapping audio.');
+      }
+      return;
+    }
+    a.muted = false;
+  });
   if (_localMediaType === 'Podcast' && typeof startWaveform === 'function') startWaveform();
   playPromise.catch((err) => {
     const msg = `[LOCAL-PLAY] play() rejected for '${name}': ${err && err.message ? err.message : err}`;
@@ -213,8 +238,14 @@ function localPlay(url, name, type, playerMetadata = null) {
       showPlaybackErrorPopup(type || 'Media', `"${name}" could not play.\n\n${errMsg}`);
     }
   });
-  // Notify server AFTER play() — keeps the user-gesture scope clean
-  setTimeout(() => fetch('/api/local-playing', { method: 'POST', body: 'true' }).catch(() => {}), 0);
+  playPromise.then(
+    () => {
+      if (playbackGeneration === _localPlaybackGeneration) {
+        fetch('/api/local-playing', { method: 'POST', body: 'true' }).catch(() => {});
+      }
+    },
+    () => {}
+  );
   if (_localMediaType !== 'Podcast') _clearLocalPlayerMeta();
 
   // Keep the same domain player UI for local playback.
@@ -248,11 +279,17 @@ async function localToggle() {
     await radioToggle();
     return;
   }
-
   const a = _getLocalAudio();
   if (!a) return;
-  if (a.paused) a.play().catch(() => {});
-  else a.pause();
+  if (a.paused) {
+    if ((_localMediaType === 'Music' || _localMediaType === 'Podcast')
+        && typeof _ensureLocalBoostGraph === 'function') {
+      _ensureLocalBoostGraph();
+    }
+    a.play().catch(() => {});
+  } else {
+    a.pause();
+  }
 }
 async function localStop(keepPlayerVisible = false, options = {}) {
   const preservePodcastQueue = options.preservePodcastQueue === true;

@@ -9,7 +9,9 @@ let _liveTvFilterCountry = '';
 let _liveTvFilterCategory = '';
 let _liveTvFilterLanguage = '';
 let _liveTvShowFavoritesOnly = false;
-let _liveTvHideFailed = true;
+let _liveTvHideFailed = false;
+let _liveTvHideFailedExplicit = false;
+let _liveTvShowHidden = false;
 let _liveTvCountries = [];
 let _liveTvCategories = [];
 let _liveTvLanguages = [];
@@ -26,6 +28,10 @@ const _liveTvHiddenKey = 'rp_live_tv_hidden_urls';
 let _liveTvHidden = new Set();
 let _liveTvRouteToken = 'browse';
 let _liveTvCurrentChannel = null;
+let _liveTvAttemptingUrl = '';
+let _liveTvPlaybackAttemptGeneration = 0;
+let _liveTvCurrentRequestId = '';
+let _liveTvPlayRequestController = null;
 let _liveTvLastRequestedUrl = '';
 let _liveTvLastPlayedUrl = '';
 let _liveTvLastFallbackUsed = false;
@@ -33,6 +39,8 @@ let _liveTvLastStatusErrorSignature = '';
 const _liveTvCatalogCacheKey = 'rp_live_tv_catalog_v1';
 const _liveTvCatalogCacheTtlMs = 7 * 24 * 60 * 60 * 1000;
 const _liveTvFilterStateKeyPrefix = 'rp_live_tv_filters_v1:';
+const _liveTvPlaybackStartTimeoutMs = 15_000;
+const _liveTvPlaybackStartBudgetMs = 45_000;
 const _liveTvFailureAuditKey = 'rp_live_tv_failure_audit_v1';
 const _liveTvFailureAuditMax = 40;
 let _liveTvRefreshInFlight = null;
@@ -56,6 +64,10 @@ function _liveTvEsc(s) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function _liveTvEncodeInlineArgument(value) {
+  return encodeURIComponent(String(value ?? '')).replace(/'/g, '%27');
 }
 
 function _liveTvLanguageName(codeOrName) {
@@ -219,8 +231,8 @@ function renderLiveTvRecent() {
 
   strip.innerHTML = items.slice(0, 5).map((c) => {
     const safeName = _liveTvEsc(c.name || 'Live TV');
-    const encUrl = encodeURIComponent(c.url || '');
-    const encName = encodeURIComponent(c.name || 'Live TV');
+    const encUrl = _liveTvEncodeInlineArgument(c.url || '');
+    const encName = _liveTvEncodeInlineArgument(c.name || 'Live TV');
     const meta = [c.countryName, c.category].filter(Boolean).join(' • ');
     return (
       '<div class="vr-card" role="button" tabindex="0" title="' + safeName + '"'
@@ -390,8 +402,16 @@ function liveTvToggleFavoritesFilter() {
 
 function liveTvToggleHideFailedFilter() {
   _liveTvHideFailed = !_liveTvHideFailed;
+  _liveTvHideFailedExplicit = true;
   _liveTvPage = 0;
   _liveTvSaveFilterState();
+  _liveTvRenderFilters();
+  renderLiveTvCards();
+}
+
+function liveTvToggleShowHidden() {
+  _liveTvShowHidden = !_liveTvShowHidden;
+  _liveTvPage = 0;
   _liveTvRenderFilters();
   renderLiveTvCards();
 }
@@ -584,21 +604,35 @@ async function _liveTvProbeChannelHealth(channel) {
   _liveTvLastProbeByUrl.set(key, now);
 
   let probeResult = null;
+  const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  const timeout = setTimeout(() => ctrl?.abort(), 2500);
   try {
-    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
-    const timeout = setTimeout(() => ctrl?.abort(), 2500);
     const response = await fetch(channel.url, {
       method: 'HEAD',
       mode: 'no-cors',
       cache: 'no-store',
       signal: ctrl?.signal,
     });
-    clearTimeout(timeout);
-    if (response && response.type !== 'opaque') {
+    if (response && response.type !== 'opaque' && response.status !== 0) {
       probeResult = !!response.ok;
+    } else if (response) {
+      _liveTvEmitTelemetry('health_probe_unknown', {
+        host: _liveTvHostLabel(channel.url),
+        reason: response.type === 'opaque' ? 'opaque_response' : 'status_unavailable',
+        phase: 'health_probe',
+      });
     }
-  } catch {
-    probeResult = false;
+  } catch (err) {
+    probeResult = null;
+    if (err?.name !== 'AbortError') {
+      _liveTvEmitTelemetry('health_probe_unknown', {
+        host: _liveTvHostLabel(channel.url),
+        reason: err?.name || 'network_error',
+        phase: 'health_probe',
+      });
+    }
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (probeResult !== null) {
@@ -665,16 +699,41 @@ function _markLiveTvRelatedChannelsFailed(channel, fallbackName, reason) {
   }
 }
 
-function _liveTvFriendlyFailureReason(rawMessage) {
+function _liveTvFailureCategory(rawMessage, statusCode) {
+  const msg = String(rawMessage || '').trim().toLowerCase();
+  const status = Number(statusCode);
+  if (msg.includes('destination is not allowed')) return 'unsafe_destination';
+  if (status === 401 || status === 403) return 'provider_rejected';
+  if (status === 404 || status === 410) return 'stream_unavailable';
+  if (status === 502 || status === 503 || status === 504) return 'provider_unavailable';
+  if (msg.includes('timed out')
+    || msg.includes('timeout')
+    || msg.includes('no playback confirmation')
+    || msg.includes('startup exceeded')) return 'startup_timeout';
+  if (msg.includes('network') || msg.includes('connection') || msg.includes('resolve')) return 'network_error';
+  return 'playback_failed';
+}
+
+function _liveTvFriendlyFailureReason(rawMessage, statusCode) {
   const msg = String(rawMessage || '').trim();
   const l = msg.toLowerCase();
+  const status = Number(statusCode);
   if (!l) return 'The channel could not be started by the player.';
-  if (l.includes('timed out') || l.includes('timeout'))
+  if (l.includes('destination is not allowed'))
+    return 'This stream URL or redirect points to a private or unsupported destination.';
+  if (l.includes('timed out')
+    || l.includes('timeout')
+    || l.includes('no playback confirmation')
+    || l.includes('startup exceeded'))
     return 'The stream timed out before playback started.';
-  if (l.includes('forbidden') || l.includes('401') || l.includes('403'))
+  if (status === 401 || status === 403 || l.includes('forbidden') || l.includes('401') || l.includes('403'))
     return 'This stream is blocked by the provider (authorization or geo restriction).';
-  if (l.includes('404') || l.includes('not found'))
+  if (status === 404 || status === 410 || l.includes('404') || l.includes('410') || l.includes('not found'))
     return 'This channel stream URL is no longer valid.';
+  if (status === 502 || status === 503 || status === 504)
+    return 'The stream provider is temporarily unavailable.';
+  if (status === 400 || l.includes('bad request'))
+    return 'The stream provider rejected the request as invalid.';
   if (l.includes('unsupported') || l.includes('codec'))
     return 'The stream format/codec is not supported by the current VLC playback path.';
   if (l.includes('network') || l.includes('connection') || l.includes('resolve'))
@@ -701,27 +760,55 @@ function liveTvGetNowPlayingInfo() {
   return _liveTvCurrentChannel;
 }
 
-function liveTvHandleStatusPlaybackError(rawError) {
+function liveTvHandleStatusPlaybackError(rawError, statusUrl) {
   const raw = String(rawError || '').trim();
-  if (!raw) return;
+  if (!raw) return false;
+  if (_liveTvAttemptingUrl || !_liveTvCurrentUrl) return false;
 
-  const currentUrl = String(_liveTvCurrentUrl || '').trim();
+  const reportedUrl = _liveTvDecodeStatusUrl(statusUrl);
+  if (reportedUrl && !_liveTvPlaybackUrlsMatch(_liveTvCurrentUrl, reportedUrl)) {
+    return false;
+  }
+
+  const currentUrl = reportedUrl || _liveTvCurrentUrl;
   const signature = `${currentUrl}|${raw}`;
-  if (_liveTvLastStatusErrorSignature === signature) return;
+  if (_liveTvLastStatusErrorSignature === signature) return true;
   _liveTvLastStatusErrorSignature = signature;
 
-  const channel = (_liveTvChannels || []).find((c) => c && c.url === currentUrl) || _liveTvCurrentChannel || null;
-  const channelName = channel?.name || 'Live TV';
-
-  if (currentUrl) {
-    _markLiveTvChannelFailed(currentUrl, raw);
-  }
-  _markLiveTvRelatedChannelsFailed(channel, channelName, raw);
+  _markLiveTvChannelFailed(currentUrl, raw);
   renderLiveTvCards();
+  return true;
 }
 
 function liveTvClearStatusPlaybackError() {
   _liveTvLastStatusErrorSignature = '';
+}
+
+function liveTvCancelPendingPlaybackStart(reason = 'user') {
+  const hadPendingStart = Boolean(_liveTvAttemptingUrl);
+  if (hadPendingStart) {
+    _liveTvEmitTelemetry('play_cancelled', {
+      host: _liveTvHostLabel(_liveTvAttemptingUrl),
+      reason,
+      phase: 'cancelled',
+    });
+  }
+  _liveTvPlaybackAttemptGeneration += 1;
+  _liveTvPlayRequestController?.abort();
+  _liveTvPlayRequestController = null;
+  _liveTvAttemptingUrl = '';
+
+  _liveTvCloseQuickActionsModal();
+  if (typeof closePlaybackErrorPopup === 'function') closePlaybackErrorPopup();
+  if (typeof clearPlaybackErrorDedup === 'function') clearPlaybackErrorDedup('Live TV');
+  liveTvClearStatusPlaybackError();
+  _liveTvCurrentUrl = '';
+  _liveTvLastPlayedUrl = '';
+  _liveTvLastFallbackUsed = false;
+  _liveTvCurrentChannel = null;
+  _liveTvCurrentRequestId = '';
+  renderLiveTvCards();
+  return hadPendingStart;
 }
 
 function _liveTvTokenFromChannelName(name) {
@@ -744,6 +831,15 @@ function _liveTvFilterStateKey() {
 }
 
 function _liveTvLoadFilterState() {
+  _liveTvFilterQuery = '';
+  _liveTvFilterCountry = '';
+  _liveTvFilterCategory = '';
+  _liveTvFilterLanguage = '';
+  _liveTvShowFavoritesOnly = false;
+  _liveTvHideFailed = false;
+  _liveTvHideFailedExplicit = false;
+  _liveTvShowHidden = false;
+  _liveTvPage = 0;
   try {
     const raw = JSON.parse(localStorage.getItem(_liveTvFilterStateKey()) || 'null');
     if (!raw || typeof raw !== 'object') return;
@@ -752,7 +848,8 @@ function _liveTvLoadFilterState() {
     _liveTvFilterCategory = String(raw.category || '').trim();
     _liveTvFilterLanguage = String(raw.language || '').trim();
     _liveTvShowFavoritesOnly = !!raw.favoritesOnly;
-    _liveTvHideFailed = raw.hideFailed !== false;
+    _liveTvHideFailedExplicit = raw.hideFailedExplicit === true;
+    _liveTvHideFailed = _liveTvHideFailedExplicit && raw.hideFailed === true;
   } catch {}
 }
 
@@ -765,6 +862,7 @@ function _liveTvSaveFilterState() {
       language: _liveTvFilterLanguage,
       favoritesOnly: _liveTvShowFavoritesOnly,
       hideFailed: _liveTvHideFailed,
+      hideFailedExplicit: _liveTvHideFailedExplicit,
     }));
   } catch {}
 }
@@ -815,9 +913,21 @@ function _liveTvPlaybackCandidates(url, channel) {
   return ready.concat(cooling).slice(0, 6);
 }
 
-async function _liveTvTryStartChannel(url, name) {
+async function _liveTvTryStartChannel(url, name, deadline, attemptId, requestController) {
   const qs = new URLSearchParams({ url: url, name: name || 'Live TV' });
-  const r = await fetch('/api/live-tv/play?' + qs);
+  const timeout = setTimeout(() => requestController?.abort(), Math.max(1, deadline - Date.now()));
+  let r;
+  try {
+    r = await fetch('/api/live-tv/play?' + qs, {
+      signal: requestController?.signal,
+      headers: _liveTvCurrentRequestId
+        ? { 'X-RemotePlay-Request-Id': _liveTvCurrentRequestId }
+        : {},
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (attemptId !== _liveTvPlaybackAttemptGeneration) return false;
   if (!r.ok) {
     const errText = await r.text().catch(() => 'Unable to play Live TV stream.');
     const err = new Error(errText || 'Unable to play Live TV stream.');
@@ -825,22 +935,87 @@ async function _liveTvTryStartChannel(url, name) {
     throw err;
   }
 
-  const waitResult = await _waitForLiveTvPlaybackStart();
+  const waitResult = await _waitForLiveTvPlaybackStart(url, deadline, attemptId);
+  if (waitResult.cancelled) return false;
   if (!waitResult.ok) {
     throw new Error(waitResult.error || 'The channel did not start playback.');
   }
+  return true;
 }
 
-async function _waitForLiveTvPlaybackStart() {
+async function _waitForLiveTvPlaybackStart(expectedUrl, deadline, attemptId) {
   let lastErr = '';
-  for (let i = 0; i < 4; i++) {
-    const status = typeof pollStatus === 'function' ? await pollStatus() : null;
-    const runtimeErr = (status?.lastError || status?.LastError || '').trim();
-    if (status?.isPlaying) return { ok: true, error: '' };
-    if (runtimeErr) lastErr = runtimeErr;
-    await _liveTvDelay(250);
+  const startedAt = Date.now();
+  let sawExpectedUrl = false;
+  while (Date.now() < deadline) {
+    if (attemptId !== _liveTvPlaybackAttemptGeneration) return { ok: false, cancelled: true, error: '' };
+    if (typeof pollStatus !== 'function') {
+      return { ok: false, error: 'Playback status reporting is unavailable.' };
+    }
+
+    let status;
+    try {
+      status = await pollStatus();
+    } catch (err) {
+      lastErr = `Unable to check playback status: ${err && err.message ? err.message : String(err)}`;
+      await _liveTvDelay(Math.min(250, Math.max(0, deadline - Date.now())));
+      continue;
+    }
+    if (attemptId !== _liveTvPlaybackAttemptGeneration) return { ok: false, cancelled: true, error: '' };
+
+    const statusUrl = status?.filePath || status?.FilePath || status?.currentFilePath || status?.CurrentFilePath || '';
+    if (!_liveTvPlaybackUrlsMatch(expectedUrl, statusUrl)) {
+      if (sawExpectedUrl && status) {
+        const runtimeErr = String(status.lastError || status.LastError || '').trim();
+        if (runtimeErr) return { ok: false, error: runtimeErr };
+        return { ok: false, cancelled: true, error: '' };
+      }
+      await _liveTvDelay(Math.min(250, Math.max(0, deadline - Date.now())));
+      continue;
+    }
+
+    sawExpectedUrl = true;
+    if (status?.isPlaying || status?.IsPlaying) return { ok: true, error: '' };
+
+    const runtimeErr = String(status?.lastError || status?.LastError || '').trim();
+    if (runtimeErr) return { ok: false, error: runtimeErr };
+
+    await _liveTvDelay(Math.min(250, Math.max(0, deadline - Date.now())));
   }
-  return { ok: false, error: lastErr || 'The channel did not start playback.' };
+
+  const elapsedSeconds = Math.max(1, Math.ceil((Date.now() - startedAt) / 1000));
+  return {
+    ok: false,
+    error: lastErr || `No playback confirmation for ${_liveTvHostLabel(expectedUrl)} after ${elapsedSeconds} seconds.`,
+  };
+}
+
+function _liveTvPlaybackUrlsMatch(first, second) {
+  const left = _liveTvDecodeStatusUrl(first);
+  const right = _liveTvDecodeStatusUrl(second);
+  if (!left || !right) return false;
+  try {
+    const leftUrl = new URL(left);
+    const rightUrl = new URL(right);
+    leftUrl.hash = '';
+    rightUrl.hash = '';
+    return leftUrl.href === rightUrl.href;
+  } catch {
+    return left === right;
+  }
+}
+
+function _liveTvDecodeStatusUrl(value) {
+  const raw = String(value || '').trim();
+  if (_liveTvIsPlayableUrl(raw)) return raw;
+  try {
+    const binary = atob(raw);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const decoded = new TextDecoder('utf-8').decode(bytes).trim();
+    return _liveTvIsPlayableUrl(decoded) ? decoded : raw;
+  } catch {
+    return raw;
+  }
 }
 
 function _liveTvChannelCountryName(channel) {
@@ -916,6 +1091,9 @@ function _liveTvEmitTelemetry(eventName, data) {
       domain: 'live-tv',
       event: String(eventName || ''),
       ts: Date.now(),
+      ...(String(eventName || '').startsWith('play_') && _liveTvCurrentRequestId
+        ? { requestId: _liveTvCurrentRequestId }
+        : {}),
       ...(data && typeof data === 'object' ? data : {}),
     };
     document.dispatchEvent(new CustomEvent('rp:telemetry', { detail }));
@@ -989,6 +1167,14 @@ function _liveTvHostLabel(url) {
   }
 }
 
+function _liveTvNewRequestId() {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
+      return crypto.randomUUID();
+  } catch {}
+  return `live-tv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function _liveTvCountryCode(channel) {
   const raw = String(channel?.countryCode || channel?.country || '').trim().toUpperCase();
   const code = raw === 'UK' ? 'GB' : raw;
@@ -1000,67 +1186,6 @@ function _liveTvFlagUrl(channel) {
   const code = _liveTvCountryCode(channel);
   if (!code) return '';
   return `https://flagcdn.com/w640/${code.toLowerCase()}.png`;
-}
-
-function _liveTvMapChannelList(channels, streams) {
-  const channelById = new Map();
-  for (const c of channels || []) {
-    if (!c || !c.id) continue;
-    if (c.is_nsfw) continue;
-    if (c.closed === true) continue;
-    channelById.set(c.id, c);
-  }
-
-  // Keep one best stream per channel id so results are broad across the whole catalog
-  // instead of being biased by early stream rows.
-  const bestStreamByChannel = new Map();
-
-  function _streamScore(url) {
-    const u = String(url || '').toLowerCase();
-    // Prefer HLS/DASH-like links first, then everything else.
-    if (u.includes('.m3u8')) return 3;
-    if (u.includes('.mpd')) return 2;
-    return 1;
-  }
-
-  for (const s of streams || []) {
-    if (!s || !s.channel || !s.url) continue;
-
-    const meta = channelById.get(s.channel);
-    if (!meta) continue;
-
-    const streamUrl = String(s.url).trim();
-    if (!/^https?:\/\//i.test(streamUrl)) continue;
-
-    const existing = bestStreamByChannel.get(meta.id);
-    if (!existing || _streamScore(streamUrl) > _streamScore(existing.url)) {
-      bestStreamByChannel.set(meta.id, { url: streamUrl });
-    }
-  }
-
-  const merged = [];
-  for (const [channelId, stream] of bestStreamByChannel.entries()) {
-    const meta = channelById.get(channelId);
-    if (!meta) continue;
-
-    const firstCategory = Array.isArray(meta.categories) && meta.categories.length ? _liveTvCanonicalCategory(meta.categories[0]) : '';
-    const firstLanguage = Array.isArray(meta.languages) && meta.languages.length ? _liveTvLanguageName(meta.languages[0]) : '';
-
-    const countryCode = _liveTvCanonicalCountryCode(meta.country);
-    const sourceHost = _liveTvHostLabel(stream.url);
-    merged.push({
-      name: String(meta.name || meta.id),
-      countryCode,
-      countryName: _liveTvCountryName(countryCode),
-      category: firstCategory,
-      language: firstLanguage,
-      sourceHost,
-      url: stream.url,
-    });
-  }
-
-  merged.sort((a, b) => a.name.localeCompare(b.name));
-  return merged;
 }
 
 function _syncLiveTvCommandBar() {
@@ -1092,9 +1217,13 @@ function _liveTvBuildFilterList() {
   const categories = ['All Categories', ..._liveTvCategories].map((name, i) => toOption(i === 0 ? '' : name, name)).join('');
   const languages = ['All Languages', ..._liveTvLanguages].map((name, i) => toOption(i === 0 ? '' : name, name)).join('');
   const favoritesPillClass = _liveTvShowFavoritesOnly ? 'vcb-pill active' : 'vcb-pill';
+  const hiddenPillClass = _liveTvShowHidden ? 'vcb-pill active' : 'vcb-pill';
+  const failedPillClass = _liveTvHideFailed ? 'vcb-pill active' : 'vcb-pill';
 
   return '<input id="live-tv-search" type="search" placeholder="Search channels" oninput="liveTvOnFilterChange()" aria-label="Search Live TV channels" />'
     + '<button class="' + favoritesPillClass + '" onclick="liveTvToggleFavoritesFilter()" title="Show only favorite channels" aria-pressed="' + (_liveTvShowFavoritesOnly ? 'true' : 'false') + '">♥ Favorites</button>'
+    + '<button class="' + hiddenPillClass + '" onclick="liveTvToggleShowHidden()" title="Show channels you previously hid" aria-pressed="' + (_liveTvShowHidden ? 'true' : 'false') + '">Show hidden</button>'
+    + '<button class="' + failedPillClass + '" onclick="liveTvToggleHideFailedFilter()" title="Hide channels that failed to start" aria-pressed="' + (_liveTvHideFailed ? 'true' : 'false') + '">Hide failed</button>'
     + '<select id="live-tv-country" onchange="liveTvOnFilterChange()" aria-label="Filter by country" title="Country filter">' + countries + '</select>'
     + '<select id="live-tv-category" onchange="liveTvOnFilterChange()" aria-label="Filter by category" title="Category filter">' + categories + '</select>'
     + '<select id="live-tv-language" onchange="liveTvOnFilterChange()" aria-label="Filter by language" title="Language filter">' + languages + '</select>'
@@ -1112,6 +1241,7 @@ function _liveTvBuildFilterChips() {
   if (_liveTvFilterCategory) pushChip('category', 'Category', _liveTvFilterCategory);
   if (_liveTvFilterLanguage) pushChip('language', 'Language', _liveTvFilterLanguage);
   if (_liveTvShowFavoritesOnly) chips.push('<button class="vcb-pill active" onclick="liveTvClearSingleFilter(\'favorites\')" title="Show all channels">Favorites only ×</button>');
+  if (_liveTvShowHidden) chips.push('<button class="vcb-pill active" onclick="liveTvClearSingleFilter(\'showHidden\')" title="Hide previously hidden channels">Show hidden ×</button>');
   if (_liveTvHideFailed) chips.push('<button class="vcb-pill active" onclick="liveTvClearSingleFilter(\'hideFailed\')" title="Show failed channels">Hide failed ×</button>');
 
   if (!chips.length) return '';
@@ -1124,7 +1254,11 @@ function liveTvClearSingleFilter(key) {
   else if (key === 'category') _liveTvFilterCategory = '';
   else if (key === 'language') _liveTvFilterLanguage = '';
   else if (key === 'favorites') _liveTvShowFavoritesOnly = false;
-  else if (key === 'hideFailed') _liveTvHideFailed = false;
+  else if (key === 'showHidden') _liveTvShowHidden = false;
+  else if (key === 'hideFailed') {
+    _liveTvHideFailed = false;
+    _liveTvHideFailedExplicit = true;
+  }
 
   _liveTvPage = 0;
   _liveTvSaveFilterState();
@@ -1180,7 +1314,9 @@ function liveTvResetFilters() {
   _liveTvFilterCategory = '';
   _liveTvFilterLanguage = '';
   _liveTvShowFavoritesOnly = false;
-  _liveTvHideFailed = true;
+  _liveTvHideFailed = false;
+  _liveTvHideFailedExplicit = true;
+  _liveTvShowHidden = false;
   _liveTvPage = 0;
   _liveTvSaveFilterState();
   _liveTvRenderFilters();
@@ -1192,7 +1328,7 @@ function _liveTvGetFilteredChannels() {
   const q = _liveTvFilterQuery.toLowerCase();
   return _liveTvChannels.filter((c) => {
     const countryName = c._countryName || _liveTvChannelCountryName(c);
-    if (_isLiveTvHidden(c.url)) return false;
+    if (_isLiveTvHidden(c.url) && !_liveTvShowHidden) return false;
     if (_liveTvShowFavoritesOnly && !_isLiveTvFavorite(c.url)) return false;
     if (_liveTvHideFailed && _isLiveTvChannelFailed(c.url) && _liveTvCurrentUrl !== c.url) return false;
     if (_liveTvFilterCountry && countryName !== _liveTvFilterCountry) return false;
@@ -1218,9 +1354,30 @@ function _liveTvGetFilteredChannels() {
 async function liveTvPlayChannel(url, name) {
   if (!url) return;
 
-  if (typeof closeLocalPlayerForNonLocalPlayback === 'function') {
-    await closeLocalPlayerForNonLocalPlayback();
+  if (_liveTvAttemptingUrl && _liveTvCurrentRequestId) {
+    _liveTvEmitTelemetry('play_cancelled', {
+      host: _liveTvHostLabel(_liveTvAttemptingUrl),
+      reason: 'replaced',
+      phase: 'cancelled',
+    });
   }
+  _liveTvPlayRequestController?.abort();
+  _liveTvPlayRequestController = null;
+  const attemptId = ++_liveTvPlaybackAttemptGeneration;
+  const requestId = _liveTvNewRequestId();
+  const playbackStartedAt = Date.now();
+  _liveTvCurrentRequestId = requestId;
+  _liveTvAttemptingUrl = url;
+  if (typeof closeLocalPlayerForNonLocalPlayback === 'function') {
+    try {
+      await closeLocalPlayerForNonLocalPlayback();
+    } catch (err) {
+      if (attemptId !== _liveTvPlaybackAttemptGeneration) return;
+      _liveTvAttemptingUrl = '';
+      throw err;
+    }
+  }
+  if (attemptId !== _liveTvPlaybackAttemptGeneration) return;
 
   if (typeof setStatus === 'function') setStatus('Starting Live TV: ' + (name || 'Unknown channel'));
   _liveTvLastRequestedUrl = url;
@@ -1239,27 +1396,79 @@ async function liveTvPlayChannel(url, name) {
     sourceHost: channel?.sourceHost || _liveTvHostLabel(url),
   };
 
+  const playbackDeadline = Date.now() + _liveTvPlaybackStartBudgetMs;
   let lastError = '';
   let hadFailedAttempt = false;
   try {
-    _liveTvEmitTelemetry('play_start', { requestedUrl: url, channelName: name || channel?.name || 'Live TV' });
+    _liveTvEmitTelemetry('play_start', {
+      requestId,
+      phase: 'playback_start',
+      requestedHost: _liveTvHostLabel(url),
+      channelName: name || channel?.name || 'Live TV',
+    });
     let playedUrl = '';
     for (const candidate of candidates.length ? candidates : [url]) {
       for (let attempt = 0; attempt < 2; attempt++) {
+        if (Date.now() >= playbackDeadline) {
+          lastError = lastError || `Live TV startup exceeded ${Math.ceil(_liveTvPlaybackStartBudgetMs / 1000)} seconds across stream sources.`;
+          break;
+        }
+
         try {
-          _liveTvEmitTelemetry('play_attempt', { candidateUrl: candidate, attempt: attempt + 1 });
-          await _liveTvTryStartChannel(candidate, name);
+          _liveTvAttemptingUrl = candidate;
+          _liveTvEmitTelemetry('play_attempt', {
+            requestId,
+            phase: 'player_handoff',
+            candidateHost: _liveTvHostLabel(candidate),
+            attempt: attempt + 1,
+            elapsedMs: Date.now() - playbackStartedAt,
+          });
+          const candidateDeadline = Math.min(playbackDeadline, Date.now() + _liveTvPlaybackStartTimeoutMs);
+          const requestController = typeof AbortController === 'function' ? new AbortController() : null;
+          _liveTvPlayRequestController = requestController;
+          let started;
+          try {
+            started = await _liveTvTryStartChannel(candidate, name, candidateDeadline, attemptId, requestController);
+          } finally {
+            if (_liveTvPlayRequestController === requestController) _liveTvPlayRequestController = null;
+          }
+          if (attemptId !== _liveTvPlaybackAttemptGeneration) return;
+          if (!started) {
+            liveTvCancelPendingPlaybackStart('server');
+            return;
+          }
           playedUrl = candidate;
           break;
         } catch (err) {
+          if (attemptId !== _liveTvPlaybackAttemptGeneration) return;
+          if (Number(err?.status) === 409) {
+            liveTvCancelPendingPlaybackStart('server');
+            return;
+          }
           lastError = err && err.message ? err.message : String(err);
           hadFailedAttempt = true;
           _markLiveTvChannelFailed(candidate, lastError);
-          _liveTvEmitTelemetry('play_attempt_failed', { candidateUrl: candidate, attempt: attempt + 1, error: lastError });
-          if (attempt === 0) await _liveTvDelay(350);
+          const statusCode = Number(err && err.status);
+          _liveTvEmitTelemetry('play_attempt_failed', {
+            requestId,
+            phase: 'player_startup',
+            candidateHost: _liveTvHostLabel(candidate),
+            attempt: attempt + 1,
+            statusCode: Number.isInteger(statusCode) ? statusCode : undefined,
+            errorType: err?.name || 'Error',
+            elapsedMs: Date.now() - playbackStartedAt,
+          });
+          const permanentHttpFailure = Number.isInteger(statusCode)
+            && statusCode >= 400
+            && statusCode < 500
+            && statusCode !== 408
+            && statusCode !== 429;
+          if (permanentHttpFailure) break;
+          if (attempt === 0 && Date.now() < playbackDeadline) await _liveTvDelay(Math.min(350, playbackDeadline - Date.now()));
         }
       }
       if (playedUrl) break;
+      if (Date.now() >= playbackDeadline) break;
     }
 
     if (!playedUrl) throw new Error(lastError || 'Unable to play Live TV stream.');
@@ -1272,6 +1481,7 @@ async function liveTvPlayChannel(url, name) {
     };
 
     _liveTvCurrentUrl = playedUrl;
+    _liveTvAttemptingUrl = '';
     _liveTvLastPlayedUrl = playedUrl;
     _liveTvLastFallbackUsed = playedUrl !== url;
     _markLiveTvChannelRecovered(playedUrl);
@@ -1290,29 +1500,44 @@ async function liveTvPlayChannel(url, name) {
 
     if (typeof setStatus === 'function') setStatus('Playing Live TV: ' + (name || 'Unknown channel'));
     if (typeof startSse === 'function') startSse();
-    if (typeof clearPlaybackErrorDedup === 'function') clearPlaybackErrorDedup('live-tv');
+    if (typeof clearPlaybackErrorDedup === 'function') clearPlaybackErrorDedup('Live TV');
     liveTvClearStatusPlaybackError();
     _liveTvEmitTelemetry('play_success', {
-      requestedUrl: url,
-      playedUrl,
+      requestId,
+      phase: 'startup_confirmed',
+      requestedHost: _liveTvHostLabel(url),
+      playedHost: _liveTvHostLabel(playedUrl),
       fallbackUsed: playedUrl !== url,
       channelName: _liveTvCurrentChannel?.name || name || 'Live TV',
+      elapsedMs: Date.now() - playbackStartedAt,
     });
   } catch (err) {
+    if (attemptId !== _liveTvPlaybackAttemptGeneration) return;
     _liveTvLastPlayedUrl = '';
     _liveTvLastFallbackUsed = false;
-    _markLiveTvChannelFailed(url, lastError || (err && err.message ? err.message : String(err)));
-    _markLiveTvRelatedChannelsFailed(channel, name, lastError);
-    renderLiveTvCards();
     const raw = err && err.message ? err.message : (lastError || String(err));
-    const friendly = _liveTvFriendlyFailureReason(raw);
+    const reason = lastError || raw;
+    _markLiveTvChannelFailed(url, reason);
+    _markLiveTvRelatedChannelsFailed(channel, name, reason);
+    renderLiveTvCards();
+    const statusCode = Number(err?.status);
+    const friendly = _liveTvFriendlyFailureReason(raw, statusCode);
     if (typeof setStatus === 'function') {
       setStatus('Live TV playback failed: ' + (name || 'Channel') + ' — ' + friendly);
     }
     if (typeof showPlaybackErrorPopup === 'function') {
       showPlaybackErrorPopup('Live TV', `${name || 'Channel'} could not play.\n\n${friendly}\n\n${raw}`);
     }
-    _liveTvEmitTelemetry('play_failed', { requestedUrl: url, channelName: name || 'Live TV', error: raw });
+    _liveTvEmitTelemetry('play_failed', {
+      requestId,
+      phase: 'playback_failed',
+      requestedHost: _liveTvHostLabel(url),
+      channelName: name || 'Live TV',
+      failureCategory: _liveTvFailureCategory(raw, statusCode),
+      statusCode: Number.isInteger(statusCode) ? statusCode : undefined,
+      errorType: err?.name || 'Error',
+      elapsedMs: Date.now() - playbackStartedAt,
+    });
     const fallbackUrl = (candidates || []).find((candidateUrl) => candidateUrl !== url) || '';
     _liveTvShowQuickActionsModal({
       name: name || 'Live TV',
@@ -1321,6 +1546,8 @@ async function liveTvPlayChannel(url, name) {
       requestedUrl: url,
       fallbackUrl,
     });
+  } finally {
+    if (attemptId === _liveTvPlaybackAttemptGeneration) _liveTvAttemptingUrl = '';
   }
 }
 
@@ -1375,8 +1602,8 @@ function _liveTvBuildFailureAuditPanel() {
 }
 
 function _liveTvBuildCard(channel, isList) {
-  const encUrl = encodeURIComponent(channel.url);
-  const encName = encodeURIComponent(channel.name);
+  const encUrl = _liveTvEncodeInlineArgument(channel.url);
+  const encName = _liveTvEncodeInlineArgument(channel.name);
   const metaParts = [];
   const countryName = _liveTvChannelCountryName(channel);
   if (countryName) metaParts.push(countryName);
@@ -1396,7 +1623,10 @@ function _liveTvBuildCard(channel, isList) {
   const retryButton = failed
     ? '<button class="live-tv-mini-btn live-tv-mini-retry" onclick="liveTvRetryChannel(decodeURIComponent(\'' + encUrl + '\'),decodeURIComponent(\'' + encName + '\'),event)" title="Retry now">Retry now</button>'
     : '';
-  const hideButton = '<button class="live-tv-mini-btn live-tv-mini-hide" onclick="liveTvHideChannel(decodeURIComponent(\'' + encUrl + '\'),event)" title="Hide channel" aria-label="Hide channel">🙈 Hide</button>';
+  const hiddenChannel = _isLiveTvHidden(channel.url);
+  const hideButton = hiddenChannel
+    ? '<button class="live-tv-mini-btn live-tv-mini-unhide" onclick="liveTvUnhideChannel(decodeURIComponent(\'' + encUrl + '\'),event)" title="Unhide channel" aria-label="Unhide channel">Unhide</button>'
+    : '<button class="live-tv-mini-btn live-tv-mini-hide" onclick="liveTvHideChannel(decodeURIComponent(\'' + encUrl + '\'),event)" title="Hide channel" aria-label="Hide channel">🙈 Hide</button>';
 
   if (isList) {
     return '<div class="radio-station-card live-tv-row' + flagClass + (playing ? ' playing' : '') + (failed ? ' live-tv-failed' : '') + '" data-url="' + _liveTvEsc(channel.url) + '"' + flagStyle + ' role="button" tabindex="0" aria-label="' + ariaLabel + '" onclick="liveTvPlayChannel(decodeURIComponent(\'' + encUrl + '\'), decodeURIComponent(\'' + encName + '\'))" onkeydown="activateKeyboardClick(event,this)">'
@@ -1436,7 +1666,7 @@ function renderLiveTvCards() {
 
   const filtered = _liveTvGetFilteredChannels();
   const hasActiveFilters = Boolean(
-    _liveTvFilterQuery || _liveTvFilterCountry || _liveTvFilterCategory || _liveTvFilterLanguage || _liveTvShowFavoritesOnly
+    _liveTvFilterQuery || _liveTvFilterCountry || _liveTvFilterCategory || _liveTvFilterLanguage || _liveTvShowFavoritesOnly || _liveTvShowHidden
   );
   const visibleCount = hasActiveFilters
     ? filtered.length
@@ -1471,61 +1701,48 @@ function renderLiveTvCards() {
 }
 
 async function liveTvLoadChannels() {
-  _liveTvSetLoadingState('Loading free live TV channels…');
-  _liveTvSetIndexingProgress('Loading Live TV index from server…');
+  const cached = _loadLiveTvCatalogCache();
+  const hasCachedChannels = Boolean(cached && Array.isArray(cached.channels) && cached.channels.length);
+  const initialChannels = hasCachedChannels ? cached.channels : _liveTvFallbackChannels.slice();
+  _liveTvApplyChannels(initialChannels);
+  _liveTvSetIndexingProgress(
+    hasCachedChannels
+      ? 'Refreshing Live TV catalog; showing cached channels…'
+      : 'Loading Live TV catalog; showing fallback channels…'
+  );
   _liveTvEmitTelemetry('catalog_load_start', { source: 'network' });
 
   try {
     const res = await fetch('/api/live-tv/catalog');
-    if (!res.ok) throw new Error('Live TV catalog request failed');
+    if (!res.ok) throw new Error(`Live TV catalog request failed (${res.status}).`);
 
     const payload = await res.json();
-    if (payload && payload.ok === false && payload.error) {
-      console.warn('[LIVE-TV] catalog warning:', payload.error);
-      if (typeof setStatus === 'function') {
-        setStatus('Live TV catalog warning: ' + payload.error + ' Using cached/fallback channels.');
-      }
+    if (payload && payload.ok === false) {
+      throw new Error(payload.error || 'Live TV catalog request failed.');
     }
     let channels = Array.isArray(payload?.channels)
       ? payload.channels.map(_liveTvNormalizeChannel).filter(Boolean)
       : [];
     if (!channels.some((c) => c.category || c.language)) {
-      try {
-        await liveTvReindexNow(true);
-        channels = _liveTvChannels;
-      } catch {}
+      const currentChannels = _liveTvChannels;
+      await liveTvReindexNow(true);
+      channels = _liveTvChannels !== currentChannels ? _liveTvChannels : initialChannels;
     }
-    if (!channels.length) channels = _liveTvFallbackChannels.slice();
+    if (!channels.length) throw new Error('Live TV catalog returned no channels.');
 
     _liveTvApplyChannels(channels);
     _saveLiveTvCatalogCache(channels);
     if (typeof setStatus === 'function') setStatus(`Live TV loaded: ${channels.length} channels.`);
     _liveTvEmitTelemetry('catalog_load_success', { source: 'network', count: channels.length });
 
-    if (payload && payload.ok === false && typeof setStatus === 'function') {
-      try {
-        const dRes = await fetch('/api/live-tv/diagnostics');
-        if (dRes.ok) {
-          const d = await dRes.json();
-          const detail = [];
-          if (typeof d.channelCount === 'number') detail.push(`cache=${d.channelCount}`);
-          if (d.channelsStatusCode) detail.push(`channels=${d.channelsStatusCode}`);
-          if (d.streamsStatusCode) detail.push(`streams=${d.streamsStatusCode}`);
-          if (d.fetchDurationMs) detail.push(`${d.fetchDurationMs}ms`);
-          setStatus(`Live TV warning: ${payload.error || 'catalog issue'}${detail.length ? ' (' + detail.join(', ') + ')' : ''}`);
-        }
-      } catch {}
-    }
     _liveTvSetIndexingProgress('Live TV channels loaded.');
     setTimeout(_liveTvClearIndexingProgress, 1200);
-  } catch {
-    const cached = _loadLiveTvCatalogCache();
-    const sourceChannels = cached && Array.isArray(cached.channels) && cached.channels.length
-      ? cached.channels
-      : _liveTvFallbackChannels.slice();
-    _liveTvApplyChannels(sourceChannels);
-    _liveTvSetIndexingProgress('Live TV index unavailable — showing fallback channels.');
-    _liveTvEmitTelemetry('catalog_load_failed', { source: cached ? 'cache' : 'fallback' });
+  } catch (err) {
+    const source = hasCachedChannels ? 'cached channels' : 'fallback channels';
+    console.warn('[LIVE-TV] catalog refresh failed; keeping the initial channel list.', err);
+    _liveTvSetIndexingProgress(`Live TV catalog unavailable — showing ${source}.`);
+    if (typeof setStatus === 'function') setStatus(`Live TV catalog refresh failed; showing ${source}.`);
+    _liveTvEmitTelemetry('catalog_load_failed', { source: hasCachedChannels ? 'cache' : 'fallback' });
     setTimeout(_liveTvClearIndexingProgress, 2400);
   }
 }
@@ -1542,21 +1759,28 @@ async function liveTvReindexNow(background = false) {
       if (!res.ok) throw new Error('Live TV reindex request failed');
 
       const payload = await res.json();
-      if (payload && payload.ok === false && payload.error) {
-        throw new Error(payload.error);
+      if (payload && payload.ok === false) {
+        throw new Error(payload.error || 'Live TV reindex failed.');
       }
       let channels = Array.isArray(payload?.channels)
         ? payload.channels.map(_liveTvNormalizeChannel).filter(Boolean)
         : [];
-      if (!channels.length) channels = _liveTvFallbackChannels.slice();
+      if (!channels.length) throw new Error('Live TV reindex returned no channels.');
 
       _liveTvApplyChannels(channels);
+      _saveLiveTvCatalogCache(channels);
       _liveTvSetIndexingProgress(background ? 'Live TV index refreshed.' : 'Live TV channels loaded.');
       setTimeout(_liveTvClearIndexingProgress, 1600);
       if (typeof setStatus === 'function' && !background) setStatus('Live TV channels reindexed.');
-    } catch {
+    } catch (err) {
+      console.warn('[LIVE-TV] reindex failed.', err);
       if (!_liveTvChannels.length) {
-        _liveTvApplyChannels(_liveTvFallbackChannels.slice());
+        const cached = _loadLiveTvCatalogCache();
+        _liveTvApplyChannels(
+          cached && Array.isArray(cached.channels) && cached.channels.length
+            ? cached.channels
+            : _liveTvFallbackChannels.slice()
+        );
       }
       _liveTvSetIndexingProgress('Live TV reindex failed.');
       setTimeout(_liveTvClearIndexingProgress, 2400);
@@ -1570,7 +1794,6 @@ async function liveTvReindexNow(background = false) {
 }
 
 function liveTvInit() {
-  _liveTvShowFavoritesOnly = true;
   _syncLiveTvCommandBar();
   _loadFailedLiveTvChannels();
   _loadLiveTvFailureAudit();

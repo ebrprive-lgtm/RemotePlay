@@ -5,13 +5,54 @@
 }
 
 const LOCAL_VIDEO_PROGRESS_SAVE_INTERVAL_MS = 15000;
+const LOCAL_VIDEO_COMPATIBILITY_HANDOFF_TIMEOUT_MS = 10 * 60 * 1000;
+const LOCAL_VIDEO_HANDOFF_REQUEST_TIMEOUT_MS = 8000;
+const LOCAL_VIDEO_STATUS_REQUEST_TIMEOUT_MS = 2500;
+const LOCAL_VIDEO_TRANSCODE_STATUS_POLL_INTERVAL_MS = 1000;
+const LOCAL_VIDEO_OVERLAY_AUTOHIDE_MS = 1500;
+const LOCAL_VIDEO_MIME_TYPES = Object.freeze({
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.mkv': 'video/x-matroska',
+  '.avi': 'video/x-msvideo',
+  '.wmv': 'video/x-ms-wmv',
+  '.ts': 'video/mp2t',
+  '.flv': 'video/x-flv',
+});
+const LOCAL_VIDEO_AUDIO_CODEC_MIME_TYPES = Object.freeze({
+  'aac-lc': 'audio/mp4; codecs="mp4a.40.2"',
+  'aac-main': 'audio/mp4; codecs="mp4a.40.1"',
+  'aac-ssr': 'audio/mp4; codecs="mp4a.40.3"',
+  'aac-ltp': 'audio/mp4; codecs="mp4a.40.4"',
+  'aac-he': 'audio/mp4; codecs="mp4a.40.5"',
+  'aac-hev2': 'audio/mp4; codecs="mp4a.40.29"',
+  mp3: 'audio/mp4; codecs="mp3"',
+  ac3: 'audio/mp4; codecs="ac-3"',
+  eac3: 'audio/mp4; codecs="ec-3"',
+  alac: 'audio/mp4; codecs="alac"',
+  flac: 'audio/mp4; codecs="flac"',
+  opus: 'audio/mp4; codecs="opus"',
+  vorbis: 'audio/mp4; codecs="vorbis"',
+});
 let _localVideoState = null;
 let _localVideoGeneration = 0;
 let _localVideoEventsBound = false;
 let _localVideoHandoffPending = false;
+let _localVideoOverlayFadeTimer = null;
 
 function _getLocalVideoElement() {
   return document.getElementById('local-video-element');
+}
+
+function _getLocalVideoSupportedAudioCodecs(video) {
+  if (!video || typeof video.canPlayType !== 'function') return [];
+  return Object.entries(LOCAL_VIDEO_AUDIO_CODEC_MIME_TYPES)
+    .filter(([, mimeType]) => {
+      const support = video.canPlayType(mimeType);
+      return support === 'maybe' || support === 'probably';
+    })
+    .map(([codec]) => codec);
 }
 
 function _localVideoHasSource() {
@@ -22,9 +63,28 @@ function _isLocalVideoActive() {
   return _localVideoHasSource() && typeof currentMode !== 'undefined' && currentMode === 'video';
 }
 
+function _localVideoCompatibilityWarning(video, mediaName) {
+  const extensionIndex = mediaName.lastIndexOf('.');
+  const extension = extensionIndex >= 0 ? mediaName.slice(extensionIndex).toLowerCase() : '';
+  const mimeType = Object.prototype.hasOwnProperty.call(LOCAL_VIDEO_MIME_TYPES, extension)
+    ? LOCAL_VIDEO_MIME_TYPES[extension]
+    : '';
+  const supportHint = mimeType && typeof video.canPlayType === 'function'
+    ? video.canPlayType(mimeType)
+    : '';
+  if (supportHint === 'maybe' || supportHint === 'probably') return '';
+
+  const format = extension ? extension.toUpperCase() + ' video' : 'this video format';
+  return `This browser does not report support for ${format} without codec metadata. Playback will still be attempted; choose Play on Server if it fails.`;
+}
+
 function _syncLocalVideoModeToggle() {
   if (document.body) {
     document.body.classList.toggle('local-video-handoff-pending', _localVideoHandoffPending);
+    document.body.classList.toggle(
+      'local-video-server-handoff-pending',
+      _localVideoHandoffPending && _localVideoState?.handoff === 'server-to-local'
+    );
   }
   const button = document.getElementById('play-local-toggle');
   if (!button) return;
@@ -46,9 +106,11 @@ function _syncLocalVideoModeToggle() {
 function _syncLocalVideoSurfaceVisibility() {
   const hasLocalVideo = _localVideoHasSource();
   const isVideoView = typeof currentMode !== 'undefined' && currentMode === 'video';
+  const shouldShowSurface = isVideoView && hasLocalVideo;
   const surface = document.getElementById('local-video-surface');
-  if (surface) surface.hidden = !(isVideoView && hasLocalVideo);
+  if (surface) surface.hidden = !shouldShowSurface;
   if (document.body) document.body.classList.toggle('local-video-active', hasLocalVideo);
+  if (!shouldShowSurface) void exitLocalVideoFullscreen();
 
   const volumeSlider = document.getElementById('video-combined-vol');
   if (volumeSlider) {
@@ -78,19 +140,265 @@ function _formatLocalVideoTime(seconds) {
     : `${minutes}:${twoDigits(remainingSeconds)}`;
 }
 
-function _renderLocalVideoFullscreenButton() {
-  const button = document.getElementById('local-video-fullscreen');
-  if (!button) return;
-  const isFullscreen = Boolean(document.fullscreenElement);
-  button.textContent = isFullscreen ? 'Exit fullscreen' : 'Fullscreen';
-  button.setAttribute('aria-label', isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen');
-  button.title = isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen';
+function _formatLocalVideoTranscodeStatus(progress, unavailable = false) {
+  if (unavailable) return 'Preparing compatible audio… (progress unavailable)';
+  if (!progress || progress.mode === 'checking') return 'Checking browser audio codec support…';
+  if (progress.isComplete) return 'Compatible audio ready; opening video…';
+  if (!progress?.isTranscoding) return 'Preparing compatible video…';
+  if (Number.isFinite(progress.progressPercent) && progress.progressPercent >= 100) {
+    return 'Finishing compatible video…';
+  }
+
+  const details = [];
+  if (Number.isFinite(progress.progressPercent)) {
+    details.push(Math.round(Math.max(0, Math.min(100, progress.progressPercent))) + '%');
+  }
+  if (
+    Number.isFinite(progress.estimatedRemainingSeconds) &&
+    progress.estimatedRemainingSeconds >= 0
+  ) {
+    details.push(
+      'about ' + _formatLocalVideoTime(Math.ceil(progress.estimatedRemainingSeconds)) + ' remaining'
+    );
+  } else {
+    details.push('estimating remaining time');
+  }
+  const operation = progress.mode === 'copy'
+    ? 'Copying supported audio into MP4…'
+    : 'Transcoding audio to AAC…';
+  return operation + ' ' + details.join(' · ');
+}
+
+function _shouldPollLocalVideoTranscodeStatus(state) {
+  return Boolean(
+    state === _localVideoState &&
+    state.audioCompatibilityRequested &&
+    state.loading &&
+    !state.transcodeCancelPending &&
+    !state.errorMessage &&
+    !state.transcodeProgress?.isComplete
+  );
+}
+
+function _scheduleLocalVideoTranscodeStatusPoll(state, delayMs = 0) {
+  if (!_shouldPollLocalVideoTranscodeStatus(state) || state.transcodeStatusTimer) return;
+  state.transcodeStatusTimer = setTimeout(() => {
+    state.transcodeStatusTimer = null;
+    void _pollLocalVideoTranscodeStatus(state);
+  }, delayMs);
+}
+
+function _cancelLocalVideoTranscodeStatusPoll(state) {
+  if (!state?.transcodeStatusTimer) return;
+  clearTimeout(state.transcodeStatusTimer);
+  state.transcodeStatusTimer = null;
+}
+
+async function _cancelLocalVideoTranscodeOnServer(state) {
+  const query = new URLSearchParams({ path: state.path });
+  if (state.linkPath) query.set('linkPath', state.linkPath);
+  const { response, body: result } = await _fetchLocalVideoRequestWithTimeout(
+    '/api/video/transcode-cancel?' + query.toString(),
+    { method: 'POST', cache: 'no-store' },
+    LOCAL_VIDEO_STATUS_REQUEST_TIMEOUT_MS,
+    (cancelResponse) => cancelResponse.ok ? cancelResponse.json() : null
+  );
+  if (!response.ok) {
+    throw new Error('Transcode cancel request failed (' + response.status + ').');
+  }
+  return result?.cancelled === true;
+}
+
+function _requestLocalVideoTranscodeCancellation(state) {
+  if (
+    !state?.audioCompatibilityRequested ||
+    !state.loading ||
+    state.transcodeCancelPending
+  ) {
+    return;
+  }
+
+  void _cancelLocalVideoTranscodeOnServer(state).catch((error) => {
+    console.error('Could not cancel Local Video transcoding.', error);
+  });
+}
+
+async function cancelLocalVideoTranscode() {
+  const state = _localVideoState;
+  if (
+    !state?.audioCompatibilityRequested ||
+    !state.loading ||
+    !state.transcodeProgress?.isTranscoding ||
+    state.transcodeCancelPending ||
+    _localVideoHandoffPending
+  ) {
+    return;
+  }
+
+  state.transcodeCancelPending = true;
+  _cancelLocalVideoTranscodeStatusPoll(state);
+  _renderLocalVideoUi();
+
+  const cancellationRequest = _cancelLocalVideoTranscodeOnServer(state).then(
+    () => null,
+    (error) => {
+      console.error('Could not cancel Local Video transcoding.', error);
+      return error;
+    }
+  );
+  let stopError = null;
+  try {
+    await stop();
+  } catch (error) {
+    console.error('Could not finish stopping Local Video playback.', error);
+    stopError = error;
+  }
+
+  const cancellationError = await cancellationRequest;
+  if (stopError && cancellationError) {
+    setStatus('Local Video stopped, but the stop request and transcode cancellation could not be confirmed.');
+  } else if (stopError) {
+    setStatus('Local Video was stopped, but the stop request did not complete.');
+  } else if (cancellationError) {
+    setStatus('Playback stopped, but the server could not confirm transcode cancellation.');
+  }
+}
+
+async function _pollLocalVideoTranscodeStatus(state) {
+  if (!_shouldPollLocalVideoTranscodeStatus(state)) return;
+
+  const query = new URLSearchParams({ path: state.path });
+  if (state.linkPath) query.set('linkPath', state.linkPath);
+  query.set('audioCodecs', (state.supportedAudioCodecs || []).join(','));
+  try {
+    const { response, body: progress } = await _fetchLocalVideoRequestWithTimeout(
+      '/api/video/transcode-status?' + query.toString(),
+      { cache: 'no-store' },
+      LOCAL_VIDEO_STATUS_REQUEST_TIMEOUT_MS,
+      (statusResponse) => statusResponse.ok ? statusResponse.json() : null
+    );
+    if (!response.ok) {
+      throw new Error('Transcode status request failed (' + response.status + ').');
+    }
+    if (!_shouldPollLocalVideoTranscodeStatus(state)) return;
+    state.transcodeProgress = progress;
+    state.transcodeStatusUnavailable = false;
+    state.transcodeStatusErrorLogged = false;
+    if (progress?.isTranscoding && state.handoff === 'server-to-local') {
+      void _stopServerPlaybackForLocalHandoff(state);
+    }
+  } catch (error) {
+    if (!_shouldPollLocalVideoTranscodeStatus(state)) return;
+    state.transcodeStatusUnavailable = true;
+    if (!state.transcodeStatusErrorLogged) {
+      console.error('Could not read Local Video transcode progress.', error);
+      state.transcodeStatusErrorLogged = true;
+    }
+  } finally {
+    if (state === _localVideoState) {
+      _renderLocalVideoUi();
+      _scheduleLocalVideoTranscodeStatusPoll(state, LOCAL_VIDEO_TRANSCODE_STATUS_POLL_INTERVAL_MS);
+    }
+  }
+}
+
+function _isLocalVideoFullscreen(stage, video) {
+  return Boolean(
+    (stage && document.fullscreenElement === stage) ||
+    (video && document.fullscreenElement === video) ||
+    video?.webkitDisplayingFullscreen === true ||
+    document.body?.classList.contains('local-video-css-fullscreen')
+  );
+}
+
+function _showLocalVideoOverlayPrompt() {
+  if (_localVideoOverlayFadeTimer) clearTimeout(_localVideoOverlayFadeTimer);
+
+  const isFullscreen = _isLocalVideoFullscreen(
+    document.getElementById('local-video-stage'),
+    _getLocalVideoElement()
+  );
+  const state = _localVideoState;
+  const promptId = isFullscreen
+    ? 'local-video-thumbnail-prompt'
+    : 'local-video-expand-prompt';
+  const prompt = document.getElementById(promptId);
+  if (!prompt) return;
+
+  prompt.classList.remove('is-faded');
+  if (isFullscreen && state?.loading && state.transcodeProgress?.isTranscoding) {
+    _localVideoOverlayFadeTimer = null;
+    return;
+  }
+
+  _localVideoOverlayFadeTimer = setTimeout(() => {
+    prompt.classList.add('is-faded');
+    _localVideoOverlayFadeTimer = null;
+  }, LOCAL_VIDEO_OVERLAY_AUTOHIDE_MS);
+}
+
+function _renderLocalVideoFullscreenOverlayStatus(state = _localVideoState) {
+  const thumbnailOverlay = document.getElementById('local-video-thumbnail-overlay');
+  const prompt = document.getElementById('local-video-thumbnail-prompt');
+  const promptLabel = document.getElementById('local-video-thumbnail-prompt-label');
+  const isFullscreen = _isLocalVideoFullscreen(
+    document.getElementById('local-video-stage'),
+    _getLocalVideoElement()
+  );
+  const isTranscoding = Boolean(
+    isFullscreen && state?.loading && state.transcodeProgress?.isTranscoding
+  );
+  const wasTranscoding = thumbnailOverlay?.dataset.transcoding === 'true';
+  const transcodeStatus = isTranscoding
+    ? _formatLocalVideoTranscodeStatus(
+        state.transcodeProgress,
+        state.transcodeStatusUnavailable
+      )
+    : '';
+  const statusText = isTranscoding
+    ? transcodeStatus + ' · Tap to go to thumbnail'
+    : 'Tap to go to thumbnail';
+
+  if (promptLabel) promptLabel.textContent = statusText;
+  if (thumbnailOverlay) {
+    thumbnailOverlay.dataset.transcoding = String(isTranscoding);
+    const accessibleLabel = isTranscoding
+      ? transcodeStatus + '. Tap to go to thumbnail.'
+      : 'Return to the Local Video thumbnail';
+    thumbnailOverlay.setAttribute(
+      'aria-label',
+      accessibleLabel
+    );
+    thumbnailOverlay.title = accessibleLabel;
+  }
+
+  if (isTranscoding) {
+    if (_localVideoOverlayFadeTimer) clearTimeout(_localVideoOverlayFadeTimer);
+    _localVideoOverlayFadeTimer = null;
+    prompt?.classList.remove('is-faded');
+  } else if (wasTranscoding) {
+    _showLocalVideoOverlayPrompt();
+  }
+}
+
+function _renderLocalVideoFullscreenState() {
+  const expandOverlay = document.getElementById('local-video-expand-overlay');
+  const thumbnailOverlay = document.getElementById('local-video-thumbnail-overlay');
+  const stage = document.getElementById('local-video-stage');
+  const video = _getLocalVideoElement();
+  const isFullscreen = _isLocalVideoFullscreen(stage, video);
+  if (video) video.controls = isFullscreen;
+  if (expandOverlay) expandOverlay.hidden = isFullscreen;
+  if (thumbnailOverlay) thumbnailOverlay.hidden = !isFullscreen;
+  _renderLocalVideoFullscreenOverlayStatus();
+  _showLocalVideoOverlayPrompt();
 }
 
 function _renderLocalVideoUi() {
   const state = _localVideoState;
   const video = _getLocalVideoElement();
   if (!state || !video) return;
+  _renderLocalVideoFullscreenOverlayStatus(state);
 
   const surface = document.getElementById('local-video-surface');
   const heading = document.getElementById('local-video-heading');
@@ -98,21 +406,33 @@ function _renderLocalVideoUi() {
   const time = document.getElementById('local-video-time');
   const volume = document.getElementById('local-video-volume');
   const error = document.getElementById('local-video-error');
+  const transcodeCancel = document.getElementById('local-video-transcode-cancel');
   const fallback = document.getElementById('local-video-server-fallback');
 
   if (heading) heading.textContent = state.name || 'Local video';
   if (status) {
-    status.textContent = state.errorMessage
-      ? 'Playback failed'
-      : video.ended
-        ? 'Playback ended'
-        : video.seeking
-          ? 'Seeking…'
-          : state.loading && video.readyState === 0
-            ? 'Loading video…'
-            : video.paused
-              ? 'Paused'
-              : 'Playing locally';
+    status.textContent = _localVideoHandoffPending
+      ? state.handoff === 'server-to-local'
+        ? 'Switching to Local playback…'
+        : 'Switching to Server playback…'
+      : state.transcodeCancelPending
+        ? 'Stopping playback…'
+        : state.errorMessage
+          ? 'Playback failed'
+          : video.ended
+            ? 'Playback ended'
+            : video.seeking
+              ? 'Seeking…'
+              : state.loading && video.readyState === 0
+                ? state.audioCompatibilityRequested
+                  ? _formatLocalVideoTranscodeStatus(
+                      state.transcodeProgress,
+                      state.transcodeStatusUnavailable
+                    )
+                  : 'Loading video…'
+                : video.paused
+                  ? 'Paused'
+                  : 'Playing locally';
   }
   if (time) {
     time.textContent =
@@ -127,7 +447,18 @@ function _renderLocalVideoUi() {
     error.textContent = state.errorMessage;
     error.hidden = !state.errorMessage;
   }
-  if (fallback) fallback.hidden = !state.errorMessage;
+  if (fallback) fallback.hidden = !state.errorMessage && !state.compatibilityWarning;
+  if (transcodeCancel) {
+    transcodeCancel.hidden =
+      !state.audioCompatibilityRequested ||
+      !state.loading ||
+      !state.transcodeProgress?.isTranscoding ||
+      Boolean(state.errorMessage);
+    transcodeCancel.disabled = _localVideoHandoffPending || state.transcodeCancelPending === true;
+    transcodeCancel.textContent = state.transcodeCancelPending
+      ? 'Stopping playback…'
+      : 'Cancel transcode';
+  }
   if (surface) surface.setAttribute('aria-busy', state.loading && !state.errorMessage ? 'true' : 'false');
 
   if (typeof currentMode === 'undefined' || currentMode !== 'video') return;
@@ -147,9 +478,18 @@ function _renderLocalVideoUi() {
   if (playerTitle) playerTitle.textContent = state.name || 'Local video';
   if (playerMeta) playerMeta.textContent = state.errorMessage
     ? 'Local playback failed'
-    : video.paused
-      ? 'Local video · Paused'
-      : 'Local video · Playing';
+    : state.transcodeCancelPending
+      ? 'Stopping playback…'
+      : state.loading && video.readyState === 0
+        ? state.audioCompatibilityRequested
+          ? _formatLocalVideoTranscodeStatus(
+              state.transcodeProgress,
+              state.transcodeStatusUnavailable
+            )
+          : 'Loading video…'
+        : video.paused
+          ? 'Local video · Paused'
+          : 'Local video · Playing';
   if (pauseButton) pauseButton.textContent = video.paused ? '\u25B6 Resume' : '\u23F8 Pause';
   if (progress) {
     progress.max = String(mediaDuration);
@@ -179,6 +519,9 @@ function _renderLocalVideoUi() {
 }
 
 function _localVideoErrorMessage(error) {
+  if (_localVideoState?.audioCompatibilityRequested && [2, 3, 4].includes(error?.code)) {
+    return 'The tablet-compatible Local stream failed. Check FFmpeg on the RemotePlay host, or choose Play on Server if the video codec is unsupported.';
+  }
   if (error?.name === 'NotAllowedError') {
     return 'The browser blocked playback. Try the video controls again or choose Play on Server.';
   }
@@ -201,8 +544,15 @@ function _localVideoErrorMessage(error) {
 function _showLocalVideoError(message, generation = _localVideoState?.generation) {
   const state = _localVideoState;
   if (!state || state.generation !== generation) return;
+  const compatibilityWarning = state.compatibilityWarning;
+  state.compatibilityWarning = '';
+  const warning = document.getElementById('local-video-warning');
+  if (compatibilityWarning && warning?.textContent === compatibilityWarning) {
+    _showLocalVideoWarning('');
+  }
   state.errorMessage = message;
   state.loading = false;
+  _cancelLocalVideoTranscodeStatusPoll(state);
   releaseWakeLock();
   _renderLocalVideoUi();
 }
@@ -286,6 +636,9 @@ function _bindLocalVideoEvents() {
   const video = _getLocalVideoElement();
   if (!video || _localVideoEventsBound) return;
   _localVideoEventsBound = true;
+  const stage = document.getElementById('local-video-stage');
+  stage?.addEventListener('pointerdown', _showLocalVideoOverlayPrompt, { passive: true });
+  stage?.addEventListener('pointermove', _showLocalVideoOverlayPrompt, { passive: true });
 
   for (const eventName of [
     'play',
@@ -307,6 +660,7 @@ function _bindLocalVideoEvents() {
       if (!state) return;
       if (eventName === 'loadedmetadata') {
         state.loading = false;
+        _cancelLocalVideoTranscodeStatusPoll(state);
         if (state.pendingStartPositionSeconds > 0) {
           const duration = Number.isFinite(video.duration) ? video.duration : Infinity;
           const position = Math.min(state.pendingStartPositionSeconds, duration);
@@ -322,7 +676,15 @@ function _bindLocalVideoEvents() {
           }
         }
       }
-      if (eventName === 'canplay' || eventName === 'playing') state.loading = false;
+      if (eventName === 'canplay' || eventName === 'playing') {
+        state.loading = false;
+        _cancelLocalVideoTranscodeStatusPoll(state);
+        if (state.compatibilityWarning) {
+          const warning = document.getElementById('local-video-warning');
+          if (warning?.textContent === state.compatibilityWarning) _showLocalVideoWarning('');
+          state.compatibilityWarning = '';
+        }
+      }
       if (eventName === 'waiting') state.loading = true;
       if (eventName === 'seeked') {
         state.pendingSeek = false;
@@ -332,7 +694,9 @@ function _bindLocalVideoEvents() {
         state.lastPositionSeconds = video.currentTime;
       }
       if (eventName === 'play') {
-        state.wasPlayingBeforeHandoff = true;
+        if (state.handoff !== 'server-to-local') {
+          state.wasPlayingBeforeHandoff = true;
+        }
         requestWakeLock();
         void _saveLocalVideoProgress(state, video.currentTime, video.duration, { force: true });
       }
@@ -380,14 +744,16 @@ function _bindLocalVideoEvents() {
   video.addEventListener('error', () => {
     const state = _localVideoState;
     const mediaError = video.error;
-    if (!state?.path || mediaError?.code === 1) return;
+    if (!state?.path || mediaError?.code === 1 || state.transcodeCancelPending) return;
     if (video.currentSrc && state.streamUrl && video.currentSrc !== state.streamUrl) return;
     state.loading = false;
     _showLocalVideoError(_localVideoErrorMessage(mediaError), state.generation);
   });
 
-  document.addEventListener('fullscreenchange', _renderLocalVideoFullscreenButton);
-  _renderLocalVideoFullscreenButton();
+  document.addEventListener('fullscreenchange', _renderLocalVideoFullscreenState);
+  video.addEventListener('webkitbeginfullscreen', _renderLocalVideoFullscreenState);
+  video.addEventListener('webkitendfullscreen', _renderLocalVideoFullscreenState);
+  _renderLocalVideoFullscreenState();
 }
 
 function _playLocalVideo(path, name, linkPath, options = {}) {
@@ -413,6 +779,8 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
   const previousState = _localVideoState;
   const previousVideoPosition = Number.isFinite(video.currentTime) ? video.currentTime : 0;
   const previousVideoDuration = Number.isFinite(video.duration) ? video.duration : 0;
+  _cancelLocalVideoTranscodeStatusPoll(previousState);
+  _requestLocalVideoTranscodeCancellation(previousState);
   if (previousState?.path) {
     void _saveLocalVideoProgress(previousState, previousVideoPosition, previousVideoDuration, {
       force: true,
@@ -424,8 +792,18 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
   video.removeAttribute('src');
   video.load();
 
+  const touchClient =
+    Number(navigator.maxTouchPoints) > 0 ||
+    (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches);
+  const supportedAudioCodecs = touchClient
+    ? _getLocalVideoSupportedAudioCodecs(video)
+    : [];
   const query = new URLSearchParams({ path });
   if (linkPath) query.set('linkPath', linkPath);
+  if (touchClient) {
+    query.set('audioCompat', 'auto');
+    query.set('audioCodecs', supportedAudioCodecs.join(','));
+  }
   const source = '/api/video/stream?' + query.toString();
   const generation = ++_localVideoGeneration;
   const startPositionSeconds = Number.isFinite(options.startPositionSeconds)
@@ -450,6 +828,7 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
     streamUrl: new URL(source, window.location.href).href,
     loading: true,
     errorMessage: '',
+    compatibilityWarning: touchClient ? '' : _localVideoCompatibilityWarning(video, name || path),
     generation,
     pendingStartPositionSeconds: startPositionSeconds,
     pendingSeek: false,
@@ -461,7 +840,29 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
         : autoplay,
     playbackEndBehavior:
       options.playbackEndBehavior || _lastServerPlaybackStatus?.playbackEndBehavior || '',
+    serverHandoffVolume: Number.isFinite(options.volume)
+      ? Math.max(0, Math.min(1, options.volume))
+      : null,
+    serverHandoffPlaybackSpeed: Number.isFinite(options.playbackSpeed)
+      ? Math.max(0.5, Math.min(2, options.playbackSpeed))
+      : null,
+    serverHandoffMuted: options.mutedAfterHandoff === true,
     mutedAfterHandoff: options.mutedAfterHandoff === true,
+    audioCompatibilityRequested: touchClient,
+    supportedAudioCodecs,
+    transcodeProgress: null,
+    transcodeStatusUnavailable: false,
+    transcodeStatusErrorLogged: false,
+    transcodeStatusTimer: null,
+    transcodeCancelPending: false,
+    serverStopPending: false,
+    serverStopConfirmed: false,
+    serverStopRequestStarted: false,
+    serverStopPositionSeconds: null,
+    serverStopPromise: null,
+    localReadyForHandoff: false,
+    serverToLocalHandoffFailed: false,
+    reportHandoffFailure: null,
     handoff: options.handoff || '',
     autoAdvance: options.autoAdvance !== false,
     savedResumePositionSeconds: canResume ? savedResumePositionSeconds : 0,
@@ -472,6 +873,8 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
     progressSavePromise: null,
     playPromise: Promise.resolve(true),
   };
+  _renderLocalVideoFullscreenState();
+  if (touchClient) _scheduleLocalVideoTranscodeStatusPoll(_localVideoState);
 
   video.muted = options.muted === true;
   video.volume = volume;
@@ -479,7 +882,7 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
     0.5,
     Math.min(2, Number(options.playbackSpeed) || Number(currentPlaybackSpeed) || 1)
   );
-  _showLocalVideoWarning('');
+  _showLocalVideoWarning(_localVideoState.compatibilityWarning);
   _hideResumePrompt();
   _syncLocalVideoSurfaceVisibility();
   _renderLocalVideoUi();
@@ -526,11 +929,13 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
     typeof _stopAllPlaybackForNewStart === 'function'
   ) {
     void _stopAllPlaybackForNewStart()
-      .then(() =>
-        fetch('/api/local-playing', { method: 'POST', body: 'true' }).then((response) => {
+      .then(() => {
+        if (_localVideoState?.generation !== generation) return;
+        _syncLocalVideoSurfaceVisibility();
+        return fetch('/api/local-playing', { method: 'POST', body: 'true' }).then((response) => {
           if (!response.ok) throw new Error('Local playback state update failed (' + response.status + ').');
-        })
-      )
+        });
+      })
       .catch((error) => {
         console.error('Could not stop previous playback or update Local Video state.', error);
         if (_localVideoState?.generation === generation) {
@@ -585,10 +990,42 @@ function _waitForLocalVideoReady(generation, timeoutMs = 20000) {
   });
 }
 
-async function _readServerPlaybackStatus() {
-  const response = await fetch('/api/status', { cache: 'no-store' });
+async function _fetchLocalVideoRequestWithTimeout(
+  url,
+  options = {},
+  timeoutMs = LOCAL_VIDEO_HANDOFF_REQUEST_TIMEOUT_MS,
+  readResponse
+) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const fetchOptions = controller ? { ...options, signal: controller.signal } : options;
+  let timeoutId;
+  const request = (async () => {
+    const response = await fetch(url, fetchOptions);
+    const body = readResponse ? await readResponse(response) : null;
+    return { response, body };
+  })();
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      controller?.abort();
+      reject(new Error('Local Video server request timed out.'));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([request, timeout]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function _readServerPlaybackStatus(timeoutMs = LOCAL_VIDEO_STATUS_REQUEST_TIMEOUT_MS) {
+  const { response, body: status } = await _fetchLocalVideoRequestWithTimeout(
+    '/api/status',
+    { cache: 'no-store' },
+    timeoutMs,
+    (statusResponse) => statusResponse.ok ? statusResponse.json() : null
+  );
   if (!response.ok) throw new Error('Could not read server playback status (' + response.status + ').');
-  return response.json();
+  return status;
 }
 
 async function _waitForServerPlaybackStatus(predicate, description, timeoutMs = 12000) {
@@ -596,14 +1033,19 @@ async function _waitForServerPlaybackStatus(predicate, description, timeoutMs = 
   let lastError = null;
   while (Date.now() < deadline) {
     try {
-      const status = await _readServerPlaybackStatus();
+      const remainingMs = deadline - Date.now();
+      const status = await _readServerPlaybackStatus(
+        Math.min(LOCAL_VIDEO_STATUS_REQUEST_TIMEOUT_MS, remainingMs)
+      );
       _lastServerPlaybackStatus = status;
       _lastServerPlaybackStatusAt = Date.now();
       if (predicate(status)) return status;
     } catch (error) {
       lastError = error;
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(250, deadline - Date.now())));
+    }
   }
   throw lastError || new Error('Timed out waiting for ' + description + '.');
 }
@@ -614,6 +1056,7 @@ function _finalizeServerToLocalHandoff(status, generation) {
     !state ||
     state.generation !== generation ||
     state.handoff !== 'server-to-local' ||
+    !state.localReadyForHandoff ||
     status?.isPlaying ||
     status?.isPaused
   ) {
@@ -623,6 +1066,8 @@ function _finalizeServerToLocalHandoff(status, generation) {
   state.serverStopPending = false;
   state.handoff = '';
   state.serverStopConfirmed = true;
+  state.serverToLocalHandoffFailed = false;
+  state.reportHandoffFailure = null;
   _localVideoHandoffPending = false;
   const video = _getLocalVideoElement();
   if (video) video.muted = state.mutedAfterHandoff;
@@ -641,7 +1086,115 @@ function _resolveLocalVideoServerHandoffStatus(status) {
   const state = _localVideoState;
   if (!state?.serverStopPending || state.handoff !== 'server-to-local') return;
   if (status?.isPlaying || status?.isPaused) return;
+  state.serverStopPending = false;
+  state.serverStopConfirmed = true;
+  if (!state.localReadyForHandoff) return;
   _finalizeServerToLocalHandoff(status, state.generation);
+}
+
+function _failServerToLocalHandoff(generation, error) {
+  const state = _localVideoState;
+  if (
+    !state ||
+    state.generation !== generation ||
+    state.handoff !== 'server-to-local'
+  ) {
+    return false;
+  }
+
+  console.error('Could not complete Server-to-Local Video handoff.', error);
+  const video = _getLocalVideoElement();
+  if (video) {
+    video.pause();
+    video.muted = true;
+  }
+  state.serverToLocalHandoffFailed = true;
+  state.handoff = '';
+  state.serverStopPending = false;
+  _localVideoHandoffPending = false;
+
+  const warning = state.serverStopConfirmed
+    ? 'Local Video could not start after Server playback stopped. Switch to Server to resume from the saved position.'
+    : state.serverStopRequestStarted
+      ? 'The server could not be stopped safely. Local Video is paused and muted to prevent duplicate audio; try the handoff again.'
+      : 'Local Video could not start. Server playback may still be active; switch to Server or try the handoff again.';
+  _showLocalVideoWarning(warning);
+  _syncLocalVideoModeToggle();
+  _renderLocalVideoUi();
+  const reportFailure = state.reportHandoffFailure;
+  state.reportHandoffFailure = null;
+  reportFailure?.(error);
+  return true;
+}
+
+function _stopServerPlaybackForLocalHandoff(state) {
+  if (
+    !state ||
+    state !== _localVideoState ||
+    state.handoff !== 'server-to-local'
+  ) {
+    return Promise.resolve(null);
+  }
+  if (state.serverStopPromise) return state.serverStopPromise;
+
+  const generation = state.generation;
+  const stopPromise = (async () => {
+    const serverStatus = await _readServerPlaybackStatus();
+    if (state !== _localVideoState || state.generation !== generation) return null;
+    _lastServerPlaybackStatus = serverStatus;
+    _lastServerPlaybackStatusAt = Date.now();
+
+    if (!serverStatus.isPlaying && !serverStatus.isPaused) {
+      state.serverStopConfirmed = true;
+      if (state.serverToLocalHandoffFailed) {
+        _showLocalVideoWarning(
+          'Local Video could not start after Server playback stopped. Switch to Server to resume from the saved position.'
+        );
+        _renderLocalVideoUi();
+      }
+      return serverStatus;
+    }
+    if (state.handoff !== 'server-to-local') return null;
+    if (serverStatus.filePath !== state.path) {
+      throw new Error('Server playback changed before the Local handoff could finish.');
+    }
+
+    const serverPositionSeconds = Number(serverStatus.position);
+    state.serverStopPositionSeconds = Number.isFinite(serverPositionSeconds)
+      ? Math.max(0, serverPositionSeconds)
+      : 0;
+    state.serverStopRequestStarted = true;
+    const { response: stopResponse } = await _fetchLocalVideoRequestWithTimeout('/api/stop');
+    if (!stopResponse.ok) {
+      throw new Error('The server could not be stopped (' + stopResponse.status + ').');
+    }
+    if (
+      state === _localVideoState &&
+      state.generation === generation &&
+      state.handoff === 'server-to-local'
+    ) {
+      state.serverStopPending = true;
+    }
+
+    const stoppedStatus = await _waitForServerPlaybackStatus(
+      (next) => !next.isPlaying && !next.isPaused,
+      'server playback to stop'
+    );
+    if (state === _localVideoState && state.generation === generation) {
+      state.serverStopPending = false;
+      state.serverStopConfirmed = true;
+      if (state.serverToLocalHandoffFailed) {
+        _showLocalVideoWarning(
+          'Local Video could not start after Server playback stopped. Switch to Server to resume from the saved position.'
+        );
+        _renderLocalVideoUi();
+      }
+    }
+    return stoppedStatus;
+  })();
+  state.serverStopPromise = stopPromise;
+  void stopPromise.catch((error) => _failServerToLocalHandoff(generation, error));
+  return stopPromise;
 }
 
 function _handoffServerVideoToLocal() {
@@ -679,59 +1232,52 @@ function _handoffServerVideoToLocal() {
     return true;
   }
 
+  void toggleLocalVideoFullscreen();
+
   const generation = _localVideoState.generation;
-  _localVideoState.serverStopPending = false;
+  const handoffState = _localVideoState;
+  handoffState.serverStopPending = false;
+  let reportHandoffFailure;
+  const handoffFailure = new Promise((resolve) => {
+    reportHandoffFailure = resolve;
+  });
+  handoffState.reportHandoffFailure = reportHandoffFailure;
   void (async () => {
     try {
-      await _waitForLocalVideoReady(generation);
+      const readinessTimeout = handoffState.audioCompatibilityRequested
+        ? LOCAL_VIDEO_COMPATIBILITY_HANDOFF_TIMEOUT_MS
+        : undefined;
+      const readinessResult = await Promise.race([
+        _waitForLocalVideoReady(generation, readinessTimeout).then(() => ({ ready: true })),
+        handoffFailure.then((error) => ({ error })),
+      ]);
+      if (readinessResult.error) throw readinessResult.error;
+
       const state = _localVideoState;
       const video = _getLocalVideoElement();
-      if (!state || state.generation !== generation || !video) return;
+      if (
+        !state ||
+        state.generation !== generation ||
+        state.handoff !== 'server-to-local' ||
+        !video
+      ) {
+        return;
+      }
       const played = await state.playPromise;
       if (!played || video.paused) throw new Error('The Local Video player could not start.');
       if (!state.wasPlayingBeforeHandoff) video.pause();
 
-      const serverStatus = await _readServerPlaybackStatus();
-      _lastServerPlaybackStatus = serverStatus;
-      _lastServerPlaybackStatusAt = Date.now();
-      if (!serverStatus.isPlaying && !serverStatus.isPaused) {
-        _finalizeServerToLocalHandoff(serverStatus, generation);
+      state.localReadyForHandoff = true;
+      const stoppedStatus = await _stopServerPlaybackForLocalHandoff(state);
+      if (
+        _localVideoState?.generation !== generation ||
+        _localVideoState.handoff !== 'server-to-local'
+      ) {
         return;
       }
-      if (serverStatus.filePath !== videoPath) {
-        throw new Error('Server playback changed before the Local handoff could finish.');
-      }
-
-      const stopResponse = await fetch('/api/stop');
-      if (!stopResponse.ok) {
-        throw new Error('The server could not be stopped (' + stopResponse.status + ').');
-      }
-      if (_localVideoState?.generation === generation) {
-        _localVideoState.serverStopPending = true;
-      }
-      const stoppedStatus = await _waitForServerPlaybackStatus(
-        (next) => !next.isPlaying && !next.isPaused,
-        'server playback to stop'
-      );
       _finalizeServerToLocalHandoff(stoppedStatus, generation);
     } catch (error) {
-      console.error('Could not complete Server-to-Local Video handoff.', error);
-      const state = _localVideoState;
-      if (state?.generation === generation) {
-        const video = _getLocalVideoElement();
-        if (video) {
-          video.pause();
-          video.muted = true;
-        }
-        state.handoff = '';
-        state.serverStopPending = false;
-        _localVideoHandoffPending = false;
-        _showLocalVideoWarning(
-          'The server could not be stopped safely. Local Video is paused and muted to prevent duplicate audio; try the handoff again.'
-        );
-        _syncLocalVideoModeToggle();
-        _renderLocalVideoUi();
-      }
+      _failServerToLocalHandoff(generation, error);
     }
   })();
   return true;
@@ -744,26 +1290,39 @@ async function _handoffLocalVideoToServer(forcePlay = false) {
 
   const { path, name, linkPath } = state;
   const hasLoadedPosition = video.readyState > 0;
-  const position = state.pendingStartPositionSeconds > 0 && !hasLoadedPosition
-    ? Math.max(0, Number(state.lastPositionSeconds) || 0)
-    : Number.isFinite(video.currentTime)
-      ? Math.max(0, video.currentTime)
-      : Math.max(0, Number(state.lastPositionSeconds) || 0);
+  const position = state.serverToLocalHandoffFailed &&
+      Number.isFinite(state.serverStopPositionSeconds)
+    ? Math.max(0, state.serverStopPositionSeconds)
+    : state.pendingStartPositionSeconds > 0 && !hasLoadedPosition
+      ? Math.max(0, Number(state.lastPositionSeconds) || 0)
+      : Number.isFinite(video.currentTime)
+        ? Math.max(0, video.currentTime)
+        : Math.max(0, Number(state.lastPositionSeconds) || 0);
   const localVolume = Number.isFinite(video.volume) ? Math.max(0, Math.min(1, video.volume)) : 1;
-  const localPlaybackSpeed = Math.max(0.5, Math.min(2, Number(video.playbackRate) || 1));
-  const localIsMuted = video.muted || localVolume <= 0.001;
+  const returningToServer = state.serverToLocalHandoffFailed;
+  const localPlaybackSpeed = returningToServer && Number.isFinite(state.serverHandoffPlaybackSpeed)
+    ? state.serverHandoffPlaybackSpeed
+    : Math.max(0.5, Math.min(2, Number(video.playbackRate) || 1));
+  const serverVolume = returningToServer && Number.isFinite(state.serverHandoffVolume)
+    ? state.serverHandoffVolume
+    : localVolume;
+  const localIsMuted = returningToServer
+    ? state.serverHandoffMuted || serverVolume <= 0.001
+    : video.muted || localVolume <= 0.001;
   const wasPlaying = forcePlay || (!video.paused && !video.ended)
-    || (state.loading && state.wasPlayingBeforeHandoff);
+    || (state.loading && state.wasPlayingBeforeHandoff)
+    || (state.serverToLocalHandoffFailed && state.wasPlayingBeforeHandoff);
   const generation = state.generation;
   let serverStartRequested = false;
   _localVideoHandoffPending = true;
   video.pause();
   _syncLocalVideoModeToggle();
   _renderLocalVideoUi();
+  setStatus('Switching Local Video to Server…');
 
   try {
     serverStartRequested = true;
-    const response = await fetch(
+    const { response } = await _fetchLocalVideoRequestWithTimeout(
       '/api/video/play?path=' + encodeURIComponent(path) + '&pos=' + encodeURIComponent(position.toFixed(3))
     );
     if (!response.ok) {
@@ -774,16 +1333,16 @@ async function _handoffLocalVideoToServer(forcePlay = false) {
       (status) => (status.isPlaying || status.isPaused) && status.filePath === path,
       'the server to start the selected video'
     );
-    const volumeResponse = await fetch(
-      '/api/volume?value=' + encodeURIComponent((localIsMuted ? 0 : localVolume).toFixed(2))
+    const { response: volumeResponse } = await _fetchLocalVideoRequestWithTimeout(
+      '/api/volume?value=' + encodeURIComponent((localIsMuted ? 0 : serverVolume).toFixed(2))
     );
     if (!volumeResponse.ok) throw new Error('The server could not apply the Local Video volume.');
-    const speedResponse = await fetch(
+    const { response: speedResponse } = await _fetchLocalVideoRequestWithTimeout(
       '/api/speed?value=' + encodeURIComponent(localPlaybackSpeed.toFixed(2))
     );
     if (!speedResponse.ok) throw new Error('The server could not apply the Local Video playback speed.');
     if (!wasPlaying && !serverStatus.isPaused) {
-      const pauseResponse = await fetch('/api/pause');
+      const { response: pauseResponse } = await _fetchLocalVideoRequestWithTimeout('/api/pause');
       if (!pauseResponse.ok) throw new Error('The server could not pause the video.');
       serverStatus = await _waitForServerPlaybackStatus(
         (status) => status.filePath === path && status.isPaused,
@@ -799,7 +1358,9 @@ async function _handoffLocalVideoToServer(forcePlay = false) {
     setPlayLocal(false);
     stopLocalVideo();
     setStatus('Playing on server from ' + _formatLocalVideoTime(position) + '.');
-    await pollStatus();
+    void pollStatus().catch((error) => {
+      console.error('Could not refresh playback status after switching to Server.', error);
+    });
   } catch (error) {
     console.error('Could not complete Local-to-Server Video handoff.', error);
     if (_localVideoState?.generation === generation) {
@@ -810,7 +1371,7 @@ async function _handoffLocalVideoToServer(forcePlay = false) {
         _lastServerPlaybackStatusAt = Date.now();
         if (serverStatus.isPlaying || serverStatus.isPaused) {
           if (serverStatus.filePath === path) {
-            const stopResponse = await fetch('/api/stop');
+            const { response: stopResponse } = await _fetchLocalVideoRequestWithTimeout('/api/stop');
             if (!stopResponse.ok) throw new Error('The server could not be stopped during rollback.');
             await _waitForServerPlaybackStatus(
               (status) => !status.isPlaying && !status.isPaused,
@@ -838,6 +1399,11 @@ async function _handoffLocalVideoToServer(forcePlay = false) {
         video.pause();
         video.muted = true;
       }
+      setStatus(
+        serverStoppedSafely
+          ? 'Could not switch to Server. Local Video remains active.'
+          : 'Could not confirm Server playback stopped. Local Video is paused and muted.'
+      );
       _showLocalVideoWarning(
         serverStoppedSafely
           ? 'Could not switch to Server playback. Local Video remains loaded at its current position.'
@@ -848,12 +1414,15 @@ async function _handoffLocalVideoToServer(forcePlay = false) {
   } finally {
     _localVideoHandoffPending = false;
     _syncLocalVideoModeToggle();
+    _renderLocalVideoUi();
   }
 }
 
 function stopLocalVideo() {
   const video = _getLocalVideoElement();
   const state = _localVideoState;
+  _cancelLocalVideoTranscodeStatusPoll(state);
+  _requestLocalVideoTranscodeCancellation(state);
   if (state?.path && video) {
     const position = Number.isFinite(video.currentTime) ? video.currentTime : state.lastPositionSeconds;
     const duration = Number.isFinite(video.duration) ? video.duration : 0;
@@ -922,19 +1491,54 @@ async function toggleLocalVideoFullscreen() {
   const stage = document.getElementById('local-video-stage');
   const video = _getLocalVideoElement();
   try {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen();
+    if (_isLocalVideoFullscreen(stage, video)) {
+      await exitLocalVideoFullscreen();
     } else if (stage?.requestFullscreen) {
-      await stage.requestFullscreen();
-    } else if (typeof video?.webkitEnterFullscreen === 'function') {
-      video.webkitEnterFullscreen();
+      try {
+        await stage.requestFullscreen();
+      } catch (error) {
+        console.warn('Browser fullscreen was unavailable; using the in-page Local Video fullscreen view.', error);
+      }
+      if (document.fullscreenElement !== stage && document.fullscreenElement !== video) {
+        _enterLocalVideoCssFullscreen();
+      }
     } else {
-      throw new Error('Fullscreen is not supported by this browser.');
+      _enterLocalVideoCssFullscreen();
     }
+    _renderLocalVideoFullscreenState();
   } catch (error) {
-    console.error('Could not enter or exit Local Video fullscreen.', error);
-    _showLocalVideoWarning('Fullscreen could not be changed. Use the browser video controls instead.');
+    console.error('Could not enter Local Video fullscreen.', error);
+    _showLocalVideoWarning('Fullscreen could not be changed. Try the expand control again.');
   }
+}
+
+async function exitLocalVideoFullscreen() {
+  const stage = document.getElementById('local-video-stage');
+  const video = _getLocalVideoElement();
+  if (!_isLocalVideoFullscreen(stage, video)) return;
+
+  try {
+    if (document.fullscreenElement === stage || document.fullscreenElement === video) {
+      await document.exitFullscreen();
+    } else if (video?.webkitDisplayingFullscreen && typeof video.webkitExitFullscreen === 'function') {
+      video.webkitExitFullscreen();
+    } else {
+      document.body?.classList.remove('local-video-css-fullscreen');
+    }
+    _renderLocalVideoFullscreenState();
+  } catch (error) {
+    console.error('Could not exit Local Video fullscreen.', error);
+    _showLocalVideoWarning('Use the browser fullscreen controls to return to the compact player.');
+  }
+}
+
+function _enterLocalVideoCssFullscreen() {
+  const surface = document.getElementById('local-video-surface');
+  if (!surface || surface.hidden || !document.body) {
+    throw new Error('The Local Video surface is unavailable for fullscreen.');
+  }
+  document.body.classList.add('local-video-css-fullscreen');
+  _renderLocalVideoFullscreenState();
 }
 
 function updateResumePrompt(status) {
@@ -1104,23 +1708,30 @@ async function onSeekCommit() {
     seekDragging = false;
     return;
   }
+  if (!seekDragging) return;
   const progress = document.getElementById('progress');
   const pos = parseFloat(progress?.value);
-  if (!Number.isNaN(pos)) {
-    haptic(8);
-    if (_isLocalVideoActive()) {
-      const video = _getLocalVideoElement();
-      if (video) {
-        const duration = Number.isFinite(video.duration) ? video.duration : pos;
-        video.currentTime = Math.min(Math.max(0, pos), duration);
-        if (_localVideoState) _localVideoState.lastPositionSeconds = video.currentTime;
+  try {
+    if (!Number.isNaN(pos)) {
+      haptic(8);
+      if (_isLocalVideoActive()) {
+        const video = _getLocalVideoElement();
+        if (video) {
+          const duration = Number.isFinite(video.duration) ? video.duration : pos;
+          video.currentTime = Math.min(Math.max(0, pos), duration);
+          if (_localVideoState) _localVideoState.lastPositionSeconds = video.currentTime;
+        }
+      } else {
+        await api('/api/seek?pos=' + pos.toFixed(1));
       }
-    } else {
-      await api('/api/seek?pos=' + pos.toFixed(1));
     }
+  } catch (error) {
+    console.error('Could not seek playback.', error);
+    if (typeof setStatus === 'function') setStatus('Could not seek playback.');
+  } finally {
+    seekDragging = false;
+    if (_isLocalVideoActive()) _renderLocalVideoUi();
   }
-  seekDragging = false;
-  if (_isLocalVideoActive()) _renderLocalVideoUi();
 }
 
 function updateVolumeIcon(value) {

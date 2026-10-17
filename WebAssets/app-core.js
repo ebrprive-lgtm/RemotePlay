@@ -303,6 +303,7 @@ function _encodedParentDir(encodedFilePath) {
   return _encodePath(folder);
 }
 
+let seekHoldTimer = null,
   seekHoldInterval = null,
   seekHoldTriggered = false,
   suppressNextSeekTap = false;
@@ -574,7 +575,13 @@ function togglePlayLocal() {
       // Start muted so server audio and local audio don't overlap while the stop propagates.
       const aHandoff = typeof _getLocalAudio !== 'undefined' ? _getLocalAudio() : null;
       if (aHandoff) aHandoff.muted = true;
-      localPlay('/api/music/stream?path=' + encodeURIComponent(musicCurrentPath), title, 'Music');
+      localPlay(
+        '/api/music/stream?path=' + encodeURIComponent(musicCurrentPath),
+        title,
+        'Music',
+        null,
+        { startMuted: true }
+      );
 
       // Seek to saved position once the stream is ready, then unmute.
       const doSeekAndUnmute = () => {
@@ -1088,10 +1095,12 @@ async function pollStatus() {
     _applyLiveTvPlayerUi(isLiveTvMode, s);
     if (isLiveTvMode) {
       if (s.lastError) {
-        showPlaybackErrorPopup('Live TV', s.lastError);
-        if (typeof liveTvHandleStatusPlaybackError === 'function') {
-          liveTvHandleStatusPlaybackError(s.lastError);
-        }
+        const shouldShowPlaybackError = typeof liveTvHandleStatusPlaybackError !== 'function'
+          || liveTvHandleStatusPlaybackError(
+            s.lastError,
+            s.filePath || s.FilePath || s.currentFilePath || s.CurrentFilePath
+          ) !== false;
+        if (shouldShowPlaybackError) showPlaybackErrorPopup('Live TV', s.lastError);
       } else {
         clearPlaybackErrorDedup('Live TV');
         if (typeof liveTvClearStatusPlaybackError === 'function') {

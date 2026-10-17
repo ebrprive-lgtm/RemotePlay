@@ -718,7 +718,8 @@
                                     BorderThickness="0" Padding="10,5" Margin="16,0,0,0"
                                     Cursor="Hand" DockPanel.Dock="Right"
                                     ToolTip="Registers .rplink app icon plus the RemotePlay submenu (Play, Go to In-App, Windows Explorer to) and Create Link action"/>
-                            <Button Content="🔍  Scan broken links"
+                            <Button x:Name="ScanBrokenLinksButton"
+                                    Content="🔍  Scan broken links"
                                     Click="OnScanBrokenLinks"
                                     Background="#333" Foreground="White"
                                     BorderThickness="0" Padding="10,5" Margin="8,0,0,0"

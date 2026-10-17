@@ -154,7 +154,10 @@ async function playMusic(path, name) {
     return;
   }
 
-  await _stopAllPlaybackForNewStart();
+  const useLocalPlayback = isPlayLocal();
+  const isSwitchingServerMusic = !useLocalPlayback && currentMode === 'music' && musicIsPlaying;
+  if (isSwitchingServerMusic) stopMusicPlaybackPoll();
+  else if (!useLocalPlayback) await _stopAllPlaybackForNewStart();
 
   musicCurrentPath = path;
   // If this path is not in the current queue, this is a manual play — reset queue cursor.
@@ -208,9 +211,9 @@ async function playMusic(path, name) {
     (musicTrackIndex >= 0 ? musicTrackList[musicTrackIndex].name : null) ||
     pathToName(path);
 
-  if (isPlayLocal()) {
-    // Local mode: stop server, play in browser via local audio
-    await fetch('/api/music/stop');
+  if (useLocalPlayback) {
+    // Start synchronously in the click gesture; server cleanup follows localPlay().
+    const serverWasPlaying = musicIsPlaying;
     musicIsPlaying = false;
     stopMusicPlaybackPoll();
     // Show music bar with local data (localPlay will also show the local docked bar)
@@ -230,7 +233,13 @@ async function playMusic(path, name) {
       hasCover: !!trackMeta.hasCover,
       coverPath: path,
     });
-    localPlay('/api/music/stream?path=' + encodeURIComponent(path), displayName, 'Music');
+    localPlay(
+      '/api/music/stream?path=' + encodeURIComponent(path),
+      displayName,
+      'Music',
+      null,
+      { startMuted: serverWasPlaying, unmuteAfterServerStop: serverWasPlaying }
+    );
     // Only record individual tracks when NOT in playlist-queue mode
     if (!(window._musicQueue && window._musicQueue.length > 0)) {
       fetch('/api/music/play?path=' + encodeURIComponent(path) + '&recordOnly=1').catch(() => {});
@@ -906,11 +915,16 @@ async function musicPlayHere() {
   if (!musicCurrentPath) return;
   const path = musicCurrentPath;
   const title = document.getElementById('music-bar-title')?.textContent || 'Track';
-  // Stop server playback so we don't hear two versions
-  await fetch('/api/music/stop');
+  const serverWasPlaying = musicIsPlaying;
   musicIsPlaying = false;
   stopMusicPlaybackPoll();
-  localPlay('/api/music/stream?path=' + encodeURIComponent(path), title, 'Music');
+  localPlay(
+    '/api/music/stream?path=' + encodeURIComponent(path),
+    title,
+    'Music',
+    null,
+    { startMuted: serverWasPlaying, unmuteAfterServerStop: serverWasPlaying }
+  );
 }
 
 // -- Lyrics -------------------------------------------------------------------
@@ -1546,6 +1560,11 @@ function onMusicSeekDrag() {
   if (!seek || seek.disabled || !Number.isFinite(duration) || duration <= 0) return;
   _musicSeekDragging = true;
   _updateMusicSeekFill();
+  const timeLabel = document.getElementById('music-time-label');
+  if (timeLabel) {
+    const position = Math.max(0, Math.min(Number(seek.value) || 0, duration));
+    timeLabel.textContent = fmtSec(position) + ' / ' + fmtSec(duration);
+  }
 }
 async function onMusicSeekCommit() {
   if (!_musicSeekDragging) return; // ignore programmatic value changes
@@ -1559,7 +1578,18 @@ async function onMusicSeekCommit() {
   // Local mode: seek the browser audio directly
   if (isPlayLocal() && typeof _localMediaType !== 'undefined' && _localMediaType === 'Music') {
     const a = typeof _getLocalAudio !== 'undefined' ? _getLocalAudio() : null;
-    if (a) a.currentTime = pos;
+    if (!a) {
+      console.error('Could not seek Local Music playback: local audio element is unavailable.');
+      if (typeof setStatus === 'function') setStatus('Could not seek Local Music playback.');
+      return;
+    }
+    try {
+      a.currentTime = pos;
+    } catch (error) {
+      console.error('Could not seek Local Music playback.', error);
+      if (typeof setStatus === 'function') setStatus('Could not seek Local Music playback.');
+      if (typeof _localTimeUpdate === 'function') _localTimeUpdate();
+    }
     return;
   }
   try {
@@ -1842,6 +1872,30 @@ function _musicQueueClear() {
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
   _renderMusicQueuePeek();
 }
+function _musicQueueDurationSeconds(track) {
+  const durationSec = Number(track?.durationSec);
+  if (Number.isFinite(durationSec) && durationSec > 0) return durationSec;
+  const duration = Number(track?.duration);
+  return Number.isFinite(duration) && duration > 0 ? duration : 0;
+}
+function _musicQueuePeekDurationSec(item) {
+  const durationSec = _musicQueueDurationSeconds(item);
+  if (durationSec > 0) return durationSec;
+
+  const pathKey = _normalizeMusicPath(item?.path);
+  if (!pathKey) return 0;
+
+  for (const tracks of [musicTrackList, currentMusicData?.files]) {
+    if (!Array.isArray(tracks)) continue;
+    const match = tracks.find((track) => _normalizeMusicPath(track.path) === pathKey);
+    const trackDuration = _musicQueueDurationSeconds(match);
+    if (trackDuration > 0) return trackDuration;
+  }
+
+  return _normalizeMusicPath(musicCurrentPath) === pathKey
+    ? _musicQueueDurationSeconds(window._lastMusicBarState)
+    : 0;
+}
 function _renderMusicQueuePeek() {
   _updateMusicQueuePendingBar();
   const card = document.getElementById('music-queue-peek-card');
@@ -1890,9 +1944,12 @@ function _renderMusicQueuePeek() {
       if (isPlaying) cls += ' music-queue-peek-playing';
       else if (isPlayed) cls += ' music-queue-peek-played';
       const nowIcon = isPlaying ? '<span class="music-queue-now-icon">&#9654;</span>' : '';
+      const durationSec = _musicQueuePeekDurationSec(item);
+      const duration = durationSec > 0 ? fmtSec(durationSec) : '&mdash;';
       return '<div class="' + cls + '" data-qi="' + i + '" title="' + esc(item.name || item.path) + '">'
         + '<span class="music-queue-peek-num">' + (i + 1) + '</span>'
         + '<span class="music-queue-peek-name">' + nowIcon + esc(item.name || item.path) + '</span>'
+        + '<span class="music-queue-peek-dur" title="Track duration">' + duration + '</span>'
         + '<button class="music-queue-remove-btn" data-action="remove" data-qi="' + i + '" aria-label="Remove ' + esc(item.name || item.path) + ' from queue" title="Remove from queue">&#10005;</button>'
         + '</div>';
     }).join('');
@@ -1916,8 +1973,13 @@ function _renderMusicQueuePeek() {
   list.innerHTML = html;
 
   const playingEl = list.querySelector('.music-queue-peek-playing');
-  if (playingEl && list.scrollHeight > list.clientHeight) {
-    const elTop = playingEl.offsetTop;
+  const playingItem = queuePos >= 0 && queuePos < queueItems.length ? queueItems[queuePos] : null;
+  const playingChanged = list._musicQueueAutoScrollItem !== playingItem
+    || list._musicQueueAutoScrollPos !== queuePos;
+  if (playingEl && playingChanged && list.scrollHeight > list.clientHeight) {
+    const listRect = list.getBoundingClientRect();
+    const playingRect = playingEl.getBoundingClientRect();
+    const elTop = playingRect.top - listRect.top + list.scrollTop;
     const elBottom = elTop + playingEl.offsetHeight;
     if (elTop < list.scrollTop) {
       list.scrollTop = elTop;
@@ -1925,6 +1987,8 @@ function _renderMusicQueuePeek() {
       list.scrollTop = elBottom - list.clientHeight;
     }
   }
+  list._musicQueueAutoScrollItem = playingItem;
+  list._musicQueueAutoScrollPos = queuePos;
 
   list.onclick = (e) => {
     const btn = e.target.closest('[data-action]');
@@ -2683,7 +2747,12 @@ let _musicCtxLongPressTimer = null;
 function _musicShowContextMenu(e, path, name) {
   if (typeof _ctxShow === 'function') {
     const isQueued = window._musicQueue ? window._musicQueue.some((q) => q.path === path) : false;
-    _ctxShow(e, 'music-file', { path, name, queued: isQueued });
+    _ctxShow(e, 'music-file', {
+      path,
+      name,
+      queued: isQueued,
+      durationSec: _musicQueuePeekDurationSec({ path }),
+    });
   }
 }
 
@@ -2701,7 +2770,7 @@ function _musicCtxQueue(path, name) {
     _musicQueueRemove(existing);
     return; // _musicQueueRemove already re-renders
   } else {
-    window._musicQueue.push({ path, name });
+    window._musicQueue.push({ path, name, durationSec: _musicQueuePeekDurationSec({ path }) });
     _musicResetQueueTraversalState();
   }
   if (currentMusicData) renderMusicCards(currentMusicData, Boolean(currentMusicData.query));
@@ -2763,7 +2832,11 @@ function _musicSelectionAddToQueue() {
   const selected = _musicGetSelectedSortedFiles();
   if (selected.length) {
     selected.forEach((f) => {
-      window._musicQueue.push({ path: f.path, name: f.name });
+      window._musicQueue.push({
+        path: f.path,
+        name: f.name,
+        durationSec: _musicQueuePeekDurationSec(f),
+      });
     });
     _musicResetQueueTraversalState();
   }
@@ -2777,7 +2850,11 @@ function _musicSelectionPlay() {
   if (!selected.length) return;
 
   // Put the full selection into the persistent queue and start at index 0
-  window._musicQueue = selected.map((f) => ({ path: f.path, name: f.name }));
+  window._musicQueue = selected.map((f) => ({
+    path: f.path,
+    name: f.name,
+    durationSec: _musicQueuePeekDurationSec(f),
+  }));
   window._musicQueuePos = 0;
   _musicResetQueueTraversalState();
   playMusic(selected[0].path, selected[0].name);
@@ -3755,7 +3832,11 @@ async function playMusicPlaylist(path, name, cardEl) {
     fetch('/api/music/play?path=' + encodeURIComponent(path) + '&recordOnly=1').catch(() => {});
     setTimeout(() => loadMusicRecent().then((files) => renderMusicRecent(files)), 400);
     // Load all tracks into a fresh persistent queue; cursor starts at 0
-    window._musicQueue = tracks.map((t) => ({ path: t.path, name: t.name }));
+    window._musicQueue = tracks.map((t) => ({
+      path: t.path,
+      name: t.name,
+      durationSec: _musicQueuePeekDurationSec(t),
+    }));
     window._musicQueuePos = 0;
     window._musicQueueVisited = new Set([0]);
     window._musicNextShuffleQueuePick = null;
@@ -3784,7 +3865,11 @@ function playMusicAll() {
   const sorted = _musicSortFiles(currentMusicData.files);
   if (!sorted.length) return;
   // Put all tracks into the persistent queue with cursor at 0
-  window._musicQueue = sorted.map((f) => ({ path: f.path, name: f.name }));
+  window._musicQueue = sorted.map((f) => ({
+    path: f.path,
+    name: f.name,
+    durationSec: _musicQueuePeekDurationSec(f),
+  }));
   window._musicQueuePos = 0;
   window._musicQueueVisited = new Set([0]);
   window._musicNextShuffleQueuePick = null;
@@ -4461,6 +4546,7 @@ function renderMusicRecent(files) {
       );
     }
     const title   = f.tagTitle ? f.tagTitle : _titleFromName(f.name);
+    const durationSec = _musicQueueDurationSeconds(f);
     const pct     = Math.max(0, Math.min(99, Math.round((Number(f.progress) || 0) * 100)));
     const isCont  = pct > 0 && pct < 95;
     const hasCover = !!f.hasCover;
@@ -4470,7 +4556,7 @@ function renderMusicRecent(files) {
       ' data-recent-music-path="' + esc(f.path) + '"' +
       ' data-recent-music-title="' + esc(title) + '"' +
       ' title="' + esc(title) + '"' +
-      ' oncontextmenu="_ctxShow(event,\'music-recent\',{path:\'' + esc(f.path) + '\',name:\'' + esc(title) + '\'})"' +
+      ' oncontextmenu="_ctxShow(event,\'music-recent\',{path:\'' + esc(f.path) + '\',name:\'' + esc(title) + '\',durationSec:' + durationSec + '})"' +
       ' onkeydown="activateKeyboardClick(event,this)">' +
       (hasCover
         ? '<div class="vr-thumb" style="background-image:url(\'' + thumb + '\')"></div>'
@@ -4929,13 +5015,15 @@ async function playQueueStart() {
   await pollStatus();
 }
 async function stop() {
+  if (currentMode === 'live-tv' && typeof liveTvCancelPendingPlaybackStart === 'function') {
+    liveTvCancelPendingPlaybackStart();
+  }
   if (typeof _localVideoHasSource === 'function' && _localVideoHasSource()) {
     if (_localVideoHandoffPending) return;
     const stoppedPath = playingPath;
     playingPath = null;
     if (stoppedPath) updatePlayingCard(null, stoppedPath);
     stopLocalVideo();
-    if (typeof setPlayLocal === 'function') setPlayLocal(false);
     setStatus('Stopped.');
     await Promise.all([
       api('/api/stop'),

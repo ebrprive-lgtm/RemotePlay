@@ -427,6 +427,7 @@ public partial class MainWindow
         _miniPreviewTimer.Stop();
         MiniPreviewBorder.Visibility = Visibility.Collapsed;
         _currentFilePath = null;
+        _lastPlaybackError = string.Empty;
         _pendingResumePosition = null;
         _smartResumeApplied = false;
         _isPaused = false;
@@ -449,10 +450,7 @@ public partial class MainWindow
                 if (_videoPlayerManager is not null && _videoPlayerManager.IsProcessRunning)
                 {
                     SaveCurrentPlaybackPosition();
-                    _ = StopVideoIsolatedAsync();
-                    ResetPlaybackState();
-                    AppendLog("Playback stopped");
-                    Logger.Info("[Video Isolated] Playback stopped");
+                    _ = StopVideoIsolatedAndResetPlaybackStateAsync();
                     return;
                 }
 
@@ -991,7 +989,9 @@ public partial class MainWindow
                 Title = activeVideoPath != null ? Path.GetFileNameWithoutExtension(activeVideoPath) : "",
                 Volume = _volume,
                 IsMuted = _mediaPlayer.Mute,
-                LastError = _lastPlaybackError,
+                LastError = isolatedVideoActive && !string.IsNullOrWhiteSpace(isolatedStatus?.LastError)
+                    ? isolatedStatus!.LastError
+                    : _lastPlaybackError,
                 CanResume = _pendingResumePosition is not null,
                 ResumePositionSeconds = Math.Max(0, _pendingResumePosition?.TotalSeconds ?? 0),
                 SmartResumeApplied = _smartResumeApplied,
@@ -1653,13 +1653,18 @@ public partial class MainWindow
         // Saturation uses 1.0 as neutral.
         try
         {
-            var adjustments = VideoAdjustmentMapper.Map(_brightness, _sharpness, _saturation);
+            var adjustments = VideoAdjustmentMapper.Map(_brightness, _saturation);
+            var requiresAdjustment = VideoAdjustmentMapper.RequiresAdjustment(adjustments);
 
-            _mediaPlayer.SetAdjustInt(VideoAdjustOption.Enable, 1);
-            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Brightness, adjustments.Brightness);
-            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Contrast, adjustments.Contrast);
-            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Gamma, adjustments.Gamma);
-            _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Saturation, adjustments.Saturation);
+            _mediaPlayer.SetAdjustInt(VideoAdjustOption.Enable, requiresAdjustment ? 1 : 0);
+            if (requiresAdjustment)
+            {
+                _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Brightness, adjustments.Brightness);
+                _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Contrast, adjustments.Contrast);
+                _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Gamma, adjustments.Gamma);
+                _mediaPlayer.SetAdjustFloat(VideoAdjustOption.Saturation, adjustments.Saturation);
+            }
+
             nativeApplied = true;
         }
         catch (Exception ex)

@@ -28,21 +28,27 @@ public partial class MainWindow
 
     private async void OnVideoPlayerHealthCheck(object? sender, EventArgs e)
     {
-        if (_videoPlayerManager is null)
+        var manager = _videoPlayerManager;
+        if (manager is null || Volatile.Read(ref _isRestarting) != 0)
             return;
 
         try
         {
             // Check if process is still running
-            if (!_videoPlayerManager.IsProcessRunning)
+            if (!manager.IsProcessRunning)
             {
-                Logger.Error($"[Video] Player process exited (code: {_videoPlayerManager.ExitCode?.ToString() ?? "unknown"})", null);
+                if (!ReferenceEquals(_videoPlayerManager, manager))
+                    return;
+
+                Logger.Error($"[Video] Player process exited (code: {manager.ExitCode?.ToString() ?? "unknown"})", null);
                 await RestartVideoPlayerAsync();
                 return;
             }
 
             // Send ping
-            var pingSuccessful = await _videoPlayerManager.PingAsync();
+            var pingSuccessful = await manager.PingAsync();
+            if (!ReferenceEquals(_videoPlayerManager, manager))
+                return;
 
             if (pingSuccessful)
             {
@@ -64,7 +70,10 @@ public partial class MainWindow
             // Also get status update to keep position synchronized
             if (pingSuccessful && _consecutivePingFailures == 0)
             {
-                var status = await _videoPlayerManager.GetStatusAsync();
+                var status = await manager.GetStatusAsync();
+                if (!ReferenceEquals(_videoPlayerManager, manager))
+                    return;
+
                 if (status is not null)
                 {
                     if (string.IsNullOrWhiteSpace(status.CurrentFilePath)
@@ -88,6 +97,9 @@ public partial class MainWindow
         }
         catch (Exception ex)
         {
+            if (!ReferenceEquals(_videoPlayerManager, manager))
+                return;
+
             Logger.Error("[Video] Health check error", ex);
         }
     }
@@ -99,12 +111,18 @@ public partial class MainWindow
 
         try
         {
-            _consecutivePingFailures = 0;
+            var manager = _videoPlayerManager;
+            if (manager is null)
+                return;
 
-            if (_videoPlayerManager is not null)
+            await _videoPlaybackStartLock.WaitAsync();
+            try
             {
-                var restarted = await _videoPlayerManager.RestartAndResumeAsync();
+                if (!ReferenceEquals(_videoPlayerManager, manager))
+                    return;
 
+                _consecutivePingFailures = 0;
+                var restarted = await manager.RestartAndResumeAsync();
                 if (restarted)
                 {
                     AppendLog("[Video] Process restarted and playback resumed");
@@ -115,6 +133,10 @@ public partial class MainWindow
                 {
                     Logger.Error("[Video] Failed to restart process", null);
                 }
+            }
+            finally
+            {
+                _videoPlaybackStartLock.Release();
             }
         }
         catch (Exception ex)

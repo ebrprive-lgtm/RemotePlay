@@ -26,6 +26,7 @@ public sealed class WebServerApiTests : IDisposable
     private readonly TestPodcastCacheTimeProvider _podcastCacheTimeProvider;
     private readonly string _podcastTopPoolCacheDirectory;
     private readonly string _podcastTopPoolCacheFile;
+    private readonly List<(string Url, string Name)> _liveTvPlayRequests = [];
     private readonly List<(string Url, string Title)> _radioPlayRequests = [];
     private readonly List<(string Path, double Position)> _videoPositionPlayRequests = [];
     private PlaybackStatus _playbackStatus = new();
@@ -51,7 +52,8 @@ public sealed class WebServerApiTests : IDisposable
             BuildStubCallbacks(
                 (url, title) => _radioPlayRequests.Add((url, title)),
                 (path, position) => _videoPositionPlayRequests.Add((path, position)),
-                () => _playbackStatus),
+                () => _playbackStatus,
+                (url, name) => _liveTvPlayRequests.Add((url, name))),
             playbackHistory: playbackHistory,
             podcastFeedHttpClient: podcastFeedHttpClient,
             podcastFeedCacheTimeProvider: _podcastCacheTimeProvider,
@@ -345,6 +347,225 @@ public sealed class WebServerApiTests : IDisposable
         var response = await _client.GetAsync("/api/live-tv/play?url=http%3A%2F%2Flocalhost%2Flive.m3u8&name=Test");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task LiveTvPlay_WhenProbeDnsResolvesToPrivateAddress_ReturnsBadRequestWithoutStartingPlayback()
+    {
+        _podcastHostResolver.Set("private-stream.test", IPAddress.Parse("10.0.0.7"));
+
+        var response = await _client.GetAsync(
+            "/api/live-tv/play?url=" + Uri.EscapeDataString("https://private-stream.test/live.m3u8"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(_podcastHttpHandler.RequestedUris);
+        Assert.Empty(_liveTvPlayRequests);
+    }
+
+    [Fact]
+    public async Task LiveTvPlay_WhenProbeRedirectsToPrivateAddress_ReturnsBadRequestWithoutStartingPlayback()
+    {
+        _podcastHttpHandler.ResponseFactory = _ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Redirect);
+            response.Headers.Location = new Uri("http://127.0.0.1/admin");
+            return response;
+        };
+
+        var response = await _client.GetAsync(
+            "/api/live-tv/play?url=" + Uri.EscapeDataString("https://stream.test/live.m3u8"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Single(_podcastHttpHandler.RequestedUris);
+        Assert.Empty(_liveTvPlayRequests);
+    }
+
+    [Fact]
+    public async Task LiveTvPlay_WhenProbeFollowsSafeRedirect_ContinuesToPlayback()
+    {
+        _podcastHttpHandler.ResponseFactory = request =>
+        {
+            if (request.RequestUri!.AbsolutePath == "/start.m3u8")
+            {
+                var redirect = new HttpResponseMessage(HttpStatusCode.Redirect);
+                redirect.Headers.Location = new Uri("https://stream.test/final.m3u8");
+                return redirect;
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        };
+
+        var response = await _client.GetAsync(
+            "/api/live-tv/play?url=" + Uri.EscapeDataString("https://stream.test/start.m3u8"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(2, _podcastHttpHandler.RequestedUris.Count);
+        Assert.Equal("/final.m3u8", _podcastHttpHandler.RequestedUris[1].AbsolutePath);
+        Assert.Single(_liveTvPlayRequests);
+    }
+
+    [Fact]
+    public async Task LiveTvPlay_ProbePreservesLiveTvUserAgentAndAcceptHeaders()
+    {
+        var userAgent = string.Empty;
+        var accept = string.Empty;
+        _podcastHttpHandler.ResponseFactory = request =>
+        {
+            userAgent = request.Headers.UserAgent.ToString();
+            accept = request.Headers.Accept.ToString();
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        };
+
+        var response = await _client.GetAsync(
+            "/api/live-tv/play?url=" + Uri.EscapeDataString("https://stream.test/live.m3u8"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("RemotePlay/LiveTV", userAgent, StringComparison.Ordinal);
+        Assert.Contains("application/vnd.apple.mpegurl", accept, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task LiveTvPlay_WhenProbeRedirectLimitIsExceeded_ReturnsBadRequestWithoutStartingPlayback()
+    {
+        _podcastHttpHandler.ResponseFactory = request =>
+        {
+            var currentIndex = int.Parse(request.RequestUri!.AbsolutePath.TrimStart('/'));
+            var redirect = new HttpResponseMessage(HttpStatusCode.Redirect);
+            redirect.Headers.Location = new Uri($"https://stream.test/{currentIndex + 1}");
+            return redirect;
+        };
+
+        var response = await _client.GetAsync(
+            "/api/live-tv/play?url=" + Uri.EscapeDataString("https://stream.test/0"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(6, _podcastHttpHandler.RequestedUris.Count);
+        Assert.Empty(_liveTvPlayRequests);
+    }
+
+    [Fact]
+    public async Task LiveTvPlay_WhenProbeReturnsPermanentClientError_ReturnsProviderStatusWithoutStartingPlayback()
+    {
+        _podcastHttpHandler.ResponseFactory = _ => new HttpResponseMessage(HttpStatusCode.NotFound);
+
+        var response = await _client.GetAsync(
+            "/api/live-tv/play?url=" + Uri.EscapeDataString("https://stream.test/live.m3u8"));
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Empty(_liveTvPlayRequests);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.RequestTimeout)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task LiveTvPlay_WhenProbeReturnsTransientErrorHandsOffToPlayback(HttpStatusCode statusCode)
+    {
+        _podcastHttpHandler.ResponseFactory = _ => new HttpResponseMessage(statusCode);
+
+        var response = await _client.GetAsync(
+            "/api/live-tv/play?url=" + Uri.EscapeDataString("https://stream.test/live.m3u8"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(("https://stream.test/live.m3u8", "stream.test"), Assert.Single(_liveTvPlayRequests));
+    }
+
+    [Fact]
+    public async Task LiveTvPlay_WhenProbeTimesOutHandsOffToPlayback()
+    {
+        _podcastUpstreamClient.Timeout = TimeSpan.FromMilliseconds(100);
+        _podcastHttpHandler.AsyncResponseFactory = async (_, cancellationToken) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("The timed-out probe unexpectedly completed.");
+        };
+
+        var response = await _client.GetAsync(
+            "/api/live-tv/play?url=" + Uri.EscapeDataString("https://stream.test/live.m3u8"));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Single(_liveTvPlayRequests);
+    }
+
+    [Fact]
+    public async Task LiveTvPlay_WhenProbeIsCanceledByStop_DoesNotStartPlayback()
+    {
+        var probeStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _podcastHttpHandler.AsyncResponseFactory = async (_, cancellationToken) =>
+        {
+            probeStarted.TrySetResult(true);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("The canceled probe unexpectedly completed.");
+        };
+
+        var playTask = _client.GetAsync(
+            "/api/live-tv/play?url=" + Uri.EscapeDataString("https://stream.test/live.m3u8"));
+        await probeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        using var stopResponse = await _client.GetAsync("/api/stop");
+        using var playResponse = await playTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(HttpStatusCode.OK, stopResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, playResponse.StatusCode);
+        Assert.Empty(_liveTvPlayRequests);
+    }
+
+    [Fact]
+    public async Task LiveTvPlay_WhenServerStopsDuringProbe_DoesNotStartPlayback()
+    {
+        var probeStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _podcastHttpHandler.AsyncResponseFactory = async (_, cancellationToken) =>
+        {
+            probeStarted.TrySetResult(true);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("The shutdown probe unexpectedly completed.");
+        };
+
+        var playTask = _client.GetAsync(
+            "/api/live-tv/play?url=" + Uri.EscapeDataString("https://stream.test/live.m3u8"));
+        await probeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        _server.Stop();
+        try
+        {
+            using var response = await playTask.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (HttpRequestException)
+        {
+        }
+
+        Assert.Empty(_liveTvPlayRequests);
+    }
+
+    [Fact]
+    public async Task LiveTvPlay_WhenReplacedDuringProbeOnlyStartsTheNewRequest()
+    {
+        var firstProbeStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _podcastHttpHandler.AsyncResponseFactory = async (request, cancellationToken) =>
+        {
+            if (request.RequestUri!.AbsolutePath == "/first.m3u8")
+            {
+                firstProbeStarted.TrySetResult(true);
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                throw new InvalidOperationException("The replaced probe unexpectedly completed.");
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        };
+
+        var firstPlayTask = _client.GetAsync(
+            "/api/live-tv/play?url=" + Uri.EscapeDataString("https://stream.test/first.m3u8"));
+        await firstProbeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        using var secondResponse = await _client.GetAsync(
+            "/api/live-tv/play?url=" + Uri.EscapeDataString("https://stream.test/second.m3u8"));
+        using var firstResponse = await firstPlayTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, firstResponse.StatusCode);
+        Assert.Equal(
+            ("https://stream.test/second.m3u8", "stream.test"),
+            Assert.Single(_liveTvPlayRequests));
     }
 
     // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1686,9 +1907,11 @@ public sealed class WebServerApiTests : IDisposable
     internal static WebServerCallbacks BuildStubCallbacks(
         Action<string, string>? radioPlay = null,
         Action<string, double>? videoPlayAtPosition = null,
-        Func<PlaybackStatus>? getStatus = null) => new()
+        Func<PlaybackStatus>? getStatus = null,
+        Action<string, string>? liveTvPlay = null) => new()
     {
         Play                  = _ => { },
+        PlayNamed             = liveTvPlay ?? ((_, _) => { }),
         PlayAtPosition        = videoPlayAtPosition,
         Stop                  = () => { },
         Pause                 = () => { },
@@ -1770,8 +1993,9 @@ public sealed class WebServerApiTests : IDisposable
             {
                 Content = new StringContent("<rss><channel /></rss>"),
             };
+        internal Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? AsyncResponseFactory { get; set; }
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
@@ -1784,7 +2008,11 @@ public sealed class WebServerApiTests : IDisposable
                     request.Headers.IfModifiedSince));
             }
 
-            return Task.FromResult(ResponseFactory(request));
+            var asyncFactory = AsyncResponseFactory;
+            if (asyncFactory is not null)
+                return await asyncFactory(request, cancellationToken).ConfigureAwait(false);
+
+            return ResponseFactory(request);
         }
     }
 

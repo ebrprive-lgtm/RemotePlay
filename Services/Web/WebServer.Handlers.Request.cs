@@ -275,6 +275,18 @@ internal sealed partial class WebServer
                 await HandleVideoStreamAsync(ctx).ConfigureAwait(false);
                 break;
 
+            case "/api/video/transcode-status":
+                HandleVideoTranscodeStatus(ctx);
+                break;
+
+            case "/api/video/transcode-cancel":
+                HandleVideoTranscodeCancel(ctx);
+                break;
+
+            case "/api/video/codec-info":
+                await HandleVideoCodecInfoAsync(ctx).ConfigureAwait(false);
+                break;
+
             case "/api/play":
             case "/api/video/play":
                 HandlePlay(ctx);
@@ -334,8 +346,14 @@ internal sealed partial class WebServer
                 break;
 
             case "/api/stop":
-                RecordVideoProgressForInitiator(_callbacks.GetStatus(), GetClientIp(ctx));
-                _callbacks.Stop();
+                lock (_liveTvPlaybackRequestGate)
+                {
+                    _liveTvPlaybackRequestGeneration++;
+                    _liveTvPlaybackRequestCancellation?.Cancel();
+                    _liveTvPlaybackRequestCancellation = null;
+                    RecordVideoProgressForInitiator(_callbacks.GetStatus(), GetClientIp(ctx));
+                    _callbacks.Stop();
+                }
                 Logger.Info("Playback", "Stopping Video on Server");
                 TrySendResponse(ctx, 200, "text/plain", "OK");
                 ScheduleSsePush();

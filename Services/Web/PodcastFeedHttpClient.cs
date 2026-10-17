@@ -62,7 +62,8 @@ internal sealed class PodcastFeedHttpClient
         Uri uri,
         HttpCompletionOption completionOption,
         CancellationToken cancellationToken = default,
-        PodcastFeedValidators? validators = null)
+        PodcastFeedValidators? validators = null,
+        Action<HttpRequestMessage>? configureRequest = null)
     {
         if (!IsValidHttpUri(uri))
             throw new PodcastDestinationRejectedException();
@@ -92,6 +93,7 @@ internal sealed class PodcastFeedHttpClient
                         request.Headers.IfModifiedSince = validators.LastModified;
                 }
 
+                configureRequest?.Invoke(request);
                 response = await _httpClient.SendAsync(request, completionOption, cancellationToken)
                     .ConfigureAwait(false);
                 response.RequestMessage ??= request;

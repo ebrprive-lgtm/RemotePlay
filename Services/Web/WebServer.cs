@@ -132,6 +132,9 @@ internal sealed partial class WebServer
     private bool _isMusicEnriching;
     private static readonly TimeSpan LiveTvCatalogCacheTtl = TimeSpan.FromDays(7);
     private static readonly TimeSpan LiveTvCatalogRefreshTimeout = TimeSpan.FromSeconds(45);
+    private readonly object _liveTvPlaybackRequestGate = new();
+    private long _liveTvPlaybackRequestGeneration;
+    private LiveTvPlaybackRequestCancellation? _liveTvPlaybackRequestCancellation;
     private DateTimeOffset? _liveTvCatalogSavedAtUtc;
     private LiveTvCatalogEntry[] _liveTvCatalog = [];
     private DateTimeOffset? _liveTvCatalogLastAttemptUtc;
@@ -188,6 +191,55 @@ internal sealed partial class WebServer
 
     // â”€â”€ Graceful-shutdown token â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private CancellationTokenSource _listenerCts = new();
+
+    private sealed class LiveTvPlaybackRequestCancellation : IDisposable
+    {
+        private readonly CancellationTokenSource _source;
+        private readonly object _gate = new();
+        private Task? _cancellationTask;
+        private bool _disposed;
+
+        internal LiveTvPlaybackRequestCancellation(CancellationToken lifetimeToken)
+        {
+            _source = CancellationTokenSource.CreateLinkedTokenSource(lifetimeToken);
+        }
+
+        internal CancellationToken Token => _source.Token;
+        internal bool IsCancellationRequested => _source.IsCancellationRequested;
+
+        internal void Cancel()
+        {
+            lock (_gate)
+            {
+                if (_disposed || _cancellationTask is not null)
+                    return;
+
+                _cancellationTask = _source.CancelAsync();
+            }
+        }
+
+        public void Dispose()
+        {
+            Task? cancellationTask;
+            lock (_gate)
+            {
+                if (_disposed)
+                    return;
+
+                _disposed = true;
+                cancellationTask = _cancellationTask;
+            }
+
+            try
+            {
+                cancellationTask?.GetAwaiter().GetResult();
+            }
+            finally
+            {
+                _source.Dispose();
+            }
+        }
+    }
 
     public WebServer(
         AppConfig config,
@@ -1003,9 +1055,10 @@ internal sealed partial class WebServer
         return $"{normalizedName}|{normalizedCountryCode}|{normalizedSourceHost}";
     }
 
-    private static LiveTvCatalogEntry[] BuildLiveTvCatalog(JsonElement channelsRoot, JsonElement streamsRoot, Dictionary<string, string>? guideLangByChannel)
+    internal static LiveTvCatalogEntry[] BuildLiveTvCatalog(JsonElement channelsRoot, JsonElement streamsRoot, Dictionary<string, string>? guideLangByChannel)
     {
         var channelsById = new Dictionary<string, (string Name, string CountryCode, string Category, string Language)>(StringComparer.OrdinalIgnoreCase);
+        var excludedChannelIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var c in channelsRoot.EnumerateArray())
         {
             if (!c.TryGetProperty("id", out var idEl) || idEl.ValueKind != JsonValueKind.String)
@@ -1013,6 +1066,12 @@ internal sealed partial class WebServer
             var id = (idEl.GetString() ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(id))
                 continue;
+            if ((c.TryGetProperty("closed", out var closedEl) && closedEl.ValueKind == JsonValueKind.True)
+                || (c.TryGetProperty("is_nsfw", out var nsfwEl) && nsfwEl.ValueKind == JsonValueKind.True))
+            {
+                excludedChannelIds.Add(id);
+                continue;
+            }
 
             var name = c.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String
                 ? (nameEl.GetString() ?? string.Empty).Trim()
@@ -1073,6 +1132,8 @@ internal sealed partial class WebServer
             var channelId = s.TryGetProperty("channel", out var chEl) && chEl.ValueKind == JsonValueKind.String
                 ? (chEl.GetString() ?? string.Empty).Trim()
                 : string.Empty;
+            if (excludedChannelIds.Contains(channelId))
+                continue;
 
             string name;
             string countryCode;
@@ -1107,7 +1168,7 @@ internal sealed partial class WebServer
                 CountryName = GetLiveTvCountryName(countryCode),
                 Category = category,
                 Language = language,
-                SourceHost = uri.Host,
+                SourceHost = uri.IsDefaultPort ? uri.Host : $"{uri.Host}:{uri.Port}",
                 Url = uri.ToString(),
             };
             var score = GetLiveTvStreamScore(entry.Url, !string.IsNullOrWhiteSpace(channelId));
@@ -1224,45 +1285,55 @@ internal sealed partial class WebServer
             Dictionary<string, string>? guideLangByChannel = null;
             try
             {
-                using var guidesResp = await _liveTvCatalogHttpClient.GetAsync("https://iptv-org.github.io/api/guides.json", ct).ConfigureAwait(false);
-                if (guidesResp.IsSuccessStatusCode)
+                try
                 {
-                    await using var guidesStream = await guidesResp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-                    guidesDoc = await JsonDocument.ParseAsync(guidesStream, cancellationToken: ct).ConfigureAwait(false);
-                    if (guidesDoc.RootElement.ValueKind == JsonValueKind.Array)
-                        guideLangByChannel = BuildGuideLanguageMap(guidesDoc.RootElement);
+                    using var guidesResp = await _liveTvCatalogHttpClient.GetAsync("https://iptv-org.github.io/api/guides.json", ct).ConfigureAwait(false);
+                    if (guidesResp.IsSuccessStatusCode)
+                    {
+                        await using var guidesStream = await guidesResp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                        guidesDoc = await JsonDocument.ParseAsync(guidesStream, cancellationToken: ct).ConfigureAwait(false);
+                        if (guidesDoc.RootElement.ValueKind == JsonValueKind.Array)
+                            guideLangByChannel = BuildGuideLanguageMap(guidesDoc.RootElement);
+                    }
                 }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Warning("Live TV", $"Unable to load optional guide metadata: {ex.Message}");
+                }
+
+                await using var channelsStream = await channelsResp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                await using var streamsStream = await streamsResp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                using var channelsDoc = await JsonDocument.ParseAsync(channelsStream, cancellationToken: ct).ConfigureAwait(false);
+                using var streamsDoc = await JsonDocument.ParseAsync(streamsStream, cancellationToken: ct).ConfigureAwait(false);
+
+                if (channelsDoc.RootElement.ValueKind != JsonValueKind.Array || streamsDoc.RootElement.ValueKind != JsonValueKind.Array)
+                    throw new InvalidOperationException("Live TV source payload is not in expected array format.");
+
+                var merged = BuildLiveTvCatalog(channelsDoc.RootElement, streamsDoc.RootElement, guideLangByChannel);
+                var savedAt = DateTimeOffset.UtcNow;
+                lock (_liveTvCatalogGate)
+                {
+                    _liveTvCatalog = merged;
+                    _liveTvCatalogSavedAtUtc = savedAt;
+                }
+                SaveLiveTvCatalogCache();
+
+                lock (_liveTvCatalogDiagGate)
+                {
+                    _liveTvCatalogLastSuccessUtc = savedAt;
+                    _liveTvCatalogLastError = string.Empty;
+                }
+
+                return (merged, savedAt);
             }
-            catch
+            finally
             {
-                // Guides are best-effort; catalog should still load without them.
+                guidesDoc?.Dispose();
             }
-
-            await using var channelsStream = await channelsResp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            await using var streamsStream = await streamsResp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            using var channelsDoc = await JsonDocument.ParseAsync(channelsStream, cancellationToken: ct).ConfigureAwait(false);
-            using var streamsDoc = await JsonDocument.ParseAsync(streamsStream, cancellationToken: ct).ConfigureAwait(false);
-
-            if (channelsDoc.RootElement.ValueKind != JsonValueKind.Array || streamsDoc.RootElement.ValueKind != JsonValueKind.Array)
-                throw new InvalidOperationException("Live TV source payload is not in expected array format.");
-
-            var merged = BuildLiveTvCatalog(channelsDoc.RootElement, streamsDoc.RootElement, guideLangByChannel);
-            guidesDoc?.Dispose();
-            var savedAt = DateTimeOffset.UtcNow;
-            lock (_liveTvCatalogGate)
-            {
-                _liveTvCatalog = merged;
-                _liveTvCatalogSavedAtUtc = savedAt;
-            }
-            SaveLiveTvCatalogCache();
-
-            lock (_liveTvCatalogDiagGate)
-            {
-                _liveTvCatalogLastSuccessUtc = savedAt;
-                _liveTvCatalogLastError = string.Empty;
-            }
-
-            return (merged, savedAt);
         }
         catch (Exception ex)
         {
@@ -1534,6 +1605,12 @@ internal sealed partial class WebServer
 
     public void Stop()
     {
+        lock (_liveTvPlaybackRequestGate)
+        {
+            _liveTvPlaybackRequestGeneration++;
+            _liveTvPlaybackRequestCancellation?.Cancel();
+            _liveTvPlaybackRequestCancellation = null;
+        }
         try { _listenerCts.Cancel(); } catch { }
         try { DisposeAllSseClients(); } catch { }
         try { _listenerCts.Dispose(); } catch { }

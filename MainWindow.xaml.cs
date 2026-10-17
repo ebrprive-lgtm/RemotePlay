@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -7,6 +8,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Animation;
@@ -86,6 +88,8 @@ public partial class MainWindow : Window
     private DateTimeOffset? _positionClockStartedUtc;
     private bool _isApplyingMoviePreferences;
     private CancellationTokenSource? _videoTransitionCts;
+    private CancellationTokenSource? _brokenLinkScanCts;
+    private ObservableCollection<BrokenScanEntry>? _brokenLinkScanResults;
     private MediaCodecInfo? _codecInfo;
 
     // Karaoke / fullscreen synced lyrics
@@ -663,6 +667,10 @@ public partial class MainWindow : Window
 
     private void OnClosing(object? sender, CancelEventArgs e)
     {
+        var brokenLinkScanCts = _brokenLinkScanCts;
+        _brokenLinkScanCts = null;
+        brokenLinkScanCts?.Cancel();
+
         SaveWindowLayout();
         SavePlaybackPreferences();
         SaveCurrentPlaybackPosition();
@@ -2748,7 +2756,10 @@ public partial class MainWindow : Window
         return rplinkPath;
     }
 
-    private string ResolveAccessibleTargetPath(string targetPath)
+    private string ResolveAccessibleTargetPath(string targetPath) =>
+        ResolveAccessibleTargetPath(targetPath, _config.AllResolvedMoviesPaths);
+
+    private static string ResolveAccessibleTargetPath(string targetPath, IReadOnlyList<string> libraryRoots)
     {
         if (File.Exists(targetPath) || Directory.Exists(targetPath))
             return targetPath;
@@ -2761,7 +2772,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(relative))
             return targetPath;
 
-        foreach (var libraryRoot in _config.AllResolvedMoviesPaths)
+        foreach (var libraryRoot in libraryRoots)
         {
             if (string.IsNullOrWhiteSpace(libraryRoot))
                 continue;
@@ -3135,6 +3146,7 @@ public partial class MainWindow : Window
 
         var indexStatus       = _webServer?.LibraryStatus;
         bool indexReady       = indexStatus is { IsScanning: false } && indexStatus.CompletedUtc is not null;
+        bool indexIdle        = indexStatus is { IsScanning: false };
         bool currentDirExists = Directory.Exists(currentDir);
         bool oppDirExists     = Directory.Exists(oppositeDir);
         bool dirsAreDifferent = !string.Equals(currentDir, oppositeDir, StringComparison.OrdinalIgnoreCase);
@@ -3273,8 +3285,12 @@ public partial class MainWindow : Window
 
                 case "MoveSeriesToMasterLibrary":
                     mi2.Visibility = showFolders ? Visibility.Visible : Visibility.Collapsed;
-                    mi2.Header =  folderCount > 1 ? $"📦  Move {folderCount} folders to @Master.Series" : $"📦  Move Series to @Master.Series";
-                    mi2.IsEnabled = onlyFolders;
+                    mi2.Header =
+                        (folderCount > 1
+                            ? $"📦  Move {folderCount} folders to @Master.Series"
+                            : "📦  Move Series to @Master.Series")
+                        + (indexStatus?.IsScanning == true ? " (library indexing)" : string.Empty);
+                    mi2.IsEnabled = onlyFolders && indexIdle;
                     break;
 
 
@@ -4000,55 +4016,130 @@ public partial class MainWindow : Window
 
         if (items.Count == 0) return;
 
-        var rootFolder = "@Master.Series";
+        var indexStatus = _webServer.LibraryStatus;
+        if (indexStatus.IsScanning)
+        {
+            DarkMessageBox.Show(
+                "RemotePlay is still scanning the video library. Wait for the scan to finish before moving series folders.",
+                "Move Series", this);
+            return;
+        }
 
+        var rootFolder = "@Master.Series";
         var masterLibrary = Path.Combine(_config.ResolvedMoviesPath, rootFolder);
 
-
-        // Create directory structure as needed
-        if (!Directory.Exists(masterLibrary))
+        try
         {
             Directory.CreateDirectory(masterLibrary);
         }
+        catch (Exception ex)
+        {
+            Logger.Error("MoveSeriesToMasterLibrary", $"Could not create '{masterLibrary}'.", ex);
+            DarkMessageBox.Show(
+                $"Could not create the master series folder:\n{ex.Message}",
+                "Move Series", this);
+            return;
+        }
 
+        var movedCount = 0;
+        var failures = new List<string>();
+        _webServer.SuppressWatcher(TimeSpan.FromSeconds(10));
         foreach (var item in items)
         {
             var itemPath = item.FullPath;
-            if (!Path.Exists(itemPath)) continue; // Skip if folder doesn't exist
-
+            if (!Directory.Exists(itemPath))
+            {
+                failures.Add($"'{itemPath}' no longer exists or cannot be accessed.");
+                continue;
+            }
 
             var folderName = Path.GetFileName(itemPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-
-            var targetPath = Path.Combine(masterLibrary, folderName);
-
-            // Check if a folder with the same name already exists
-
-            if (Directory.Exists(targetPath))
+            var targetFolderName = folderName;
+            var targetPath = Path.Combine(masterLibrary, targetFolderName);
+            var suffix = 2;
+            while (Path.Exists(targetPath) || Path.Exists(targetPath + RplinkHelper.Extension))
             {
-                // Use a different naming strategy - append timestamp or increment count
-                var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-                targetPath = Path.Combine(masterLibrary, $"{folderName}_{timestamp}");
+                targetFolderName = $"{folderName}_{suffix++}";
+                targetPath = Path.Combine(masterLibrary, targetFolderName);
             }
 
-            // Move the folder to master library
-
-            Directory.Move(itemPath, targetPath);
-
-            // Create .rplink file in the original location that points to the new folder in master library
-
-            var linkPath = Path.Combine(Path.GetDirectoryName(itemPath)!, folderName + ".rplink");
-
-            if (File.Exists(linkPath))
+            var originalParent = Path.GetDirectoryName(itemPath);
+            if (string.IsNullOrWhiteSpace(originalParent))
             {
-
-                var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-                linkPath = Path.Combine(Path.GetDirectoryName(itemPath)!, $"{folderName}_{timestamp}.rplink");
+                failures.Add($"Could not determine the parent folder for '{itemPath}'.");
+                continue;
             }
 
-            File.WriteAllText(linkPath, $"@\\{rootFolder}\\{folderName}\\");
+            var linkName = folderName;
+            var linkPath = Path.Combine(originalParent, linkName + RplinkHelper.Extension);
+            suffix = 2;
+            while (Path.Exists(linkPath))
+            {
+                linkName = $"{folderName}_{suffix++}";
+                linkPath = Path.Combine(originalParent, linkName + RplinkHelper.Extension);
+            }
+
+            try
+            {
+                Directory.Move(itemPath, targetPath);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("MoveSeriesToMasterLibrary", $"Could not move '{itemPath}' to '{targetPath}'.", ex);
+                var reason = _webServer.LibraryStatus.IsScanning
+                    ? "RemotePlay is still scanning the library; wait for it to finish before retrying."
+                    : "The move failed; this error alone does not establish a share-permission problem.";
+                failures.Add($"Could not move '{folderName}' to @Master.Series. {reason} {ex.Message}");
+                continue;
+            }
+
+            movedCount++;
+            try
+            {
+                _webServer.IndexRenamePrefix(itemPath, targetPath);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("MoveSeriesToMasterLibrary", $"Moved '{itemPath}' but could not update its library index path.", ex);
+                failures.Add($"'{folderName}' was moved to '{targetPath}', but its library index path could not be updated: {ex.Message}");
+            }
+
+            try
+            {
+                var storedTarget = RplinkHelper.MakeRelativeIfPossible(linkPath, targetPath);
+                RplinkHelper.Create(linkPath, storedTarget);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("MoveSeriesToMasterLibrary", $"Moved '{itemPath}' but could not create '{linkPath}'.", ex);
+                failures.Add($"'{folderName}' was moved to '{targetPath}', but its link could not be created: {ex.Message}");
+                continue;
+            }
+
+            try
+            {
+                _webServer.IndexAddOrUpdateFile(linkPath);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("MoveSeriesToMasterLibrary", $"Created '{linkPath}' but could not update the library index.", ex);
+                failures.Add($"'{folderName}' was moved and linked, but its library index could not be updated: {ex.Message}");
+            }
         }
+
         RefreshBrowser(isLeft);
         RefreshBrowser(!isLeft);
+
+        if (failures.Count > 0)
+        {
+            var details = string.Join(Environment.NewLine, failures.Take(5));
+            if (failures.Count > 5)
+                details += $"{Environment.NewLine}And {failures.Count - 5} more failure(s).";
+
+            DarkMessageBox.Show(
+                $"{movedCount} series folder(s) moved to @Master.Series; {failures.Count} item(s) failed or need attention.\n\n{details}",
+                "Move Series to Master Library", this);
+        }
     }
 
     private void OnBrowserCheckIndex(object sender, RoutedEventArgs e)
@@ -4483,45 +4574,213 @@ public partial class MainWindow : Window
             : null;
     }
 
-    private void OnScanBrokenLinks(object sender, RoutedEventArgs e)
-    {
-        var root = _config.ResolvedMoviesPath;
-        Logger.Info("BrokenLinkScan", $"Manual scan requested. Root='{root}'");
+    private readonly record struct BrokenLinkScanSummary(
+        bool RootExists,
+        bool IsCanceled,
+        int TotalLinks,
+        int BrokenLinks);
 
-        if (!Directory.Exists(root))
+    private async void OnScanBrokenLinks(object sender, RoutedEventArgs e)
+    {
+        if (_brokenLinkScanCts is { } activeScan)
         {
-            BrokenLinksPanel.Visibility = Visibility.Visible;
-            BrokenLinksStatus.Text      = "Library root does not exist.";
-            BrokenLinksList.ItemsSource = null;
-            Logger.Warning("BrokenLinkScan", $"Scan aborted: library root does not exist '{root}'.");
+            if (!activeScan.IsCancellationRequested)
+            {
+                activeScan.Cancel();
+                UpdateBrokenLinkScanStatus();
+            }
+
             return;
         }
 
-        var diagnostics = Directory
-            .EnumerateFiles(root, "*" + RplinkHelper.Extension, SearchOption.AllDirectories)
-            .Select(DiagnoseLinkTarget)
-            .OrderBy(d => d.LinkFile)
-            .ToList();
+        var config = _config;
+        var root = config.ResolvedMoviesPath;
+        var libraryRoots = config.AllResolvedMoviesPaths;
+        var scanCts = new CancellationTokenSource();
+        var results = new ObservableCollection<BrokenScanEntry>();
+        _brokenLinkScanCts = scanCts;
+        _brokenLinkScanResults = results;
+        BrokenLinksList.ItemsSource = results;
+        CollectionViewSource.GetDefaultView(results).SortDescriptions.Add(
+            new SortDescription(nameof(BrokenScanEntry.LinkFile), ListSortDirection.Ascending));
+        BrokenLinksPanel.Visibility = Visibility.Visible;
+        BrokenLinksStatus.Text = "Scanning for broken links…";
+        ScanBrokenLinksButton.Content = "Cancel Scan";
+        ScanBrokenLinksButton.ToolTip = "Cancel the broken-link scan";
 
-        var broken = diagnostics
-            .Where(d => !d.Exists)
-            .Select(d => new BrokenScanEntry(d.LinkFile, d.StoredTargetText, Path.GetDirectoryName(d.LinkFile) ?? root))
-            .ToList();
+        Logger.Info("BrokenLinkScan", $"Manual scan requested. Root='{root}'");
 
-        foreach (var d in diagnostics.Where(d => !d.Exists))
+        var finalStatus = "Scan did not complete.";
+        try
         {
-            Logger.Warning(
-                "BrokenLinkScan",
-                $"Broken link detected. LinkFile='{d.LinkFile}', StoredTarget='{d.StoredTargetText}', ResolvedRawTarget='{d.ResolvedRawTarget}', InspectionStatus={d.InspectionStatus}, InspectionResolved='{d.InspectionResolvedTarget ?? string.Empty}', InspectionDetails='{d.InspectionDetails ?? string.Empty}', Normalized='{d.NormalizedTarget}', Mapped='{d.MappedTarget ?? string.Empty}', Accessible='{d.AccessibleTarget}', ExistsFile={d.ExistsAsFile}, ExistsDirectory={d.ExistsAsDirectory}, ParentDir='{d.ParentDirectory}', ParentExists={d.ParentExists}, ParentProbe='{d.ParentProbe}', SameNameDifferentExtension={d.SameNameDifferentExtension}, SampleSiblingNames='{d.SampleSiblingNames}'");
+            void ReportBrokenLink(BrokenScanEntry entry)
+            {
+                if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+                    return;
+
+                try
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (!ReferenceEquals(_brokenLinkScanCts, scanCts) ||
+                            !ReferenceEquals(_brokenLinkScanResults, results))
+                        {
+                            return;
+                        }
+
+                        if (results.Any(existing =>
+                                string.Equals(existing.LinkFile, entry.LinkFile, StringComparison.OrdinalIgnoreCase)))
+                        {
+                            return;
+                        }
+
+                        results.Add(entry);
+                        UpdateBrokenLinkScanStatus();
+                    }, DispatcherPriority.Background);
+                }
+                catch (InvalidOperationException) when (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+                {
+                }
+                catch (TaskCanceledException) when (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+                {
+                }
+            }
+
+            var summary = await Task.Run(() => ScanBrokenLinks(root, libraryRoots, scanCts.Token, ReportBrokenLink));
+            if (summary.IsCanceled)
+            {
+                Logger.Info("BrokenLinkScan", $"Manual scan canceled. TotalLinks={summary.TotalLinks}, BrokenLinks={summary.BrokenLinks}");
+                var count = results.Count;
+                finalStatus = count == 0
+                    ? "Scan canceled. No broken links were listed before cancellation."
+                    : $"Scan canceled. {count} broken link{(count == 1 ? "" : "s")} found before cancellation:";
+            }
+            else if (!summary.RootExists)
+            {
+                finalStatus = "Library root does not exist.";
+                Logger.Warning("BrokenLinkScan", $"Scan aborted: library root does not exist '{root}'.");
+            }
+            else
+            {
+                Logger.Info("BrokenLinkScan", $"Manual scan completed. TotalLinks={summary.TotalLinks}, BrokenLinks={summary.BrokenLinks}");
+                var count = results.Count;
+                finalStatus = count == 0
+                    ? "✅  No broken links found."
+                    : $"⚠️  {count} broken link{(count == 1 ? "" : "s")} found:";
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Manual broken-link scan failed", ex);
+            finalStatus = $"Scan failed: {ex.Message}";
+        }
+        finally
+        {
+            if (ReferenceEquals(_brokenLinkScanCts, scanCts))
+            {
+                _brokenLinkScanCts = null;
+                ScanBrokenLinksButton.Content = "🔍  Scan broken links";
+                ScanBrokenLinksButton.ToolTip = "Scan the entire library for .rplink files whose targets no longer exist";
+                BrokenLinksStatus.Text = finalStatus;
+            }
+
+            scanCts.Dispose();
+        }
+    }
+
+    private BrokenLinkScanSummary ScanBrokenLinks(
+        string root,
+        IReadOnlyList<string> libraryRoots,
+        CancellationToken cancellationToken,
+        Action<BrokenScanEntry> reportBrokenLink)
+    {
+        var totalLinks = 0;
+        var brokenCount = 0;
+        var rootExists = false;
+
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            rootExists = Directory.Exists(root);
+            if (!rootExists)
+                return new BrokenLinkScanSummary(false, false, 0, 0);
+
+            foreach (var linkFile in EnumerateBrokenLinkFiles(root, cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                totalLinks++;
+                var diagnosis = DiagnoseLinkTarget(linkFile, libraryRoots);
+                if (diagnosis.Exists)
+                    continue;
+
+                var entry = new BrokenScanEntry(
+                    diagnosis.LinkFile,
+                    diagnosis.StoredTargetText,
+                    Path.GetDirectoryName(diagnosis.LinkFile) ?? root);
+                brokenCount++;
+                reportBrokenLink(entry);
+                Logger.Warning(
+                    "BrokenLinkScan",
+                    $"Broken link detected. LinkFile='{diagnosis.LinkFile}', StoredTarget='{diagnosis.StoredTargetText}', ResolvedRawTarget='{diagnosis.ResolvedRawTarget}', InspectionStatus={diagnosis.InspectionStatus}, InspectionResolved='{diagnosis.InspectionResolvedTarget ?? string.Empty}', InspectionDetails='{diagnosis.InspectionDetails ?? string.Empty}', Normalized='{diagnosis.NormalizedTarget}', Mapped='{diagnosis.MappedTarget ?? string.Empty}', Accessible='{diagnosis.AccessibleTarget}', ExistsFile={diagnosis.ExistsAsFile}, ExistsDirectory={diagnosis.ExistsAsDirectory}, ParentDir='{diagnosis.ParentDirectory}', ParentExists={diagnosis.ParentExists}, ParentProbe='{diagnosis.ParentProbe}', SameNameDifferentExtension={diagnosis.SameNameDifferentExtension}, SampleSiblingNames='{diagnosis.SampleSiblingNames}'");
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            return new BrokenLinkScanSummary(true, false, totalLinks, brokenCount);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return new BrokenLinkScanSummary(rootExists, true, totalLinks, brokenCount);
+        }
+    }
+
+    private static IEnumerable<string> EnumerateBrokenLinkFiles(string root, CancellationToken cancellationToken)
+    {
+        var pendingDirectories = new Stack<string>();
+        pendingDirectories.Push(root);
+
+        while (pendingDirectories.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var directory = pendingDirectories.Pop();
+
+            foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (string.Equals(Path.GetExtension(file), RplinkHelper.Extension, StringComparison.OrdinalIgnoreCase))
+                    yield return file;
+            }
+
+            foreach (var childDirectory in Directory.EnumerateDirectories(directory, "*", SearchOption.TopDirectoryOnly))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                pendingDirectories.Push(childDirectory);
+            }
+        }
+    }
+
+    private void UpdateBrokenLinkScanStatus()
+    {
+        var count = _brokenLinkScanResults?.Count ?? 0;
+        if (_brokenLinkScanCts is { } scanCts)
+        {
+            if (count == 0)
+            {
+                BrokenLinksStatus.Text = scanCts.IsCancellationRequested
+                    ? "Cancelling scan…"
+                    : "Scanning for broken links…";
+            }
+            else
+            {
+                var prefix = scanCts.IsCancellationRequested ? "Cancelling scan…" : "Scanning…";
+                BrokenLinksStatus.Text = $"{prefix} {count} broken link{(count == 1 ? "" : "s")} found so far.";
+            }
+
+            return;
         }
 
-        Logger.Info("BrokenLinkScan", $"Manual scan completed. TotalLinks={diagnostics.Count}, BrokenLinks={broken.Count}");
-
-        BrokenLinksPanel.Visibility = Visibility.Visible;
-        BrokenLinksStatus.Text = broken.Count == 0
+        BrokenLinksStatus.Text = count == 0
             ? "✅  No broken links found."
-            : $"⚠️  {broken.Count} broken link{(broken.Count == 1 ? "" : "s")} found:";
-        BrokenLinksList.ItemsSource = broken;
+            : $"⚠️  {count} broken link{(count == 1 ? "" : "s")} found:";
     }
 
     private void OnHideBrokenLinksPanel(object sender, RoutedEventArgs e)
@@ -4603,19 +4862,15 @@ public partial class MainWindow : Window
 
     private void RemoveBrokenScanEntryFromList(string linkFile)
     {
-        var current = BrokenLinksList.ItemsSource as IEnumerable<BrokenScanEntry>;
-        if (current is null)
+        if (BrokenLinksList.ItemsSource is not ObservableCollection<BrokenScanEntry> current)
             return;
 
-        var updated = current
-            .Where(item => !string.Equals(item.LinkFile, linkFile, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(item => item.LinkFile)
-            .ToList();
+        var entry = current.FirstOrDefault(item =>
+            string.Equals(item.LinkFile, linkFile, StringComparison.OrdinalIgnoreCase));
+        if (entry is not null)
+            current.Remove(entry);
 
-        BrokenLinksList.ItemsSource = updated;
-        BrokenLinksStatus.Text = updated.Count == 0
-            ? "✅  No broken links found."
-            : $"⚠️  {updated.Count} broken link{(updated.Count == 1 ? "" : "s")} found:";
+        UpdateBrokenLinkScanStatus();
     }
 
     private string? TryGetExistingLinkTargetPath(string rplinkPath)
@@ -4624,7 +4879,10 @@ public partial class MainWindow : Window
         return diagnosis.ExistingTargetPath;
     }
 
-    private LinkTargetDiagnosis DiagnoseLinkTarget(string rplinkPath)
+    private LinkTargetDiagnosis DiagnoseLinkTarget(string rplinkPath) =>
+        DiagnoseLinkTarget(rplinkPath, _config.AllResolvedMoviesPaths);
+
+    private LinkTargetDiagnosis DiagnoseLinkTarget(string rplinkPath, IReadOnlyList<string> libraryRoots)
     {
         var inspection = RplinkHelper.InspectTarget(rplinkPath);
 
@@ -4704,7 +4962,7 @@ public partial class MainWindow : Window
             target = mappedTargetPath;
         }
 
-        target = ResolveAccessibleTargetPath(target);
+        target = ResolveAccessibleTargetPath(target, libraryRoots);
         accessibleTarget = target;
 
         existsAsFile = File.Exists(target);

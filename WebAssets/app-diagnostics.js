@@ -260,12 +260,73 @@ async function refreshDiagnostics() {
     const health = await healthResponse.json();
     const display = await displayResponse.json();
     const library = await libraryResponse.json();
-    const ci = display.codecInfo;
+    const localVideoState = typeof _localVideoState !== 'undefined' ? _localVideoState : null;
+    const localVideoActive = Boolean(
+      localVideoState?.path &&
+      typeof currentMode !== 'undefined' &&
+      currentMode === 'video' &&
+      typeof isPlayLocal === 'function' &&
+      isPlayLocal()
+    );
+    const localVideoHandoffStatus = localVideoActive
+      && typeof _localVideoHandoffPending !== 'undefined'
+      && _localVideoHandoffPending
+      ? localVideoState.handoff === 'server-to-local'
+        ? 'Switching to Local'
+        : 'Switching to Server'
+      : '';
+    const localVideoTranscodeStatus = localVideoActive
+      && localVideoState.loading
+      && localVideoState.audioCompatibilityRequested
+      ? typeof _formatLocalVideoTranscodeStatus === 'function'
+        ? _formatLocalVideoTranscodeStatus(
+            localVideoState.transcodeProgress,
+            localVideoState.transcodeStatusUnavailable
+          )
+        : 'Transcoding audio for tablet playback…'
+      : '';
+    const localVideoElement = localVideoActive && typeof _getLocalVideoElement === 'function'
+      ? _getLocalVideoElement()
+      : null;
+    let ci = display.codecInfo;
+    let localProbeError = '';
+    if (localVideoActive) {
+      const query = new URLSearchParams({ path: localVideoState.path });
+      if (localVideoState.linkPath) query.set('linkPath', localVideoState.linkPath);
+      try {
+        const response = await fetch('/api/video/codec-info?' + query.toString());
+        if (!response.ok) {
+          const detail = await response.text();
+          throw new Error(detail || 'Track probe failed (' + response.status + ').');
+        }
+        ci = await response.json();
+      } catch (error) {
+        ci = null;
+        localProbeError = error?.message || String(error);
+        console.error('[diag] could not inspect Local Video tracks:', error);
+      }
+    }
 
     // ── Overview tab ────────────────────────────────────────────
     const rows = [
-      ['Playback', status.isPlaying ? 'Playing' : status.queueCount > 0 ? 'Queued' : 'Idle'],
-      ['Title', (status.title || '').replace(/^\s*[▶⏸]\s*/, '') || 'N/A'],
+      [
+        'Playback',
+        localVideoActive
+          ? localVideoHandoffStatus || (localVideoElement && !localVideoElement.paused
+            ? 'Playing locally'
+            : 'Paused locally')
+          : status.isPlaying
+            ? 'Playing'
+            : status.queueCount > 0
+              ? 'Queued'
+              : 'Idle',
+      ],
+      [
+        'Title',
+        localVideoActive
+          ? localVideoState.name || 'Local video'
+          : (status.title || '').replace(/^\s*[▶⏸]\s*/, '') || 'N/A',
+      ],
       ['Queue', String(status.queueCount || 0) + ' item(s)'],
       [
         'Library',
@@ -282,6 +343,25 @@ async function refreshDiagnostics() {
       ['Brightness', Math.round((Number(status.brightness) || 0) * 100) + '%'],
       ['Last error', status.lastError || health.startupWarning || library.lastError || 'None'],
     ];
+    if (localProbeError) rows.push(['Media track probe', localProbeError]);
+    if (localVideoActive) {
+      rows.push([
+        'Local audio',
+        localVideoState.audioCompatibilityRequested
+          ? 'Browser-aware audio compatibility selection requested'
+          : 'Original source audio stream',
+      ]);
+      if (localVideoState.audioCompatibilityRequested) {
+        const supportedCodecs = localVideoState.supportedAudioCodecs || [];
+        rows.push([
+          'Browser audio codecs',
+          supportedCodecs.length ? supportedCodecs.join(', ') : 'No known codecs reported as supported',
+        ]);
+      }
+    }
+    if (localVideoTranscodeStatus) {
+      rows.push(['Local transcode', localVideoTranscodeStatus]);
+    }
     if (ci) {
       rows.push(['─── Media ───', '']);
       rows.push(['File', ci.fileName || 'N/A']);
@@ -322,8 +402,12 @@ async function refreshDiagnostics() {
     // ── Video tab
     const videoEl = document.getElementById('diag-video-content');
     if (videoEl) {
-      if (!ci || !ci.videoTracks?.length) {
-        videoEl.innerHTML = '<p class="diag-muted">No video tracks — start a video first.</p>';
+      if (localProbeError) {
+        videoEl.innerHTML = '<p class="diag-muted">Track information unavailable: ' + esc(localProbeError) + '</p>';
+      } else if (!ci || !ci.videoTracks?.length) {
+        videoEl.innerHTML = localVideoActive
+          ? '<p class="diag-muted">The media probe found no video tracks in this file.</p>'
+          : '<p class="diag-muted">No video tracks — start a video first.</p>';
       } else {
         videoEl.innerHTML = ci.videoTracks
           .map((t, i) => {
@@ -355,10 +439,19 @@ async function refreshDiagnostics() {
     // ── Audio tab ───────────────────────────────────────────────
     const audioEl = document.getElementById('diag-audio-content');
     if (audioEl) {
-      const isPlaying = Boolean(status.isPlaying);
+      const isPlaying = localVideoActive
+        ? Boolean(localVideoElement && !localVideoElement.paused)
+        : Boolean(status.isPlaying);
       const swActive = Boolean(display.forceSwAudio);
       let audioFixHtml = '';
-      if (isPlaying) {
+      if (localVideoActive) {
+        audioFixHtml = localVideoState.audioCompatibilityRequested
+          ? '<div class="diag-audio-fix diag-audio-fix--active">&#10003; Local playback requested browser-aware audio selection. Supported audio may be streamed or remuxed; other audio is converted to stereo AAC.</div>'
+          : '<div class="diag-audio-fix">Local playback is using the source audio tracks.</div>';
+        if (localVideoTranscodeStatus) {
+          audioFixHtml += '<div class="diag-audio-fix">' + esc(localVideoTranscodeStatus) + '</div>';
+        }
+      } else if (isPlaying) {
         if (swActive) {
           audioFixHtml =
             '<div class="diag-audio-fix diag-audio-fix--active">&#10003; Software audio decode is active for this file.</div>';
@@ -369,7 +462,12 @@ async function refreshDiagnostics() {
       }
       if (!ci || !ci.audioTracks?.length) {
         audioEl.innerHTML =
-          audioFixHtml + '<p class="diag-muted">No audio tracks — start a video first.</p>';
+          audioFixHtml +
+          (localProbeError
+            ? '<p class="diag-muted">Track information unavailable: ' + esc(localProbeError) + '</p>'
+            : localVideoActive
+              ? '<p class="diag-muted">The media probe found no audio tracks in this file.</p>'
+              : '<p class="diag-muted">No audio tracks — start a video first.</p>');
       } else {
         audioEl.innerHTML =
           audioFixHtml +
@@ -390,6 +488,7 @@ async function refreshDiagnostics() {
                     t.codecDescription +
                       (t.codec && t.codec !== t.codecDescription ? ' (' + t.codec + ')' : ''),
                   ],
+                  ['Profile', t.profile || ''],
                   ['Channels', t.channelLayout],
                   ['Sample rate', t.sampleRate ? ' ' + t.sampleRate + ' Hz' : ''],
                   ['Language', t.language || ''],

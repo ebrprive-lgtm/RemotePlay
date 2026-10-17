@@ -17,6 +17,9 @@ internal static class PlayerDiagnostics
     public static void Info(string message)
         => Write("INFO", message);
 
+    public static void Error(string message)
+        => Write("ERROR", message);
+
     public static void Error(string message, Exception exception)
         => Write("ERROR", $"{message}: {exception}");
 

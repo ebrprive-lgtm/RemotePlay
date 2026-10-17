@@ -9,26 +9,6 @@ namespace RemotePlay;
 
 internal sealed partial class WebServer
 {
-    private static readonly System.Net.Http.HttpClient _liveTvPlaybackProbeHttpClient = CreateLiveTvPlaybackProbeHttpClient();
-
-    private static System.Net.Http.HttpClient CreateLiveTvPlaybackProbeHttpClient()
-    {
-        var handler = new System.Net.Http.HttpClientHandler
-        {
-            AllowAutoRedirect = true,
-            MaxAutomaticRedirections = 4
-        };
-
-        var client = new System.Net.Http.HttpClient(handler)
-        {
-            Timeout = TimeSpan.FromSeconds(8)
-        };
-
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("RemotePlay/LiveTV");
-        client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.apple.mpegurl,application/x-mpegURL,application/octet-stream,*/*");
-        return client;
-    }
-
     private void HandleSearch(HttpListenerContext ctx)
     {
         var query = (ctx.Request.QueryString["q"] ?? string.Empty).Trim();
@@ -614,13 +594,23 @@ internal sealed partial class WebServer
 
     private static int ReadPositiveInt(string? value, int defaultValue, int maxValue) => MediaControlValueParser.ReadPositiveInt(value, defaultValue, maxValue);
 
-    private void StopAllServerPlayers(bool stopVideoPlayer = true)
+    private void StopAllServerPlayers(bool stopVideoPlayer = true, bool invalidatePendingLiveTvRequest = true)
     {
-        if (stopVideoPlayer)
-            _callbacks.Stop();
+        lock (_liveTvPlaybackRequestGate)
+        {
+            if (invalidatePendingLiveTvRequest)
+            {
+                _liveTvPlaybackRequestGeneration++;
+                _liveTvPlaybackRequestCancellation?.Cancel();
+                _liveTvPlaybackRequestCancellation = null;
+            }
 
-        _callbacks.StopMusic();
-        _callbacks.RadioStop();
+            if (stopVideoPlayer)
+                _callbacks.Stop();
+
+            _callbacks.StopMusic();
+            _callbacks.RadioStop();
+        }
     }
 
     private void HandlePlay(HttpListenerContext ctx)
@@ -731,8 +721,18 @@ internal sealed partial class WebServer
         }
     }
 
+    private static string GetLiveTvRequestCorrelationId(HttpListenerContext ctx)
+    {
+        var candidate = (ctx.Request.Headers["X-RemotePlay-Request-Id"] ?? string.Empty).Trim();
+        return candidate.Length is > 0 and <= 64
+               && candidate.All(ch => char.IsAsciiLetterOrDigit(ch) || ch is '-' or '_')
+            ? candidate
+            : Guid.NewGuid().ToString("N");
+    }
+
     private async Task HandleLiveTvPlayAsync(HttpListenerContext ctx)
     {
+        var requestId = GetLiveTvRequestCorrelationId(ctx);
         var rawUrl = (ctx.Request.QueryString["url"] ?? string.Empty).Trim();
         var name = (ctx.Request.QueryString["name"] ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(rawUrl))
@@ -754,37 +754,153 @@ internal sealed partial class WebServer
             return;
         }
 
+        LiveTvPlaybackRequestCancellation requestCancellation;
+        long requestGeneration;
+        lock (_liveTvPlaybackRequestGate)
+        {
+            _liveTvPlaybackRequestCancellation?.Cancel();
+            requestCancellation = new LiveTvPlaybackRequestCancellation(_listenerCts.Token);
+            _liveTvPlaybackRequestCancellation = requestCancellation;
+            requestGeneration = ++_liveTvPlaybackRequestGeneration;
+        }
+
+        var probeTimer = System.Diagnostics.Stopwatch.StartNew();
+        Logger.Detail("Playback", $"Live TV request {requestId}: probing host '{uri.Host}'.");
         try
         {
-            using var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, uri);
-            using var resp = await _liveTvPlaybackProbeHttpClient
-                .SendAsync(req, System.Net.Http.HttpCompletionOption.ResponseHeadersRead)
-                .ConfigureAwait(false);
+            using var probeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            using var probeCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                requestCancellation.Token,
+                probeTimeout.Token);
 
-            if (resp.StatusCode == HttpStatusCode.Forbidden)
+            try
             {
-                Logger.Info("Playback", $"Live TV stream blocked (403): {uri}");
-                TrySendResponse(ctx, 403, "text/plain", "Forbidden (403) from stream provider");
+                using var response = await _podcastFeedHttpClient.GetAsync(
+                        uri,
+                        System.Net.Http.HttpCompletionOption.ResponseHeadersRead,
+                        probeCancellation.Token,
+                        configureRequest: request =>
+                        {
+                            request.Headers.UserAgent.Clear();
+                            request.Headers.UserAgent.ParseAdd("RemotePlay/LiveTV");
+                            request.Headers.Accept.ParseAdd(
+                                "application/vnd.apple.mpegurl,application/x-mpegURL,application/octet-stream,*/*");
+                        })
+                    .ConfigureAwait(false);
+
+                probeTimer.Stop();
+                var responseHost = response.RequestMessage?.RequestUri?.Host ?? uri.Host;
+                var upstreamStatusCode = (int)response.StatusCode;
+                if (!response.IsSuccessStatusCode)
+                {
+                    Logger.Warning(
+                        "Playback",
+                        $"Live TV request {requestId}: probe returned HTTP {upstreamStatusCode} from '{responseHost}' after {probeTimer.ElapsedMilliseconds}ms.");
+                }
+                else
+                {
+                    Logger.Detail(
+                        "Playback",
+                        $"Live TV request {requestId}: probe succeeded at '{responseHost}' with HTTP {upstreamStatusCode} after {probeTimer.ElapsedMilliseconds}ms.");
+                }
+
+                if (upstreamStatusCode is >= 400 and < 500
+                    && response.StatusCode is not HttpStatusCode.RequestTimeout and not HttpStatusCode.TooManyRequests)
+                {
+                    var message = response.StatusCode == HttpStatusCode.Forbidden
+                        ? "Forbidden (403) from stream provider"
+                        : $"Stream provider returned HTTP {upstreamStatusCode} {response.ReasonPhrase}.";
+                    TrySendResponse(ctx, upstreamStatusCode, "text/plain", message);
+                    return;
+                }
+            }
+            catch (PodcastDestinationRejectedException)
+            {
+                probeTimer.Stop();
+                Logger.Warning(
+                    "Playback",
+                    $"Live TV request {requestId}: rejected an unsafe or invalid redirect destination from '{uri.Host}' after {probeTimer.ElapsedMilliseconds}ms.");
+                TrySendResponse(ctx, 400, "text/plain", "Stream destination is not allowed");
                 return;
             }
-        }
-        catch (TaskCanceledException)
-        {
-            // Ignore probe timeouts and continue with VLC attempt.
-        }
-        catch (System.Net.Http.HttpRequestException ex)
-        {
-            Logger.Detail("Playback", $"Live TV probe failed for '{uri}': {ex.Message}");
-            // Ignore probe transport errors and continue with VLC attempt.
-        }
+            catch (PodcastHostResolutionException)
+            {
+                probeTimer.Stop();
+                Logger.Warning(
+                    "Playback",
+                    $"Live TV request {requestId}: could not resolve a public stream host for '{uri.Host}' after {probeTimer.ElapsedMilliseconds}ms.");
+                TrySendResponse(ctx, 502, "text/plain", "Stream provider host could not be resolved");
+                return;
+            }
+            catch (OperationCanceledException) when (requestCancellation.IsCancellationRequested)
+            {
+                probeTimer.Stop();
+                var serverShutdown = _listenerCts.IsCancellationRequested;
+                Logger.Info(
+                    "Playback",
+                    $"Live TV request {requestId}: probe canceled before player handoff {(serverShutdown ? "during server shutdown" : "after stop or replacement")} after {probeTimer.ElapsedMilliseconds}ms.");
+                if (!serverShutdown)
+                    TrySendResponse(ctx, 409, "text/plain", "Live TV playback request was canceled");
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                probeTimer.Stop();
+                Logger.Warning(
+                    "Playback",
+                    $"Live TV request {requestId}: probe timed out for host '{uri.Host}' after {probeTimer.ElapsedMilliseconds}ms; handing off to VLC.");
+            }
+            catch (System.Net.Http.HttpRequestException ex)
+            {
+                probeTimer.Stop();
+                var reason = ex.InnerException is System.Net.Sockets.SocketException socketException
+                    ? $"socket error {socketException.SocketErrorCode}"
+                    : ex.GetType().Name;
+                Logger.Warning(
+                    "Playback",
+                    $"Live TV request {requestId}: probe failed for host '{uri.Host}' after {probeTimer.ElapsedMilliseconds}ms ({reason}); handing off to VLC.");
+            }
 
-        StopAllServerPlayers(stopVideoPlayer: false);
-        _callbacks.PlayNamed(uri.ToString(), string.IsNullOrWhiteSpace(name) ? uri.Host : name);
+            var playbackSuperseded = false;
+            lock (_liveTvPlaybackRequestGate)
+            {
+                if (requestGeneration != _liveTvPlaybackRequestGeneration
+                    || requestCancellation.IsCancellationRequested)
+                {
+                    playbackSuperseded = true;
+                }
+                else
+                {
+                    StopAllServerPlayers(
+                        stopVideoPlayer: false,
+                        invalidatePendingLiveTvRequest: false);
+                    _callbacks.PlayNamed(uri.ToString(), string.IsNullOrWhiteSpace(name) ? uri.Host : name);
+                }
+            }
 
-        var displayName = string.IsNullOrWhiteSpace(name) ? uri.Host : name;
-        Logger.Info("Playback", $"Playing Live TV: '{displayName}' on Server");
-        TrySendResponse(ctx, 200, "text/plain", "OK");
-        ScheduleSsePush(delayMs: 300);
+            if (playbackSuperseded)
+            {
+                Logger.Info("Playback", $"Live TV request {requestId}: superseded before player handoff.");
+                if (!_listenerCts.IsCancellationRequested)
+                    TrySendResponse(ctx, 409, "text/plain", "Live TV playback request was superseded.");
+                return;
+            }
+
+            Logger.Info(
+                "Playback",
+                $"Live TV request {requestId}: player handoff requested for host '{uri.Host}' after {probeTimer.ElapsedMilliseconds}ms.");
+            TrySendResponse(ctx, 200, "text/plain", "OK");
+            ScheduleSsePush(delayMs: 300);
+        }
+        finally
+        {
+            lock (_liveTvPlaybackRequestGate)
+            {
+                if (ReferenceEquals(_liveTvPlaybackRequestCancellation, requestCancellation))
+                    _liveTvPlaybackRequestCancellation = null;
+            }
+            requestCancellation.Dispose();
+        }
     }
 
     // Sets the browser-local-playing flag so the WPF window can update its idle overlay.

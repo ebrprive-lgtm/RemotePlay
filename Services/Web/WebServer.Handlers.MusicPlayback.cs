@@ -99,33 +99,28 @@ internal sealed partial class WebServer
         var fileInfo = new FileInfo(filePath);
         long fileLength = fileInfo.Length;
 
-        // Parse Range header for seek support
-        long rangeStart = 0;
-        long rangeEnd = fileLength - 1;
-        bool isRange = false;
-        var rangeHeader = ctx.Request.Headers["Range"];
-        if (!string.IsNullOrEmpty(rangeHeader) && rangeHeader.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
+        var range = VideoByteRangeParser.Parse(ctx.Request.Headers["Range"], fileLength);
+        ctx.Response.Headers["Accept-Ranges"] = "bytes";
+        ctx.Response.Headers["Cache-Control"] = "no-store";
+        if (range.Kind == VideoByteRangeKind.Unsatisfiable)
         {
-            var parts = rangeHeader[6..].Split('-');
-            if (parts.Length == 2)
-            {
-                if (long.TryParse(parts[0], out var rs)) rangeStart = rs;
-                if (long.TryParse(parts[1], out var re)) rangeEnd = re;
-                isRange = true;
-            }
+            ctx.Response.Headers["Content-Range"] = $"bytes */{fileLength}";
+            TrySendResponse(ctx, 416, "text/plain", "Range Not Satisfiable");
+            return;
         }
-        rangeStart = Math.Max(0, Math.Min(rangeStart, fileLength - 1));
-        rangeEnd   = Math.Max(rangeStart, Math.Min(rangeEnd, fileLength - 1));
-        long contentLength = rangeEnd - rangeStart + 1;
+
+        var isRange = range.Kind == VideoByteRangeKind.PartialContent;
+        var rangeStart = isRange ? range.Start : 0;
+        var rangeEnd = isRange ? range.End : fileLength - 1;
+        var contentLength = isRange ? rangeEnd - rangeStart + 1 : fileLength;
 
         try
         {
             ctx.Response.StatusCode = isRange ? 206 : 200;
             ctx.Response.ContentType = mime;
             ctx.Response.ContentLength64 = contentLength;
-            ctx.Response.Headers["Accept-Ranges"] = "bytes";
-            ctx.Response.Headers["Content-Range"] = $"bytes {rangeStart}-{rangeEnd}/{fileLength}";
-            ctx.Response.Headers["Cache-Control"] = "no-store";
+            if (isRange)
+                ctx.Response.Headers["Content-Range"] = $"bytes {rangeStart}-{rangeEnd}/{fileLength}";
 
             using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             fs.Seek(rangeStart, SeekOrigin.Begin);

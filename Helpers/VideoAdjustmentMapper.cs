@@ -6,18 +6,20 @@ public readonly record struct VideoAdjustmentValues(float Brightness, float Cont
 
 public static class VideoAdjustmentMapper
 {
-    public static VideoAdjustmentValues Map(double brightness, double sharpness, double saturation)
-    {
-        var detailBoost = (float)Math.Clamp(sharpness, 0, 1);
-        var contrast = 1f + (detailBoost * 1.35f);
-        var gamma = 1f + (detailBoost * 0.14f);
-        var compensationFactor = 1 + (detailBoost * 0.05f) - (detailBoost * detailBoost * 0.12f);
-        var compensatedBrightness = Math.Clamp(Math.Clamp(brightness, 0, 1) * 2 * compensationFactor, 0, 2);
+    private const float NeutralTolerance = 0.0001f;
 
+    public static VideoAdjustmentValues Map(double brightness, double saturation)
+    {
         return new VideoAdjustmentValues(
-            (float)compensatedBrightness,
-            contrast,
-            gamma,
+            (float)(Math.Clamp(brightness, 0, 1) * 2),
+            1f,
+            1f,
             (float)Math.Clamp(saturation, 0, 2));
     }
+
+    public static bool RequiresAdjustment(VideoAdjustmentValues adjustments) =>
+        MathF.Abs(adjustments.Brightness - 1f) > NeutralTolerance ||
+        MathF.Abs(adjustments.Contrast - 1f) > NeutralTolerance ||
+        MathF.Abs(adjustments.Gamma - 1f) > NeutralTolerance ||
+        MathF.Abs(adjustments.Saturation - 1f) > NeutralTolerance;
 }

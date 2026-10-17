@@ -163,7 +163,12 @@
             return;
           }
           if (existing >= 0) window._musicQueue.splice(existing, 1);
-          else window._musicQueue.push({ path: ctx.path, name: ctx.name });
+          else {
+            const durationSec = typeof _musicQueuePeekDurationSec === 'function'
+              ? _musicQueuePeekDurationSec(ctx)
+              : Number(ctx.durationSec) || 0;
+            window._musicQueue.push({ path: ctx.path, name: ctx.name, durationSec });
+          }
           window._musicNextShuffleQueuePick = null;
           const cur = window._musicQueuePos;
           window._musicQueueVisited = (cur >= 0 && cur < window._musicQueue.length) ? new Set([cur]) : new Set();

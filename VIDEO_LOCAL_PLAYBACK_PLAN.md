@@ -1,7 +1,12 @@
 # Local Video Playback Plan
 
-**Status:** Feasibility and Phase 0 defaults are complete. Phases 1–3 are
-implemented and verified; Phases 4–6 remain.
+**Status:** Phases 0–6, tablet audio compatibility, Local Video track
+diagnostics, transcode progress/ETA, and server-side transcode cancellation are
+implemented. Focused automated tests pass, and a desktop Chrome smoke run is
+complete. The user confirmed Local Video audio works on the tablet; first
+playback can wait for conversion. Tablet fullscreen, Local Music audio/seek,
+and the latest compact-player cancellation behavior still need device
+verification.
 
 **Recommendation:** Add browser-local playback with an HTML `<video>` element
 fed by a same-origin, byte-range-aware endpoint. Keep the existing Server
@@ -24,7 +29,7 @@ Server player should remain the fallback for unsupported formats.
 | Approach | Assessment |
 | --- | --- |
 | Same-origin HTTP range stream into browser `<video>` | Recommended MVP. Reuses the library file and server; supports efficient loading and seeking without server-side decoding. Browser codec support remains the limit. |
-| VLC/FFmpeg remux or transcode to browser-friendly media | Feasible as a later compatibility feature, but adds process management, CPU/bandwidth cost, seek and track handling, and cleanup work. No web transcode path exists today. |
+| FFmpeg audio compatibility conversion for touch clients | Implemented as an optional stream path. It copies the first video stream, converts audio tracks to stereo AAC, and serves a cached MP4 through the same range handler. The host must have FFmpeg on `PATH`; first playback waits for conversion and needs temporary disk space. Video codecs are not converted, and subtitles are omitted, so this does not guarantee universal browser compatibility. |
 | `file://` URL, full-file download, or capturing the server player's window | Not recommended. A remote browser cannot use the server's filesystem path; downloading wastes time/storage; capturing server output adds latency and complexity. |
 
 ## Verified current state
@@ -44,8 +49,8 @@ Server player should remain the fallback for unsupported formats.
   [WebServer.Handlers.VideoStream.cs](./Services/Web/WebServer.Handlers.VideoStream.cs).
   The
   [Music stream handler](./Services/Web/WebServer.Handlers.MusicPlayback.cs)
-  remains useful prior art for direct streaming, but its permissive range
-  parsing was not copied unchanged.
+  uses the same single-range parser so Local Music seeking follows standard
+  byte-range response semantics.
 - Video files are represented in the browser by encoded path tokens from
   [WebPathHelpers.cs](./Helpers/Web/WebPathHelpers.cs). The stream endpoint
   authorizes normal paths against configured movie roots and validates
@@ -63,7 +68,22 @@ Server player should remain the fallback for unsupported formats.
   server player.
 - The default configured extensions include MP4, MKV, AVI, MOV, WMV, M4V, TS,
   and FLV. These are container extensions, not a guarantee about the codecs
-  inside each file. No browser-oriented video transcode endpoint was found.
+  inside each file.
+- Touch clients request `audioCompat=auto` and send only positively reported
+  `canPlayType()` hints for known audio codec profiles. After authorizing the
+  source, the server probes its tracks with FFprobe inside the cancellable
+  operation. Known, supported stereo audio in MP4/M4V is streamed unchanged;
+  supported audio in other containers is copied into an MP4 without audio
+  re-encoding; unknown, unsupported, or multichannel audio is converted to
+  stereo AAC. If FFprobe cannot provide usable metadata, the server keeps the
+  conservative AAC fallback. Generated MP4s are cached by source path, size,
+  modified time, and compatibility mode; copy-remux output is distinct from
+  AAC output and cache entries expire after 24 hours without use. Desktop
+  clients continue to stream the original file.
+- Local Video diagnostics use `/api/video/codec-info` to authorize the same
+  source/link path and probe source tracks with FFprobe on the RemotePlay host.
+  Missing FFprobe or probe failures are shown explicitly instead of reporting
+  an empty track list.
 
 ## Recommended implementation
 
@@ -116,16 +136,19 @@ Server player should remain the fallback for unsupported formats.
     error.
 - [x] Apply the existing library-root access policy; same-origin URLs remain
   the intended browser use, and CORS is not treated as path authorization.
+- [x] For `audioCompat=aac`, authorize the original source before conversion,
+  then use the compatible MP4 as the range-stream source.
 - [x] Add focused HTTP and parser tests for response status/headers/body,
   range edge cases, unsupported extensions, missing and outside-root files,
   additional configured roots, and authorized file/directory link targets.
-  The parser is video-specific and does not change Music stream behavior.
+  The Music stream handler also uses the parser and omits `Content-Range` from
+  full `200 OK` responses.
 
 ### Phase 2: Add the browser-local video surface
 
 - [x] Add a dedicated responsive `<video>` player surface in the Video view. Use
-  `playsinline` and metadata preloading; provide accessible labels, an explicit
-  Stop action, and browser fullscreen support.
+  `playsinline` and metadata preloading; provide accessible labels,
+  click-to-fullscreen support, and the shared player dock's Stop action.
 - [x] Keep the local video surface out of the shared Radio/Podcast/Music dock and
   hide it when Video is not the active view. Do not reuse the audio element or
   `_localMediaType` as the video player state.
@@ -174,6 +197,8 @@ Server player should remain the fallback for unsupported formats.
     value and starts the server player at that position.
   - Avoid duplicate audio during transition and retain the old player if the
     new target fails to start. Report handoff failures visibly.
+  - Bound handoff requests and status reads; show the pending target and
+    release the pending UI before the background status refresh completes.
 - [x] Keep the browser video element and per-page Local Video state as the
   source of truth. `/api/local-playing` remains a server-wide hint for the WPF
   idle overlay; it does not determine Local Video playback state.
@@ -208,37 +233,96 @@ Focused regression coverage in `WebAssetRegressionTests` and
 
 ### Phase 5: Codec compatibility and optional transcoding
 
-- Start with unchanged source bytes. Test representative files from the actual
-  library, including an H.264/AAC MP4 and files using containers/codecs that
-  are known not to work in the target browser.
-- Use `canPlayType()` only as a hint. If codec metadata is available, optionally
-  use `MediaCapabilities.decodingInfo()` to improve the preflight message; still
-  handle the runtime media `error` event.
-- Explain unsupported formats and keep the Server playback fallback visible.
-  Do not claim that all configured extensions are browser playable.
-- Treat remux/transcode as a separate follow-up if real usage requires it.
-  There is no existing browser transcoding pipeline. A later design must cover
-  the selected VLC/FFmpeg tool, process lifetime, concurrent sessions, CPU and
-  bandwidth limits, seek behavior, audio/subtitle tracks, cleanup, and
-  user-visible failures. Prefer remuxing when compatible; transcode only when
-  required.
+- [x] Keep streaming original bytes and verify the response body and container
+  MIME type for every configured video extension.
+- [x] Use `canPlayType()` synchronously as a conservative hint for known audio
+  codec profiles. Send only positive `maybe`/`probably` results, and use
+  FFprobe source metadata to select direct playback, audio-copy remuxing, or
+  AAC encoding. Unknown profiles, unsupported results, and multichannel audio
+  keep the AAC fallback; runtime media errors remain authoritative.
+- [x] Explain uncertain/unsupported browser formats without preventing the
+  playback attempt, and keep the Play on Server fallback visible.
+- [x] Add touch-client codec-aware audio compatibility: preserve supported
+  stereo audio when possible, remux it into MP4 without re-encoding when
+  needed, and use stereo AAC when support is unknown or insufficient. Copy the
+  video stream, preserve HTTP range seeking, cache each compatibility mode
+  separately, and expire cached output after 24 hours without use. Desktop
+  clients retain direct streaming.
+- [x] Report missing FFmpeg and conversion failures explicitly, and show
+  codec-checking, audio-copy, or AAC-conversion status as appropriate. Keep the
+  cancel action visible only while FFmpeg is actively processing; cancellation
+  also stops an in-progress FFprobe check when replacing or stopping playback.
+- [x] Expose authorized FFmpeg audio-transcode progress and a speed-based
+  remaining-time estimate in the Local player and diagnostics. If media
+  duration is unavailable, show progress without inventing an ETA.
+- [x] Stop Server playback when confirmed touch-client transcoding begins, so
+  the isolated player closes during a long conversion. When no conversion is
+  needed, retain the Local-readiness-first handoff; finalize only after both
+  the server stop and Local readiness are confirmed.
+- [x] Keep video conversion, subtitle preservation, and global CPU/storage
+  limits out of scope. Copied video codecs still need to be supported by the
+  browser; the server-side player remains the fallback.
+
+Actual-library Chrome/Edge playback checks remain in the Phase 6 rollout
+checklist; the repository contains no real-media fixtures for those checks.
 
 ### Phase 6: Verification and rollout
 
-- Add focused frontend regressions for Local/Server routing, status-poll
-  isolation, controls, error handling, and the Local mode handoff.
+- [x] Add focused frontend regressions for Local/Server routing, status-poll
+  isolation, HTML-media-backed controls, runtime error handling, and the Local
+  mode handoff, including paused Server-to-Local startup.
 - [x] Add server tests for stream range/path cases in Phase 1.
-- Manually test Chrome/Edge desktop and any explicitly supported mobile
-  browsers using:
-  - A known-supported MP4, with start, pause, resume, seek, skip, stop, and
-    fullscreen.
-  - A browser-unsupported or uncertain container/codec, verifying the fallback.
-  - Local-to-Server and Server-to-Local handoff, including paused playback.
-  - Video queue/next/previous, resume history, and navigation away from and
-    back to Video.
-  - A slow connection and a disconnected client during a range response.
-- Retain existing movie-card click and playback-launch regression coverage.
-  Confirm Podcast/Music queue and dock behavior are unchanged.
+- [x] Test FFmpeg argument construction and source cache keys, and verify that
+  compatibility requests still authorize the original path before conversion.
+- [x] Smoke-test desktop Chrome using a generated H.264 MP4 served by the real
+  WebServer range endpoint: start, pause/resume, seek, held skip, stop,
+  fullscreen entry/exit, view switching, and previous-video navigation.
+- [x] Verify the unsupported-format fallback with an empty `.flv` fixture.
+- [x] Exercise paused Local-to-Server-to-Local handoff at about 5 seconds. The
+  browser test simulated server playback/status responses because the stream
+  test host has stub player callbacks; media streaming still used the real
+  WebServer endpoint.
+- [x] Verify a throttled 200,000-byte range response (206, about 7.74 seconds),
+  abort a client during a full response, and confirm `/health` still returns
+  200.
+- [x] Retain existing queue, adjacent-video, progress/resume, and playback
+  launch regression coverage. These behaviors are covered by the frontend and
+  server tests; the smoke run did not manually exercise queue/resume history.
+- [x] Retain existing movie-card click and playback-launch regression coverage.
+  Existing frontend regressions also cover Podcast/Music queue and dock behavior.
+- [x] Keep the compact Local preview in the player dock rather than above the
+  browser list. A Server-to-Local handoff starts the Local player fullscreen;
+  otherwise a dedicated overlay captures taps on the compact preview and opens
+  fullscreen. Its prompt fades after 1.5 seconds of inactivity, but the preview
+  remains tappable. Fullscreen shows the same fading center prompt to return to
+  the thumbnail. While an audio compatibility transcode is active, that
+  fullscreen button instead shows progress and the ETA, stays visible, and exits
+  fullscreen when tapped. Native video controls are enabled only in fullscreen,
+  while the shared player dock retains compact-mode playback controls.
+- [x] Restore the Local player dock after startup cleanup stops previous media,
+  and keep the selected Local/Server preference unchanged when stopping a Local
+  video.
+- [x] Return from fullscreen through the centered, fading "Tap to go to
+  thumbnail" overlay, without a separate corner button. Use an in-page
+  fullscreen fallback when the browser Fullscreen API is unavailable.
+- [x] Request AAC-compatible audio on touch clients while keeping desktop
+  Local video streaming unchanged.
+- [x] Cover FFmpeg progress parsing and ETA calculation, secure status-endpoint
+  access, and Local player/diagnostics status display.
+- [x] Add an authorized transcode-cancel endpoint and operation-level
+  cancellation. The compact player exposes "Cancel transcode" while tablet
+  audio preparation is pending; normal stop and source replacement also request
+  cancellation. Cancellation terminates FFmpeg and removes partial output.
+
+Automated Phase 6 verification: the focused frontend, stream, and transcoder
+Release test run for the cancellation follow-up reported 90 passed and 0 failed.
+FFmpeg progress output was also checked against a short generated media stream.
+The integrated browser identified as Chrome on Windows. Edge and mobile
+browsers were not exercised, and no codec compatibility beyond the tested H.264
+fixture is claimed. The sample AC-3 5.1-to-stereo-AAC conversion succeeded in a
+manual 10-second FFmpeg check.
+Tablet audio, fullscreen exit, the in-page fullscreen fallback, and Escape-key
+behavior, and transcode cancellation are not device-verified.
 
 ## MVP acceptance criteria
 
@@ -257,6 +341,9 @@ Focused regression coverage in `WebAssetRegressionTests` and
    fallback.
 8. Local Video UI is confined to the Video view and does not reintroduce an
    audio dock in Video or alter movie-card click behavior.
+9. At desktop docked widths, Local preview stays inside the player dock at no
+   more than 320x180 CSS pixels; clicking its image toggles fullscreen and
+   returns to the compact preview without intercepting native controls.
 
 ## External references
 

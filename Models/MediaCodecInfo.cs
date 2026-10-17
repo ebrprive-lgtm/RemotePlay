@@ -31,6 +31,7 @@ internal sealed record AudioTrackInfo
     public int Id { get; init; }
     public string Codec { get; init; } = string.Empty;
     public string CodecDescription { get; init; } = string.Empty;
+    public string Profile { get; init; } = string.Empty;
     public int Channels { get; init; }
     public string ChannelLayout { get; init; } = string.Empty;
     public int SampleRate { get; init; }

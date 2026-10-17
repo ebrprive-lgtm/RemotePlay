@@ -1176,16 +1176,25 @@ let _localBoostGraphBuilt = false;
 let _localBoostGraphFailed = false;
 let _localBoostWarningReported = false;
 
+function _resumeLocalBoostContext() {
+  if (!_localBoostCtx || _localBoostCtx.state === 'running' || _localBoostCtx.state === 'closed') return;
+  _localBoostCtx.resume().catch((error) => {
+    if (!_localBoostWarningReported) {
+      console.warn('Could not resume the local audio graph.', error);
+      _localBoostWarningReported = true;
+    }
+  });
+}
+
 function _ensureLocalBoostGraph() {
   const a = typeof _getLocalAudio !== 'undefined' ? _getLocalAudio() : null;
   if (!a) return null;
   if (_localBoostGraphFailed) return null;
-  // Graph already built — context is always kept running, just return the gain node.
-  if (_localBoostGraphBuilt && _localBoostGain) {
+  if (_localBoostGraphBuilt) {
+    if (!_localBoostGain || _localBoostCtx?.state === 'closed') return null;
+    _resumeLocalBoostContext();
     return _localBoostGain;
   }
-  // Do not attempt to rebuild after the context was closed — the element would throw.
-  if (_localBoostGraphBuilt) return null;
   try {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) {
@@ -1206,14 +1215,7 @@ function _ensureLocalBoostGraph() {
     _localBoostGain.connect(_localBoostAnalyser);
     _localBoostAnalyser.connect(_localBoostCtx.destination);
     _localBoostGraphBuilt = true;
-    // Resume from the initial 'suspended' state that autoplay policy creates.
-    // After this first resume the context is kept running permanently.
-    _localBoostCtx.resume().catch((error) => {
-      if (!_localBoostWarningReported) {
-        console.warn('Could not resume the local audio graph.', error);
-        _localBoostWarningReported = true;
-      }
-    });
+    _resumeLocalBoostContext();
     return _localBoostGain;
   } catch (error) {
     _localBoostGraphFailed = true;
@@ -1228,14 +1230,6 @@ function _ensureLocalBoostGraph() {
 function _getLocalAudioAnalyser() {
   const gainNode = _ensureLocalBoostGraph();
   if (!gainNode || !_localBoostAnalyser) return null;
-  if (_localBoostCtx?.state === 'suspended') {
-    _localBoostCtx.resume().catch((error) => {
-      if (!_localBoostWarningReported) {
-        console.warn('Could not resume the local audio graph.', error);
-        _localBoostWarningReported = true;
-      }
-    });
-  }
   return _localBoostAnalyser;
 }
 

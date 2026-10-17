@@ -16,6 +16,9 @@ namespace RemotePlay.Services;
 internal sealed class VideoPlayerProcessManager : IDisposable
 {
     private const string VideoPlayerExecutableName = "RemotePlay.VideoPlayer.exe";
+    private const int ReconnectTimeoutMs = 2_000;
+    private static readonly TimeSpan CommandResponseTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan PingResponseTimeout = TimeSpan.FromSeconds(5);
     private readonly string _instanceId;
     private readonly Action<string> _logger;
     private Process? _process;
@@ -180,17 +183,22 @@ internal sealed class VideoPlayerProcessManager : IDisposable
         await _startLock.WaitAsync(ct);
         try
         {
-            _logger("[VideoPlayerManager] Restarting crashed process...");
+            _logger("[VideoPlayerManager] Restarting player process...");
 
-            var lastFilePath = _lastKnownState.FilePath;
-            var lastPosition = _lastKnownState.PositionSeconds;
+            var lastKnownState = _lastKnownState with { };
+            var lastFilePath = lastKnownState.FilePath;
+            var lastPosition = lastKnownState.PositionSeconds;
 
             // Kill the old process
             KillProcess();
             await Task.Delay(500, ct);
 
-            // Start new process
-            var started = StartCore(_lastKnownState.DisplayIndex, ct);
+            // Start the replacement process off the UI thread; connecting to its pipe can take several seconds.
+            var started = await Task.Factory.StartNew(
+                () => StartCore(lastKnownState.DisplayIndex, ct),
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
             if (!started)
                 return false;
 
@@ -202,8 +210,8 @@ internal sealed class VideoPlayerProcessManager : IDisposable
                 _logger("[VideoPlayerManager] Fullscreen controls settings were not acknowledged after player restart.");
             }
 
-            // Resume playback if we had a file playing
-            if (!string.IsNullOrEmpty(lastFilePath) && File.Exists(lastFilePath))
+            // Resume playback if we had a local file or an HTTP(S) stream playing.
+            if (lastFilePath is not null && CanResumePlaybackPath(lastFilePath))
             {
                 _logger($"[VideoPlayerManager] Resuming playback at {lastPosition:0.#}s");
                 await Task.Delay(1000, ct); // Give process time to fully initialize
@@ -213,14 +221,14 @@ internal sealed class VideoPlayerProcessManager : IDisposable
                     MessageType = nameof(PlayCommand),
                     FilePath = lastFilePath,
                     StartPositionSeconds = lastPosition,
-                    Volume = _lastKnownState.Volume,
-                    Brightness = _lastKnownState.Brightness,
-                    Saturation = _lastKnownState.Saturation,
-                    Zoom = _lastKnownState.Zoom,
-                    AudioBoost = _lastKnownState.AudioBoost,
-                    PlaybackSpeed = _lastKnownState.PlaybackSpeed,
-                    SubtitlesEnabled = _lastKnownState.SubtitlesEnabled,
-                    TargetDisplayIndex = _lastKnownState.DisplayIndex
+                    Volume = lastKnownState.Volume,
+                    Brightness = lastKnownState.Brightness,
+                    Saturation = lastKnownState.Saturation,
+                    Zoom = lastKnownState.Zoom,
+                    AudioBoost = lastKnownState.AudioBoost,
+                    PlaybackSpeed = lastKnownState.PlaybackSpeed,
+                    SubtitlesEnabled = lastKnownState.SubtitlesEnabled,
+                    TargetDisplayIndex = lastKnownState.DisplayIndex
                 }, ct);
 
                 return resumed;
@@ -239,7 +247,30 @@ internal sealed class VideoPlayerProcessManager : IDisposable
         }
     }
 
-    private bool ConnectIpc(CancellationToken ct)
+    internal static bool CanResumePlaybackPath(string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+            return false;
+
+        if (File.Exists(filePath))
+            return true;
+
+        return IsHttpStreamPath(filePath);
+    }
+
+    internal static bool IsHttpStreamPath(string? filePath)
+    {
+        if (string.IsNullOrWhiteSpace(filePath))
+            return false;
+
+        return Uri.TryCreate(filePath, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+    }
+
+    internal static bool ShouldRecycleForHttpStreamSwitch(string? currentFilePath, string? nextFilePath) =>
+        IsHttpStreamPath(currentFilePath) && IsHttpStreamPath(nextFilePath);
+
+    private bool ConnectIpc(CancellationToken ct, int maxWaitMs = 30_000)
     {
         var pipeName = $"RemotePlay.VideoPlayer.{_instanceId}";
         _isConnected = false;
@@ -248,7 +279,6 @@ internal sealed class VideoPlayerProcessManager : IDisposable
         // no continuation can be delayed between a successful connection and the first Ping.
         const int connectTimeoutMs = 2_000;
         const int retryDelayMs     = 250;
-        const int maxWaitMs        = 30_000;
         var sw = Stopwatch.StartNew();
 
         while (sw.ElapsedMilliseconds < maxWaitMs)
@@ -300,9 +330,9 @@ internal sealed class VideoPlayerProcessManager : IDisposable
         try
         {
             var ping = new PingCommand { MessageType = nameof(PingCommand) };
-            var response = await SendCommandAsync<PongResponse>(ping, ct);
+            var response = await SendCommandAsync<PongResponse>(ping, ct, PingResponseTimeout);
 
-            if (response is not null)
+            if (response?.MessageType == nameof(PongResponse))
             {
                 _lastPongReceived = DateTime.UtcNow;
                 return true;
@@ -532,36 +562,66 @@ internal sealed class VideoPlayerProcessManager : IDisposable
         return response?.Success == true;
     }
 
-    private async Task<T?> SendCommandAsync<T>(IpcMessage command, CancellationToken ct) where T : IpcMessage
+    private async Task<T?> SendCommandAsync<T>(
+        IpcMessage command,
+        CancellationToken ct,
+        TimeSpan? responseTimeout = null) where T : IpcMessage
     {
         await _commandLock.WaitAsync(ct).ConfigureAwait(false);
+        StreamWriter? pipeWriter = null;
+        StreamReader? pipeReader = null;
+        NamedPipeClientStream? pipeClient = null;
         try
         {
-            if (_pipeWriter is null || _pipeReader is null || !IsConnected)
+            pipeWriter = _pipeWriter;
+            pipeReader = _pipeReader;
+            pipeClient = _pipeClient;
+            if (pipeWriter is null || pipeReader is null || pipeClient is null || !IsConnected)
             {
                 _logger($"[VideoPlayerManager] Cannot send {command.MessageType}: IPC is not connected");
                 return null;
             }
 
+            var requestWriter = pipeWriter;
+            var requestReader = pipeReader;
             var json = IpcMessageJson.Serialize(command, GetJsonOptions());
             if (command is not PingCommand and not StatusRequestCommand)
                 _logger($"[VideoPlayerManager] Sending {command.MessageType}: {json}");
 
-            var responseLine = await Task.Factory.StartNew(
+            var responseTask = Task.Factory.StartNew(
                 () =>
                 {
-                    _pipeWriter.WriteLine(json);
-                    _pipeWriter.Flush();
-                    return _pipeReader.ReadLine();
+                    requestWriter.WriteLine(json);
+                    requestWriter.Flush();
+                    return requestReader.ReadLine();
                 },
                 CancellationToken.None,
                 TaskCreationOptions.LongRunning,
-                TaskScheduler.Default).ConfigureAwait(false);
+                TaskScheduler.Default);
 
+            var timeout = responseTimeout ?? CommandResponseTimeout;
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var timeoutTask = Task.Delay(timeout, timeoutCts.Token);
+            var completedTask = await Task.WhenAny(responseTask, timeoutTask).ConfigureAwait(false);
+            if (completedTask != responseTask)
+            {
+                ct.ThrowIfCancellationRequested();
+                _logger($"[VideoPlayerManager] {command.MessageType} response timed out after {timeout.TotalSeconds:0.#} seconds");
+                DisposePipeResources(pipeWriter, pipeReader, pipeClient);
+                _ = responseTask.ContinueWith(
+                    task => { _ = task.Exception; },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                return null;
+            }
+
+            timeoutCts.Cancel();
+            var responseLine = await responseTask.ConfigureAwait(false);
             if (responseLine is null)
             {
                 _logger($"[VideoPlayerManager] {command.MessageType} failed: the player closed the IPC connection without responding");
-                _isConnected = false;
+                DisposePipeResources(pipeWriter, pipeReader, pipeClient);
                 return null;
             }
 
@@ -574,7 +634,10 @@ internal sealed class VideoPlayerProcessManager : IDisposable
         catch (Exception ex)
         {
             _logger($"[VideoPlayerManager] SendCommand: {command.MessageType} failed: {ex.GetType().Name}: {ex.Message}");
-            _isConnected = false;  // assume pipe is broken
+            if (pipeClient is not null)
+                DisposePipeResources(pipeWriter, pipeReader, pipeClient);
+            else
+                _isConnected = false;
             return null;
         }
         finally
@@ -592,7 +655,7 @@ internal sealed class VideoPlayerProcessManager : IDisposable
                 return false;
 
             _logger("[VideoPlayerManager] Reconnecting IPC after a missing response");
-            return ConnectIpc(ct);
+            return ConnectIpc(ct, ReconnectTimeoutMs);
         }
         finally
         {
@@ -698,6 +761,24 @@ internal sealed class VideoPlayerProcessManager : IDisposable
         _pipeClient = null;
     }
 
+    private void DisposePipeResources(
+        StreamWriter? pipeWriter,
+        StreamReader? pipeReader,
+        NamedPipeClientStream? pipeClient)
+    {
+        if (ReferenceEquals(_pipeClient, pipeClient))
+        {
+            _isConnected = false;
+            _pipeWriter = null;
+            _pipeReader = null;
+            _pipeClient = null;
+        }
+
+        DisposePipeResource(pipeClient);
+        DisposePipeResource(pipeWriter);
+        DisposePipeResource(pipeReader);
+    }
+
     private static void DisposePipeResource(IDisposable? resource)
     {
         try
@@ -707,6 +788,10 @@ internal sealed class VideoPlayerProcessManager : IDisposable
         catch (IOException)
         {
             // The process has already exited and the pipe cannot be flushed.
+        }
+        catch (ObjectDisposedException)
+        {
+            // The pipe may already have been closed by a concurrent process restart.
         }
     }
 
