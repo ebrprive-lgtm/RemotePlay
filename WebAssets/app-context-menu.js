@@ -127,16 +127,21 @@
         }
       } else if (action === 'play') {
         if (ctx.type === 'video-file') {
-          if (typeof onCardClick === 'function') onCardClick({ stopPropagation: () => {} }, ctx.path);
-          else if (typeof play === 'function') play(ctx.path, ctx.name);
+          if (typeof play === 'function') await play(ctx.path, ctx.name, ctx.linkPath);
         } else if (ctx.type === 'video-recent') {
           const path = decodePath(ctx.path);
           const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
           const rawFolder = lastSlash > 0 ? path.substring(0, lastSlash) : null;
           const folderArg = rawFolder ? btoa(unescape(encodeURIComponent(rawFolder))) : null;
           if (currentMode !== 'video') switchMode('video', true);
-          await browse(folderArg);
-          await play(ctx.path, ctx.name);
+          if (typeof isPlayLocal === 'function' && isPlayLocal()) {
+            const playback = play(ctx.path, ctx.name, ctx.linkPath);
+            await browse(folderArg);
+            await playback;
+          } else {
+            await browse(folderArg);
+            await play(ctx.path, ctx.name);
+          }
         } else if (ctx.type === 'music-file' || ctx.type === 'music-recent') {
           if (currentMode !== 'music') switchMode('music', true);
           await playMusic(ctx.path, ctx.name);

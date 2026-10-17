@@ -123,29 +123,31 @@ Server player should remain the fallback for unsupported formats.
 
 ### Phase 2: Add the browser-local video surface
 
-- Add a dedicated responsive `<video>` player surface in the Video view. Use
+- [x] Add a dedicated responsive `<video>` player surface in the Video view. Use
   `playsinline` and metadata preloading; provide accessible labels, an explicit
   Stop action, and browser fullscreen support.
-- Keep the local video surface out of the shared Radio/Podcast/Music dock and
+- [x] Keep the local video surface out of the shared Radio/Podcast/Music dock and
   hide it when Video is not the active view. Do not reuse the audio element or
   `_localMediaType` as the video player state.
-- In the Video `play(path, name)` flow, branch on `isPlayLocal()`:
-  - Local: set the video source to
+- [x] In the Video `play(path, name)` flow, branch on `isPlayLocal()`:
+  - [x] Local: set the video source to
     `/api/video/stream?path=<encoded-path-token>`.
     Include and validate the link context returned by browse for authorized
     linked files.
-  - Server: retain the current `/api/video/play` request and behavior.
-- Preserve the browser user-activation window. The current Video `play()`
+-  - [x] Server: retain the current `/api/video/play` request and behavior.
+- [x] Preserve the browser user-activation window. The current Video `play()`
   awaits cleanup before starting playback; the Local branch must invoke
   `HTMLMediaElement.play()` from the original click/toggle gesture before any
   awaited network teardown that could cause autoplay policy to reject it.
-- Drive the Local UI from the video element's media events and properties
+- [x] Drive the Local UI from the video element's media events and properties
   (`play`, `pause`, `loadedmetadata`, `timeupdate`, `seeking`, `seeked`,
   `ended`, `error`, and `volumechange`). Do not let `/api/status` overwrite the
   local title, duration, position, pause state, or controls.
-- Show explicit load and playback errors. If the browser rejects the media,
+- [x] Show explicit load and playback errors. If the browser rejects the media,
   offer a clear **Play on Server** action rather than leaving a stale or
   success-shaped player state.
+- [x] Disable the Local/Server mode toggle while a Local Video session is
+  loaded; position-preserving mode handoff remains part of Phase 3.
 
 ### Phase 3: Wire controls, queue, and mode handoff
 

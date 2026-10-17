@@ -40,6 +40,46 @@ public sealed class WebAssetRegressionTests
     }
 
     [Fact]
+    public void LocalVideoSurfacePreservesServerPlaybackAndStartsWithinTheUserGesture()
+    {
+        var html = ReadWebAsset("index.html");
+        var libraryJs = ReadWebAsset("app-library.js");
+        var playbackJs = ReadWebAsset("app-playback.js");
+        var surfaceStart = html.IndexOf("<section id=\"local-video-surface\"", StringComparison.Ordinal);
+        var surfaceEnd = surfaceStart < 0 ? -1 : html.IndexOf("</section>", surfaceStart, StringComparison.Ordinal);
+        Assert.True(surfaceStart >= 0 && surfaceEnd > surfaceStart, "The Local Video surface should exist.");
+
+        var surface = html[surfaceStart..surfaceEnd];
+        AssertContainsAll(
+            surface,
+            "id=\"local-video-element\"",
+            "controls",
+            "playsinline",
+            "preload=\"metadata\"",
+            "aria-label=\"Local video player\"",
+            "onclick=\"stopLocalVideo()\"",
+            "onclick=\"toggleLocalVideoFullscreen()\"",
+            "onclick=\"playLocalVideoOnServer()\"");
+        AssertContainsAll(
+            libraryJs,
+            "if (isPlayLocal())",
+            "_playLocalVideo(p, title, _resolveVideoLinkPath(p, linkPath));",
+            "await api('/api/video/play?path='");
+
+        var localPlayStart = playbackJs.IndexOf("function _playLocalVideo(", StringComparison.Ordinal);
+        var localPlayEnd = localPlayStart < 0
+            ? -1
+            : playbackJs.IndexOf("function stopLocalVideo()", localPlayStart, StringComparison.Ordinal);
+        Assert.True(localPlayStart >= 0 && localPlayEnd > localPlayStart, "The Local Video launch flow should exist.");
+        var localPlay = playbackJs[localPlayStart..localPlayEnd];
+        var mediaPlay = localPlay.IndexOf("video.play()", StringComparison.Ordinal);
+        var playbackCleanup = localPlay.IndexOf("_stopAllPlaybackForNewStart()", StringComparison.Ordinal);
+        Assert.True(mediaPlay >= 0 && playbackCleanup > mediaPlay,
+            "Local video must start before asynchronous playback cleanup to preserve browser user activation.");
+        Assert.Contains("'/api/video/stream?' + query.toString()", localPlay, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void IndexLinksSettingsPage()
     {
         var html = ReadWebAsset("index.html");

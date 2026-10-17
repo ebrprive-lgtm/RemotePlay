@@ -2135,6 +2135,9 @@ function switchMode(mode, skipInitialBrowse = false) {
   const leavingRadio = currentMode === 'radio' && mode !== 'radio';
   console.log('[BOOTSTRAP] Leaving: video =', leavingVideo, ', music =', leavingMusic, ', podcasts =', leavingPodcasts, ', radio =', leavingRadio);
 
+  if (leavingVideo && typeof _pauseLocalVideoForNavigation === 'function') {
+    _pauseLocalVideoForNavigation();
+  }
   if (leavingPodcasts && typeof podcastsLeaveView === 'function') podcastsLeaveView();
   if (leavingMusic) {
     _cancelPendingPlaylistArtLoads();
@@ -2145,6 +2148,9 @@ function switchMode(mode, skipInitialBrowse = false) {
   currentMode = mode;
   console.log('[BOOTSTRAP] currentMode updated to:', currentMode);
   localStorage.setItem('remotePlayMode', mode);
+  if (typeof _syncLocalVideoSurfaceVisibility === 'function') {
+    _syncLocalVideoSurfaceVisibility();
+  }
   if (typeof _syncUiRoute === 'function') _syncUiRoute(mode);
   // Remove music dock when leaving music mode
   if (mode !== 'music') document.body.classList.remove('music-player-docked');
@@ -4249,6 +4255,7 @@ function _renderVideoFileRows(files) {
       const altRow    = rowIndex % 2 === 1 ? ' alt-row' : '';
       const isPlaying = f.path === playingPath;
       const displayName = f.displayName || f.name;
+      const linkPath = typeof f.linkPath === 'string' ? f.linkPath : '';
       const progress  = Number(f.progress) || 0;
       const progressPct = Math.max(0, Math.min(99, Math.round(progress * 100)));
       const cardClass = 'movie-card ' +
@@ -4257,7 +4264,7 @@ function _renderVideoFileRows(files) {
         (played    ? 'played '  : '') +
         (favorite  ? 'favorite ': '') +
         altRow;
-      const action = isPlaying ? '' : ' onclick="onCardClick(event,\'' + f.path + '\')"';
+      const action = isPlaying ? '' : ' onclick="onCardClick(event,\'' + f.path + '\',\'' + linkPath + '\')"';
       // ── column: watched pip ────────────────────────────────────────────────
       // watched state is indicated by the left border colour on the row (class 'played')
       // ── column: title (with inline actions on right) ──────────────────────
@@ -4265,7 +4272,7 @@ function _renderVideoFileRows(files) {
       const inlineActions = isPlaying
         ? '<div class="vlc-inline-actions"><button class="stop-btn" onclick="stopPlayingCard(event,\'' + f.path + '\')">&#9632; Stop</button></div>'
         : '<div class="vlc-inline-actions">' +
-            '<button class="primary-action" onclick="playCardAction(event,\'' + f.path + "','" + esc(f.name) + '\')">&#9654; Play</button>' +
+            '<button class="primary-action" onclick="playCardAction(event,\'' + f.path + "','" + esc(f.name) + "','" + linkPath + '\')">&#9654; Play</button>' +
             '<button class="muted-action"   onclick="queueCardAction(event,\'' + f.path + '\')">' + (queued ? '&#8722; Unqueue' : '+ Queue') + '</button>' +
             '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + f.path + '\')">' + (favorite ? '&#9733; Unfav' : '&#9734; Fav') + '</button>' +
             '<button class="muted-action"   onclick="toggleWatchedCard(event,\'' + f.path + '\')">' + (played ? '&#128064; Unwatch' : '&#10003; Watched') + '</button>' +
@@ -4299,7 +4306,7 @@ function _renderVideoFileRows(files) {
       // ── grid-mode card overlay actions (hidden in list mode) ─────────────
       const cardActionsGrid = isPlaying ? '' :
         '<div class="card-actions">' +
-          '<button class="primary-action" onclick="playCardAction(event,\'' + f.path + "','" + esc(f.name) + '\')">Play</button>' +
+          '<button class="primary-action" onclick="playCardAction(event,\'' + f.path + "','" + esc(f.name) + "','" + linkPath + '\')">Play</button>' +
           '<button class="muted-action"   onclick="queueCardAction(event,\'' + f.path + '\')">' + (queued ? 'Unqueue' : 'Queue') + '</button>' +
           '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + f.path + '\')">'
             + (favorite ? '&#10084;&#xFE0E; Unfavorite' : '&#9825; Favorite') + '</button>' +
@@ -4314,11 +4321,12 @@ function _renderVideoFileRows(files) {
       return '<div class="' + cardClass +
         '" id="' + cardIdFor(f.path) +
         '" data-path="' + esc(f.path) +
+        '" data-link-path="' + esc(linkPath) +
         '" role="button" tabindex="0" aria-label="Play ' + esc(displayName) +
         '" data-thumb="' + esc(thumbUrl) + '"' +
         action +
         ' onkeydown="activateKeyboardClick(event,this)"' +
-        ' oncontextmenu="_ctxShow(event,\'video-file\',{path:\'' + esc(f.path) + '\',name:\'' + esc(displayName) + '\',played:' + played + ',queued:' + queued + ',favorite:' + favorite + '})"' +
+        ' oncontextmenu="_ctxShow(event,\'video-file\',{path:\'' + esc(f.path) + '\',name:\'' + esc(displayName) + '\',linkPath:\'' + linkPath + '\',played:' + played + ',queued:' + queued + ',favorite:' + favorite + '})"' +
         ' onpointerdown="beginCardHold(event,\'' + f.path + '\')"' +
         ' onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">' +
         // List-mode columns (CSS grid)
@@ -4501,8 +4509,9 @@ function renderRecent(files) {
       '<div class="vr-card" role="button" tabindex="0"' +
       ' data-recent-video-path="' + esc(f.path) + '"' +
       ' data-recent-video-title="' + esc(title) + '"' +
+      ' data-recent-video-link-path="' + esc(f.linkPath || '') + '"' +
       ' title="' + esc(title) + '"' +
-      ' oncontextmenu="_ctxShow(event,\'video-recent\',{path:\'' + esc(f.path) + '\',name:\'' + esc(title) + '\'})"' +
+      ' oncontextmenu="_ctxShow(event,\'video-recent\',{path:\'' + esc(f.path) + '\',name:\'' + esc(title) + '\',linkPath:\'' + esc(f.linkPath || '') + '\'})"' +
       ' onkeydown="activateKeyboardClick(event,this)">' +
       '<div class="vr-thumb" style="background-image:url(\'' + thumb + '\')"></div>' +
       '<div class="vr-label">' + esc(title) + '</div>' +
@@ -4522,8 +4531,18 @@ function renderRecent(files) {
     // browse() expects Base64-encoded path (server calls DecodePath on it)
     const folderArg = rawFolder ? btoa(unescape(encodeURIComponent(rawFolder))) : null;
     if (currentMode !== 'video') switchMode('video', true);
-    await browse(folderArg);
-    await play(encodedPath, card.dataset.recentVideoTitle);
+    if (isPlayLocal()) {
+      const playback = play(
+        encodedPath,
+        card.dataset.recentVideoTitle,
+        card.dataset.recentVideoLinkPath || ''
+      );
+      await browse(folderArg);
+      await playback;
+    } else {
+      await browse(folderArg);
+      await play(encodedPath, card.dataset.recentVideoTitle);
+    }
   };
   strip.addEventListener('click', strip._recentVideoHandler);
 }
@@ -4544,6 +4563,7 @@ function renderProgressCard(f, isContinue, isFavoriteSection = false) {
   const bg = 'data-thumb="' + esc(thumbUrl) + '"';
   const pct = Math.max(0, Math.min(99, Math.round((Number(f.progress) || 0) * 100)));
   const displayName = f.displayName || f.name;
+  const linkPath = typeof f.linkPath === 'string' ? f.linkPath : '';
   const queued = queuedVideos.has(f.path);
   const favorite = favoriteVideos.has(f.path) || Boolean(f.favorite);
   if (favorite) favoriteVideos.add(f.path);
@@ -4561,12 +4581,16 @@ function renderProgressCard(f, isContinue, isFavoriteSection = false) {
     continueCardIdFor(f.path) +
     '" data-path="' +
     esc(f.path) +
+    '" data-link-path="' +
+    esc(linkPath) +
     '" role="button" tabindex="0" aria-label="Play ' +
     esc(displayName) +
     '" ' +
     bg +
     ' onclick="onCardClick(event,\'' +
     f.path +
+    '\',\'' +
+    linkPath +
     '\')" onkeydown="activateKeyboardClick(event,this)" onpointerdown="beginCardHold(event,\'' +
     f.path +
     '\')" onpointerup="endCardHold()" onpointercancel="endCardHold()" onpointerleave="endCardHold()">' +
@@ -4584,6 +4608,8 @@ function renderProgressCard(f, isContinue, isFavoriteSection = false) {
     f.path +
     "','" +
     esc(displayName) +
+    "','" +
+    linkPath +
     '\')">Play</button><button class="muted-action" onclick="queueCardAction(event,\'' +
     f.path +
     '\')">' +
@@ -4627,7 +4653,24 @@ function goBack() {
     if (d) browse(d, 0, false, false);
   }
 }
-function onCardClick(event, p) {
+function _findCurrentVideoFile(path) {
+  if (typeof _currentRawFiles !== 'undefined' && Array.isArray(_currentRawFiles)) {
+    const file = _currentRawFiles.find((item) => item.path === path);
+    if (file) return file;
+  }
+  if (typeof currentData !== 'undefined' && Array.isArray(currentData?.files)) {
+    return currentData.files.find((item) => item.path === path) || null;
+  }
+  return null;
+}
+
+function _resolveVideoLinkPath(path, linkPath) {
+  if (typeof linkPath === 'string' && linkPath) return linkPath;
+  const file = _findCurrentVideoFile(path);
+  return typeof file?.linkPath === 'string' ? file.linkPath : '';
+}
+
+function onCardClick(event, p, linkPath, name) {
   if (cardHoldOpened) {
     cardHoldOpened = false;
     event.preventDefault();
@@ -4639,7 +4682,7 @@ function onCardClick(event, p) {
     _videoSelectionToggle(p);
     return;
   }
-  play(p);
+  play(p, name, linkPath);
 }
 function beginCardHold(event, p) {
   if (!window.matchMedia('(pointer:coarse)').matches) return;
@@ -4661,10 +4704,19 @@ function endCardHold() {
   clearTimeout(cardHoldTimer);
   cardHoldTimer = null;
 }
-async function play(p, name) {
+async function play(p, name, linkPath) {
+  const currentFile = _findCurrentVideoFile(p);
+  const title = name || currentFile?.displayName || currentFile?.name || '';
+  if (isPlayLocal()) {
+    _playLocalVideo(p, title, _resolveVideoLinkPath(p, linkPath));
+    return;
+  }
+
+  if (typeof _localVideoHasSource === 'function' && _localVideoHasSource()) {
+    stopLocalVideo();
+  }
   await _stopAllPlaybackForNewStart();
 
-  const title = name || '';
   playingPath = p;
   setStatus(title ? 'Playing: ' + title : 'Playing...');
   setPlayerPoster(p);
@@ -4693,10 +4745,10 @@ function closeCardActions(event) {
   const card = event?.target?.closest('.movie-card');
   if (card) card.classList.remove('actions-open');
 }
-async function playCardAction(event, p, name) {
+async function playCardAction(event, p, name, linkPath) {
   event.stopPropagation();
   closeCardActions(event);
-  await play(p, name);
+  await play(p, name, linkPath);
 }
 async function startOverCard(event, p, name) {
   event.stopPropagation();
@@ -4989,11 +5041,12 @@ function updatePlayingCard(newPath, oldPath) {
   for (const p of new Set(paths)) {
     for (const card of getMovieCards(p)) {
       const isActive = p === newPath;
+      const linkPath = card.dataset.linkPath || '';
       card.classList.toggle('playing', isActive);
       card.classList.remove('actions-open');
       card.classList.toggle('played', !isActive && playedVideos.has(p));
       syncVideoStateBadges(card);
-      card.onclick = isActive ? null : (event) => onCardClick(event, p);
+      card.onclick = isActive ? null : (event) => onCardClick(event, p, linkPath);
       // Grid-mode overlay actions
       const actions = card.querySelector('.card-actions');
       if (actions) actions.style.display = isActive ? 'none' : '';
@@ -5020,7 +5073,7 @@ function updatePlayingCard(newPath, oldPath) {
           const isWatched = card.classList.contains('played');
           const fname = esc(card.getAttribute('aria-label') || '').replace(/^Play /, '');
           vlcInlineActions.innerHTML =
-            '<button class="primary-action"  onclick="playCardAction(event,\'' + ep + "','" + fname + '\')">&#9654; Play</button>' +
+            '<button class="primary-action"  onclick="playCardAction(event,\'' + ep + "','" + fname + "','" + linkPath + '\')">&#9654; Play</button>' +
             '<button class="muted-action"    onclick="queueCardAction(event,\'' + ep + '\')">' + (isQueued ? '&#8722; Unqueue' : '+ Queue') + '</button>' +
             '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + ep + '\')">' + (isFav ? '&#9733; Unfav' : '&#9734; Fav') + '</button>' +
             '<button class="muted-action"    onclick="toggleWatchedCard(event,\'' + ep + '\')">' + (isWatched ? '&#128064; Unwatch' : '&#10003; Watched') + '</button>';
@@ -5040,7 +5093,7 @@ function updatePlayingCard(newPath, oldPath) {
           const fname = esc(card.getAttribute('aria-label') || '').replace(/^Play /, '');
           vlcActions.classList.add('card-list-actions');
           vlcActions.innerHTML =
-            '<button class="primary-action"  onclick="playCardAction(event,\'' + ep + "','" + fname + '\')">&#9654;</button>' +
+            '<button class="primary-action"  onclick="playCardAction(event,\'' + ep + "','" + fname + "','" + linkPath + '\')">&#9654;</button>' +
             '<button class="muted-action"    onclick="queueCardAction(event,\'' + ep + '\')">' + (isQueued ? '&#8722;Q' : '+Q') + '</button>' +
             '<button class="favorite-action" onclick="toggleFavoriteCard(event,\'' + ep + '\')">' + (isFav ? '&#9733;' : '&#9734;') + '</button>' +
             '<button class="muted-action"    onclick="toggleWatchedCard(event,\'' + ep + '\')">' + (isWatched ? '&#128064;' : '&#10003;') + '</button>';

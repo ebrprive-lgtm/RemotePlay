@@ -461,12 +461,21 @@ function setPlayLocal(on) {
   if (btn) {
     btn.classList.toggle('active', on);
     btn.title = on ? 'Playing on this device — click to switch to server' : 'Playing on server — click to play on this device';
+    btn.setAttribute('aria-pressed', String(on));
   }
   // Toggle local-play-mode class on body to hide server-only audio effects
   document.body.classList.toggle('local-play-mode', on);
+  if (typeof _syncLocalVideoModeToggle === 'function') _syncLocalVideoModeToggle();
 }
 let _togglePlayLocalLast = 0;
 function togglePlayLocal() {
+  if (typeof _localVideoHasSource === 'function' && _localVideoHasSource()) {
+    if (typeof _showLocalVideoWarning === 'function') {
+      _showLocalVideoWarning('Stop local video before switching playback mode.');
+    }
+    return;
+  }
+
   // Debounce: on touch devices a single tap fires touchend + synthetic click;
   // without this guard the function runs twice and the active state flips back.
   const now = Date.now();
@@ -1016,6 +1025,15 @@ async function pollStatus() {
     updateDiagnosticsIndicator(s.lastError ? 'error' : 'ok');
     if (typeof s.expertMode === 'boolean') _setExpertMode(s.expertMode);
     if (typeof s.debugMode  === 'boolean') _setDebugMode(s.debugMode);
+    if (
+      typeof currentMode !== 'undefined' &&
+      currentMode === 'video' &&
+      typeof _localVideoHasSource === 'function' &&
+      _localVideoHasSource()
+    ) {
+      _renderLocalVideoUi();
+      return s;
+    }
     const bar = document.getElementById('now-playing-bar');
     const hasQueue = Array.isArray(s.queue) && s.queue.length > 0;
     const isLiveTvMode = typeof currentMode !== 'undefined' && currentMode === 'live-tv';

@@ -4,6 +4,328 @@
   return m + ':' + (s < 10 ? '0' : '') + s;
 }
 
+let _localVideoState = null;
+let _localVideoGeneration = 0;
+let _localVideoEventsBound = false;
+
+function _getLocalVideoElement() {
+  return document.getElementById('local-video-element');
+}
+
+function _localVideoHasSource() {
+  return Boolean(_localVideoState?.path);
+}
+
+function _syncLocalVideoModeToggle() {
+  const button = document.getElementById('play-local-toggle');
+  if (!button) return;
+
+  const useLocalPlayback = typeof isPlayLocal === 'function' && isPlayLocal();
+  const hasLocalVideo = _localVideoHasSource();
+  button.disabled = hasLocalVideo;
+  button.setAttribute('aria-pressed', String(useLocalPlayback));
+  button.title = hasLocalVideo
+    ? 'Stop local video before switching playback mode'
+    : useLocalPlayback
+      ? 'Playing on this device — click to switch to server'
+      : 'Playing on server — click to play on this device';
+}
+
+function _syncLocalVideoSurfaceVisibility() {
+  const surface = document.getElementById('local-video-surface');
+  if (surface) {
+    surface.hidden = !(
+      typeof currentMode !== 'undefined' &&
+      currentMode === 'video' &&
+      _localVideoHasSource()
+    );
+  }
+  _syncLocalVideoModeToggle();
+}
+
+function _formatLocalVideoTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return '--:--';
+  const totalSeconds = Math.floor(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+  const twoDigits = (value) => String(value).padStart(2, '0');
+  return hours > 0
+    ? `${hours}:${twoDigits(minutes)}:${twoDigits(remainingSeconds)}`
+    : `${minutes}:${twoDigits(remainingSeconds)}`;
+}
+
+function _renderLocalVideoFullscreenButton() {
+  const button = document.getElementById('local-video-fullscreen');
+  if (!button) return;
+  const isFullscreen = Boolean(document.fullscreenElement);
+  button.textContent = isFullscreen ? 'Exit fullscreen' : 'Fullscreen';
+  button.setAttribute('aria-label', isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen');
+  button.title = isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen';
+}
+
+function _renderLocalVideoUi() {
+  const state = _localVideoState;
+  const video = _getLocalVideoElement();
+  if (!state || !video) return;
+
+  const surface = document.getElementById('local-video-surface');
+  const heading = document.getElementById('local-video-heading');
+  const status = document.getElementById('local-video-status');
+  const time = document.getElementById('local-video-time');
+  const volume = document.getElementById('local-video-volume');
+  const error = document.getElementById('local-video-error');
+  const fallback = document.getElementById('local-video-server-fallback');
+
+  if (heading) heading.textContent = state.name || 'Local video';
+  if (status) {
+    status.textContent = state.errorMessage
+      ? 'Playback failed'
+      : video.ended
+        ? 'Playback ended'
+        : video.seeking
+          ? 'Seeking…'
+          : state.loading && video.readyState === 0
+            ? 'Loading video…'
+            : video.paused
+              ? 'Paused'
+              : 'Playing locally';
+  }
+  if (time) {
+    time.textContent =
+      _formatLocalVideoTime(video.currentTime) + ' / ' + _formatLocalVideoTime(video.duration);
+  }
+  if (volume) {
+    volume.textContent = video.muted || video.volume <= 0
+      ? 'Muted'
+      : 'Volume ' + Math.round(video.volume * 100) + '%';
+  }
+  if (error) {
+    error.textContent = state.errorMessage;
+    error.hidden = !state.errorMessage;
+  }
+  if (fallback) fallback.hidden = !state.errorMessage;
+  if (surface) surface.setAttribute('aria-busy', state.loading && !state.errorMessage ? 'true' : 'false');
+}
+
+function _localVideoErrorMessage(error) {
+  if (error?.name === 'NotAllowedError') {
+    return 'The browser blocked playback. Try the video controls again or choose Play on Server.';
+  }
+  if (error?.name === 'NotSupportedError') {
+    return 'This browser cannot play this video format or codec. Choose Play on Server.';
+  }
+
+  switch (error?.code) {
+    case 2:
+      return 'The browser could not load the video stream. Check the connection or choose Play on Server.';
+    case 3:
+      return 'The browser could not decode this video. Its codec may not be supported; choose Play on Server.';
+    case 4:
+      return 'This browser does not support this video format or codec. Choose Play on Server.';
+    default:
+      return 'The browser could not load or play this video. Check the connection or choose Play on Server.';
+  }
+}
+
+function _showLocalVideoError(message, generation = _localVideoState?.generation) {
+  const state = _localVideoState;
+  if (!state || state.generation !== generation) return;
+  state.errorMessage = message;
+  state.loading = false;
+  releaseWakeLock();
+  _renderLocalVideoUi();
+}
+
+function _showLocalVideoWarning(message) {
+  const warning = document.getElementById('local-video-warning');
+  if (!warning) return;
+  warning.textContent = message;
+  warning.hidden = !message;
+}
+
+function _bindLocalVideoEvents() {
+  const video = _getLocalVideoElement();
+  if (!video || _localVideoEventsBound) return;
+  _localVideoEventsBound = true;
+
+  for (const eventName of [
+    'play',
+    'pause',
+    'loadedmetadata',
+    'timeupdate',
+    'seeking',
+    'seeked',
+    'ended',
+    'volumechange',
+  ]) {
+    video.addEventListener(eventName, () => {
+      const state = _localVideoState;
+      if (!state) return;
+      if (eventName === 'loadedmetadata') state.loading = false;
+      if (eventName === 'play') requestWakeLock();
+      if (eventName === 'pause' || eventName === 'ended') releaseWakeLock();
+      _renderLocalVideoUi();
+    });
+  }
+
+  video.addEventListener('playing', () => {
+    const state = _localVideoState;
+    if (!state) return;
+    state.loading = false;
+    state.errorMessage = '';
+    _renderLocalVideoUi();
+  });
+
+  video.addEventListener('error', () => {
+    const state = _localVideoState;
+    const mediaError = video.error;
+    if (!state?.path || mediaError?.code === 1) return;
+    if (video.currentSrc && state.streamUrl && video.currentSrc !== state.streamUrl) return;
+    _showLocalVideoError(_localVideoErrorMessage(mediaError), state.generation);
+  });
+
+  document.addEventListener('fullscreenchange', _renderLocalVideoFullscreenButton);
+  _renderLocalVideoFullscreenButton();
+}
+
+function _playLocalVideo(path, name, linkPath) {
+  const video = _getLocalVideoElement();
+  if (!video || !path) {
+    const surface = document.getElementById('local-video-surface');
+    if (surface && typeof currentMode !== 'undefined' && currentMode === 'video') {
+      surface.hidden = false;
+    }
+    _showLocalVideoWarning(
+      path
+        ? 'The Local Video player is unavailable. Reload the page and try again.'
+        : 'No video file was selected. Choose a video and try again.'
+    );
+    return false;
+  }
+
+  _bindLocalVideoEvents();
+
+  const previousServerPath = playingPath;
+  if (previousServerPath) {
+    playingPath = null;
+    updatePlayingCard(null, previousServerPath);
+  }
+
+  _localVideoState = null;
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+
+  const query = new URLSearchParams({ path });
+  if (linkPath) query.set('linkPath', linkPath);
+  const source = '/api/video/stream?' + query.toString();
+  const generation = ++_localVideoGeneration;
+  _localVideoState = {
+    path,
+    linkPath: linkPath || '',
+    name: name || 'Local video',
+    streamUrl: new URL(source, window.location.href).href,
+    loading: true,
+    errorMessage: '',
+    generation,
+  };
+
+  _showLocalVideoWarning('');
+  _syncLocalVideoSurfaceVisibility();
+  _renderLocalVideoUi();
+
+  if (typeof setPlayerBarVisible === 'function') setPlayerBarVisible(false);
+  if (typeof applyPhonePlaybackState === 'function') applyPhonePlaybackState(false);
+  if (typeof applyDesktopDockedLayout === 'function') applyDesktopDockedLayout(false);
+  const musicBar = document.getElementById('music-player-bar');
+  const radioBar = document.getElementById('radio-player-bar');
+  if (musicBar) musicBar.style.display = 'none';
+  if (radioBar) radioBar.style.display = 'none';
+  document.body.classList.remove('music-player-docked', 'radio-player-docked');
+
+  video.src = source;
+  video.load();
+  try {
+    const playRequest = video.play();
+    if (playRequest && typeof playRequest.catch === 'function') {
+      playRequest.catch((error) => {
+        if (error?.name === 'AbortError') return;
+        _showLocalVideoError(_localVideoErrorMessage(error), generation);
+      });
+    }
+  } catch (error) {
+    _showLocalVideoError(_localVideoErrorMessage(error), generation);
+  }
+
+  if (typeof _stopAllPlaybackForNewStart === 'function') {
+    void _stopAllPlaybackForNewStart().catch((error) => {
+      console.error('Could not stop previous playback before starting Local Video.', error);
+      if (_localVideoState?.generation === generation) {
+        _showLocalVideoWarning(
+          'Previous playback could not be stopped and may still be playing alongside this video.'
+        );
+      }
+    });
+  }
+
+  return true;
+}
+
+function stopLocalVideo() {
+  const video = _getLocalVideoElement();
+  ++_localVideoGeneration;
+  _localVideoState = null;
+  if (video) {
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+  }
+  const error = document.getElementById('local-video-error');
+  if (error) {
+    error.textContent = '';
+    error.hidden = true;
+  }
+  _showLocalVideoWarning('');
+  releaseWakeLock();
+  _syncLocalVideoSurfaceVisibility();
+}
+
+function _pauseLocalVideoForNavigation() {
+  if (!_localVideoHasSource()) return;
+  const video = _getLocalVideoElement();
+  if (video) video.pause();
+  _renderLocalVideoUi();
+}
+
+async function playLocalVideoOnServer() {
+  const state = _localVideoState;
+  if (!state?.path) return;
+  const { path, name, linkPath } = state;
+  stopLocalVideo();
+  if (typeof setPlayLocal === 'function') setPlayLocal(false);
+  await play(path, name, linkPath);
+}
+
+async function toggleLocalVideoFullscreen() {
+  const stage = document.getElementById('local-video-stage');
+  const video = _getLocalVideoElement();
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+    } else if (stage?.requestFullscreen) {
+      await stage.requestFullscreen();
+    } else if (typeof video?.webkitEnterFullscreen === 'function') {
+      video.webkitEnterFullscreen();
+    } else {
+      throw new Error('Fullscreen is not supported by this browser.');
+    }
+  } catch (error) {
+    console.error('Could not enter or exit Local Video fullscreen.', error);
+    _showLocalVideoWarning('Fullscreen could not be changed. Use the browser video controls instead.');
+  }
+}
+
 function updateResumePrompt(status) {
   const card = document.getElementById('resume-card');
   if (!card) return;
@@ -2141,4 +2463,3 @@ function _clearUpNext() {
   const countdownEl = document.getElementById('up-next-countdown');
   if (countdownEl) countdownEl.textContent = '';
 }
-
