@@ -1,6 +1,6 @@
 # Web Player UI Improvement Plan
 
-**Status:** Phases 1–7 implemented and verified. Phase 4–7 evidence and known
+**Status:** Phases 1–8 implemented and verified. Evidence and known
 browser-automation limitations are recorded below.
 
 ## Goal and scope
@@ -10,7 +10,8 @@ small/narrow layout, while keeping Radio, Podcast, and Music playback reliable.
 Use the current shared Radio/Podcast bar as the primary target and bring the
 separate Music bar into visual alignment where practical. This plan does not
 redesign the dedicated video/full-screen player or change the server playback
-protocol.
+protocol. The separate browser-local video feature is tracked in
+[VIDEO_LOCAL_PLAYBACK_PLAN.md](./VIDEO_LOCAL_PLAYBACK_PLAN.md).
 
 ## Checked baseline
 

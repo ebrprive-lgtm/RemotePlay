@@ -267,6 +267,10 @@ internal sealed partial class WebServer
                 HandleHistoryWatchedSet(ctx);
                 break;
 
+            case "/api/video/stream":
+                await HandleVideoStreamAsync(ctx).ConfigureAwait(false);
+                break;
+
             case "/api/play":
             case "/api/video/play":
                 HandlePlay(ctx);
