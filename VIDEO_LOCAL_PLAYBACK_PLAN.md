@@ -1,7 +1,7 @@
 # Local Video Playback Plan
 
-**Status:** Feasibility complete; Phase 0 defaults are selected and the Phase 1
-endpoint is implemented and verified. Phases 2–6 remain.
+**Status:** Feasibility and Phase 0 defaults are complete. Phases 1–3 are
+implemented and verified; Phases 4–6 remain.
 
 **Recommendation:** Add browser-local playback with an HTML `<video>` element
 fed by a same-origin, byte-range-aware endpoint. Keep the existing Server
@@ -151,32 +151,38 @@ Server player should remain the fallback for unsupported formats.
 
 ### Phase 3: Wire controls, queue, and mode handoff
 
-- Route Play/Pause, Stop, seek-bar commit, quick-skip, volume, and mute to the
-  browser video element while it owns playback. Continue using the current
+- [x] Route Play/Pause, Stop, seek-bar commit, quick-skip, volume, and mute to
+  the browser video element while it owns playback. Continue using the current
   server endpoints in Server mode.
-- Keep server-only controls honest: audio-track/subtitle selection and
+- [x] Keep server-only controls honest: audio-track/subtitle selection and
   server-side picture adjustments must either be implemented for browser
   playback or hidden/disabled in Local mode. Do not route them to the server
   while a browser video is active. In particular, do not imitate sharpening
   with brightness or contrast changes.
-- Preserve the existing Video queue, selection-to-queue action, and
+- [x] Preserve the existing Video queue, selection-to-queue action, and
   previous/next behavior. `/api/adjacent` and the current queue are
   server-oriented; Local mode must select the next item without asking the
   server player to start it. The browser's `ended` event should use the same
   queue policy and continue in the selected playback mode.
-- Support mode switching during playback:
+- [x] Support mode switching during playback:
   - Server to Local: capture the current encoded path, position, and paused
     state; start the browser player from the toggle gesture; stop server
     playback only after the browser source is ready to play.
   - Local to Server: capture the browser position and paused state; start the
     same file on the server at that position; stop the browser only after the
-    handoff succeeds. `/api/video/play` currently accepts only a path, so add
-    reliable start-position support or wait for server playback before seeking.
+    handoff succeeds. `/api/video/play` accepts an optional validated `pos`
+    value and starts the server player at that position.
   - Avoid duplicate audio during transition and retain the old player if the
     new target fails to start. Report handoff failures visibly.
-- Clarify whether `/api/local-playing` means "Local mode selected" or "browser
-  media actively playing." Prefer active, client-scoped playback state over a
-  server-wide boolean as the source of truth for Video.
+- [x] Keep the browser video element and per-page Local Video state as the
+  source of truth. `/api/local-playing` remains a server-wide hint for the WPF
+  idle overlay; it does not determine Local Video playback state.
+- [x] Treat a paused server player (`isPlaying: false`, `isPaused: true`) as
+  active for handoff confirmation and shared player controls, preserving its
+  paused state when switching modes.
+
+Focused regression coverage in `WebAssetRegressionTests` and
+`WebServerApiTests` passes (102 tests).
 
 ### Phase 4: Preserve resume, history, and lifecycle
 

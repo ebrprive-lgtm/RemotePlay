@@ -127,7 +127,7 @@ public partial class MainWindow
         }
     }
 
-    private async void PlayMovieIsolated(string filePath)
+    private async void PlayMovieIsolated(string filePath, double startPositionSeconds = 0)
     {
         await _videoPlaybackStartLock.WaitAsync();
         try
@@ -208,7 +208,7 @@ public partial class MainWindow
             {
                 MessageType = nameof(PlayCommand),
                 FilePath = filePath,
-                StartPositionSeconds = 0,
+                StartPositionSeconds = Math.Max(0, startPositionSeconds),
                 Volume = _volume,
                 Brightness = _brightness,
                 Saturation = _saturation,
@@ -227,7 +227,7 @@ public partial class MainWindow
             };
 
             // Send play command off the UI thread (pipe write should not block UI)
-            AppendLog($"[Video] Sending PlayCommand: {System.IO.Path.GetFileName(filePath)} pos=0");
+            AppendLog($"[Video] Sending PlayCommand: {System.IO.Path.GetFileName(filePath)} pos={Math.Max(0, startPositionSeconds):0.##}");
             var playAccepted = await Task.Run(() => _videoPlayerManager.SendPlayCommandAsync(playCmd));
             if (!playAccepted)
                 throw new InvalidOperationException("The isolated video player did not acknowledge the playback request.");

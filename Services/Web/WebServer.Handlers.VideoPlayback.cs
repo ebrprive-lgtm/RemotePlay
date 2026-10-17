@@ -512,6 +512,23 @@ internal sealed partial class WebServer
             return;
         }
 
+        var startPositionSeconds = 0d;
+        var positionParam = ctx.Request.QueryString["pos"];
+        if (!string.IsNullOrWhiteSpace(positionParam)
+            && (!MediaControlValueParser.TryParseDouble(positionParam, out startPositionSeconds)
+                || !double.IsFinite(startPositionSeconds)
+                || startPositionSeconds < 0))
+        {
+            TrySendResponse(ctx, 400, "text/plain", "Bad start position");
+            return;
+        }
+
+        if (startPositionSeconds > 0 && _callbacks.PlayAtPosition is null)
+        {
+            TrySendResponse(ctx, 501, "text/plain", "Position handoff is not supported");
+            return;
+        }
+
         var filePath = WebPathHelpers.DecodePath(encodedPath);
         if (!File.Exists(filePath))
         {
@@ -526,8 +543,13 @@ internal sealed partial class WebServer
         }
 
         StopAllServerPlayers(stopVideoPlayer: false);
-        _callbacks.Play(filePath);
-        Logger.Info("Playback", $"Video playback requested: '{Path.GetFileName(filePath)}' on Server");
+        if (startPositionSeconds > 0)
+            _callbacks.PlayAtPosition!(filePath, startPositionSeconds);
+        else
+            _callbacks.Play(filePath);
+        Logger.Info("Playback", startPositionSeconds > 0
+            ? $"Video playback requested: '{Path.GetFileName(filePath)}' on Server at {startPositionSeconds:0.##}s"
+            : $"Video playback requested: '{Path.GetFileName(filePath)}' on Server");
         TrySendResponse(ctx, 200, "text/plain", "OK");
         ScheduleSsePush(delayMs: 300);
     }

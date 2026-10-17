@@ -7,6 +7,7 @@
 let _localVideoState = null;
 let _localVideoGeneration = 0;
 let _localVideoEventsBound = false;
+let _localVideoHandoffPending = false;
 
 function _getLocalVideoElement() {
   return document.getElementById('local-video-element');
@@ -16,29 +17,50 @@ function _localVideoHasSource() {
   return Boolean(_localVideoState?.path);
 }
 
+function _isLocalVideoActive() {
+  return _localVideoHasSource() && typeof currentMode !== 'undefined' && currentMode === 'video';
+}
+
 function _syncLocalVideoModeToggle() {
+  if (document.body) {
+    document.body.classList.toggle('local-video-handoff-pending', _localVideoHandoffPending);
+  }
   const button = document.getElementById('play-local-toggle');
   if (!button) return;
 
   const useLocalPlayback = typeof isPlayLocal === 'function' && isPlayLocal();
   const hasLocalVideo = _localVideoHasSource();
-  button.disabled = hasLocalVideo;
+  const isVideoView = typeof currentMode !== 'undefined' && currentMode === 'video';
+  button.disabled = _localVideoHandoffPending || (hasLocalVideo && !isVideoView);
   button.setAttribute('aria-pressed', String(useLocalPlayback));
-  button.title = hasLocalVideo
-    ? 'Stop local video before switching playback mode'
-    : useLocalPlayback
-      ? 'Playing on this device — click to switch to server'
-      : 'Playing on server — click to play on this device';
+  button.title = _localVideoHandoffPending
+    ? 'Switching video playback mode'
+    : hasLocalVideo && !isVideoView
+      ? 'Return to Video to switch playback mode'
+      : useLocalPlayback
+        ? 'Playing on this device — click to switch to server'
+        : 'Playing on server — click to play on this device';
 }
 
 function _syncLocalVideoSurfaceVisibility() {
+  const hasLocalVideo = _localVideoHasSource();
+  const isVideoView = typeof currentMode !== 'undefined' && currentMode === 'video';
   const surface = document.getElementById('local-video-surface');
-  if (surface) {
-    surface.hidden = !(
-      typeof currentMode !== 'undefined' &&
-      currentMode === 'video' &&
-      _localVideoHasSource()
-    );
+  if (surface) surface.hidden = !(isVideoView && hasLocalVideo);
+  if (document.body) document.body.classList.toggle('local-video-active', hasLocalVideo);
+
+  const volumeSlider = document.getElementById('video-combined-vol');
+  if (volumeSlider) {
+    volumeSlider.max = hasLocalVideo ? '1' : '1.3';
+    volumeSlider.setAttribute('aria-label', hasLocalVideo ? 'Volume' : 'Volume / boost');
+  }
+
+  if (hasLocalVideo) {
+    const visible = isVideoView;
+    if (typeof setPlayerBarVisible === 'function') setPlayerBarVisible(visible);
+    if (typeof applyPhonePlaybackState === 'function') applyPhonePlaybackState(visible);
+    if (typeof applyDesktopDockedLayout === 'function') applyDesktopDockedLayout(visible);
+    if (visible) _renderLocalVideoUi();
   }
   _syncLocalVideoModeToggle();
 }
@@ -106,6 +128,52 @@ function _renderLocalVideoUi() {
   }
   if (fallback) fallback.hidden = !state.errorMessage;
   if (surface) surface.setAttribute('aria-busy', state.loading && !state.errorMessage ? 'true' : 'false');
+
+  if (typeof currentMode === 'undefined' || currentMode !== 'video') return;
+
+  const playerTitle = document.getElementById('player-title');
+  const playerMeta = document.getElementById('player-meta');
+  const pauseButton = document.getElementById('pause-btn');
+  const progress = document.getElementById('progress');
+  const timeLabel = document.getElementById('time-label');
+  const volumeSlider = document.getElementById('video-combined-vol');
+  const volumeLabel = document.getElementById('volume-label');
+  const mediaDuration = Number.isFinite(video.duration) ? Math.max(0, video.duration) : 0;
+  const mediaPosition = Number.isFinite(video.currentTime) ? Math.max(0, video.currentTime) : 0;
+  const currentVolume = video.muted ? 0 : Math.max(0, Math.min(1, Number(video.volume) || 0));
+
+  if (playerTitle) playerTitle.textContent = state.name || 'Local video';
+  if (playerMeta) playerMeta.textContent = state.errorMessage
+    ? 'Local playback failed'
+    : video.paused
+      ? 'Local video · Paused'
+      : 'Local video · Playing';
+  if (pauseButton) pauseButton.textContent = video.paused ? '\u25B6 Resume' : '\u23F8 Pause';
+  if (progress) {
+    progress.max = String(mediaDuration);
+    progress.disabled = mediaDuration <= 0;
+    if (!seekDragging) progress.value = String(Math.min(mediaPosition, mediaDuration || mediaPosition));
+    updateSeekFill(progress);
+  }
+  if (timeLabel) {
+    timeLabel.textContent = _formatLocalVideoTime(mediaPosition) + ' / '
+      + (mediaDuration > 0 ? _formatLocalVideoTime(mediaDuration) : '--:--');
+  }
+  if (volumeSlider) {
+    volumeSlider.value = currentVolume.toFixed(2);
+    volumeSlider.classList.remove('slider-boosting');
+    const fill = (currentVolume * 100).toFixed(2) + '%';
+    volumeSlider.style.setProperty('--cvs-vol', fill);
+    volumeSlider.style.setProperty('--cvs-boost', fill);
+    volumeSlider.style.setProperty('--cvs-thumb', 'var(--player-accent,#e94560)');
+  }
+  if (volumeLabel) volumeLabel.textContent = Math.round(currentVolume * 100) + '%';
+  if (currentVolume > 0.001) lastVolumeBeforeMute = currentVolume;
+  updateVolumeIcon(currentVolume);
+  currentPlaybackSpeed = Math.max(0.5, Math.min(2, Number(video.playbackRate) || 1));
+  syncSpeedChips(currentPlaybackSpeed);
+  if (typeof updateStopBtn === 'function') updateStopBtn(true, lastQueue.length > 0);
+  _syncLocalVideoAdjacentButtons();
 }
 
 function _localVideoErrorMessage(error) {
@@ -153,35 +221,64 @@ function _bindLocalVideoEvents() {
     'play',
     'pause',
     'loadedmetadata',
+    'durationchange',
     'timeupdate',
     'seeking',
     'seeked',
     'ended',
     'volumechange',
+    'ratechange',
+    'waiting',
+    'playing',
+    'canplay',
   ]) {
     video.addEventListener(eventName, () => {
       const state = _localVideoState;
       if (!state) return;
-      if (eventName === 'loadedmetadata') state.loading = false;
-      if (eventName === 'play') requestWakeLock();
-      if (eventName === 'pause' || eventName === 'ended') releaseWakeLock();
+      if (eventName === 'loadedmetadata') {
+        state.loading = false;
+        if (state.pendingStartPositionSeconds > 0) {
+          const duration = Number.isFinite(video.duration) ? video.duration : Infinity;
+          const position = Math.min(state.pendingStartPositionSeconds, duration);
+          try {
+            state.pendingSeek = position > 0.05;
+            video.currentTime = position;
+            state.lastPositionSeconds = position;
+            state.pendingStartPositionSeconds = 0;
+          } catch (error) {
+            state.seekError = error;
+            state.pendingSeek = false;
+          }
+        }
+      }
+      if (eventName === 'canplay' || eventName === 'playing') state.loading = false;
+      if (eventName === 'waiting') state.loading = true;
+      if (eventName === 'seeked') {
+        state.pendingSeek = false;
+        state.lastPositionSeconds = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+      }
+      if (eventName === 'timeupdate' && Number.isFinite(video.currentTime)) {
+        state.lastPositionSeconds = video.currentTime;
+      }
+      if (eventName === 'play') {
+        state.wasPlayingBeforeHandoff = true;
+        requestWakeLock();
+      }
+      if (eventName === 'pause' || eventName === 'ended') {
+        state.wasPlayingBeforeHandoff = false;
+        releaseWakeLock();
+      }
       _renderLocalVideoUi();
+      if (eventName === 'ended') void _advanceLocalVideoAfterEnd();
     });
   }
-
-  video.addEventListener('playing', () => {
-    const state = _localVideoState;
-    if (!state) return;
-    state.loading = false;
-    state.errorMessage = '';
-    _renderLocalVideoUi();
-  });
 
   video.addEventListener('error', () => {
     const state = _localVideoState;
     const mediaError = video.error;
     if (!state?.path || mediaError?.code === 1) return;
     if (video.currentSrc && state.streamUrl && video.currentSrc !== state.streamUrl) return;
+    state.loading = false;
     _showLocalVideoError(_localVideoErrorMessage(mediaError), state.generation);
   });
 
@@ -189,7 +286,7 @@ function _bindLocalVideoEvents() {
   _renderLocalVideoFullscreenButton();
 }
 
-function _playLocalVideo(path, name, linkPath) {
+function _playLocalVideo(path, name, linkPath, options = {}) {
   const video = _getLocalVideoElement();
   if (!video || !path) {
     const surface = document.getElementById('local-video-surface');
@@ -207,10 +304,7 @@ function _playLocalVideo(path, name, linkPath) {
   _bindLocalVideoEvents();
 
   const previousServerPath = playingPath;
-  if (previousServerPath) {
-    playingPath = null;
-    updatePlayingCard(null, previousServerPath);
-  }
+  if (previousServerPath && previousServerPath !== path) updatePlayingCard(null, previousServerPath);
 
   _localVideoState = null;
   video.pause();
@@ -221,6 +315,13 @@ function _playLocalVideo(path, name, linkPath) {
   if (linkPath) query.set('linkPath', linkPath);
   const source = '/api/video/stream?' + query.toString();
   const generation = ++_localVideoGeneration;
+  const startPositionSeconds = Number.isFinite(options.startPositionSeconds)
+    ? Math.max(0, options.startPositionSeconds)
+    : 0;
+  const autoplay = options.autoplay !== false;
+  const sliderVolume = Number.parseFloat(document.getElementById('video-combined-vol')?.value);
+  const requestedVolume = Number.isFinite(options.volume) ? options.volume : sliderVolume;
+  const volume = Number.isFinite(requestedVolume) ? Math.max(0, Math.min(1, requestedVolume)) : 1;
   _localVideoState = {
     path,
     linkPath: linkPath || '',
@@ -229,47 +330,397 @@ function _playLocalVideo(path, name, linkPath) {
     loading: true,
     errorMessage: '',
     generation,
+    pendingStartPositionSeconds: startPositionSeconds,
+    pendingSeek: false,
+    seekError: null,
+    lastPositionSeconds: startPositionSeconds,
+    wasPlayingBeforeHandoff:
+      typeof options.wasPlayingBeforeHandoff === 'boolean'
+        ? options.wasPlayingBeforeHandoff
+        : autoplay,
+    playbackEndBehavior:
+      options.playbackEndBehavior || _lastServerPlaybackStatus?.playbackEndBehavior || '',
+    mutedAfterHandoff: options.mutedAfterHandoff === true,
+    handoff: options.handoff || '',
+    autoAdvance: options.autoAdvance !== false,
+    playPromise: Promise.resolve(true),
   };
 
+  video.muted = options.muted === true;
+  video.volume = volume;
+  video.playbackRate = Math.max(
+    0.5,
+    Math.min(2, Number(options.playbackSpeed) || Number(currentPlaybackSpeed) || 1)
+  );
   _showLocalVideoWarning('');
   _syncLocalVideoSurfaceVisibility();
   _renderLocalVideoUi();
 
-  if (typeof setPlayerBarVisible === 'function') setPlayerBarVisible(false);
-  if (typeof applyPhonePlaybackState === 'function') applyPhonePlaybackState(false);
-  if (typeof applyDesktopDockedLayout === 'function') applyDesktopDockedLayout(false);
+  const inVideoView = typeof currentMode === 'undefined' || currentMode === 'video';
+  if (typeof setPlayerBarVisible === 'function') setPlayerBarVisible(inVideoView);
+  if (typeof applyPhonePlaybackState === 'function') applyPhonePlaybackState(inVideoView);
+  if (typeof applyDesktopDockedLayout === 'function') applyDesktopDockedLayout(inVideoView);
   const musicBar = document.getElementById('music-player-bar');
   const radioBar = document.getElementById('radio-player-bar');
   if (musicBar) musicBar.style.display = 'none';
   if (radioBar) radioBar.style.display = 'none';
   document.body.classList.remove('music-player-docked', 'radio-player-docked');
+  playingPath = path;
+  setPlayerPoster(path);
+  markPlayed(path);
+  updatePlayingCard(path);
 
   video.src = source;
   video.load();
-  try {
-    const playRequest = video.play();
-    if (playRequest && typeof playRequest.catch === 'function') {
-      playRequest.catch((error) => {
-        if (error?.name === 'AbortError') return;
-        _showLocalVideoError(_localVideoErrorMessage(error), generation);
-      });
-    }
-  } catch (error) {
-    _showLocalVideoError(_localVideoErrorMessage(error), generation);
-  }
-
-  if (typeof _stopAllPlaybackForNewStart === 'function') {
-    void _stopAllPlaybackForNewStart().catch((error) => {
-      console.error('Could not stop previous playback before starting Local Video.', error);
-      if (_localVideoState?.generation === generation) {
-        _showLocalVideoWarning(
-          'Previous playback could not be stopped and may still be playing alongside this video.'
+  if (autoplay) {
+    try {
+      const playRequest = video.play();
+      if (playRequest && typeof playRequest.then === 'function') {
+        _localVideoState.playPromise = Promise.resolve(playRequest).then(
+          () => true,
+          (error) => {
+            if (error?.name !== 'AbortError') {
+              _showLocalVideoError(_localVideoErrorMessage(error), generation);
+            }
+            return false;
+          }
         );
       }
-    });
+    } catch (error) {
+      _showLocalVideoError(_localVideoErrorMessage(error), generation);
+      _localVideoState.playPromise = Promise.resolve(false);
+    }
+  }
+
+  if (
+    options.handoff !== 'server-to-local' &&
+    options.skipServerCleanup !== true &&
+    typeof _stopAllPlaybackForNewStart === 'function'
+  ) {
+    void _stopAllPlaybackForNewStart()
+      .then(() =>
+        fetch('/api/local-playing', { method: 'POST', body: 'true' }).then((response) => {
+          if (!response.ok) throw new Error('Local playback state update failed (' + response.status + ').');
+        })
+      )
+      .catch((error) => {
+        console.error('Could not stop previous playback or update Local Video state.', error);
+        if (_localVideoState?.generation === generation) {
+          _showLocalVideoWarning(
+            'Previous playback could not be stopped or Local Video state could not be updated.'
+          );
+        }
+      });
   }
 
   return true;
+}
+
+function _waitForLocalVideoReady(generation, timeoutMs = 20000) {
+  const video = _getLocalVideoElement();
+  return new Promise((resolve, reject) => {
+    if (!video || _localVideoState?.generation !== generation) {
+      reject(new Error('The Local Video source changed before it was ready.'));
+      return;
+    }
+
+    let timeout = null;
+    const events = ['loadedmetadata', 'canplay', 'seeked', 'error'];
+    const cleanup = () => {
+      events.forEach((name) => video.removeEventListener(name, check));
+      clearTimeout(timeout);
+    };
+    const fail = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const check = () => {
+      const state = _localVideoState;
+      if (state?.generation !== generation) {
+        fail(new Error('The Local Video source changed before it was ready.'));
+      } else if (state.seekError) {
+        fail(new Error('The Local Video stream could not seek to the handoff position.'));
+      } else if (state.errorMessage) {
+        fail(new Error(state.errorMessage));
+      } else if (video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA && !state.pendingSeek) {
+        cleanup();
+        resolve();
+      }
+    };
+
+    events.forEach((name) => video.addEventListener(name, check));
+    timeout = setTimeout(
+      () => fail(new Error('The Local Video stream did not become ready in time.')),
+      timeoutMs
+    );
+    check();
+  });
+}
+
+async function _readServerPlaybackStatus() {
+  const response = await fetch('/api/status', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Could not read server playback status (' + response.status + ').');
+  return response.json();
+}
+
+async function _waitForServerPlaybackStatus(predicate, description, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const status = await _readServerPlaybackStatus();
+      _lastServerPlaybackStatus = status;
+      _lastServerPlaybackStatusAt = Date.now();
+      if (predicate(status)) return status;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw lastError || new Error('Timed out waiting for ' + description + '.');
+}
+
+function _finalizeServerToLocalHandoff(status, generation) {
+  const state = _localVideoState;
+  if (
+    !state ||
+    state.generation !== generation ||
+    state.handoff !== 'server-to-local' ||
+    status?.isPlaying ||
+    status?.isPaused
+  ) {
+    return false;
+  }
+
+  state.serverStopPending = false;
+  state.handoff = '';
+  state.serverStopConfirmed = true;
+  _localVideoHandoffPending = false;
+  const video = _getLocalVideoElement();
+  if (video) video.muted = state.mutedAfterHandoff;
+  setPlayLocal(true);
+  fetch('/api/local-playing', { method: 'POST', body: 'true' }).catch((error) => {
+    console.error('Could not update Local Video playback state on the server.', error);
+  });
+  fetch('/api/log', { method: 'POST', body: 'Switched playback mode to Local' }).catch(() => {});
+  _showLocalVideoWarning('');
+  _syncLocalVideoSurfaceVisibility();
+  _renderLocalVideoUi();
+  return true;
+}
+
+function _resolveLocalVideoServerHandoffStatus(status) {
+  const state = _localVideoState;
+  if (!state?.serverStopPending || state.handoff !== 'server-to-local') return;
+  if (status?.isPlaying || status?.isPaused) return;
+  _finalizeServerToLocalHandoff(status, state.generation);
+}
+
+function _handoffServerVideoToLocal() {
+  const status = _lastServerPlaybackStatus;
+  if (!(status?.isPlaying || status?.isPaused) || !status.filePath) return false;
+
+  const videoPath = status.filePath;
+  const file = typeof _findCurrentVideoFile === 'function' ? _findCurrentVideoFile(videoPath) : null;
+  const startPositionSeconds = Number(status.position);
+  const wasPlaying = status.isPlaying && !status.isPaused;
+  const serverVolume = Number(status.volume);
+  const serverPlaybackSpeed = Number(status.playbackSpeed);
+  _localVideoHandoffPending = true;
+  setPlayLocal(true);
+  const started = _playLocalVideo(
+    videoPath,
+    status.title || file?.displayName || file?.name || 'Local video',
+    file?.linkPath || '',
+    {
+      handoff: 'server-to-local',
+      startPositionSeconds: Number.isFinite(startPositionSeconds) ? startPositionSeconds : 0,
+      autoplay: true,
+      wasPlayingBeforeHandoff: wasPlaying,
+      muted: true,
+      mutedAfterHandoff: status.isMuted === true,
+      volume: Number.isFinite(serverVolume) ? serverVolume : undefined,
+      playbackSpeed: Number.isFinite(serverPlaybackSpeed) ? serverPlaybackSpeed : undefined,
+      playbackEndBehavior: status.playbackEndBehavior || '',
+    }
+  );
+
+  if (!started || !_localVideoState) {
+    _localVideoHandoffPending = false;
+    setPlayLocal(false);
+    return true;
+  }
+
+  const generation = _localVideoState.generation;
+  _localVideoState.serverStopPending = false;
+  void (async () => {
+    try {
+      await _waitForLocalVideoReady(generation);
+      const state = _localVideoState;
+      const video = _getLocalVideoElement();
+      if (!state || state.generation !== generation || !video) return;
+      const played = await state.playPromise;
+      if (!played || video.paused) throw new Error('The Local Video player could not start.');
+      if (!state.wasPlayingBeforeHandoff) video.pause();
+
+      const serverStatus = await _readServerPlaybackStatus();
+      _lastServerPlaybackStatus = serverStatus;
+      _lastServerPlaybackStatusAt = Date.now();
+      if (!serverStatus.isPlaying && !serverStatus.isPaused) {
+        _finalizeServerToLocalHandoff(serverStatus, generation);
+        return;
+      }
+      if (serverStatus.filePath !== videoPath) {
+        throw new Error('Server playback changed before the Local handoff could finish.');
+      }
+
+      const stopResponse = await fetch('/api/stop');
+      if (!stopResponse.ok) {
+        throw new Error('The server could not be stopped (' + stopResponse.status + ').');
+      }
+      if (_localVideoState?.generation === generation) {
+        _localVideoState.serverStopPending = true;
+      }
+      const stoppedStatus = await _waitForServerPlaybackStatus(
+        (next) => !next.isPlaying && !next.isPaused,
+        'server playback to stop'
+      );
+      _finalizeServerToLocalHandoff(stoppedStatus, generation);
+    } catch (error) {
+      console.error('Could not complete Server-to-Local Video handoff.', error);
+      const state = _localVideoState;
+      if (state?.generation === generation) {
+        const video = _getLocalVideoElement();
+        if (video) {
+          video.pause();
+          video.muted = true;
+        }
+        state.handoff = '';
+        state.serverStopPending = false;
+        _localVideoHandoffPending = false;
+        _showLocalVideoWarning(
+          'The server could not be stopped safely. Local Video is paused and muted to prevent duplicate audio; try the handoff again.'
+        );
+        _syncLocalVideoModeToggle();
+        _renderLocalVideoUi();
+      }
+    }
+  })();
+  return true;
+}
+
+async function _handoffLocalVideoToServer(forcePlay = false) {
+  const state = _localVideoState;
+  const video = _getLocalVideoElement();
+  if (!state?.path || !video || _localVideoHandoffPending) return;
+
+  const { path, name, linkPath } = state;
+  const hasLoadedPosition = video.readyState > 0;
+  const position = state.pendingStartPositionSeconds > 0 && !hasLoadedPosition
+    ? Math.max(0, Number(state.lastPositionSeconds) || 0)
+    : Number.isFinite(video.currentTime)
+      ? Math.max(0, video.currentTime)
+      : Math.max(0, Number(state.lastPositionSeconds) || 0);
+  const localVolume = Number.isFinite(video.volume) ? Math.max(0, Math.min(1, video.volume)) : 1;
+  const localPlaybackSpeed = Math.max(0.5, Math.min(2, Number(video.playbackRate) || 1));
+  const localIsMuted = video.muted || localVolume <= 0.001;
+  const wasPlaying = forcePlay || (!video.paused && !video.ended)
+    || (state.loading && state.wasPlayingBeforeHandoff);
+  const generation = state.generation;
+  let serverStartRequested = false;
+  _localVideoHandoffPending = true;
+  video.pause();
+  _syncLocalVideoModeToggle();
+  _renderLocalVideoUi();
+
+  try {
+    serverStartRequested = true;
+    const response = await fetch(
+      '/api/video/play?path=' + encodeURIComponent(path) + '&pos=' + encodeURIComponent(position.toFixed(3))
+    );
+    if (!response.ok) {
+      throw new Error('The server could not start this video (' + response.status + ').');
+    }
+
+    let serverStatus = await _waitForServerPlaybackStatus(
+      (status) => (status.isPlaying || status.isPaused) && status.filePath === path,
+      'the server to start the selected video'
+    );
+    const volumeResponse = await fetch(
+      '/api/volume?value=' + encodeURIComponent((localIsMuted ? 0 : localVolume).toFixed(2))
+    );
+    if (!volumeResponse.ok) throw new Error('The server could not apply the Local Video volume.');
+    const speedResponse = await fetch(
+      '/api/speed?value=' + encodeURIComponent(localPlaybackSpeed.toFixed(2))
+    );
+    if (!speedResponse.ok) throw new Error('The server could not apply the Local Video playback speed.');
+    if (!wasPlaying && !serverStatus.isPaused) {
+      const pauseResponse = await fetch('/api/pause');
+      if (!pauseResponse.ok) throw new Error('The server could not pause the video.');
+      serverStatus = await _waitForServerPlaybackStatus(
+        (status) => status.filePath === path && status.isPaused,
+        'the server video to pause'
+      );
+    }
+
+    if (_localVideoState?.generation !== generation) return;
+    fetch('/api/local-playing', { method: 'POST', body: 'false' }).catch((error) => {
+      console.error('Could not update Local Video playback state on the server.', error);
+    });
+    fetch('/api/log', { method: 'POST', body: 'Switched playback mode to Server' }).catch(() => {});
+    setPlayLocal(false);
+    stopLocalVideo();
+    setStatus('Playing on server from ' + _formatLocalVideoTime(position) + '.');
+    await pollStatus();
+  } catch (error) {
+    console.error('Could not complete Local-to-Server Video handoff.', error);
+    if (_localVideoState?.generation === generation) {
+      let serverStoppedSafely = !serverStartRequested;
+      try {
+        const serverStatus = await _readServerPlaybackStatus();
+        _lastServerPlaybackStatus = serverStatus;
+        _lastServerPlaybackStatusAt = Date.now();
+        if (serverStatus.isPlaying || serverStatus.isPaused) {
+          if (serverStatus.filePath === path) {
+            const stopResponse = await fetch('/api/stop');
+            if (!stopResponse.ok) throw new Error('The server could not be stopped during rollback.');
+            await _waitForServerPlaybackStatus(
+              (status) => !status.isPlaying && !status.isPaused,
+              'the server playback rollback'
+            );
+            serverStoppedSafely = true;
+          } else {
+            serverStoppedSafely = false;
+          }
+        } else {
+          serverStoppedSafely = true;
+        }
+      } catch (rollbackError) {
+        console.error('Could not roll back failed Local-to-Server Video handoff.', rollbackError);
+      }
+      if (wasPlaying && serverStoppedSafely) {
+        video.muted = false;
+        try {
+          const playRequest = video.play();
+          if (playRequest && typeof playRequest.then === 'function') await playRequest;
+        } catch (resumeError) {
+          console.error('Could not resume Local Video after a failed handoff.', resumeError);
+        }
+      } else if (wasPlaying) {
+        video.pause();
+        video.muted = true;
+      }
+      _showLocalVideoWarning(
+        serverStoppedSafely
+          ? 'Could not switch to Server playback. Local Video remains loaded at its current position.'
+          : 'Could not switch safely. Local Video is paused and muted because server playback may still be active.'
+      );
+      _renderLocalVideoUi();
+    }
+  } finally {
+    _localVideoHandoffPending = false;
+    _syncLocalVideoModeToggle();
+  }
 }
 
 function stopLocalVideo() {
@@ -300,11 +751,36 @@ function _pauseLocalVideoForNavigation() {
 
 async function playLocalVideoOnServer() {
   const state = _localVideoState;
-  if (!state?.path) return;
-  const { path, name, linkPath } = state;
-  stopLocalVideo();
-  if (typeof setPlayLocal === 'function') setPlayLocal(false);
-  await play(path, name, linkPath);
+  if (!state?.path || _localVideoHandoffPending) return;
+
+  const generation = state.generation;
+  _localVideoHandoffPending = true;
+  _syncLocalVideoModeToggle();
+  _renderLocalVideoUi();
+  try {
+    const status = await _readServerPlaybackStatus();
+    _lastServerPlaybackStatus = status;
+    _lastServerPlaybackStatusAt = Date.now();
+    if (_localVideoState?.generation !== generation) return;
+    if ((status.isPlaying || status.isPaused) && status.filePath === state.path) {
+      fetch('/api/local-playing', { method: 'POST', body: 'false' }).catch((error) => {
+        console.error('Could not update Local Video playback state on the server.', error);
+      });
+      setPlayLocal(false);
+      stopLocalVideo();
+      setStatus(status.isPaused ? 'Video remains paused on Server.' : 'Continued playback on Server.');
+      _localVideoHandoffPending = false;
+      _syncLocalVideoModeToggle();
+      await pollStatus();
+      return;
+    }
+  } catch (error) {
+    console.error('Could not check Server playback before Local Video fallback.', error);
+  } finally {
+    _localVideoHandoffPending = false;
+    _syncLocalVideoModeToggle();
+  }
+  await _handoffLocalVideoToServer(true);
 }
 
 async function toggleLocalVideoFullscreen() {
@@ -379,12 +855,27 @@ async function onSeekDrag() {
   if (el) updateSeekFill(el);
 }
 async function onSeekCommit() {
-  const pos = parseFloat(document.getElementById('progress').value);
+  if (_localVideoHandoffPending) {
+    seekDragging = false;
+    return;
+  }
+  const progress = document.getElementById('progress');
+  const pos = parseFloat(progress?.value);
   if (!Number.isNaN(pos)) {
     haptic(8);
-    await api('/api/seek?pos=' + pos.toFixed(1));
+    if (_isLocalVideoActive()) {
+      const video = _getLocalVideoElement();
+      if (video) {
+        const duration = Number.isFinite(video.duration) ? video.duration : pos;
+        video.currentTime = Math.min(Math.max(0, pos), duration);
+        if (_localVideoState) _localVideoState.lastPositionSeconds = video.currentTime;
+      }
+    } else {
+      await api('/api/seek?pos=' + pos.toFixed(1));
+    }
   }
   seekDragging = false;
+  if (_isLocalVideoActive()) _renderLocalVideoUi();
 }
 
 function updateVolumeIcon(value) {
@@ -404,10 +895,32 @@ const _debouncedVideoVolumeApi = debounce((vol, boost) => {
 }, 150);
 
 async function setVideoCombinedSlider(v) {
+  if (_localVideoHandoffPending) return;
   const val = parseFloat(v);
   if (isNaN(val)) return;
   const slider = document.getElementById('video-combined-vol');
   const lbl    = document.getElementById('volume-label');
+  if (_isLocalVideoActive()) {
+    const video = _getLocalVideoElement();
+    const volume = Math.max(0, Math.min(1, val));
+    if (video) {
+      video.volume = volume;
+      video.muted = volume <= 0.001;
+    }
+    if (slider) {
+      slider.value = volume.toFixed(2);
+      const fill = (volume * 100).toFixed(2) + '%';
+      slider.classList.remove('slider-boosting');
+      slider.style.setProperty('--cvs-vol', fill);
+      slider.style.setProperty('--cvs-boost', fill);
+      slider.style.setProperty('--cvs-thumb', 'var(--player-accent,#e94560)');
+    }
+    if (volume > 0.001) lastVolumeBeforeMute = volume;
+    if (lbl) lbl.textContent = Math.round(volume * 100) + '%';
+    updateVolumeIcon(volume);
+    _renderLocalVideoUi();
+    return;
+  }
   const totalRange  = 1.3;
   const volBoundary = (1.0 / totalRange * 100).toFixed(2) + '%';  // ~76.92%
   const fillPct     = (val / totalRange * 100).toFixed(2) + '%';
@@ -443,10 +956,38 @@ async function setVideoCombinedReset() {
   if (slider) { slider.value = 1; await setVideoCombinedSlider(1); }
 }
 async function togglePause() {
+  if (_localVideoHandoffPending) return;
   haptic(12);
+  if (_isLocalVideoActive()) {
+    const video = _getLocalVideoElement();
+    if (!video) return;
+    if (video.paused || video.ended) {
+      try {
+        video.currentTime = video.ended ? 0 : video.currentTime;
+        const playRequest = video.play();
+        if (playRequest && typeof playRequest.catch === 'function') await playRequest;
+      } catch (error) {
+        console.error('Could not resume Local Video.', error);
+        _showLocalVideoError(_localVideoErrorMessage(error));
+      }
+    } else {
+      video.pause();
+    }
+    _renderLocalVideoUi();
+    return;
+  }
   await api('/api/pause');
 }
 async function skip(seconds) {
+  if (_localVideoHandoffPending) return;
+  if (_isLocalVideoActive()) {
+    const video = _getLocalVideoElement();
+    if (!video || !Number.isFinite(video.duration)) return;
+    video.currentTime = Math.min(video.duration, Math.max(0, video.currentTime + Number(seconds)));
+    if (_localVideoState) _localVideoState.lastPositionSeconds = video.currentTime;
+    _renderLocalVideoUi();
+    return;
+  }
   await api('/api/skip?seconds=' + encodeURIComponent(seconds));
 }
 async function quickSkip(seconds) {
@@ -479,17 +1020,36 @@ function endSeekHold() {
 async function setVolume(value) {
   const volume = Math.max(0, Math.min(1, parseFloat(value) || 0));
   if (volume > 0.001) lastVolumeBeforeMute = volume;
-  document.getElementById('volume-label').textContent = Math.round(volume * 100) + '%';
+  const label = document.getElementById('volume-label');
+  if (label) label.textContent = Math.round(volume * 100) + '%';
   updateVolumeIcon(volume);
   // sync combined slider (only if we are in volume zone)
   const cs = document.getElementById('video-combined-vol');
   if (cs && parseFloat(cs.value) <= 1.0) { cs.value = volume.toFixed(2); cs.classList.remove('slider-boosting'); }
+  if (_isLocalVideoActive()) {
+    const video = _getLocalVideoElement();
+    if (video) {
+      video.volume = volume;
+      video.muted = volume <= 0.001;
+    }
+    _renderLocalVideoUi();
+    return;
+  }
   await api('/api/volume?value=' + encodeURIComponent(volume.toFixed(2)));
 }
 async function toggleVolumeMute() {
   haptic(10);
   const slider = document.getElementById('video-combined-vol');
   if (!slider) return;
+  if (_isLocalVideoActive()) {
+    const video = _getLocalVideoElement();
+    const next = video?.muted || video?.volume <= 0.001
+      ? Math.max(0.05, lastVolumeBeforeMute || 0.7)
+      : 0;
+    slider.value = next.toFixed(2);
+    await setVideoCombinedSlider(slider.value);
+    return;
+  }
   const current = Math.max(0, Math.min(1, parseFloat(slider.value) || 0));
   // Only mute/unmute when in volume zone
   const combined = parseFloat(slider.value);
@@ -499,6 +1059,7 @@ async function toggleVolumeMute() {
   await setVideoCombinedSlider(slider.value);
 }
 async function setAudioBoost(value) {
+  if (_isLocalVideoActive()) return;
   const boostAmount = Math.max(0, Math.min(1, parseFloat(value) || 0));
   if (boostAmount > 0.001) lastBoostBeforeMute = boostAmount;
   updateAudioBoostIcon(boostAmount);
@@ -508,6 +1069,7 @@ async function toggleAudioBoostMute() {
   // Legacy — no longer exposed in UI; no-op
 }
 async function setBrightness(value) {
+  if (_isLocalVideoActive()) return;
   const brightness = Math.max(0.3, Math.min(0.7, parseFloat(value) || 0.5));
   brightnessPendingUntil = Date.now() + 1500;
   document.getElementById('brightness').value = brightness.toFixed(2);
@@ -515,6 +1077,7 @@ async function setBrightness(value) {
   await api('/api/brightness?value=' + encodeURIComponent(brightness.toFixed(2)));
 }
 async function setSaturation(value) {
+  if (_isLocalVideoActive()) return;
   const parsed = parseFloat(value);
   const saturation = Math.max(0, Math.min(2, Number.isFinite(parsed) ? parsed : 1));
   saturationPendingUntil = Date.now() + 1500;
@@ -523,6 +1086,7 @@ async function setSaturation(value) {
   await api('/api/saturation?value=' + encodeURIComponent(saturation.toFixed(2)));
 }
 async function setSharpness(value) {
+  if (_isLocalVideoActive()) return;
   sharpnessPendingUntil = Date.now() + 1500;
   setSharpnessPreview(value);
 
@@ -554,6 +1118,7 @@ function setZoomPreview(value) {
   document.getElementById('zoom-label').textContent = Math.round(zoom * 100) + '%';
 }
 async function commitZoom(value) {
+  if (_isLocalVideoActive()) return;
   zoomPendingUntil = Date.now() + 1500;
   setZoomPreview(value);
   await api(
@@ -705,10 +1270,17 @@ function syncSpeedChips(speed) {
   }
 }
 async function setPlaybackSpeed(value) {
+  if (_localVideoHandoffPending) return;
   const speed = Math.max(0.5, Math.min(2, parseFloat(value) || 1));
   currentPlaybackSpeed = speed;
   syncSpeedChips(speed);
   haptic(10);
+  if (_isLocalVideoActive()) {
+    const video = _getLocalVideoElement();
+    if (video) video.playbackRate = speed;
+    _renderLocalVideoUi();
+    return;
+  }
   await api('/api/speed?value=' + encodeURIComponent(speed.toFixed(2)));
 }
 function updateTrackControls(s) {
@@ -722,6 +1294,7 @@ function updateTrackControls(s) {
   const audioTracks = Array.isArray(s.audioTracks) ? s.audioTracks : [];
   const subtitleTracks = Array.isArray(s.subtitleTracks) ? s.subtitleTracks : [];
   const chapters = Array.isArray(s.chapters) ? s.chapters : [];
+  const playbackActive = Boolean(s.isPlaying || s.isPaused);
   const showAudio = audioTracks.length > 1;
   const showSubtitles = subtitleTracks.some((t) => Number(t.id) >= 0);
   const showChapters = chapters.length > 1;
@@ -735,13 +1308,13 @@ function updateTrackControls(s) {
   trackControls.style.display = showAny ? 'flex' : 'none';
   renderEqPresets(s.eqPreset ?? -1);
   const eqWrap = document.getElementById('eq-select-wrap');
-  if (eqWrap) eqWrap.style.display = s.isPlaying ? '' : 'none';
-  if (s.isPlaying) _drawEqSparkline('eq-sparkline', s.eqPreset ?? -1);
+  if (eqWrap) eqWrap.style.display = playbackActive ? '' : 'none';
+  if (playbackActive) _drawEqSparkline('eq-sparkline', s.eqPreset ?? -1);
   _syncEqWrapVisibility();
   document.getElementById('options-card').style.display =
-    showAny || s.isPlaying ? 'flex' : 'none';
+    showAny || playbackActive ? 'flex' : 'none';
   updateChapterMarkers(s);
-  if (s.isPlaying) updateUpNext(s);
+  if (playbackActive) updateUpNext(s);
   else _clearUpNext();
 }
 function renderTrackSelect(select, tracks, currentId) {
@@ -761,6 +1334,120 @@ function renderTrackSelect(select, tracks, currentId) {
   }
   select.value = String(currentId);
 }
+function _getLocalVideoAdjacentFile(direction) {
+  if (!_localVideoState?.path) return null;
+  const sourceFiles = typeof _currentRawFiles !== 'undefined' && Array.isArray(_currentRawFiles)
+    ? _currentRawFiles
+    : Array.isArray(currentData?.files)
+      ? currentData.files
+      : [];
+  const files = sourceFiles
+    .filter((file) => file?.path)
+    .slice()
+    .sort((a, b) =>
+      String(a.name || a.path).localeCompare(String(b.name || b.path), undefined, {
+        sensitivity: 'base',
+      })
+    );
+  const currentIndex = files.findIndex((file) => file.path === _localVideoState.path);
+  if (currentIndex < 0) return null;
+  const adjacentIndex = currentIndex + Math.sign(direction);
+  return adjacentIndex >= 0 && adjacentIndex < files.length ? files[adjacentIndex] : null;
+}
+
+function _syncLocalVideoAdjacentButtons() {
+  if (!_isLocalVideoActive()) return;
+  const previous = document.getElementById('previous-btn');
+  const next = document.getElementById('next-btn');
+  if (!previous || !next) return;
+  const navGroup = previous.closest('.transport-nav-group');
+  const queue = Array.isArray(lastQueue) ? lastQueue : [];
+  const hasQueue = queue.length > 0;
+  navGroup?.classList.toggle('queue-mode', hasQueue);
+  previous.classList.toggle('queue-mode', hasQueue);
+  next.classList.toggle('queue-mode', hasQueue);
+  previous.querySelector('.nav-main').textContent = 'PREV';
+  next.querySelector('.nav-main').textContent = hasQueue ? 'Next Queued' : 'NEXT';
+  if (_localVideoHandoffPending) {
+    previous.disabled = true;
+    next.disabled = true;
+    return;
+  }
+
+  if (hasQueue) {
+    previous.querySelector('.nav-title').textContent = '';
+    next.querySelector('.nav-title').textContent = shortTitle(queue[0].title || 'Queued video');
+    previous.title = 'Previous video unavailable while queue is active';
+    next.title = 'Play next queued: ' + (queue[0].title || 'Queued video');
+    previous.disabled = true;
+    next.disabled = false;
+    next.onclick = playQueueStart;
+    return;
+  }
+
+  const previousFile = _getLocalVideoAdjacentFile(-1);
+  const nextFile = _getLocalVideoAdjacentFile(1);
+  const previousTitle = previousFile?.displayName || previousFile?.name || '';
+  const nextTitle = nextFile?.displayName || nextFile?.name || '';
+  previous.querySelector('.nav-title').textContent = previousTitle ? shortTitle(previousTitle) : '';
+  next.querySelector('.nav-title').textContent = nextTitle ? shortTitle(nextTitle) : '';
+  previous.title = previousTitle ? 'Play previous: ' + previousTitle : 'No previous video';
+  next.title = nextTitle ? 'Play next: ' + nextTitle : 'No next video';
+  previous.disabled = !previousFile;
+  next.disabled = !nextFile;
+  previous.onclick = () => playAdjacent('previous');
+  next.onclick = () => playAdjacent('next');
+}
+
+async function _consumeLocalVideoQueueItem(path) {
+  if (!path) return;
+  _localQueueRemovalPending.add(path);
+  lastQueue = lastQueue.filter((item) => item.path !== path);
+  queuedVideos.delete(path);
+  setQueuedCard(path, false);
+  updateQueueControls({ queue: lastQueue });
+  _syncLocalVideoAdjacentButtons();
+  try {
+    const response = await fetch('/api/queue/remove?path=' + encodeURIComponent(path));
+    if (!response.ok) throw new Error('Queue removal failed (' + response.status + ').');
+    await pollStatus();
+  } catch (error) {
+    console.error('Could not remove the locally played video from the queue.', error);
+    setStatus('The video is playing locally, but it could not be removed from the server queue.');
+    _showLocalVideoWarning(
+      'This video is playing locally, but it could not be removed from the server queue.'
+    );
+  } finally {
+    _localQueueRemovalPending.delete(path);
+    await pollStatus();
+  }
+}
+
+async function _advanceLocalVideoAfterEnd() {
+  const state = _localVideoState;
+  if (!state?.path || !state.autoAdvance) return;
+  if (lastQueue.length) {
+    const first = lastQueue[0];
+    const file = typeof _findCurrentVideoFile === 'function'
+      ? _findCurrentVideoFile(first.path)
+      : null;
+    if (_playLocalVideo(first.path, first.title || file?.displayName || file?.name || '', file?.linkPath || '', {
+      skipServerCleanup: true,
+      playbackEndBehavior: state.playbackEndBehavior,
+    })) {
+      void _consumeLocalVideoQueueItem(first.path);
+    }
+    return;
+  }
+  if (state.playbackEndBehavior !== 'PlayNext') return;
+  const nextFile = _getLocalVideoAdjacentFile(1);
+  if (!nextFile) return;
+  _playLocalVideo(nextFile.path, nextFile.displayName || nextFile.name || '', nextFile.linkPath || '', {
+    skipServerCleanup: true,
+    playbackEndBehavior: state.playbackEndBehavior,
+  });
+}
+
 function updateAdjacentButtons(s) {
   const previous = document.getElementById('previous-btn');
   const next = document.getElementById('next-btn');
@@ -1663,7 +2350,22 @@ function _syncMusicReverbFromStatus(status) {
   _syncMusicReverbHint();
 }
 async function playAdjacent(direction) {
+  if (_localVideoHandoffPending) return;
   haptic(10);
+  if (_isLocalVideoActive()) {
+    if (direction === 'next' && lastQueue.length) {
+      await playQueueStart();
+      return;
+    }
+    const file = _getLocalVideoAdjacentFile(direction === 'previous' ? -1 : 1);
+    if (!file) return;
+    _playLocalVideo(file.path, file.displayName || file.name || '', file.linkPath || '', {
+      skipServerCleanup: true,
+      playbackEndBehavior: _localVideoState?.playbackEndBehavior || '',
+    });
+    return;
+  }
+
   await api('/api/adjacent?direction=' + encodeURIComponent(direction));
   // Poll until the new file is playing (up to ~2s)
   let tries = 0;
@@ -2365,7 +3067,7 @@ let _upNextTimer = null;          // setInterval handle
 let _upNextDismissedPath = null;  // encoded path last dismissed (suppress re-show)
 let _upNextFetchedForPath = null; // last filePath we fetched next-in-folder for
 
-/** Called from updateTrackControls when s.isPlaying is true. */
+/** Called from updateTrackControls while playback is active. */
 async function updateUpNext(s) {
   const duration = Number(s.duration) || 0;
   const position = Number(s.position) || 0;

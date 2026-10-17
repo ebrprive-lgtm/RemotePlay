@@ -27,6 +27,7 @@ public sealed class WebServerApiTests : IDisposable
     private readonly string _podcastTopPoolCacheDirectory;
     private readonly string _podcastTopPoolCacheFile;
     private readonly List<(string Url, string Title)> _radioPlayRequests = [];
+    private readonly List<(string Path, double Position)> _videoPositionPlayRequests = [];
 
     public WebServerApiTests()
     {
@@ -45,7 +46,9 @@ public sealed class WebServerApiTests : IDisposable
         var podcastFeedHttpClient = new PodcastFeedHttpClient(_podcastUpstreamClient, _podcastHostResolver);
         _server = new WebServer(
             new AppConfig { Port = port },
-            BuildStubCallbacks((url, title) => _radioPlayRequests.Add((url, title))),
+            BuildStubCallbacks(
+                (url, title) => _radioPlayRequests.Add((url, title)),
+                (path, position) => _videoPositionPlayRequests.Add((path, position))),
             podcastFeedHttpClient: podcastFeedHttpClient,
             podcastFeedCacheTimeProvider: _podcastCacheTimeProvider,
             podcastCatalogHttpClient: _podcastCatalogHttpClient,
@@ -92,6 +95,36 @@ public sealed class WebServerApiTests : IDisposable
         using var doc = JsonDocument.Parse(json);
 
         Assert.True(doc.RootElement.TryGetProperty("volume", out _));
+    }
+
+    [Fact]
+    public async Task VideoPlay_PassesStartPositionToPositionAwareCallback()
+    {
+        Directory.CreateDirectory(_podcastTopPoolCacheDirectory);
+        var filePath = Path.Combine(_podcastTopPoolCacheDirectory, "position-handoff.mp4");
+        await File.WriteAllBytesAsync(filePath, [0x00]);
+        var encodedPath = WebPathHelpers.EncodePath(filePath);
+
+        var response = await _client.GetAsync(
+            "/api/video/play?path=" + Uri.EscapeDataString(encodedPath) + "&pos=123.45");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal((filePath, 123.45), Assert.Single(_videoPositionPlayRequests));
+    }
+
+    [Fact]
+    public async Task VideoPlay_RejectsNegativeStartPosition()
+    {
+        Directory.CreateDirectory(_podcastTopPoolCacheDirectory);
+        var filePath = Path.Combine(_podcastTopPoolCacheDirectory, "invalid-position.mp4");
+        await File.WriteAllBytesAsync(filePath, [0x00]);
+        var encodedPath = WebPathHelpers.EncodePath(filePath);
+
+        var response = await _client.GetAsync(
+            "/api/video/play?path=" + Uri.EscapeDataString(encodedPath) + "&pos=-1");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Empty(_videoPositionPlayRequests);
     }
 
     // â”€â”€ /api/library-status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1581,9 +1614,12 @@ public sealed class WebServerApiTests : IDisposable
         return port;
     }
 
-    internal static WebServerCallbacks BuildStubCallbacks(Action<string, string>? radioPlay = null) => new()
+    internal static WebServerCallbacks BuildStubCallbacks(
+        Action<string, string>? radioPlay = null,
+        Action<string, double>? videoPlayAtPosition = null) => new()
     {
         Play                  = _ => { },
+        PlayAtPosition        = videoPlayAtPosition,
         Stop                  = () => { },
         Pause                 = () => { },
         GetStatus             = () => new PlaybackStatus(),

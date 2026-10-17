@@ -91,10 +91,36 @@ function _buildQueuedVideoControlsPayload() {
 }
 
 async function _videoSelectionPlayFromSelection(syncQueueControls) {
+  if (_localVideoHandoffPending) return;
   if (!_videoSelected.size) return;
   const paths = Array.from(_videoSelected);
   const first = paths[0];
   const rest  = paths.slice(1);
+
+  if (isPlayLocal()) {
+    const firstFile = _findCurrentVideoFile(first);
+    const started = _playLocalVideo(
+      first,
+      firstFile?.displayName || firstFile?.name || '',
+      _resolveVideoLinkPath(first, firstFile?.linkPath)
+    );
+    if (!started) return;
+    _videoSelectionClear();
+    if (queuedVideos.has(first)) void _consumeLocalVideoQueueItem(first);
+
+    for (const path of rest) {
+      if (queuedVideos.has(path)) continue;
+      await api('/api/queue/add?path=' + encodeURIComponent(path));
+      queuedVideos.add(path);
+      setQueuedCard(path, true);
+    }
+    if (syncQueueControls) {
+      await pollStatus();
+    } else if (rest.length) {
+      await pollStatus();
+    }
+    return;
+  }
 
   // Queue the rest, then play the first
   for (const p of rest) {
@@ -4705,10 +4731,13 @@ function endCardHold() {
   cardHoldTimer = null;
 }
 async function play(p, name, linkPath) {
+  if (_localVideoHandoffPending) return;
   const currentFile = _findCurrentVideoFile(p);
   const title = name || currentFile?.displayName || currentFile?.name || '';
   if (isPlayLocal()) {
-    _playLocalVideo(p, title, _resolveVideoLinkPath(p, linkPath));
+    if (_playLocalVideo(p, title, _resolveVideoLinkPath(p, linkPath)) && queuedVideos.has(p)) {
+      void _consumeLocalVideoQueueItem(p);
+    }
     return;
   }
 
@@ -4867,17 +4896,50 @@ function updateStopBtn(isPlaying, hasQueue) {
   btn.className = 'btn btn-stop';
   btn.innerHTML = '&#9632; STOP';
   btn.onclick = stop;
-  btn.disabled = !isPlaying;
+  btn.disabled = !isPlaying || Boolean(_localVideoHandoffPending);
 }
 async function playQueueStart() {
+  if (_localVideoHandoffPending) return;
   if (!lastQueue.length) return;
   const first = lastQueue[0];
   setStatus('Playing next queued: ' + (first.title || 'Queued video'));
+  if (isPlayLocal()) {
+    const file = _findCurrentVideoFile(first.path);
+    const started = _playLocalVideo(
+      first.path,
+      first.title || file?.displayName || file?.name || '',
+      file?.linkPath || '',
+      {
+        skipServerCleanup: true,
+        playbackEndBehavior: _localVideoState?.playbackEndBehavior || '',
+      }
+    );
+    if (started) void _consumeLocalVideoQueueItem(first.path);
+    return;
+  }
   startSse();
   await api('/api/adjacent?direction=next');
   await pollStatus();
 }
 async function stop() {
+  if (typeof _localVideoHasSource === 'function' && _localVideoHasSource()) {
+    if (_localVideoHandoffPending) return;
+    const stoppedPath = playingPath;
+    playingPath = null;
+    if (stoppedPath) updatePlayingCard(null, stoppedPath);
+    stopLocalVideo();
+    if (typeof setPlayLocal === 'function') setPlayLocal(false);
+    setStatus('Stopped.');
+    await Promise.all([
+      api('/api/stop'),
+      fetch('/api/local-playing', { method: 'POST', body: 'false' }).catch((error) => {
+        console.error('Could not clear Local Video playback state on the server.', error);
+      }),
+    ]);
+    await pollStatus();
+    return;
+  }
+
   const stoppedPath = playingPath;
   playingPath = null;
   updatePlayingCard(null, stoppedPath);

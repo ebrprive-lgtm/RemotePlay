@@ -1495,6 +1495,22 @@
           .local-video-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}
           #local-video-server-fallback{grid-column:1/-1}
         }
+        body.local-video-active #resume-card,
+        body.local-video-active #up-next-card,
+        body.local-video-active #chapter-markers,
+        body.local-video-active #options-card,
+        body.local-video-active #media-controls > .control-card:nth-child(2),
+        body.local-video-active #media-controls > .control-card:nth-child(3),
+        body.local-video-active #media-controls > .control-card:nth-child(4),
+        body.local-video-active #media-controls .eq-reverb-row,
+        body.local-video-active #local-video-time,
+        body.local-video-active #local-video-volume{display:none!important}
+        body.local-video-handoff-pending #local-video-stage,
+        body.local-video-handoff-pending #transport-controls,
+        body.local-video-handoff-pending .transport-controls,
+        body.local-video-handoff-pending #speed-row,
+        body.local-video-handoff-pending #progress-row,
+        body.local-video-handoff-pending #media-controls{pointer-events:none;opacity:.65}
         #browse-loading{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:.8rem;background:rgba(0,0,0,.45);backdrop-filter:blur(2px);color:#ccc;font-size:.9rem;pointer-events:none;opacity:0;visibility:hidden;transition:opacity .2s ease,visibility .2s ease}
         #browse-loading.visible{opacity:1;visibility:visible}
         .browse-spinner{width:36px;height:36px;border:3px solid rgba(255,255,255,.15);border-top-color:#00d4aa;border-radius:50%;animation:rp-spin .75s linear infinite}

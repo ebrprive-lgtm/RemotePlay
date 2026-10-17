@@ -57,13 +57,13 @@ public sealed class WebAssetRegressionTests
             "playsinline",
             "preload=\"metadata\"",
             "aria-label=\"Local video player\"",
-            "onclick=\"stopLocalVideo()\"",
+            "onclick=\"stop()\"",
             "onclick=\"toggleLocalVideoFullscreen()\"",
             "onclick=\"playLocalVideoOnServer()\"");
         AssertContainsAll(
             libraryJs,
             "if (isPlayLocal())",
-            "_playLocalVideo(p, title, _resolveVideoLinkPath(p, linkPath));",
+            "if (_playLocalVideo(p, title, _resolveVideoLinkPath(p, linkPath)) && queuedVideos.has(p))",
             "await api('/api/video/play?path='");
 
         var localPlayStart = playbackJs.IndexOf("function _playLocalVideo(", StringComparison.Ordinal);
@@ -77,6 +77,53 @@ public sealed class WebAssetRegressionTests
         Assert.True(mediaPlay >= 0 && playbackCleanup > mediaPlay,
             "Local video must start before asynchronous playback cleanup to preserve browser user activation.");
         Assert.Contains("'/api/video/stream?' + query.toString()", localPlay, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalVideoHandoffKeepsControlsAndQueueClientScoped()
+    {
+        var coreJs = ReadWebAsset("app-core.js");
+        var libraryJs = ReadWebAsset("app-library.js");
+        var playbackJs = ReadWebAsset("app-playback.js");
+
+        AssertContainsAll(
+            playbackJs,
+            "function _handoffServerVideoToLocal()",
+            "async function _handoffLocalVideoToServer(forcePlay = false)",
+            "await _handoffLocalVideoToServer(true)",
+            "if ((status.isPlaying || status.isPaused) && status.filePath === state.path)",
+            "await _waitForLocalVideoReady(generation)",
+            "await _waitForServerPlaybackStatus(",
+            "'/api/video/play?path=' + encodeURIComponent(path) + '&pos='",
+            "(next) => !next.isPlaying && !next.isPaused",
+            "(status) => (status.isPlaying || status.isPaused) && status.filePath === path",
+            "state.loading && state.wasPlayingBeforeHandoff",
+            "if (_isLocalVideoActive())",
+            "if (eventName === 'ended') void _advanceLocalVideoAfterEnd();",
+            "function _consumeLocalVideoQueueItem(path)");
+        AssertContainsAll(
+            coreJs,
+            "const localQueue = Array.isArray(s.queue)",
+            "_syncLocalVideoAdjacentButtons();",
+            "_resolveLocalVideoServerHandoffStatus(s)",
+            "const playbackActive = Boolean(s.isPlaying || s.isPaused);",
+            "updateStopBtn(playbackActive, isLiveTvMode ? false : hasQueue);",
+            "if (playbackActive) {");
+
+        var localQueueStart = libraryJs.IndexOf("async function playQueueStart()", StringComparison.Ordinal);
+        var localQueueEnd = localQueueStart < 0
+            ? -1
+            : libraryJs.IndexOf("async function stop()", localQueueStart, StringComparison.Ordinal);
+        Assert.True(localQueueStart >= 0 && localQueueEnd > localQueueStart, "The queue-start flow should exist.");
+        var localQueue = libraryJs[localQueueStart..localQueueEnd];
+        var localQueueBranchStart = localQueue.IndexOf("if (isPlayLocal())", StringComparison.Ordinal);
+        var localQueueBranchEnd = localQueue.IndexOf("  startSse();", localQueueBranchStart, StringComparison.Ordinal);
+        Assert.True(
+            localQueueBranchStart >= 0 && localQueueBranchEnd > localQueueBranchStart,
+            "The Local queue-start branch should remain separate from Server playback.");
+        var localQueueBranch = localQueue[localQueueBranchStart..localQueueBranchEnd];
+        Assert.Contains("_playLocalVideo(", localQueueBranch, StringComparison.Ordinal);
+        Assert.DoesNotContain("/api/adjacent", localQueueBranch, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -111,16 +111,21 @@ public partial class MainWindow
 
     private void PlayMovie(string filePath)
     {
+        PlayMovie(filePath, 0);
+    }
+
+    private void PlayMovie(string filePath, double startPositionSeconds)
+    {
         // Always marshal to the UI thread — callers may come from background threads
         // (web server callbacks, queue timers, VLC event handlers, etc.)
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(() => PlayMovie(filePath));
+            Dispatcher.BeginInvoke(() => PlayMovie(filePath, startPositionSeconds));
             return;
         }
 
         // Use isolated video player process to prevent crashes
-        PlayMovieIsolated(filePath);
+        PlayMovieIsolated(filePath, double.IsFinite(startPositionSeconds) ? Math.Max(0, startPositionSeconds) : 0);
     }
 
     // Legacy direct VLC playback (kept for reference, not used)
@@ -1448,6 +1453,11 @@ public partial class MainWindow
             {
                 _currentPlaybackDisplayName = null;
                 PlayMovie(path);
+            },
+            PlayAtPosition = (path, position) =>
+            {
+                _currentPlaybackDisplayName = null;
+                PlayMovie(path, position);
             },
             PlayNamed = (path, displayName) =>
             {

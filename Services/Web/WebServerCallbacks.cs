@@ -8,6 +8,7 @@ namespace RemotePlay;
 internal sealed class WebServerCallbacks
 {
     public required Action<string> Play { get; init; }
+    public Action<string, double>? PlayAtPosition { get; init; }
     public Action<string, string> PlayNamed { get; init; } = (_, _) => { };
     public required Action Stop { get; init; }
     public required Action Pause { get; init; }

@@ -6,6 +6,9 @@ let pollInterval = null,
   seekDragging = false,
   searchTimer = null,
   lastQueue = [];
+let _lastServerPlaybackStatus = null,
+  _lastServerPlaybackStatusAt = 0;
+let _localQueueRemovalPending = new Set();
 let lastVolumeBeforeMute = 0.7,
   lastBoostBeforeMute = 0.3;
 
@@ -469,19 +472,35 @@ function setPlayLocal(on) {
 }
 let _togglePlayLocalLast = 0;
 function togglePlayLocal() {
-  if (typeof _localVideoHasSource === 'function' && _localVideoHasSource()) {
-    if (typeof _showLocalVideoWarning === 'function') {
-      _showLocalVideoWarning('Stop local video before switching playback mode.');
-    }
-    return;
-  }
-
   // Debounce: on touch devices a single tap fires touchend + synthetic click;
   // without this guard the function runs twice and the active state flips back.
   const now = Date.now();
   if (now - _togglePlayLocalLast < 400) return;
   _togglePlayLocalLast = now;
   const turningOn = !isPlayLocal();
+
+  const hasLocalVideo = typeof _localVideoHasSource === 'function' && _localVideoHasSource();
+  if (hasLocalVideo && currentMode !== 'video') {
+    if (typeof _showLocalVideoWarning === 'function') {
+      _showLocalVideoWarning('Return to Video to switch playback mode while a Local video is loaded.');
+    }
+    return;
+  }
+  if (currentMode === 'video') {
+    if (hasLocalVideo && !turningOn && typeof _handoffLocalVideoToServer === 'function') {
+      void _handoffLocalVideoToServer();
+      return;
+    }
+    if (!hasLocalVideo && turningOn && typeof _handoffServerVideoToLocal === 'function'
+        && _handoffServerVideoToLocal()) {
+      return;
+    }
+    if (hasLocalVideo && turningOn) {
+      setPlayLocal(true);
+      return;
+    }
+  }
+
   setPlayLocal(turningOn);
   if (turningOn) {
     // Podcast playback uses its original episode URL and metadata, not the live-radio proxy.
@@ -1020,22 +1039,47 @@ async function pollStatus() {
     }
     const s = await res.json();
     await _applyPendingWebUiNavigation(s);
+    const localVideoOwnsPlayback =
+      typeof currentMode !== 'undefined' &&
+      currentMode === 'video' &&
+      typeof _localVideoHasSource === 'function' &&
+      _localVideoHasSource();
+    if (!localVideoOwnsPlayback) {
+      _lastServerPlaybackStatus = s;
+      _lastServerPlaybackStatusAt = Date.now();
+    }
     statusFailures = 0;
     setConnectionStatus('Connected', false, true);
     updateDiagnosticsIndicator(s.lastError ? 'error' : 'ok');
     if (typeof s.expertMode === 'boolean') _setExpertMode(s.expertMode);
     if (typeof s.debugMode  === 'boolean') _setDebugMode(s.debugMode);
-    if (
-      typeof currentMode !== 'undefined' &&
-      currentMode === 'video' &&
-      typeof _localVideoHasSource === 'function' &&
-      _localVideoHasSource()
-    ) {
+    if (localVideoOwnsPlayback) {
+      _lastServerPlaybackStatus = s;
+      _lastServerPlaybackStatusAt = Date.now();
+      const localQueue = Array.isArray(s.queue)
+        ? s.queue.filter((item) => item.path && !_localQueueRemovalPending.has(item.path))
+        : [];
+      updateQueueControls({ queue: localQueue });
+      lastQueue = localQueue;
+      if (_localVideoState) {
+        _localVideoState.playbackEndBehavior =
+          s.playbackEndBehavior || _localVideoState.playbackEndBehavior || '';
+      }
+      updateStopBtn(true, localQueue.length > 0);
+      _syncLocalVideoAdjacentButtons();
+      if (typeof _resolveLocalVideoServerHandoffStatus === 'function') {
+        _resolveLocalVideoServerHandoffStatus(s);
+      }
       _renderLocalVideoUi();
       return s;
     }
     const bar = document.getElementById('now-playing-bar');
-    const hasQueue = Array.isArray(s.queue) && s.queue.length > 0;
+    const queue = Array.isArray(s.queue)
+      ? s.queue.filter((item) => item.path && !_localQueueRemovalPending.has(item.path))
+      : [];
+    const queueStatus = { ...s, queue };
+    const hasQueue = queue.length > 0;
+    const playbackActive = Boolean(s.isPlaying || s.isPaused);
     const isLiveTvMode = typeof currentMode !== 'undefined' && currentMode === 'live-tv';
     const liveTvInfo = isLiveTvMode && typeof liveTvGetNowPlayingInfo === 'function'
       ? liveTvGetNowPlayingInfo()
@@ -1055,10 +1099,10 @@ async function pollStatus() {
         }
       }
     }
-    if (!isLiveTvMode) updateQueueControls(s);
-    lastQueue = hasQueue ? s.queue : [];
-    updateStopBtn(s.isPlaying, isLiveTvMode ? false : hasQueue);
-    if (!isLiveTvMode) updateAdjacentButtons(s);
+    if (!isLiveTvMode) updateQueueControls(queueStatus);
+    lastQueue = hasQueue ? queue : [];
+    updateStopBtn(playbackActive, isLiveTvMode ? false : hasQueue);
+    if (!isLiveTvMode) updateAdjacentButtons(queueStatus);
     if (!isLiveTvMode) {
       const err = document.getElementById('error');
       if (s.lastError) {
@@ -1072,11 +1116,11 @@ async function pollStatus() {
         clearPlaybackErrorDedup('Video');
       }
     }
-    if (s.isPlaying || hasQueue) {
+    if (playbackActive || hasQueue) {
       if (typeof currentMode === 'undefined' || currentMode === 'video' || isLiveTvMode)
         setPlayerBarVisible(true);
     }
-    if (s.isPlaying) {
+    if (playbackActive) {
       if (s.filePath && s.filePath !== playingPath) setPlayerPoster(s.filePath);
       if (s.filePath) {
         const oldPath = playingPath && playingPath !== s.filePath ? playingPath : null;
@@ -1155,11 +1199,11 @@ async function pollStatus() {
         if (!seekDragging) progress.value = s.position;
         updateSeekFill(progress);
         document.getElementById('time-label').textContent = fmt(s.position) + ' / ' + fmt(s.duration);
-      } else if (!s.isPlaying) {
-        // Not playing and no duration — show zeroes
+      } else if (!playbackActive) {
+        // No active playback and no duration — show zeroes
         document.getElementById('time-label').textContent = fmt(0) + ' / ' + fmt(0);
       }
-      // If isPlaying but duration still 0 (VLC hasn't reported length yet), keep whatever was shown
+      // If playback is active but duration is not yet available, keep whatever was shown.
       if (s.duration > 0) updateCardProgress(s.filePath, s.position, s.duration);
       currentPlaybackSpeed = Math.max(0.5, Math.min(2, Number(s.playbackSpeed) || 1));
       syncSpeedChips(currentPlaybackSpeed);
@@ -1167,7 +1211,8 @@ async function pollStatus() {
       document.getElementById('player-meta').textContent = liveTvInfo
         ? ['Live TV', liveTvInfo.countryName, liveTvInfo.category, liveTvInfo.sourceHost].filter(Boolean).join(' • ')
         : buildPlayerMeta(s, volume, boostAmount);
-      requestWakeLock();
+      if (s.isPlaying && !s.isPaused) requestWakeLock();
+      else releaseWakeLock();
       if (isPhoneRemoteOnly) applyPhonePlaybackState(true);
       else if (typeof currentMode === 'undefined' || currentMode === 'video' || isLiveTvMode) applyDesktopDockedLayout(true);
     } else if (isPhoneRemoteOnly) {
