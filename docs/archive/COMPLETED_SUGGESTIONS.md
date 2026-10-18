@@ -110,7 +110,7 @@ The **browser side** and **server backend** were already complete before this su
 
 The only missing piece was the **blurred album-art backdrop** on the `IdleOverlay` during music fullscreen (karaoke mode). The overlay was plain black; the suggestion called for rendering cover art as a blurred, dimmed full-screen background behind the lyrics panel.
 
-##### `MainWindow.xaml`
+##### `UI/Windows/MainWindow.xaml`
 Added two new elements inside `IdleOverlay`, z-ordered behind `KaraokeLyricsPanel`:
 
 | Element | Purpose |
@@ -120,7 +120,7 @@ Added two new elements inside `IdleOverlay`, z-ordered behind `KaraokeLyricsPane
 
 `KaraokeLyricsPanel` was given explicit `Panel.ZIndex="3"` to maintain correct stacking order.
 
-##### `MainWindow.Karaoke.cs`
+##### `UI/Windows/MainWindow.Karaoke.cs`
 - Added `_karaokeCoverNames` — local copy of the cover file name list (`cover.jpg`, `folder.jpg`, `front.jpg`, `album.jpg` + `.png` variants).
 - Added `LoadKaraokeArtBackdropAsync(string filePath)` — awaits a `Task.Run` that:
   1. Tries `TagLib.File.Create(filePath).Tag.Pictures[0].Data.Data` (embedded ID3 art).
@@ -148,7 +148,7 @@ Read MKV/MP4 chapter metadata from VLC (`libvlc_media_get_chapter_description`) 
 Chapter markers are the #1 most-requested missing feature in media players. MKV files commonly carry them and users expect to be able to jump to chapters.
 
 ### Rough approach
-- In `MainWindow.Playback.cs`, after a file starts playing, call `_mediaPlayer.ChapterDescription(-1)` to enumerate all chapters.
+- In `UI/Windows/MainWindow.Playback.cs`, after a file starts playing, call `_mediaPlayer.ChapterDescription(-1)` to enumerate all chapters.
 - Add a `/api/chapters` GET endpoint that returns `[{ title, startSeconds }]` from the current media.
 - In JS: after a `play()` call, fetch `/api/chapters` and render `<span class="chapter-dot">` elements absolutely positioned over the seek bar track at the correct `left: X%` positions.
 - Add a tooltip (`title` attribute or custom overlay) showing the chapter name on hover.
@@ -160,7 +160,7 @@ Chapter markers are the #1 most-requested missing feature in media players. MKV 
 **Completed:** Chapter markers on the seek bar fully implemented and rendered from existing `/api/status` chapter data.
 
 #### What was already in place
-- `MainWindow.Playback.cs` `GetPlaybackStatus()` already populated `PlaybackStatus.Chapters` (array of `ChapterInfo { Id, Name, StartSeconds, DurationSeconds }`) and `CurrentChapter` from VLC's `FullChapterDescriptions(-1)`.
+- `UI/Windows/MainWindow.Playback.cs` `GetPlaybackStatus()` already populated `PlaybackStatus.Chapters` (array of `ChapterInfo { Id, Name, StartSeconds, DurationSeconds }`) and `CurrentChapter` from VLC's `FullChapterDescriptions(-1)`.
 - `/api/status` already serialised `chapters` and `currentChapter` to the browser.
 - `app-playback.js` `updateTrackControls()` already rendered a chapter dropdown select when `chapters.length > 1`.
 - `/api/chapter?id=N` already existed to seek to a chapter by index.

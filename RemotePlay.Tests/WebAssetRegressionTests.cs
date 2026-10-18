@@ -1688,7 +1688,7 @@ public sealed class WebAssetRegressionTests
     [Fact]
     public void ReusedIsolatedPlayerRestartsHealthMonitoring()
     {
-        var source = ReadProjectFile("MainWindow.VideoPlayerIsolated.cs");
+        var source = ReadProjectFile("UI", "Windows", "MainWindow.VideoPlayerIsolated.cs");
         var methodStart = source.IndexOf("private async void PlayMovieIsolated(", StringComparison.Ordinal);
         Assert.True(methodStart >= 0, "Expected the isolated playback-start method.");
 
@@ -1706,7 +1706,7 @@ public sealed class WebAssetRegressionTests
     [Fact]
     public void IsolatedPlayerRecyclesBeforeReplacingAnActiveHttpStream()
     {
-        var source = ReadProjectFile("MainWindow.VideoPlayerIsolated.cs");
+        var source = ReadProjectFile("UI", "Windows", "MainWindow.VideoPlayerIsolated.cs");
         var methodStart = source.IndexOf("private async void PlayMovieIsolated(", StringComparison.Ordinal);
         Assert.True(methodStart >= 0, "Expected the isolated playback-start method.");
 
@@ -1726,7 +1726,7 @@ public sealed class WebAssetRegressionTests
     {
         var managerSource = ReadProjectFile("Services", "VideoPlayerProcessManager.cs");
         var playerSource = ReadProjectFile("RemotePlay.VideoPlayer", "MainWindow.xaml.cs");
-        var monitorSource = ReadProjectFile("MainWindow.VideoPlayerMonitoring.cs");
+        var monitorSource = ReadProjectFile("UI", "Windows", "MainWindow.VideoPlayerMonitoring.cs");
 
         var pingStart = playerSource.IndexOf("if (message is PingCommand ping)", StringComparison.Ordinal);
         var responseSwitch = pingStart < 0
@@ -1764,7 +1764,7 @@ public sealed class WebAssetRegressionTests
     {
         var playerSource = ReadProjectFile("RemotePlay.VideoPlayer", "MainWindow.xaml.cs");
         var contractSource = ReadProjectFile("RemotePlay.VideoPlayer", "Ipc", "IpcContracts.cs");
-        var playbackSource = ReadProjectFile("MainWindow.Playback.cs");
+        var playbackSource = ReadProjectFile("UI", "Windows", "MainWindow.Playback.cs");
 
         AssertContainsAll(
             playerSource,
@@ -1780,8 +1780,8 @@ public sealed class WebAssetRegressionTests
     public void IsolatedPlayerStopClearsAndSuppressesLatePlaybackErrors()
     {
         var playerSource = ReadProjectFile("RemotePlay.VideoPlayer", "MainWindow.xaml.cs");
-        var playbackSource = ReadProjectFile("MainWindow.Playback.cs");
-        var isolatedPlaybackSource = ReadProjectFile("MainWindow.VideoPlayerIsolated.cs");
+        var playbackSource = ReadProjectFile("UI", "Windows", "MainWindow.Playback.cs");
+        var isolatedPlaybackSource = ReadProjectFile("UI", "Windows", "MainWindow.VideoPlayerIsolated.cs");
 
         AssertContainsAll(
             playerSource,

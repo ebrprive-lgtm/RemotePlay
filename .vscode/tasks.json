@@ -2,13 +2,87 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "build",
+      "label": "Build Release",
       "type": "process",
       "command": "dotnet",
       "args": [
         "build",
-        "${workspaceFolder}\\RemotePlay.csproj"
+        "${workspaceFolder}\\RemotePlay.slnx",
+        "--configuration",
+        "Release"
       ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$msCompile",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Test .NET",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "test",
+        "${workspaceFolder}\\RemotePlay.Tests\\RemotePlay.Tests.csproj",
+        "--configuration",
+        "Release"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$msCompile",
+      "group": "test"
+    },
+    {
+      "label": "Test browser regressions",
+      "type": "process",
+      "command": "deno",
+      "args": [
+        "test",
+        "--allow-read=WebAssets/app-live-tv.js",
+        "${workspaceFolder}\\RemotePlay.Tests\\WebAssets\\app-live-tv.browser.test.mjs"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      }
+    },
+    {
+      "label": "Publish Portable Win-x64",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\build\\Publish-RemotePlay.ps1",
+        "-Profile",
+        "PortableWinX64"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "Publish Self-Contained Win-x64",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\build\\Publish-RemotePlay.ps1",
+        "-Profile",
+        "SelfContainedWinX64"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
       "problemMatcher": "$msCompile"
     }
   ]

@@ -29,6 +29,9 @@ deno test --allow-read=WebAssets/app-live-tv.js .\RemotePlay.Tests\WebAssets\app
 dotnet run --project .\RemotePlay.csproj
 ```
 
+VS Code's **Terminal > Run Task** menu also exposes the Release build, both test
+suites, and the two x64 publish profiles.
+
 The Deno command is optional when Deno is not installed. `remoteplay.example.json`
 is a sanitized configuration reference, not a replacement for the app's
 per-user configuration.

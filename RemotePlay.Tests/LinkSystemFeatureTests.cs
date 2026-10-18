@@ -217,7 +217,7 @@ public sealed class LinkSystemFeatureTests : IDisposable
     [Fact]
     public void BreadcrumbPath_RootEqualsTarget_SingleSegment()
     {
-        // Mirrors the logic in UpdateBreadcrumbs inside MainWindow.xaml.cs.
+        // Mirrors the logic in UpdateBreadcrumbs inside UI/Windows/MainWindow.xaml.cs.
         var root   = _tempDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var target = root;
 

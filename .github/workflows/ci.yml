@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDKs
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Restore
+        run: dotnet restore .\RemotePlay.slnx
+
+      - name: Build Release
+        run: dotnet build .\RemotePlay.slnx --configuration Release --no-restore
+
+      - name: Run .NET tests
+        run: dotnet test .\RemotePlay.Tests\RemotePlay.Tests.csproj --configuration Release --no-build --no-restore --logger "console;verbosity=minimal"
+
+      - name: Run browser regression tests
+        run: deno test --allow-read=WebAssets/app-live-tv.js .\RemotePlay.Tests\WebAssets\app-live-tv.browser.test.mjs

@@ -45,6 +45,11 @@ Generated\ Files/
 [Tt]est[Rr]esult*/
 [Bb]uild[Ll]og.*
 
+# Test runner reports and crash diagnostics
+*.trx
+*.dmp
+crash_stderr.txt
+
 # Developer config (machine-specific, not for source control)
 /remoteplay.json
 

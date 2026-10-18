@@ -16,9 +16,9 @@ The video player has been successfully isolated into a separate process (`Remote
 ### 2. **Main RemotePlay Project** (Host Process)
 - **Key Files**:
   - `Services/VideoPlayerProcessManager.cs` - Process lifecycle and IPC client
-  - `MainWindow.VideoPlayerMonitoring.cs` - Health monitoring with ping/pong heartbeat
-  - `MainWindow.VideoPlayerIsolated.cs` - Isolated playback control methods
-  - `MainWindow.Playback.cs` - Modified to delegate to isolated player
+  - `UI/Windows/MainWindow.VideoPlayerMonitoring.cs` - Health monitoring with ping/pong heartbeat
+  - `UI/Windows/MainWindow.VideoPlayerIsolated.cs` - Isolated playback control methods
+  - `UI/Windows/MainWindow.Playback.cs` - Modified to delegate to isolated player
 
 ## How It Works
 

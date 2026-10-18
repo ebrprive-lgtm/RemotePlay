@@ -1,7 +1,6 @@
 # Repository Cleanup Plan
 
-**Status:** In progress. Phases 0–2 and the two Phase 4 publishing items are
-complete. Phase 3, the remaining Phase 4 items, Phase 5, and Phase 6 remain.
+**Status:** In progress. Phases 0–4 are complete. Phases 5–6 remain.
 
 ## Goal
 
@@ -168,25 +167,44 @@ Verification:
 
 ### Phase 3 — Application source layout
 
-- [ ] Keep application entry-point and project metadata at the root.
-- [ ] Move the `MainWindow` XAML/code-behind and its partial classes together
+- [x] Keep application entry-point and project metadata at the root.
+- [x] Move the `MainWindow` XAML/code-behind and its partial classes together
   into a dedicated UI/window area. Group `DarkMessageBox`, `FindLinksDialog`,
   `RenameDialog`, `SplashWindow`, and `VideoTextOverlay` by their actual UI
   roles.
-- [ ] Before each move, check `x:Class`, `StartupUri`, resource URIs,
+- [x] Before each move, check `x:Class`, `StartupUri`, resource URIs,
   `Application` resources, code-behind namespaces, and project compile/page
   items. Preserve namespaces unless a namespace change is explicitly part of
   the batch.
-- [ ] Keep the isolated `RemotePlay.VideoPlayer` project and
+- [x] Keep the isolated `RemotePlay.VideoPlayer` project and
   `RemotePlay.Tests` project clearly separated. Retain `BenchmarkSuite1` if
   it is still used; otherwise document its disposition before removal.
-- [ ] Review `Services`, `Models`, `Helpers`, `Abstractions`, `Controls`,
+- [x] Review `Services`, `Models`, `Helpers`, `Abstractions`, `Controls`,
   `ViewModels`, `Infrastructure`, and `DependencyInjection` for inconsistent
   placement. Move only files whose responsibility and namespace clearly fit
   another existing area.
-- [ ] Keep `WebAssets` together unless the server asset loader, service
+- [x] Keep `WebAssets` together unless the server asset loader, service
   worker, and browser tests are updated in the same change. Its filenames
   and paths are runtime contracts.
+
+#### Phase 3 execution record — 2026-10-18
+
+- Kept `App.xaml`, `App.xaml.cs`, `AssemblyInfo.cs`, `RemotePlay.csproj`, and
+  `RemotePlay.slnx` at the root. Moved the main window and its four partials,
+  plus `SplashWindow`, to `UI/Windows/`; moved the three dialogs to
+  `UI/Dialogs/`; and moved `VideoTextOverlay` to `UI/Overlays/`.
+- Preserved all `RemotePlay` code-behind namespaces and XAML `x:Class` values.
+  The main app has no `StartupUri`; `App.xaml.cs` creates `SplashWindow` and
+  resolves `MainWindow` through dependency injection. Checked resource URIs
+  and project item declarations; the SDK default compile/page globs cover the
+  new locations, and no moved resource URI needed updating.
+- Updated source-path references in the regression tests, testing guide, and
+  archived suggestion notes. Kept `WebAssets` unchanged.
+- Reviewed the existing source-folder boundaries; no other file clearly
+  warranted a move. Retained `BenchmarkSuite1`, which remains a solution
+  project with BenchmarkDotNet benchmarks.
+- Verified the Release solution build across all four projects and the full
+  .NET test suite (719 passed, 0 failed).
 
 ### Phase 4 — Build, repository, and developer tooling
 
@@ -210,20 +228,52 @@ Verification:
   `4.0.1`: each of the two LibVLC runtime directories contains only `win-x64`
   (425 files, 100.9 MB), and the expected executables and version file exist.
 
-- [ ] Review `.gitignore` against the actual project layout. Keep generated
+- [x] Review `.gitignore` against the actual project layout. Keep generated
   artifacts ignored, and ensure local configuration, logs, and test output
   cannot be accidentally added.
-- [ ] Add a concise `.editorconfig` and choose a consistent formatter/linter
+- [x] Add a concise `.editorconfig` and choose a consistent formatter/linter
   workflow only after checking compatibility with the current C# and web
   code.
-- [ ] Review floating package versions (currently including `NAudio` and
+- [x] Review floating package versions (currently including `NAudio` and
   `TagLibSharp`) for reproducible restores. Pin or centralize them only after
   confirming the resolved versions and running the full test suite.
-- [ ] Decide whether to add a minimal CI workflow for restore, build, .NET
+- [x] Decide whether to add a minimal CI workflow for restore, build, .NET
   tests, and browser regression tests; no tracked GitHub Actions workflow was
   found in the initial inventory.
-- [ ] Update VS Code tasks to expose the verified build, test, and publish
+- [x] Update VS Code tasks to expose the verified build, test, and publish
   commands if that improves the normal developer workflow.
+
+#### Phase 4 developer tooling verification — 2026-10-18
+
+- Audited `.gitignore` against generated output and confirmed its existing
+  coverage for `bin/`, `obj/`, test-result directories, logs, and the
+  machine-local `remoteplay.json`. Added ignore rules for standalone `.trx`
+  reports, `.dmp` crash dumps, and `crash_stderr.txt`. `git check-ignore`
+  confirmed representative paths are ignored; none of those local artifacts
+  are tracked.
+- `dotnet list package` resolved `NAudio` to `2.4.0` and `TagLibSharp` to
+  `2.3.0`; pinned those exact versions in `RemotePlay.csproj`. The solution
+  restore and full .NET test suite passed after pinning.
+- Added `.editorconfig` defaults for C#, web/config, XML/XAML, and Markdown.
+  Compatibility checks found existing baseline issues: `dotnet format
+  whitespace --verify-no-changes` reported 1,735 whitespace diagnostics,
+  `deno fmt --check` reported 20 of 22 files not formatted, and `deno lint`
+  reported 609 findings. The chosen tools are `dotnet format whitespace` for
+  C# and Deno's `fmt`/`lint` for web code, but repository-wide format/lint gates
+  are deferred until the existing baseline can be cleaned without mixing broad
+  formatting changes into this phase.
+- Added `.github/workflows/ci.yml` for Windows restore, Release build, .NET
+  tests, and browser regression tests on pushes to `master`, pull requests, and
+  manual dispatch. The corresponding commands passed locally; the hosted
+  workflow will run after it is pushed.
+- Expanded `.vscode/tasks.json` with Release build, both test suites, and
+  portable and self-contained x64 publish tasks. Parsed the task file and ran
+  the build and test tasks successfully. The publish script and portable
+  profile were already verified above.
+- Verification: solution restore succeeded; the Release build succeeded with
+  the existing `WFAC010` high-DPI manifest warning; all 719 .NET tests and all
+  10 browser regression tests passed; ignore checks and `git diff --check`
+  passed.
 
 ### Phase 5 — Dead-code and asset audit
 
@@ -253,15 +303,16 @@ Verification:
 - [ ] Confirm no unapproved local configuration, generated output, crash log,
   scratch tool, or obsolete plan remains tracked.
 
-## Decisions for later phases
+## Decisions and scope
 
 - Completed implementation plans are preserved under `docs/archive/`.
   Plans with outstanding manual, provider, or target-device checks stay under
   `docs/plans/`.
-- Should source-folder moves preserve current namespaces, or is namespace
-  cleanup in scope as a separate step?
-- Should the cleanup include `.editorconfig`, package-version pinning, and CI,
-  or should those remain separate follow-up changes?
+- Phase 3 file moves preserve existing namespaces; broad namespace cleanup is
+  outside the scope of those moves.
+- Phase 4 includes `.editorconfig`, exact pins for the resolved floating
+  packages, Windows CI, and VS Code tasks. Repository-wide format/lint gates
+  remain deferred until the existing baseline can be normalized safely.
 
 ## Definition of done
 
