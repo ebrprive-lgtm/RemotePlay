@@ -1,7 +1,7 @@
 # Repository Cleanup Plan
 
-**Status:** Proposed plan only. No files have been deleted or moved as part of
-this audit.
+**Status:** In progress. Phases 0–2 and the two Phase 4 publishing items are
+complete. Phase 3, the remaining Phase 4 items, Phase 5, and Phase 6 remain.
 
 ## Goal
 
@@ -124,18 +124,47 @@ Verification:
 
 ### Phase 2 — Documentation structure
 
-- [ ] Add a root `README.md` covering purpose, supported environment,
+- [x] Add a root `README.md` covering purpose, supported environment,
   prerequisites, build/test/run/publish commands, and links to deeper docs.
-- [ ] Create `docs/` sections such as `user-guide/`, `development/`,
+- [x] Create `docs/` sections such as `user-guide/`, `development/`,
   `testing/`, `plans/`, and `archive/`; choose the smallest structure that
   fits the existing documents.
-- [ ] Move the certificate-help guide and video-player testing guide into
+- [x] Move the certificate-help guide and video-player testing guide into
   appropriate documentation sections, updating relative links.
-- [ ] Classify each top-level plan before moving it. Preserve active work:
+- [x] Classify each top-level plan before moving it. Preserve active work:
   `VIDEO_LOCAL_PLAYBACK_PLAN.md` still records device-validation follow-ups.
   Archive plans only after their remaining checks and status are reviewed.
-- [ ] Separate the completed entries in `SUGGESTIONS.md` from the active
+- [x] Separate the completed entries in `SUGGESTIONS.md` from the active
   backlog, or replace it with the project's chosen issue-tracking workflow.
+
+#### Phase 2 execution record — 2026-10-18
+
+- Added the root `README.md` with the supported Windows x64 environment,
+  prerequisites, build/test/run/publish commands, and links to the guides and
+  plan areas.
+- Created `docs/user-guide/`, `docs/testing/`, `docs/plans/`, and
+  `docs/archive/`. No `docs/development/` section was needed: setup and
+  developer commands are covered by the README, and there was no separate
+  development guide to move.
+- Moved the certificate-help and isolated-player testing guides into their
+  respective sections.
+- Reviewed plan statuses and outstanding checks. `LIVE_TV_IMPROVEMENT_PLAN.md`
+  remains active for real-provider timing and playback validation;
+  `VIDEO_LOCAL_PLAYBACK_PLAN.md` remains active for progressive HTTP tests and
+  target-device/browser validation; this cleanup plan and the pending
+  suggestions remain active.
+- Archived `PODCASTS_IMPLEMENTATION_PLAN.md` after its implementation phases
+  and documented acceptance checks were complete; its note that production
+  timing comparisons remain qualitative is preserved. Archived
+  `WEB_PLAYER_UI_PLAN.md` after its eight verified phases, retaining its
+  browser-automation limitations.
+- Split the five completed suggestion reports (#1, #3, #4, #6, and #10) into
+  `docs/archive/COMPLETED_SUGGESTIONS.md`; the five pending suggestions remain
+  in `docs/plans/SUGGESTIONS.md`.
+- Updated source-file and cross-plan links for the new locations. A local-link
+  check resolved all 46 Markdown links across the README and documentation;
+  staged and unstaged `git diff --check` both passed. No build or test run was
+  needed for these documentation-only changes.
 
 ### Phase 3 — Application source layout
 
@@ -161,12 +190,26 @@ Verification:
 
 ### Phase 4 — Build, repository, and developer tooling
 
-- [ ] Make publishing reproducible without a machine-local `.pubxml`: either
+- [x] Make publishing reproducible without a machine-local `.pubxml`: either
   provide safe, documented profiles or pass the intended configuration,
   runtime identifier, deployment mode, and output directory explicitly from
   the publish script.
-- [ ] Make the publish script fail on a nonzero `dotnet publish` exit code and
+- [x] Make the publish script fail on a nonzero `dotnet publish` exit code and
   verify the expected application, isolated-player, and version outputs.
+
+#### Phase 4 publishing verification — 2026-10-18
+
+- `build/Publish-RemotePlay.ps1` now maps `PortableWinX64` and
+  `SelfContainedWinX64` to explicit Release, `win-x64`, deployment-mode, and
+  output-directory settings. It cleans the prior generated Release outputs,
+  checks the publish exit code, and verifies the application, isolated-player,
+  LibVLC, and version files.
+- Both application projects configure `VideoLAN.LibVLC.Windows` for x64 only;
+  its default `AnyCPU` settings otherwise copy x86, x64, and ARM64 runtimes.
+- Verified `.\build\Publish-RemotePlay.ps1 -Profile PortableWinX64` with version
+  `4.0.1`: each of the two LibVLC runtime directories contains only `win-x64`
+  (425 files, 100.9 MB), and the expected executables and version file exist.
+
 - [ ] Review `.gitignore` against the actual project layout. Keep generated
   artifacts ignored, and ensure local configuration, logs, and test output
   cannot be accidentally added.
@@ -212,8 +255,9 @@ Verification:
 
 ## Decisions for later phases
 
-- Should completed implementation plans be archived under `docs/archive/` or
-  deleted after their information is summarized?
+- Completed implementation plans are preserved under `docs/archive/`.
+  Plans with outstanding manual, provider, or target-device checks stay under
+  `docs/plans/`.
 - Should source-folder moves preserve current namespaces, or is namespace
   cleanup in scope as a separate step?
 - Should the cleanup include `.editorconfig`, package-version pinning, and CI,

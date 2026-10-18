@@ -1,14 +1,18 @@
 # Podcast Improvements Implementation Plan
 
+> Archived on 2026-10-18 after the implementation phases and documented
+> acceptance checks were completed. Live catalog timing comparisons remain
+> qualitative, as noted in the status below.
+
 ## Purpose and scope
 
 This plan records the podcast fixes already present in the worktree and the
 remaining improvements identified during the podcast review. It is specific to
-the current implementation in [WebAssets/app-podcasts.js](./WebAssets/app-podcasts.js),
-[Services/Web/WebServer.Handlers.Podcasts.cs](./Services/Web/WebServer.Handlers.Podcasts.cs),
+the current implementation in [WebAssets/app-podcasts.js](../../WebAssets/app-podcasts.js),
+[Services/Web/WebServer.Handlers.Podcasts.cs](../../Services/Web/WebServer.Handlers.Podcasts.cs),
 and the related player integration and API tests.
 
-The tagged [RemotePlay.VideoPlayer/MainWindow.xaml](./RemotePlay.VideoPlayer/MainWindow.xaml)
+The tagged [RemotePlay.VideoPlayer/MainWindow.xaml](../../RemotePlay.VideoPlayer/MainWindow.xaml)
 is not part of the podcast path; podcast discovery and playback use the web
 assets and WebServer handlers.
 
@@ -50,7 +54,7 @@ from a deployed instance for a numeric production comparison.
 - [x] Feed XML parsing prohibits DTDs and limits feed input; private/local
   literal episode and feed URLs are rejected by the current validation.
 - [x] Podcast API tests cover country listing and rejection of private-host
-  feed/play URLs in [RemotePlay.Tests/WebServerApiTests.cs](./RemotePlay.Tests/WebServerApiTests.cs).
+  feed/play URLs in [RemotePlay.Tests/WebServerApiTests.cs](../../RemotePlay.Tests/WebServerApiTests.cs).
 
 ### Baseline verification
 
@@ -80,8 +84,8 @@ test harness.
 automatically; validating only the starting URL does not validate every
 redirect destination or protect against DNS rebinding.
 
-**Primary files:** [Services/Web/WebServer.Handlers.Podcasts.cs](./Services/Web/WebServer.Handlers.Podcasts.cs),
-[RemotePlay.Tests/WebServerApiTests.cs](./RemotePlay.Tests/WebServerApiTests.cs).
+**Primary files:** [Services/Web/WebServer.Handlers.Podcasts.cs](../../Services/Web/WebServer.Handlers.Podcasts.cs),
+[RemotePlay.Tests/WebServerApiTests.cs](../../RemotePlay.Tests/WebServerApiTests.cs).
 
 - [x] Add the narrowest practical injection seam for the feed HTTP transport
   and DNS/connect validation so tests can use deterministic fake upstream
@@ -149,8 +153,8 @@ podcast-feed response cache or conditional `ETag`/`Last-Modified` revalidation
 was found. Feed paging can otherwise repeatedly download and parse the same
 feed.
 
-**Primary files:** [Services/Web/WebServer.Handlers.Podcasts.cs](./Services/Web/WebServer.Handlers.Podcasts.cs),
-[RemotePlay.Tests/WebServerApiTests.cs](./RemotePlay.Tests/WebServerApiTests.cs).
+**Primary files:** [Services/Web/WebServer.Handlers.Podcasts.cs](../../Services/Web/WebServer.Handlers.Podcasts.cs),
+[RemotePlay.Tests/WebServerApiTests.cs](../../RemotePlay.Tests/WebServerApiTests.cs).
 
 - [x] Add a feed cache keyed by a normalized, validated feed URL. Store
   validators and the bounded parsed feed data needed to serve offset pages.
@@ -216,7 +220,7 @@ order beginning with the US and returns as soon as it reaches the requested
 limit. A well-populated early country can therefore dominate the global
 directory.
 
-**Primary file:** [Services/Web/WebServer.Handlers.Podcasts.cs](./Services/Web/WebServer.Handlers.Podcasts.cs).
+**Primary file:** [Services/Web/WebServer.Handlers.Podcasts.cs](../../Services/Web/WebServer.Handlers.Podcasts.cs).
 
 - [x] Change the all-country top-pool merge to sample countries in rounds
   (for example, one new unique show per country per round) instead of filling
@@ -274,11 +278,11 @@ directory.
 the obsolete network work. Playback navigation currently stops at the end of
 the episodes already loaded, even when the feed has another page.
 
-**Primary files:** [WebAssets/app-podcasts.js](./WebAssets/app-podcasts.js),
-[WebAssets/app-library.js](./WebAssets/app-library.js),
-[WebAssets/app-local.js](./WebAssets/app-local.js),
-[WebAssets/app-radio.js](./WebAssets/app-radio.js),
-[WebAssets/index.html](./WebAssets/index.html).
+**Primary files:** [WebAssets/app-podcasts.js](../../WebAssets/app-podcasts.js),
+[WebAssets/app-library.js](../../WebAssets/app-library.js),
+[WebAssets/app-local.js](../../WebAssets/app-local.js),
+[WebAssets/app-radio.js](../../WebAssets/app-radio.js),
+[WebAssets/index.html](../../WebAssets/index.html).
 
 - [x] Add `AbortController` handling to podcast directory, search, feed, and
   load-more requests. Abort the prior request when a newer selection or query
@@ -412,10 +416,10 @@ are visible, but there are no recommendation cards or skeletons.
   zero-result count and text-only loading message instead of retaining prior
   results or showing card-shaped placeholders.
 
-**Primary files:** [WebAssets/app-podcasts.js](./WebAssets/app-podcasts.js),
-[Services/Web/WebServer.Handlers.Podcasts.cs](./Services/Web/WebServer.Handlers.Podcasts.cs),
-[RemotePlay.Tests/WebAssetRegressionTests.cs](./RemotePlay.Tests/WebAssetRegressionTests.cs),
-and [RemotePlay.Tests/WebServerApiTests.cs](./RemotePlay.Tests/WebServerApiTests.cs).
+**Primary files:** [WebAssets/app-podcasts.js](../../WebAssets/app-podcasts.js),
+[Services/Web/WebServer.Handlers.Podcasts.cs](../../Services/Web/WebServer.Handlers.Podcasts.cs),
+[RemotePlay.Tests/WebAssetRegressionTests.cs](../../RemotePlay.Tests/WebAssetRegressionTests.cs),
+and [RemotePlay.Tests/WebServerApiTests.cs](../../RemotePlay.Tests/WebServerApiTests.cs).
 
 - [x] Instrument cold-process, warm-process, and browser re-entry time from
   `podcastsInit()` to the first card and to directory completion. Browser logs

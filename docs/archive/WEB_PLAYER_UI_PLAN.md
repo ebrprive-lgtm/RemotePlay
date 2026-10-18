@@ -1,5 +1,8 @@
 # Web Player UI Improvement Plan
 
+> Archived on 2026-10-18 after all eight phases were implemented and verified.
+> Browser-automation limitations remain recorded below for historical context.
+
 **Status:** Phases 1–8 implemented and verified. Evidence and known
 browser-automation limitations are recorded below.
 
@@ -11,7 +14,7 @@ Use the current shared Radio/Podcast bar as the primary target and bring the
 separate Music bar into visual alignment where practical. This plan does not
 redesign the dedicated video/full-screen player or change the server playback
 protocol. The separate browser-local video feature is tracked in
-[VIDEO_LOCAL_PLAYBACK_PLAN.md](./VIDEO_LOCAL_PLAYBACK_PLAN.md).
+[VIDEO_LOCAL_PLAYBACK_PLAN.md](../plans/VIDEO_LOCAL_PLAYBACK_PLAN.md).
 
 ## Checked baseline
 
@@ -19,28 +22,28 @@ protocol. The separate browser-local video feature is tracked in
   into a very narrow column and wraps word-by-word; transport buttons compete
   for the same horizontal space; the player uses substantial vertical space;
   and a “Stations” control appears while the metadata looks podcast-related.
-- [x] Reviewed the player markup in [index.html](./WebAssets/index.html). The
+- [x] Reviewed the player markup in [index.html](../../WebAssets/index.html). The
   shared `#radio-player-bar` contains metadata, podcast Prev/Next and episode
   count, Play/Pause, Stop, a combined volume/boost slider, and the radio globe
   section. `#music-player-bar` is a separate surface with its own seek row,
   options, effects, and queue-peek card.
 - [x] Found a malformed opening tag at the radio globe section in
-  [index.html](./WebAssets/index.html): `<div id="radio-bar-geo"` is missing
+  [index.html](../../WebAssets/index.html): `<div id="radio-bar-geo"` is missing
   its closing `>`. Repair and validate this markup before relying on mode CSS
   or computed layout.
 - [x] Reviewed the relevant layout and mode rules in
-  [styles.css](./WebAssets/styles.css). `.player-top` starts as a two-column
+  [styles.css](../../WebAssets/styles.css). `.player-top` starts as a two-column
   grid (`minmax(0, 1fr) auto`); narrow-view rules stack it, while docked-player
   rules apply separate widths and title wrapping. The docked radio title has
   no line limit, so the actual viewport, dock state, and CSS cascade should be
   reproduced before choosing the final breakpoint fix.
-- [x] Reviewed playback state in [app-radio.js](./WebAssets/app-radio.js),
-  [app-local.js](./WebAssets/app-local.js), and
-  [app-podcasts.js](./WebAssets/app-podcasts.js). Podcast navigation already
+- [x] Reviewed playback state in [app-radio.js](../../WebAssets/app-radio.js),
+  [app-local.js](../../WebAssets/app-local.js), and
+  [app-podcasts.js](../../WebAssets/app-podcasts.js). Podcast navigation already
   tracks episode position, loading/error status, and continuation across feed
   pages. Stop/dismiss and play/pause have distinct existing semantics.
 - [x] Checked existing frontend regression coverage in
-  [WebAssetRegressionTests.cs](./RemotePlay.Tests/WebAssetRegressionTests.cs).
+  [WebAssetRegressionTests.cs](../../RemotePlay.Tests/WebAssetRegressionTests.cs).
   It includes checks that movie cards remain clickable and launch playback.
 
 ### Screenshot and code observations to verify during implementation

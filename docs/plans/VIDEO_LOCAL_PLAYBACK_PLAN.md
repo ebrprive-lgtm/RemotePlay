@@ -42,31 +42,31 @@ Server player should remain the fallback for unsupported formats.
 ## Verified current state
 
 - The Local/Server preference is stored per browser. The Local handoff logic in
-  [app-core.js](./WebAssets/app-core.js) handles audio playback; it does not
+  [app-core.js](../../WebAssets/app-core.js) handles audio playback; it does not
   hand off a Video session.
-- Video selection in [app-library.js](./WebAssets/app-library.js) currently
+- Video selection in [app-library.js](../../WebAssets/app-library.js) currently
   always calls `/api/video/play`. That route dispatches to `HandlePlay` in
-  [WebServer.Handlers.VideoPlayback.cs](./Services/Web/WebServer.Handlers.VideoPlayback.cs),
+  [WebServer.Handlers.VideoPlayback.cs](../../Services/Web/WebServer.Handlers.VideoPlayback.cs),
   which starts the server-side player through its callback.
-- [index.html](./WebAssets/index.html) has the server video status/control
+- [index.html](../../WebAssets/index.html) has the server video status/control
   surface and a local `<audio>` element, but no local `<video>` element. The
-  transport functions in [app-playback.js](./WebAssets/app-playback.js) send
+  transport functions in [app-playback.js](../../WebAssets/app-playback.js) send
   pause, seek, skip, and volume changes to server endpoints.
 - Phase 1 adds `/api/video/stream` in
-  [WebServer.Handlers.VideoStream.cs](./Services/Web/WebServer.Handlers.VideoStream.cs).
+  [WebServer.Handlers.VideoStream.cs](../../Services/Web/WebServer.Handlers.VideoStream.cs).
   The
-  [Music stream handler](./Services/Web/WebServer.Handlers.MusicPlayback.cs)
+  [Music stream handler](../../Services/Web/WebServer.Handlers.MusicPlayback.cs)
   uses the same single-range parser so Local Music seeking follows standard
   byte-range response semantics.
 - Video files are represented in the browser by encoded path tokens from
-  [WebPathHelpers.cs](./Helpers/Web/WebPathHelpers.cs). The stream endpoint
+  [WebPathHelpers.cs](../../Helpers/Web/WebPathHelpers.cs). The stream endpoint
   authorizes normal paths against configured movie roots and validates
   `.rplink` sources and targets. Base64-encoding a path is not authorization.
   The existing server video play handler still does not apply the same
   library-root check.
 - Server-player progress is saved by the WPF playback tracker into
   `PlaybackHistory`. Browser clients have per-IP histories through
-  [WebServer.History.cs](./Services/Web/WebServer.History.cs), but browser-local
+  [WebServer.History.cs](../../Services/Web/WebServer.History.cs), but browser-local
   video has no progress reporter yet. The current `/api/local-playing` boolean
   is not a progress record.
 - The web video controls also rely on server status polling, `/api/adjacent`,
@@ -109,9 +109,9 @@ Server player should remain the fallback for unsupported formats.
 ### Phase 1: Add a secure video stream endpoint (complete)
 
 - [x] Add a `GET /api/video/stream` route in
-  [WebServer.Handlers.Request.cs](./Services/Web/WebServer.Handlers.Request.cs),
+  [WebServer.Handlers.Request.cs](../../Services/Web/WebServer.Handlers.Request.cs),
   implemented by
-  [WebServer.Handlers.VideoStream.cs](./Services/Web/WebServer.Handlers.VideoStream.cs).
+  [WebServer.Handlers.VideoStream.cs](../../Services/Web/WebServer.Handlers.VideoStream.cs).
   It accepts the existing encoded video path token.
 - [x] Decode and validate the requested file before opening it:
   - [x] Require an existing regular file with an allowed video extension.
