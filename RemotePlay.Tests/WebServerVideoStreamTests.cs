@@ -300,6 +300,24 @@ public sealed class WebServerVideoStreamTests : IClassFixture<VideoStreamTestHos
     }
 
     [Fact]
+    public async Task GetThroughEmptyLink_StreamsMatchingMovieFromMasterMovies()
+    {
+        var masterMovies = Path.Combine(_host.PrimaryRoot, "@Master.Movies");
+        var decadeMovies = Path.Combine(masterMovies, "2020s");
+        Directory.CreateDirectory(decadeMovies);
+        var movieName = $"2024 - empty-link-movie-{Guid.NewGuid():N}";
+        var bytes = new byte[] { 7, 8, 9 };
+        var targetPath = _host.WriteVideo(decadeMovies, movieName + ".flv", bytes);
+        var linkPath = Path.Combine(_host.PrimaryRoot, movieName + ".rplink");
+        File.WriteAllText(linkPath, string.Empty);
+
+        using var response = await _host.Client.GetAsync(_host.GetStreamUrl(targetPath, linkPath));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(bytes, await response.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
     public async Task GetThroughLinkOutsideConfiguredRoots_IsForbidden()
     {
         var targetPath = _host.WriteVideo(_host.OutsideRoot, "external-target.mp4", [1, 2, 3]);

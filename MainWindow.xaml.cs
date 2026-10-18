@@ -3987,14 +3987,11 @@ public partial class MainWindow : Window
         if (items.Count == 0) return;
 
         var rootFolder = "@Master.Movies";
-
-        var masterLibrary = Path.Combine( _config.ResolvedMoviesPath, rootFolder);
+        var masterLibrary = Path.Combine(_config.ResolvedMoviesPath, rootFolder);
 
         // Create directory structure as needed
         if (!Directory.Exists(masterLibrary))
-        {
             Directory.CreateDirectory(masterLibrary);
-        }
 
         foreach (var item in items)
         {
@@ -4002,7 +3999,17 @@ public partial class MainWindow : Window
             if (!File.Exists(itemPath)) continue; // Skip if file doesn't exist
 
             var fileName = Path.GetFileName(itemPath);
-            var targetPath = Path.Combine(masterLibrary, fileName);
+            var movieName = Path.GetFileNameWithoutExtension(fileName);
+            var targetDirectory = RplinkHelper.GetMasterLibraryTargetDirectory(masterLibrary, movieName);
+            if (!Directory.Exists(targetDirectory))
+                Directory.CreateDirectory(targetDirectory);
+            var targetPath = Path.Combine(targetDirectory, fileName);
+
+            if (string.Equals(
+                    Path.GetFullPath(itemPath),
+                    Path.GetFullPath(targetPath),
+                    StringComparison.OrdinalIgnoreCase))
+                continue;
 
             // Check if a file with the same name already exists
             if (File.Exists(targetPath))
@@ -4011,7 +4018,7 @@ public partial class MainWindow : Window
                 var fileNameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
                 var fileExt = Path.GetExtension(fileName);
                 var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-                targetPath = Path.Combine(masterLibrary, $"{fileNameWithoutExt}_{timestamp}{fileExt}");
+                targetPath = Path.Combine(targetDirectory, $"{fileNameWithoutExt}_{timestamp}{fileExt}");
             }
 
             // Move the file to master library
@@ -4019,10 +4026,8 @@ public partial class MainWindow : Window
 
             // Create .rplink file in the original location that points to the new file in master library
             var linkPath = Path.ChangeExtension(itemPath, ".rplink");
-
-            //var relativePath = RplinkHelper.MakeRelativeIfPossible(itemPath, targetPath);
-
-            File.WriteAllText(linkPath, $"@\\{rootFolder}\\{fileName}");
+            var relativeTargetPath = Path.GetRelativePath(_config.ResolvedMoviesPath, targetPath);
+            File.WriteAllText(linkPath, $"@\\{relativeTargetPath}");
             _webServer.IndexRenameFile(itemPath, targetPath);
         }
 
@@ -4083,12 +4088,19 @@ public partial class MainWindow : Window
 
             var folderName = Path.GetFileName(itemPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             var targetFolderName = folderName;
-            var targetPath = Path.Combine(masterLibrary, targetFolderName);
+            var targetDirectory = RplinkHelper.GetMasterLibraryTargetDirectory(masterLibrary, folderName);
+            var targetPath = Path.Combine(targetDirectory, targetFolderName);
+            if (string.Equals(
+                    Path.GetFullPath(itemPath),
+                    Path.GetFullPath(targetPath),
+                    StringComparison.OrdinalIgnoreCase))
+                continue;
+
             var suffix = 2;
             while (Path.Exists(targetPath) || Path.Exists(targetPath + RplinkHelper.Extension))
             {
                 targetFolderName = $"{folderName}_{suffix++}";
-                targetPath = Path.Combine(masterLibrary, targetFolderName);
+                targetPath = Path.Combine(targetDirectory, targetFolderName);
             }
 
             var originalParent = Path.GetDirectoryName(itemPath);
@@ -4109,6 +4121,7 @@ public partial class MainWindow : Window
 
             try
             {
+                Directory.CreateDirectory(targetDirectory);
                 Directory.Move(itemPath, targetPath);
             }
             catch (Exception ex)
