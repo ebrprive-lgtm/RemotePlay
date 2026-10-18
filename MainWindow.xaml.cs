@@ -2781,7 +2781,12 @@ public partial class MainWindow : Window
             {
                 var candidate = Path.Combine(libraryRoot, relative);
                 if (!File.Exists(candidate) && !Directory.Exists(candidate))
-                    continue;
+                {
+                    if (!RplinkHelper.TryResolveDecadeTargetPath(candidate, out var decadeCandidate, out _))
+                        continue;
+
+                    candidate = decadeCandidate;
+                }
 
                 Logger.Info("ExternalCommand", $"Resolved inaccessible target path '{targetPath}' via library root to '{candidate}'.");
                 return candidate;

@@ -6,7 +6,7 @@ namespace RemotePlay;
 /// <summary>Helpers for the <c>.rplink</c> file format — a single-line text file whose content is a
 /// target path or a library directive such as <c>@Series</c> or <c>@Movie</c>. Empty links are
 /// inferred from a same-name series folder or movie file. Year-prefixed names also search their
-/// corresponding decade folders.</summary>
+/// corresponding decade folders, including legacy concrete paths to the old flat master layout.</summary>
 internal static class RplinkHelper
 {
     public const string Extension = ".rplink";
@@ -273,6 +273,13 @@ internal static class RplinkHelper
                 ? raw
                 : Path.GetFullPath(Path.Combine(Path.GetDirectoryName(rplinkPath) ?? string.Empty, raw));
 
+            // Older concrete links can still point at the former flat master-folder layout.
+            if (TryResolveDecadeTargetPath(targetPath, out var decadeTarget, out var decadeSeriesTarget))
+            {
+                targetPath = decadeTarget;
+                isSeriesTarget = decadeSeriesTarget;
+            }
+
             return true;
         }
         catch (Exception ex)
@@ -280,6 +287,58 @@ internal static class RplinkHelper
             error = BuildErrorDetails(ex);
             return false;
         }
+    }
+
+    internal static bool TryResolveDecadeTargetPath(
+        string targetPath,
+        out string resolvedTarget,
+        out bool isSeriesTarget)
+    {
+        resolvedTarget = targetPath;
+        isSeriesTarget = false;
+
+        if (File.Exists(targetPath) || Directory.Exists(targetPath))
+            return false;
+
+        var normalizedPath = Path.TrimEndingDirectorySeparator(targetPath);
+        var masterDirectory = Path.GetDirectoryName(normalizedPath);
+        if (string.IsNullOrWhiteSpace(masterDirectory))
+            return false;
+
+        var masterDirectoryName = Path.GetFileName(masterDirectory);
+        var targetName = Path.GetFileName(normalizedPath);
+        var isMovieTarget = string.Equals(
+            masterDirectoryName,
+            "@Master.Movies",
+            StringComparison.OrdinalIgnoreCase);
+        var isSeriesCandidate = string.Equals(
+            masterDirectoryName,
+            "@Master.Series",
+            StringComparison.OrdinalIgnoreCase);
+
+        if (!isMovieTarget && !isSeriesCandidate)
+            return false;
+
+        if (isMovieTarget && !MovieScanner.IsSupportedVideoFile(normalizedPath))
+            return false;
+
+        var itemName = isMovieTarget
+            ? Path.GetFileNameWithoutExtension(targetName)
+            : targetName;
+        var decade = GetDecadeFolderName(itemName);
+        if (decade is null)
+            return false;
+
+        var decadeTarget = Path.Combine(masterDirectory, decade, targetName);
+        var targetExists = isMovieTarget
+            ? File.Exists(decadeTarget)
+            : Directory.Exists(decadeTarget);
+        if (!targetExists)
+            return false;
+
+        resolvedTarget = decadeTarget;
+        isSeriesTarget = isSeriesCandidate;
+        return true;
     }
 
     private static bool TryResolveMovieTarget(
