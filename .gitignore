@@ -46,7 +46,7 @@ Generated\ Files/
 [Bb]uild[Ll]og.*
 
 # Developer config (machine-specific, not for source control)
-remoteplay.json
+/remoteplay.json
 
 # NUnit
 *.VisualState.xml

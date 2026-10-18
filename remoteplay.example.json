@@ -1,0 +1,39 @@
+{
+  "Port": 9090,
+  "UseHttps": false,
+  "MoviesPath": "C:\\Media\\Movies",
+  "MusicPath": "C:\\Media\\Music",
+  "LibraryRescanDelayMinutes": 60,
+  "EnableThumbnailGeneration": true,
+  "IgnoredLibraryFolders": [
+    "Subs",
+    "Alt"
+  ],
+  "VideoFileExtensions": [
+    ".mp4",
+    ".mkv",
+    ".avi",
+    ".mov",
+    ".wmv",
+    ".m4v",
+    ".ts",
+    ".flv"
+  ],
+  "MusicFileExtensions": [
+    ".mp3",
+    ".flac",
+    ".aac",
+    ".ogg",
+    ".wav",
+    ".m4a",
+    ".wma",
+    ".opus"
+  ],
+  "LibraryPageSize": 200,
+  "AdditionalMoviesPaths": [],
+  "AdditionalMusicPaths": [],
+  "NetworkShareCredentials": [],
+  "DiscogsToken": "",
+  "UpdateSourcePath": "",
+  "AutoUpdateIntervalMinutes": 60
+}

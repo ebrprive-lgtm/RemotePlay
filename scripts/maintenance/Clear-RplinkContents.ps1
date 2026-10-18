@@ -10,10 +10,10 @@ The files remain in place. Use -WhatIf to preview or -Confirm to approve changes
 The existing directory to scan.
 
 .EXAMPLE
-.\Clear-RplinkContents.ps1 -RootPath 'D:\Media' -WhatIf
+.\scripts\maintenance\Clear-RplinkContents.ps1 -RootPath 'D:\Media' -WhatIf
 
 .EXAMPLE
-.\Clear-RplinkContents.ps1 -RootPath 'D:\Media'
+.\scripts\maintenance\Clear-RplinkContents.ps1 -RootPath 'D:\Media'
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(

@@ -33,7 +33,7 @@
   <ItemGroup>
     <Resource Include="Assets\RemotePlay.ico" />
 
-    <None Include="remoteplay.json" />
+    <None Remove="remoteplay.json" />
 
     <Content Include="Assets\Pwa\*.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
