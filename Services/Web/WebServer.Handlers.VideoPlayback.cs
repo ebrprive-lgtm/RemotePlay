@@ -514,8 +514,20 @@ internal sealed partial class WebServer
         var naturalComparer = _naturalComparer;
 
         // Regular sub-folders
+        var isLibraryRoot = string.Equals(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(targetDir)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)),
+            StringComparison.OrdinalIgnoreCase);
         var regularFolders = Directory.EnumerateDirectories(targetDir)
-            .Where(d => !_hiddenFolderNames.Contains(Path.GetFileName(d)) && !Path.GetFileName(d).StartsWith('@'))
+            .Where(d =>
+            {
+                var folderName = Path.GetFileName(d);
+                var isMasterLibrary = isLibraryRoot
+                    && (string.Equals(folderName, "@Master.Series", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(folderName, "@Master.Movies", StringComparison.OrdinalIgnoreCase));
+                return !_hiddenFolderNames.Contains(folderName)
+                    && (!folderName.StartsWith('@') || isMasterLibrary);
+            })
             .Select(d => (name: Path.GetFileName(d), dir: WebPathHelpers.EncodePath(d), isLink: false, virtualPath: string.Empty));
 
         // Folder-link .rplink entries (target is a directory)

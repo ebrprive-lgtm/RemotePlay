@@ -20,6 +20,60 @@ public sealed class WebServerVideoStreamTests : IClassFixture<VideoStreamTestHos
     }
 
     [Fact]
+    public async Task Browse_ExposesMasterLibraryFoldersAndVideosInsideDecades()
+    {
+        var suffix = Guid.NewGuid().ToString("N");
+        var movieName = $"1942 - Movie {suffix}";
+        var movieDecade = Path.Combine(_host.PrimaryRoot, "@Master.Movies", "1940s");
+        var seriesName = $"1942 - Series {suffix}";
+        var seriesFolder = Path.Combine(_host.PrimaryRoot, "@Master.Series", "1940s", seriesName);
+        var seasonFolder = Path.Combine(seriesFolder, "Season 1");
+
+        Directory.CreateDirectory(movieDecade);
+        Directory.CreateDirectory(seasonFolder);
+        Directory.CreateDirectory(Path.Combine(_host.PrimaryRoot, "@Private"));
+        _host.WriteVideo(movieDecade, movieName + ".mp4", [1, 2, 3]);
+        var episodeName = seriesName + " S01E01";
+        _host.WriteVideo(seasonFolder, episodeName + ".mkv", [4, 5, 6]);
+
+        using var rootBrowse = await BrowseAsync(null);
+        var rootFolders = GetNames(rootBrowse, "folders");
+        Assert.Contains("@Master.Movies", rootFolders);
+        Assert.Contains("@Master.Series", rootFolders);
+        Assert.DoesNotContain("@Private", rootFolders);
+
+        using var moviesBrowse = await BrowseAsync(Path.Combine(_host.PrimaryRoot, "@Master.Movies"));
+        Assert.Contains("1940s", GetNames(moviesBrowse, "folders"));
+        using var movieDecadeBrowse = await BrowseAsync(movieDecade);
+        Assert.Contains(movieName, GetNames(movieDecadeBrowse, "files"));
+
+        using var seriesBrowse = await BrowseAsync(Path.Combine(_host.PrimaryRoot, "@Master.Series"));
+        Assert.Contains("1940s", GetNames(seriesBrowse, "folders"));
+        using var seriesDecadeBrowse = await BrowseAsync(Path.GetDirectoryName(seriesFolder)!);
+        Assert.Contains(seriesName, GetNames(seriesDecadeBrowse, "folders"));
+        using var seriesFolderBrowse = await BrowseAsync(seriesFolder);
+        Assert.Contains("Season 1", GetNames(seriesFolderBrowse, "folders"));
+        using var seasonBrowse = await BrowseAsync(seasonFolder);
+        Assert.Contains(episodeName, GetNames(seasonBrowse, "files"));
+    }
+
+    private async Task<JsonDocument> BrowseAsync(string? path)
+    {
+        var url = path is null
+            ? "/api/browse"
+            : $"/api/browse?dir={Uri.EscapeDataString(WebPathHelpers.EncodePath(path))}";
+        using var response = await _host.Client.GetAsync(url);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+    }
+
+    private static string[] GetNames(JsonDocument document, string propertyName) =>
+        document.RootElement.GetProperty(propertyName)
+            .EnumerateArray()
+            .Select(item => item.GetProperty("name").GetString()!)
+            .ToArray();
+
+    [Fact]
     public async Task GetWithoutRange_ReturnsCompleteFileAndStreamingHeaders()
     {
         var bytes = Enumerable.Range(0, 10).Select(value => (byte)value).ToArray();
