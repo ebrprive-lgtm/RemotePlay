@@ -299,6 +299,17 @@
                   aria-label="Local video player"
                   aria-describedby="local-video-status local-video-error"
                   title="Local video"></video>
+                <span
+                  id="local-video-transcode-indicator"
+                  class="local-video-transcode-indicator"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                  title="Preparing compatible audio"
+                  hidden>
+                  <span class="local-video-transcode-spinner" aria-hidden="true"></span>
+                  <span class="sr-only">Preparing tablet-compatible audio</span>
+                </span>
                 <button
                   id="local-video-expand-overlay"
                   class="local-video-expand-overlay"

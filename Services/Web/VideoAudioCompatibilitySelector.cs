@@ -111,3 +111,35 @@ internal static class VideoAudioCompatibilitySelector
 internal sealed record VideoAudioCompatibilityStream(
     string Path,
     VideoAudioCompatibilityMode Mode);
+
+internal sealed class VideoAudioCompatibilityStreamRequest : IDisposable
+{
+    private VideoAudioCompatibilityStreamRequest(
+        VideoAudioCompatibilityStream? completedStream,
+        Task<VideoAudioCompatibilityStream>? completionTask,
+        ProgressiveVideoAudioOutput? progressiveOutput,
+        ProgressiveVideoAudioOutput.ProgressiveVideoAudioSubscription? subscription)
+    {
+        CompletedStream = completedStream;
+        CompletionTask = completionTask;
+        ProgressiveOutput = progressiveOutput;
+        Subscription = subscription;
+    }
+
+    internal VideoAudioCompatibilityStream? CompletedStream { get; }
+    internal Task<VideoAudioCompatibilityStream>? CompletionTask { get; }
+    internal ProgressiveVideoAudioOutput? ProgressiveOutput { get; }
+    internal ProgressiveVideoAudioOutput.ProgressiveVideoAudioSubscription? Subscription { get; }
+
+    internal static VideoAudioCompatibilityStreamRequest Completed(
+        VideoAudioCompatibilityStream stream) =>
+        new(stream, null, null, null);
+
+    internal static VideoAudioCompatibilityStreamRequest Progressive(
+        Task<VideoAudioCompatibilityStream> completionTask,
+        ProgressiveVideoAudioOutput progressiveOutput,
+        ProgressiveVideoAudioOutput.ProgressiveVideoAudioSubscription subscription) =>
+        new(null, completionTask, progressiveOutput, subscription);
+
+    public void Dispose() => Subscription?.Dispose();
+}

@@ -158,6 +158,88 @@ public class RplinkHelperTests : IDisposable
     }
 
     [Fact]
+    public void TryReadTarget_WithSeriesDirective_ResolvesToFolderNamedAfterLink()
+    {
+        var libraryRoot = Path.Combine(_tempDir, "SeriesLibrary");
+        var masterSeries = Path.Combine(libraryRoot, "@Master.Series");
+        var links = Path.Combine(libraryRoot, "Links");
+        var expectedFolder = Path.Combine(masterSeries, "1970 - Whatever");
+        Directory.CreateDirectory(Path.Combine(libraryRoot, "@Master.Movies"));
+        Directory.CreateDirectory(links);
+        Directory.CreateDirectory(expectedFolder);
+
+        var linkPath = Path.Combine(links, "1970 - Whatever.rplink");
+        File.WriteAllText(linkPath, "@series");
+
+        Assert.Equal(expectedFolder, RplinkHelper.TryReadTarget(linkPath));
+        Assert.True(RplinkHelper.IsTargetFolder(linkPath));
+    }
+
+    [Fact]
+    public void InspectTarget_WithMissingSeriesDirective_ReturnsMissingFolder()
+    {
+        var libraryRoot = Path.Combine(_tempDir, "MissingSeriesLibrary");
+        var masterSeries = Path.Combine(libraryRoot, "@Master.Series");
+        var links = Path.Combine(libraryRoot, "Links");
+        Directory.CreateDirectory(masterSeries);
+        Directory.CreateDirectory(links);
+
+        var linkPath = Path.Combine(links, "1970 - Missing.Series.rplink");
+        File.WriteAllText(linkPath, "@Series");
+
+        var inspection = RplinkHelper.InspectTarget(linkPath);
+
+        Assert.Equal(RplinkHelper.RplinkTargetStatus.Missing, inspection.Status);
+        Assert.Equal(Path.Combine(masterSeries, "1970 - Missing.Series"), inspection.ResolvedTarget);
+        Assert.True(RplinkHelper.IsTargetFolder(linkPath));
+    }
+
+    [Fact]
+    public void TryReadTarget_WithMovieDirective_SelectsFirstSupportedMovieFile()
+    {
+        var libraryRoot = Path.Combine(_tempDir, "MovieLibrary");
+        var masterMovies = Path.Combine(libraryRoot, "@Master.Movies");
+        var links = Path.Combine(libraryRoot, "Links");
+        var movieName = "1971 - MovieName";
+        Directory.CreateDirectory(masterMovies);
+        Directory.CreateDirectory(links);
+
+        var expectedMovie = Path.Combine(masterMovies, movieName + ".avi");
+        File.WriteAllText(Path.Combine(masterMovies, movieName + ".mp4"), "mp4");
+        File.WriteAllText(expectedMovie, "avi");
+        File.WriteAllText(Path.Combine(masterMovies, movieName + ".nfo"), "metadata");
+
+        var linkPath = Path.Combine(links, movieName + ".rplink");
+        File.WriteAllText(linkPath, "@Movie");
+
+        Assert.Equal(expectedMovie, RplinkHelper.TryReadTarget(linkPath));
+        Assert.False(RplinkHelper.IsTargetFolder(linkPath));
+    }
+
+    [Fact]
+    public void InspectTarget_WithMissingMovieDirective_ReturnsExpectedWildcardAsMissing()
+    {
+        var libraryRoot = Path.Combine(_tempDir, "MissingMovieLibrary");
+        var masterSeries = Path.Combine(libraryRoot, "@Master.Series");
+        var masterMovies = Path.Combine(libraryRoot, "@Master.Movies");
+        var links = Path.Combine(libraryRoot, "Links");
+        Directory.CreateDirectory(masterSeries);
+        Directory.CreateDirectory(links);
+
+        var linkPath = Path.Combine(links, "1972 - MissingMovie.rplink");
+        File.WriteAllText(linkPath, "@Movie");
+
+        var expectedPattern = Path.Combine(masterMovies, "1972 - MissingMovie.*");
+        var inspection = RplinkHelper.InspectTarget(linkPath);
+
+        Assert.Equal(expectedPattern, RplinkHelper.TryReadTargetRaw(linkPath));
+        Assert.Null(RplinkHelper.TryReadTarget(linkPath));
+        Assert.Equal(RplinkHelper.RplinkTargetStatus.Missing, inspection.Status);
+        Assert.Equal(expectedPattern, inspection.ResolvedTarget);
+        Assert.False(RplinkHelper.IsTargetFolder(linkPath));
+    }
+
+    [Fact]
     public void TryReadTarget_WhenTargetDoesNotExist_ReturnsNull()
     {
         var linkPath = Path.Combine(_tempDir, "link.rplink");

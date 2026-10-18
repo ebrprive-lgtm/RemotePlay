@@ -82,14 +82,59 @@ internal sealed partial class WebServer
                 {
                     var supportedAudioCodecs = VideoAudioCompatibilitySelector.ParseSupportedCodecs(
                         ctx.Request.QueryString["audioCodecs"]);
-                    var compatibleStream = await _videoAudioCompatibilityTranscoder
-                        .GetOrCreateCompatibleStreamAsync(
+                    var progressiveRequested = string.Equals(
+                        ctx.Request.QueryString["progressive"],
+                        "1",
+                        StringComparison.Ordinal);
+                    var transcodeId = ctx.Request.QueryString["transcodeId"];
+                    if (transcodeId is { Length: > 128 })
+                    {
+                        TrySendResponse(ctx, 400, "text/plain", "Invalid transcode ID");
+                        return;
+                    }
+                    if (string.IsNullOrWhiteSpace(transcodeId))
+                        transcodeId = null;
+                    if (progressiveRequested)
+                    {
+                        using var streamRequest = await _videoAudioCompatibilityTranscoder
+                            .StartCompatibleStreamAsync(
+                                filePath,
+                                supportedAudioCodecs,
+                                cancellationToken,
+                                durationSeconds,
+                                transcodeId)
+                            .ConfigureAwait(false);
+                        if (streamRequest.CompletedStream is { } completedStream)
+                        {
+                            streamPath = completedStream.Path;
+                        }
+                        else if (IsProgressiveVideoRequest(ctx.Request)
+                            && await TryStreamProgressiveVideoAsync(
+                            ctx,
                             filePath,
-                            supportedAudioCodecs,
-                            cancellationToken,
-                            durationSeconds)
-                        .ConfigureAwait(false);
-                    streamPath = compatibleStream.Path;
+                            streamRequest,
+                            cancellationToken).ConfigureAwait(false))
+                        {
+                            return;
+                        }
+                        else
+                        {
+                            var finishedStream = await streamRequest.CompletionTask!
+                                .ConfigureAwait(false);
+                            streamPath = finishedStream.Path;
+                        }
+                    }
+                    else
+                    {
+                        var compatibleStream = await _videoAudioCompatibilityTranscoder
+                            .GetOrCreateCompatibleStreamAsync(
+                                filePath,
+                                supportedAudioCodecs,
+                                cancellationToken,
+                                durationSeconds)
+                            .ConfigureAwait(false);
+                        streamPath = compatibleStream.Path;
+                    }
                 }
                 else
                 {
@@ -283,6 +328,91 @@ internal sealed partial class WebServer
         }
     }
 
+    private static bool IsProgressiveVideoRequest(HttpListenerRequest request)
+    {
+        var rangeHeader = request.Headers["Range"];
+        if (string.IsNullOrWhiteSpace(rangeHeader))
+            return true;
+
+        var range = VideoByteRangeParser.Parse(rangeHeader, long.MaxValue);
+        return range.Kind == VideoByteRangeKind.FullContent
+            || range.Kind == VideoByteRangeKind.PartialContent && range.Start == 0;
+    }
+
+    private async Task<bool> TryStreamProgressiveVideoAsync(
+        HttpListenerContext ctx,
+        string sourcePath,
+        VideoAudioCompatibilityStreamRequest streamRequest,
+        CancellationToken serverCancellationToken)
+    {
+        var progressiveOutput = streamRequest.ProgressiveOutput
+            ?? throw new InvalidOperationException("Progressive video output was not initialized.");
+        var subscription = streamRequest.Subscription
+            ?? throw new InvalidOperationException("Progressive video subscriber was not initialized.");
+        using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            serverCancellationToken,
+            subscription.CancellationToken);
+
+        if (!await progressiveOutput.WaitForFirstMediaFragmentAsync(linkedCancellation.Token)
+            .ConfigureAwait(false))
+        {
+            return false;
+        }
+
+        ctx.Response.StatusCode = (int)HttpStatusCode.OK;
+        ctx.Response.ContentType = "video/mp4";
+        ctx.Response.SendChunked = true;
+        ctx.Response.Headers["Content-Disposition"] = "inline";
+        ctx.Response.Headers["Cache-Control"] = "no-store";
+        ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+
+        try
+        {
+            await progressiveOutput.CopyToAsync(
+                ctx.Response.OutputStream,
+                linkedCancellation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (
+            serverCancellationToken.IsCancellationRequested
+            || subscription.CancellationToken.IsCancellationRequested)
+        {
+            Logger.Detail("WebServer", "Progressive video stream was cancelled.");
+        }
+        catch (VideoAudioTranscodingException ex)
+        {
+            Logger.Error(
+                $"Progressive tablet-compatible Local Video stream failed for '{Path.GetFileName(sourcePath)}'.",
+                ex);
+        }
+        catch (HttpListenerException)
+        {
+            Logger.Detail("WebServer", "Progressive video stream client disconnected.");
+            _videoAudioCompatibilityTranscoder.CancelTranscode(
+                sourcePath,
+                subscription.SubscriberId);
+        }
+        catch (IOException ex)
+        {
+            Logger.Detail("WebServer", $"Progressive video stream ended unexpectedly: {ex.Message}");
+            _videoAudioCompatibilityTranscoder.CancelTranscode(
+                sourcePath,
+                subscription.SubscriberId);
+        }
+        catch (ObjectDisposedException)
+        {
+            Logger.Detail("WebServer", "Progressive video response closed by the client.");
+            _videoAudioCompatibilityTranscoder.CancelTranscode(
+                sourcePath,
+                subscription.SubscriberId);
+        }
+        finally
+        {
+            CloseVideoStreamResponse(ctx.Response);
+        }
+
+        return true;
+    }
+
     private void HandleVideoTranscodeStatus(HttpListenerContext ctx)
     {
         if (!ctx.Request.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase))
@@ -374,7 +504,15 @@ internal sealed partial class WebServer
 
         try
         {
-            var cancelled = _videoAudioCompatibilityTranscoder.CancelTranscode(filePath);
+            var transcodeId = ctx.Request.QueryString["transcodeId"];
+            if (transcodeId is { Length: > 128 })
+            {
+                TrySendResponse(ctx, 400, "text/plain", "Invalid transcode ID");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(transcodeId))
+                transcodeId = null;
+            var cancelled = _videoAudioCompatibilityTranscoder.CancelTranscode(filePath, transcodeId);
             TrySendResponse(
                 ctx,
                 200,

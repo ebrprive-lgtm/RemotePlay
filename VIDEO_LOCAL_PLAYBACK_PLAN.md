@@ -1,16 +1,23 @@
 # Local Video Playback Plan
 
-**Status:** Phases 0–6, tablet audio compatibility, Local Video track
-diagnostics, transcode progress/ETA, and server-side transcode cancellation are
-implemented. Focused automated tests pass, and a desktop Chrome smoke run is
-complete. The user confirmed Local Video audio works on the tablet; first
-playback can wait for conversion. Tablet fullscreen, Local Music audio/seek,
-and the latest compact-player cancellation behavior still need device
-verification.
+**Status:** Phases 0–7 are implemented, including progressive fragmented-MP4
+startup and fast-start cache finalization for uncached tablet audio
+compatibility conversions. Focused automated tests passed (84/84), and
+FFmpeg/FFprobe probes verified AAC encoding, audio copying, and fast-start
+finalization of fragmented output. The first complete media fragment arrived
+in 571 ms and 540 ms, respectively, on the local synthetic fixture. These are server-side
+fragment-arrival measurements, not browser-decoded-frame measurements. The
+latest replay failure involved a valid but still-fragmented cache and 216
+stream requests in about nine seconds; legacy empty-marker caches are now
+rejected and regenerated as seekable fast-start MP4s.
+Progressive route-level HTTP tests and actual target-tablet playback, seeking,
+audio/video sync, and handoff verification remain outstanding. The user
+confirmed Local Video audio works on the tablet. Tablet fullscreen, Local Music
+audio/seek, and the latest compact-player cancellation behavior still need
+device verification.
 
-**Recommendation:** Add browser-local playback with an HTML `<video>` element
-fed by a same-origin, byte-range-aware endpoint. Keep the existing Server
-playback path available and unchanged for the MVP.
+**Recommendation:** Keep browser-local playback on the same-origin streaming
+endpoint and retain Server playback as the fallback for unsupported formats.
 
 ## Decision and feasibility
 
@@ -323,6 +330,140 @@ fixture is claimed. The sample AC-3 5.1-to-stereo-AAC conversion succeeded in a
 manual 10-second FFmpeg check.
 Tablet audio, fullscreen exit, the in-page fullscreen fallback, and Escape-key
 behavior, and transcode cancellation are not device-verified.
+
+### Phase 7: Progressive playback during audio compatibility conversion (implementation complete; target-device validation pending)
+
+**Goal:** On browser/touch Local Video sessions that require audio compatibility
+work, start playback as soon as the first decodable video/audio fragment is
+available, while the server continues preparing the complete compatible file.
+Target a first decoded frame within about 3 seconds for a defined local-disk
+test fixture whose conversion remains active long enough to demonstrate
+overlap; do not promise that timing for every network share or media file.
+Continue copying the video stream rather than re-encoding it. Keep desktop
+direct playback, already-compatible streams, completed-cache playback, and
+Play on Server behavior unchanged.
+
+**Current constraint:** The stream handler awaits the compatibility operation
+before opening the completed output file. During conversion, FFmpeg writes a
+fragmented MP4 to a temporary file and the server streams those fragments to
+active readers. After conversion, FFmpeg stream-copies that file into a
+separate `+faststart` cache file for replay and byte-range seeking. The cache's
+versioned ready marker is published only after finalization succeeds; the
+fragmented temporary file remains until its last reader releases it.
+The reported replay failure showed that a ready marker alone was insufficient:
+the old cache was complete but still fragmented. The new marker format ensures
+those legacy cache entries are regenerated through fast-start finalization.
+
+**Recommended MVP design:** Deliver fragmented MP4 output progressively over a
+chunked HTTP response, then finalize a separate seekable `+faststart` cache for
+replay and ranges. Keep the fragmented temporary output only as long as active
+readers need it. Do not build a separate video-only player and attach audio
+later; that would require a separate synchronization and seeking design.
+
+**Active seek policy:** A live chunked response has no final content length and
+cannot provide arbitrary byte ranges. During progressive conversion, playback
+is sequential and seeking is allowed only within data the browser has buffered.
+The UI rejects other seeks; an explicit saved-position seek can wait for the
+same conversion to finish. A nonzero initial resume/handoff position waits for
+the completed cache before playback starts. A zero-based initial Range request
+may be ignored and served as a chunked `200`; a nonzero Range request joins the
+same conversion and receives the normal range response after cache commit.
+Completed streams retain the existing `Content-Length`/byte-range behavior.
+If arbitrary seeking through unconverted portions is required, revise the
+design to HLS/MSE rather than promising it from the progressive response.
+
+#### Checklist
+
+- [x] Trace the browser Local Video request, server stream handler, codec
+  selection, and FFmpeg operation. Confirm that the current request waits for
+  the complete compatibility output before sending media.
+- [x] Confirm the scope: compatible source streams and warm cache entries can
+  avoid conversion; this delay affects uncached touch-client compatibility
+  remux/transcode requests. Desktop native LibVLC playback is a separate path.
+- [x] Adopt buffered-only seeking during active conversion; use the completed
+  cache for nonzero initial positions and nonzero active Range requests.
+- [ ] Confirm the target tablet browser(s) and validate its media behavior.
+- [x] Prototype fragmented MP4 output for both audio-copy remux and AAC encode.
+  On the synthetic local fixture, the first complete media fragments arrived
+  in 540 ms (audio copy) and 571 ms (AAC encode) while FFmpeg was still running;
+  FFprobe accepted both completed outputs. This measures fragment arrival, not
+  browser decoding or first-frame latency.
+- [x] Use FFmpeg stdout for media and stderr for progress/errors, with the
+  growing fragmented temporary file as a shared producer/consumer buffer.
+  FFmpeg progress remains separate from the media bytes.
+- [x] Expose the selected compatibility mode before conversion finishes so
+  compatible-original and completed-cache paths continue through the existing
+  range handler; route only active conversion jobs through progressive output.
+- [x] Keep the existing path authorization, `.rplink` validation, allowed
+  extension checks, and source-file identity checks ahead of starting FFmpeg.
+  Never treat an in-progress temporary file as a completed cache entry.
+- [x] Stream fragmented MP4 with `video/mp4` and a chunked response; flush
+  initialization data and complete fragments as they become available. Apply
+  the active-Range policy above and retain the current completed-file range
+  contract.
+- [x] Preserve single-flight transcoding. Support multiple active readers and
+  cancel only the departing reader unless no reader still needs the conversion.
+  Coordinate cancellation with new subscriber registration and retire cancelled
+  or completed operations before a later request can join them.
+- [x] On successful progressive conversion, stream-copy the fragmented output
+  into a separate `+faststart` cache file, atomically commit it, and write a
+  versioned ready marker only after finalization succeeds. Legacy empty-marker
+  caches are regenerated. Later playback and seeking use the existing
+  range-capable path. Keep the fragmented file until active readers release it;
+  on failure or cancellation, close active responses and clean partial files.
+- [x] Keep stop, source replacement, page exit, and explicit cancel wired to
+  server cancellation. Subscriber IDs preserve other readers; server shutdown
+  cancels the shared FFmpeg operation and closes its readers.
+- [x] Separate Local playback readiness from transcode activity in
+  `app-playback.js`; progress, ETA, and cancellation remain available after
+  playback starts while FFmpeg is active.
+- [x] Preserve Local/Server handoff, autoplay gesture behavior, pause/stop,
+  resume position, queue/adjacent playback, and Play on Server fallback. If
+  FFmpeg fails after response headers or media bytes have been sent, show an
+  explicit playback error and fallback rather than attempting to send a new
+  HTTP error response.
+- [x] Add focused transcoder/output tests for delivery before completion,
+  multiple readers, per-reader cancellation, progressive FFmpeg arguments,
+  completed-cache status, rejection of unmarked and legacy empty-marker cache
+  files, and progressive-file cleanup after the last reader. Run FFmpeg/FFprobe
+  probes for AAC encode and audio copy.
+- [x] Retain the existing HTTP regressions for authorization before codec
+  probing and ordinary source range responses.
+- [ ] Add progressive HTTP integration tests for chunked delivery before
+  conversion completes, active Range behavior, concurrent readers,
+  disconnect/cancel cleanup, and range requests against a completed cache file.
+- [x] Add browser source regressions that verify polling/cancel continue after
+  loading, unbuffered seeks are rejected, and progressive state is shown in
+  diagnostics.
+- [ ] Validate in a real target browser that the first decoded frame can play
+  while transcode status remains active and confirm audio/video synchronization.
+- [ ] Validate actual target tablet browsers with supported and AAC-fallback
+  audio, and check audio/video sync, seeking, stopping, source replacement,
+  handoff, transcode failure, and repeat playback from cache.
+- [x] Update Diagnostics and this plan to distinguish progressive playback
+  from conversion completion and record the measured server-side fragment
+  arrival times and outstanding browser validation.
+
+#### Phase 7 acceptance criteria
+
+1. For an uncached compatibility transcode using the documented local-disk
+   fixture, designed to keep conversion active through first-frame delivery,
+   the browser decodes its first video frame within 3 seconds while the server
+   still reports that audio conversion is active. Measure decoded playback,
+   not just HTTP headers or bytes received.
+2. Audio and copied video remain synchronized and playable while FFmpeg
+   continues; no video re-encoding is introduced.
+3. The transcode completes in the background, produces a valid `+faststart`
+   cache entry, and normal byte-range seeking works after completion. A repeat
+   request uses that cache without starting another FFmpeg job; the temporary
+   fragmented output is removed after all progressive readers finish.
+4. Direct-compatible and already-cached streams retain their current behavior;
+   Server mode remains unchanged.
+5. Unauthorized paths never start FFmpeg. Stop/cancel, disconnect, and source
+   replacement do not leave orphaned processes or partial cache files, and
+   shared readers do not cancel each other's required conversion.
+6. The in-progress seek behavior matches the confirmed policy; seeking outside
+   the buffered range is never silently reported as successful.
 
 ## MVP acceptance criteria
 

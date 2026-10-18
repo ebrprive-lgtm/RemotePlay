@@ -178,6 +178,10 @@ public sealed class WebAssetRegressionTests
             "id=\"local-video-thumbnail-prompt\"",
             "id=\"local-video-thumbnail-prompt-label\"",
             "Tap to go to thumbnail",
+            "id=\"local-video-transcode-indicator\"",
+            "class=\"local-video-transcode-spinner\"",
+            "aria-live=\"polite\"",
+            "Preparing tablet-compatible audio",
             "id=\"local-video-transcode-cancel\"",
             "onclick=\"cancelLocalVideoTranscode()\"",
             "onclick=\"playLocalVideoOnServer()\"");
@@ -194,6 +198,13 @@ public sealed class WebAssetRegressionTests
             ".local-video-expand-overlay[hidden]{display:none!important}",
             ".local-video-thumbnail-overlay{",
             ".local-video-thumbnail-overlay[hidden]{display:none!important}",
+            ".local-video-transcode-indicator{position:absolute;",
+            ".local-video-transcode-indicator[hidden]{display:none!important}",
+            "pointer-events:none",
+            ".local-video-transcode-spinner{",
+            "animation:local-video-transcode-spin .8s linear infinite",
+            "@keyframes local-video-transcode-spin{to{transform:rotate(360deg)}}",
+            ".local-video-transcode-spinner{animation:none}",
             ".local-video-overlay-prompt.is-faded{opacity:0;transform:scale(.94)}",
             "transition:opacity .45s ease,transform .45s ease",
             "#local-video-stage:fullscreen",
@@ -283,12 +294,38 @@ public sealed class WebAssetRegressionTests
         AssertContainsAll(
             playbackJs,
             "function _renderLocalVideoFullscreenOverlayStatus(state = _localVideoState)",
-            "state?.loading && state.transcodeProgress?.isTranscoding",
-            "_formatLocalVideoTranscodeStatus(",
-            "promptLabel.textContent = statusText;",
+            "const isTranscoding = Boolean(",
+            "isFullscreen &&",
+            "state?.transcodeProgress?.isTranscoding",
+            "!state.transcodeProgress.isComplete",
+            "transcodeIndicator.hidden = !isTranscoding;",
+            "promptLabel.textContent = 'Tap to go to thumbnail';",
             "thumbnailOverlay.setAttribute(",
-            "isTranscoding",
-            "Tap to go to thumbnail");
+            "Return to the Local Video thumbnail");
+        var overlayStatusStart = playbackJs.IndexOf(
+            "function _renderLocalVideoFullscreenOverlayStatus(",
+            StringComparison.Ordinal);
+        var overlayStatusEnd = playbackJs.IndexOf(
+            "function _renderLocalVideoFullscreenState()",
+            overlayStatusStart,
+            StringComparison.Ordinal);
+        Assert.True(overlayStatusStart >= 0 && overlayStatusEnd > overlayStatusStart);
+        Assert.DoesNotContain(
+            "_formatLocalVideoTranscodeStatus(",
+            playbackJs[overlayStatusStart..overlayStatusEnd],
+            StringComparison.Ordinal);
+        var overlayPromptStart = playbackJs.IndexOf(
+            "function _showLocalVideoOverlayPrompt()",
+            StringComparison.Ordinal);
+        var overlayPromptEnd = playbackJs.IndexOf(
+            "function _renderLocalVideoFullscreenOverlayStatus(",
+            overlayPromptStart,
+            StringComparison.Ordinal);
+        Assert.True(overlayPromptStart >= 0 && overlayPromptEnd > overlayPromptStart);
+        Assert.DoesNotContain(
+            "transcodeProgress",
+            playbackJs[overlayPromptStart..overlayPromptEnd],
+            StringComparison.Ordinal);
 
         var fullscreenHandler = playbackJs[fullscreenStart..resumeStart];
         AssertContainsAll(
@@ -448,6 +485,8 @@ public sealed class WebAssetRegressionTests
         AssertContainsAll(
             playbackJs,
             "function _formatLocalVideoTranscodeStatus(progress, unavailable = false)",
+            "progress.mode === 'finalizing'",
+            "'Finalizing seekable video cache…'",
             "progress.progressPercent",
             "progress.estimatedRemainingSeconds",
             "'/api/video/transcode-status?' + query.toString()",
@@ -460,6 +499,70 @@ public sealed class WebAssetRegressionTests
             "const localVideoTranscodeStatus =",
             "rows.push(['Local transcode', localVideoTranscodeStatus]);",
             "esc(localVideoTranscodeStatus)");
+    }
+
+    [Fact]
+    public void LocalVideoHeaderOmitsRedundantPlayingLocallyLabel()
+    {
+        var playbackJs = ReadWebAsset("app-playback.js");
+        var renderStart = playbackJs.IndexOf("function _renderLocalVideoUi()", StringComparison.Ordinal);
+        var statusStart = renderStart < 0
+            ? -1
+            : playbackJs.IndexOf("if (status) {", renderStart, StringComparison.Ordinal);
+        var statusEnd = statusStart < 0
+            ? -1
+            : playbackJs.IndexOf("if (time) {", statusStart, StringComparison.Ordinal);
+        Assert.True(renderStart >= 0 && statusStart > renderStart && statusEnd > statusStart);
+
+        var headerStatus = playbackJs[statusStart..statusEnd];
+        Assert.DoesNotContain("Playing locally", headerStatus, StringComparison.Ordinal);
+        AssertContainsAll(headerStatus, "transcodeStatus", "? 'Paused'", ": '';");
+    }
+
+    [Fact]
+    public void ProgressiveLocalVideoKeepsTranscodeStatusAndRestrictsUnbufferedSeeking()
+    {
+        var playbackJs = ReadWebAsset("app-playback.js");
+        var diagnosticsJs = ReadWebAsset("app-diagnostics.js");
+        var pollStart = playbackJs.IndexOf(
+            "function _shouldPollLocalVideoTranscodeStatus(state)",
+            StringComparison.Ordinal);
+        var pollEnd = pollStart < 0
+            ? -1
+            : playbackJs.IndexOf("function _isLocalVideoProgressiveTranscodeActive", pollStart, StringComparison.Ordinal);
+        Assert.True(pollStart >= 0 && pollEnd > pollStart);
+
+        AssertContainsAll(
+            playbackJs,
+            "query.set('progressive', progressiveRequested ? '1' : '0');",
+            "query.set('transcodeId', transcodeId);",
+            "progressiveRequested,",
+            "transcodeId,",
+            "if (progress?.errorMessage)",
+            "function _canSeekLocalVideoTo(video, state, position)",
+            "if (eventName === 'seeking' && _rejectUnbufferedLocalVideoSeek(video, state))",
+            "progress?.isTranscoding &&",
+            "Seeking outside the buffered video is available after audio conversion completes.");
+        Assert.DoesNotContain("state.loading", playbackJs[pollStart..pollEnd], StringComparison.Ordinal);
+        Assert.Contains("localVideoState.transcodeProgress?.isTranscoding", diagnosticsJs, StringComparison.Ordinal);
+        Assert.Contains("Playing progressively · ", diagnosticsJs, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LocalVideoTranscodePollingStopsWhenNoConversionIsRequired()
+    {
+        var playbackJs = ReadWebAsset("app-playback.js");
+
+        AssertContainsAll(
+            playbackJs,
+            "!state.transcodeStatusResolved",
+            "state.transcodeStatusResolved = Boolean(",
+            "state.localVideoMediaReady = true;",
+            "state.transcodeStatusNoConversionResponses >= 2",
+            "progress?.isComplete ||",
+            "progress?.errorMessage ||",
+            "const noConversionReported = Boolean(",
+            "!progress.isTranscoding &&");
     }
 
     [Fact]
@@ -512,7 +615,9 @@ public sealed class WebAssetRegressionTests
             seek,
             "if (!seekDragging) return;",
             "if (_isLocalVideoActive())",
-            "video.currentTime = Math.min(Math.max(0, pos), duration);",
+            "const target = Math.min(Math.max(0, pos), duration);",
+            "if (!_canSeekLocalVideoTo(video, _localVideoState, target))",
+            "video.currentTime = target;",
             "await api('/api/seek?pos='",
             "finally {",
             "seekDragging = false;");

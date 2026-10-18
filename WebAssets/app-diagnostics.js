@@ -275,19 +275,27 @@ async function refreshDiagnostics() {
         ? 'Switching to Local'
         : 'Switching to Server'
       : '';
-    const localVideoTranscodeStatus = localVideoActive
-      && localVideoState.loading
-      && localVideoState.audioCompatibilityRequested
-      ? typeof _formatLocalVideoTranscodeStatus === 'function'
-        ? _formatLocalVideoTranscodeStatus(
-            localVideoState.transcodeProgress,
-            localVideoState.transcodeStatusUnavailable
-          )
-        : 'Transcoding audio for tablet playback…'
-      : '';
     const localVideoElement = localVideoActive && typeof _getLocalVideoElement === 'function'
       ? _getLocalVideoElement()
       : null;
+    const localVideoTranscodeStatus = localVideoActive
+      && localVideoState.audioCompatibilityRequested
+      && (
+        localVideoState.loading ||
+        localVideoState.transcodeProgress?.isTranscoding ||
+        localVideoState.transcodeProgress?.errorMessage
+      )
+      ? typeof _formatLocalVideoTranscodeStatus === 'function'
+        ? (localVideoState.progressiveRequested &&
+          localVideoState.transcodeProgress?.isTranscoding &&
+          localVideoElement?.readyState >= 2
+            ? 'Playing progressively · '
+            : '') + _formatLocalVideoTranscodeStatus(
+              localVideoState.transcodeProgress,
+              localVideoState.transcodeStatusUnavailable
+            )
+        : 'Transcoding audio for tablet playback…'
+      : '';
     let ci = display.codecInfo;
     let localProbeError = '';
     if (localVideoActive) {

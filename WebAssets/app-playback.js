@@ -55,6 +55,10 @@ function _getLocalVideoSupportedAudioCodecs(video) {
     .map(([codec]) => codec);
 }
 
+function _newLocalVideoTranscodeId() {
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+}
+
 function _localVideoHasSource() {
   return Boolean(_localVideoState?.path);
 }
@@ -141,6 +145,7 @@ function _formatLocalVideoTime(seconds) {
 }
 
 function _formatLocalVideoTranscodeStatus(progress, unavailable = false) {
+  if (progress?.errorMessage) return progress.errorMessage;
   if (unavailable) return 'Preparing compatible audio… (progress unavailable)';
   if (!progress || progress.mode === 'checking') return 'Checking browser audio codec support…';
   if (progress.isComplete) return 'Compatible audio ready; opening video…';
@@ -163,9 +168,11 @@ function _formatLocalVideoTranscodeStatus(progress, unavailable = false) {
   } else {
     details.push('estimating remaining time');
   }
-  const operation = progress.mode === 'copy'
-    ? 'Copying supported audio into MP4…'
-    : 'Transcoding audio to AAC…';
+  const operation = progress.mode === 'finalizing'
+    ? 'Finalizing seekable video cache…'
+    : progress.mode === 'copy'
+      ? 'Copying supported audio into MP4…'
+      : 'Transcoding audio to AAC…';
   return operation + ' ' + details.join(' · ');
 }
 
@@ -173,11 +180,67 @@ function _shouldPollLocalVideoTranscodeStatus(state) {
   return Boolean(
     state === _localVideoState &&
     state.audioCompatibilityRequested &&
-    state.loading &&
     !state.transcodeCancelPending &&
+    !state.transcodeStatusResolved &&
     !state.errorMessage &&
     !state.transcodeProgress?.isComplete
   );
+}
+
+function _isLocalVideoProgressiveTranscodeActive(state) {
+  return Boolean(
+    state?.progressiveRequested &&
+    state.transcodeProgress?.isTranscoding &&
+    !state.transcodeProgress?.isComplete
+  );
+}
+
+function _isLocalVideoPositionBuffered(video, position) {
+  if (!video || !Number.isFinite(position)) return false;
+  for (let index = 0; index < video.buffered.length; index++) {
+    if (position >= video.buffered.start(index) - 0.05
+      && position <= video.buffered.end(index) + 0.05) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function _canSeekLocalVideoTo(video, state, position) {
+  if (!_isLocalVideoProgressiveTranscodeActive(state)) return true;
+  if (
+    Number.isFinite(state.allowedSeekSeconds) &&
+    Math.abs(position - state.allowedSeekSeconds) <= 0.5
+  ) {
+    return true;
+  }
+  return _isLocalVideoPositionBuffered(video, position);
+}
+
+function _rejectUnbufferedLocalVideoSeek(video, state) {
+  if (Number.isFinite(state.revertingSeekTarget)) {
+    const isRestoring = Math.abs(video.currentTime - state.revertingSeekTarget) <= 0.1;
+    state.revertingSeekTarget = null;
+    if (isRestoring) return false;
+  }
+  if (_canSeekLocalVideoTo(video, state, video.currentTime)) return false;
+
+  const restorePosition = Number.isFinite(state.lastPositionSeconds)
+    ? Math.max(0, state.lastPositionSeconds)
+    : 0;
+  if (Math.abs(video.currentTime - restorePosition) > 0.05) {
+    state.revertingSeekTarget = restorePosition;
+    try {
+      video.currentTime = restorePosition;
+    } catch (error) {
+      state.revertingSeekTarget = null;
+      console.warn('Could not restore Local Video after an unbuffered seek.', error);
+    }
+  }
+  _showLocalVideoWarning(
+    'Seeking outside the buffered video is available after audio conversion completes.'
+  );
+  return true;
 }
 
 function _scheduleLocalVideoTranscodeStatusPoll(state, delayMs = 0) {
@@ -197,6 +260,7 @@ function _cancelLocalVideoTranscodeStatusPoll(state) {
 async function _cancelLocalVideoTranscodeOnServer(state) {
   const query = new URLSearchParams({ path: state.path });
   if (state.linkPath) query.set('linkPath', state.linkPath);
+  if (state.transcodeId) query.set('transcodeId', state.transcodeId);
   const { response, body: result } = await _fetchLocalVideoRequestWithTimeout(
     '/api/video/transcode-cancel?' + query.toString(),
     { method: 'POST', cache: 'no-store' },
@@ -212,7 +276,6 @@ async function _cancelLocalVideoTranscodeOnServer(state) {
 function _requestLocalVideoTranscodeCancellation(state) {
   if (
     !state?.audioCompatibilityRequested ||
-    !state.loading ||
     state.transcodeCancelPending
   ) {
     return;
@@ -227,7 +290,6 @@ async function cancelLocalVideoTranscode() {
   const state = _localVideoState;
   if (
     !state?.audioCompatibilityRequested ||
-    !state.loading ||
     !state.transcodeProgress?.isTranscoding ||
     state.transcodeCancelPending ||
     _localVideoHandoffPending
@@ -284,12 +346,34 @@ async function _pollLocalVideoTranscodeStatus(state) {
     state.transcodeProgress = progress;
     state.transcodeStatusUnavailable = false;
     state.transcodeStatusErrorLogged = false;
+    const noConversionReported = Boolean(
+      progress &&
+      !progress.isTranscoding &&
+      !progress.isComplete &&
+      !progress.mode
+    );
+    state.transcodeStatusNoConversionResponses =
+      noConversionReported && state.localVideoMediaReady
+        ? state.transcodeStatusNoConversionResponses + 1
+        : 0;
+    state.transcodeStatusResolved = Boolean(
+      progress?.isComplete ||
+      progress?.errorMessage ||
+      state.transcodeStatusNoConversionResponses >= 2
+    );
+    if (progress?.isComplete) state.allowedSeekSeconds = null;
+    if (progress?.errorMessage) {
+      state.errorMessage = progress.errorMessage;
+      state.loading = false;
+      _cancelLocalVideoTranscodeStatusPoll(state);
+    }
     if (progress?.isTranscoding && state.handoff === 'server-to-local') {
       void _stopServerPlaybackForLocalHandoff(state);
     }
   } catch (error) {
     if (!_shouldPollLocalVideoTranscodeStatus(state)) return;
     state.transcodeStatusUnavailable = true;
+    state.transcodeStatusNoConversionResponses = 0;
     if (!state.transcodeStatusErrorLogged) {
       console.error('Could not read Local Video transcode progress.', error);
       state.transcodeStatusErrorLogged = true;
@@ -318,7 +402,6 @@ function _showLocalVideoOverlayPrompt() {
     document.getElementById('local-video-stage'),
     _getLocalVideoElement()
   );
-  const state = _localVideoState;
   const promptId = isFullscreen
     ? 'local-video-thumbnail-prompt'
     : 'local-video-expand-prompt';
@@ -326,10 +409,6 @@ function _showLocalVideoOverlayPrompt() {
   if (!prompt) return;
 
   prompt.classList.remove('is-faded');
-  if (isFullscreen && state?.loading && state.transcodeProgress?.isTranscoding) {
-    _localVideoOverlayFadeTimer = null;
-    return;
-  }
 
   _localVideoOverlayFadeTimer = setTimeout(() => {
     prompt.classList.add('is-faded');
@@ -338,46 +417,25 @@ function _showLocalVideoOverlayPrompt() {
 }
 
 function _renderLocalVideoFullscreenOverlayStatus(state = _localVideoState) {
+  const transcodeIndicator = document.getElementById('local-video-transcode-indicator');
   const thumbnailOverlay = document.getElementById('local-video-thumbnail-overlay');
-  const prompt = document.getElementById('local-video-thumbnail-prompt');
   const promptLabel = document.getElementById('local-video-thumbnail-prompt-label');
   const isFullscreen = _isLocalVideoFullscreen(
     document.getElementById('local-video-stage'),
     _getLocalVideoElement()
   );
   const isTranscoding = Boolean(
-    isFullscreen && state?.loading && state.transcodeProgress?.isTranscoding
+    isFullscreen &&
+    state?.transcodeProgress?.isTranscoding &&
+    !state.transcodeProgress.isComplete
   );
-  const wasTranscoding = thumbnailOverlay?.dataset.transcoding === 'true';
-  const transcodeStatus = isTranscoding
-    ? _formatLocalVideoTranscodeStatus(
-        state.transcodeProgress,
-        state.transcodeStatusUnavailable
-      )
-    : '';
-  const statusText = isTranscoding
-    ? transcodeStatus + ' · Tap to go to thumbnail'
-    : 'Tap to go to thumbnail';
 
-  if (promptLabel) promptLabel.textContent = statusText;
+  if (promptLabel) promptLabel.textContent = 'Tap to go to thumbnail';
+  if (transcodeIndicator) transcodeIndicator.hidden = !isTranscoding;
   if (thumbnailOverlay) {
-    thumbnailOverlay.dataset.transcoding = String(isTranscoding);
-    const accessibleLabel = isTranscoding
-      ? transcodeStatus + '. Tap to go to thumbnail.'
-      : 'Return to the Local Video thumbnail';
-    thumbnailOverlay.setAttribute(
-      'aria-label',
-      accessibleLabel
-    );
+    const accessibleLabel = 'Return to the Local Video thumbnail';
+    thumbnailOverlay.setAttribute('aria-label', accessibleLabel);
     thumbnailOverlay.title = accessibleLabel;
-  }
-
-  if (isTranscoding) {
-    if (_localVideoOverlayFadeTimer) clearTimeout(_localVideoOverlayFadeTimer);
-    _localVideoOverlayFadeTimer = null;
-    prompt?.classList.remove('is-faded');
-  } else if (wasTranscoding) {
-    _showLocalVideoOverlayPrompt();
   }
 }
 
@@ -408,6 +466,14 @@ function _renderLocalVideoUi() {
   const error = document.getElementById('local-video-error');
   const transcodeCancel = document.getElementById('local-video-transcode-cancel');
   const fallback = document.getElementById('local-video-server-fallback');
+  const transcodeActive = Boolean(
+    state.audioCompatibilityRequested &&
+    state.transcodeProgress?.isTranscoding &&
+    !state.transcodeProgress?.isComplete
+  );
+  const transcodeStatus = transcodeActive
+    ? _formatLocalVideoTranscodeStatus(state.transcodeProgress, state.transcodeStatusUnavailable)
+    : '';
 
   if (heading) heading.textContent = state.name || 'Local video';
   if (status) {
@@ -430,9 +496,11 @@ function _renderLocalVideoUi() {
                       state.transcodeStatusUnavailable
                     )
                   : 'Loading video…'
+                : transcodeActive
+                  ? (video.paused ? 'Paused · ' : '') + transcodeStatus
                 : video.paused
                   ? 'Paused'
-                  : 'Playing locally';
+                  : '';
   }
   if (time) {
     time.textContent =
@@ -451,15 +519,19 @@ function _renderLocalVideoUi() {
   if (transcodeCancel) {
     transcodeCancel.hidden =
       !state.audioCompatibilityRequested ||
-      !state.loading ||
-      !state.transcodeProgress?.isTranscoding ||
+      !transcodeActive ||
       Boolean(state.errorMessage);
     transcodeCancel.disabled = _localVideoHandoffPending || state.transcodeCancelPending === true;
     transcodeCancel.textContent = state.transcodeCancelPending
       ? 'Stopping playback…'
       : 'Cancel transcode';
   }
-  if (surface) surface.setAttribute('aria-busy', state.loading && !state.errorMessage ? 'true' : 'false');
+  if (surface) {
+    surface.setAttribute(
+      'aria-busy',
+      (state.loading || transcodeActive) && !state.errorMessage ? 'true' : 'false'
+    );
+  }
 
   if (typeof currentMode === 'undefined' || currentMode !== 'video') return;
   _showLocalVideoResumePrompt(state);
@@ -487,6 +559,9 @@ function _renderLocalVideoUi() {
               state.transcodeStatusUnavailable
             )
           : 'Loading video…'
+        : transcodeActive
+          ? (video.paused ? 'Local video · Paused' : 'Local video · Playing')
+            + ' · ' + transcodeStatus
         : video.paused
           ? 'Local video · Paused'
           : 'Local video · Playing';
@@ -519,6 +594,9 @@ function _renderLocalVideoUi() {
 }
 
 function _localVideoErrorMessage(error) {
+  if (_localVideoState?.transcodeProgress?.errorMessage) {
+    return _localVideoState.transcodeProgress.errorMessage;
+  }
   if (_localVideoState?.audioCompatibilityRequested && [2, 3, 4].includes(error?.code)) {
     return 'The tablet-compatible Local stream failed. Check FFmpeg on the RemotePlay host, or choose Play on Server if the video codec is unsupported.';
   }
@@ -659,12 +737,14 @@ function _bindLocalVideoEvents() {
       const state = _localVideoState;
       if (!state) return;
       if (eventName === 'loadedmetadata') {
+        state.localVideoMediaReady = true;
+        state.localVideoMediaReady = true;
         state.loading = false;
-        _cancelLocalVideoTranscodeStatusPoll(state);
         if (state.pendingStartPositionSeconds > 0) {
           const duration = Number.isFinite(video.duration) ? video.duration : Infinity;
           const position = Math.min(state.pendingStartPositionSeconds, duration);
           try {
+            if (state.progressiveRequested) state.allowedSeekSeconds = position;
             state.pendingSeek = position > 0.05;
             video.currentTime = position;
             state.lastPositionSeconds = position;
@@ -677,18 +757,28 @@ function _bindLocalVideoEvents() {
         }
       }
       if (eventName === 'canplay' || eventName === 'playing') {
+        state.localVideoMediaReady = true;
         state.loading = false;
-        _cancelLocalVideoTranscodeStatusPoll(state);
         if (state.compatibilityWarning) {
           const warning = document.getElementById('local-video-warning');
           if (warning?.textContent === state.compatibilityWarning) _showLocalVideoWarning('');
           state.compatibilityWarning = '';
         }
       }
+      if (eventName === 'seeking' && _rejectUnbufferedLocalVideoSeek(video, state)) {
+        _renderLocalVideoUi();
+        return;
+      }
       if (eventName === 'waiting') state.loading = true;
       if (eventName === 'seeked') {
         state.pendingSeek = false;
         state.lastPositionSeconds = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+        if (
+          Number.isFinite(state.allowedSeekSeconds) &&
+          Math.abs(video.currentTime - state.allowedSeekSeconds) <= 0.5
+        ) {
+          state.allowedSeekSeconds = null;
+        }
       }
       if (eventName === 'timeupdate' && Number.isFinite(video.currentTime)) {
         state.lastPositionSeconds = video.currentTime;
@@ -795,6 +885,11 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
   const touchClient =
     Number(navigator.maxTouchPoints) > 0 ||
     (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches);
+  const startPositionSeconds = Number.isFinite(options.startPositionSeconds)
+    ? Math.max(0, options.startPositionSeconds)
+    : 0;
+  const progressiveRequested = touchClient && startPositionSeconds <= 0.05;
+  const transcodeId = progressiveRequested ? _newLocalVideoTranscodeId() : '';
   const supportedAudioCodecs = touchClient
     ? _getLocalVideoSupportedAudioCodecs(video)
     : [];
@@ -803,12 +898,11 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
   if (touchClient) {
     query.set('audioCompat', 'auto');
     query.set('audioCodecs', supportedAudioCodecs.join(','));
+    query.set('progressive', progressiveRequested ? '1' : '0');
+    if (transcodeId) query.set('transcodeId', transcodeId);
   }
   const source = '/api/video/stream?' + query.toString();
   const generation = ++_localVideoGeneration;
-  const startPositionSeconds = Number.isFinite(options.startPositionSeconds)
-    ? Math.max(0, options.startPositionSeconds)
-    : 0;
   const savedResumePositionSeconds = Number(options.resumePositionSeconds);
   const savedResumeDurationSeconds = Number(options.resumeDurationSeconds);
   const canResume = options.handoff !== 'server-to-local'
@@ -853,8 +947,15 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
     transcodeProgress: null,
     transcodeStatusUnavailable: false,
     transcodeStatusErrorLogged: false,
+    transcodeStatusResolved: false,
+    transcodeStatusNoConversionResponses: 0,
     transcodeStatusTimer: null,
+    localVideoMediaReady: false,
     transcodeCancelPending: false,
+    progressiveRequested,
+    transcodeId,
+    allowedSeekSeconds: null,
+    revertingSeekTarget: null,
     serverStopPending: false,
     serverStopConfirmed: false,
     serverStopRequestStarted: false,
@@ -1608,6 +1709,7 @@ async function resumeFromSavedPosition() {
 
     const position = resumePromptPosition;
     localState.resumePromptDismissed = true;
+    if (localState.progressiveRequested) localState.allowedSeekSeconds = position;
     try {
       if (video.readyState > 0) {
         const duration = Number.isFinite(video.duration) ? video.duration : Infinity;
@@ -1718,7 +1820,14 @@ async function onSeekCommit() {
         const video = _getLocalVideoElement();
         if (video) {
           const duration = Number.isFinite(video.duration) ? video.duration : pos;
-          video.currentTime = Math.min(Math.max(0, pos), duration);
+          const target = Math.min(Math.max(0, pos), duration);
+          if (!_canSeekLocalVideoTo(video, _localVideoState, target)) {
+            _showLocalVideoWarning(
+              'Seeking outside the buffered video is available after audio conversion completes.'
+            );
+            return;
+          }
+          video.currentTime = target;
           if (_localVideoState) _localVideoState.lastPositionSeconds = video.currentTime;
         }
       } else {
@@ -1839,7 +1948,14 @@ async function skip(seconds) {
   if (_isLocalVideoActive()) {
     const video = _getLocalVideoElement();
     if (!video || !Number.isFinite(video.duration)) return;
-    video.currentTime = Math.min(video.duration, Math.max(0, video.currentTime + Number(seconds)));
+    const target = Math.min(video.duration, Math.max(0, video.currentTime + Number(seconds)));
+    if (!_canSeekLocalVideoTo(video, _localVideoState, target)) {
+      _showLocalVideoWarning(
+        'Seeking outside the buffered video is available after audio conversion completes.'
+      );
+      return;
+    }
+    video.currentTime = target;
     if (_localVideoState) _localVideoState.lastPositionSeconds = video.currentTime;
     _renderLocalVideoUi();
     return;

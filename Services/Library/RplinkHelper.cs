@@ -2,8 +2,8 @@ using System.IO;
 
 namespace RemotePlay;
 
-/// <summary>Helpers for the <c>.rplink</c> file format — a single-line text file whose content is the
-/// absolute path to a video file elsewhere in the library.</summary>
+/// <summary>Helpers for the <c>.rplink</c> file format — a single-line text file whose content is a
+/// target path or a library directive such as <c>@Series</c> or <c>@Movie</c>.</summary>
 internal static class RplinkHelper
 {
     public const string Extension = ".rplink";
@@ -41,10 +41,10 @@ internal static class RplinkHelper
         }
     }
 
-    /// <summary>Reads the resolved target path from a <c>.rplink</c> file without checking whether
-    /// the target exists. Returns <c>null</c> when the file is unreadable or empty.</summary>
+    /// <summary>Reads the resolved target path from a <c>.rplink</c> file without requiring the
+    /// target to exist. A missing <c>@Movie</c> target is returned as its expected wildcard path.</summary>
     public static string? TryReadTargetRaw(string rplinkPath) =>
-        TryResolveTargetPath(rplinkPath, out var targetPath, out _)
+        TryResolveTargetPath(rplinkPath, out var targetPath, out _, out _, out _)
             ? targetPath
             : null;
 
@@ -52,8 +52,17 @@ internal static class RplinkHelper
     /// (folder link), regardless of whether the directory currently exists.</summary>
     public static bool IsTargetFolder(string rplinkPath)
     {
-        var raw = TryReadTargetRaw(rplinkPath);
-        if (raw is null) return false;
+        if (!TryResolveTargetPath(
+            rplinkPath,
+            out var raw,
+            out _,
+            out var isSeriesDirective,
+            out var missingMovieTarget))
+            return false;
+
+        if (isSeriesDirective) return true;
+        if (missingMovieTarget) return false;
+
         // Heuristic: if the stored path has no extension it is very likely a folder.
         // We also check on disk when possible.
         if (Directory.Exists(raw)) return true;
@@ -74,8 +83,20 @@ internal static class RplinkHelper
 
     internal static RplinkTargetInspection InspectTarget(string rplinkPath)
     {
-        if (!TryResolveTargetPath(rplinkPath, out var targetPath, out var resolveError))
+        if (!TryResolveTargetPath(
+            rplinkPath,
+            out var targetPath,
+            out var resolveError,
+            out _,
+            out var missingMovieTarget))
             return new(RplinkTargetStatus.UnreadableLink, null, resolveError);
+
+        if (missingMovieTarget)
+        {
+            return resolveError is null
+                ? new(RplinkTargetStatus.Missing, targetPath, null)
+                : new(RplinkTargetStatus.InaccessibleTarget, targetPath, resolveError);
+        }
 
         if (File.Exists(targetPath) || Directory.Exists(targetPath))
             return new(RplinkTargetStatus.Resolved, targetPath, null);
@@ -142,10 +163,17 @@ internal static class RplinkHelper
         }
     }
 
-    private static bool TryResolveTargetPath(string rplinkPath, out string targetPath, out string? error)
+    private static bool TryResolveTargetPath(
+        string rplinkPath,
+        out string targetPath,
+        out string? error,
+        out bool isSeriesDirective,
+        out bool missingMovieTarget)
     {
         targetPath = string.Empty;
         error = null;
+        isSeriesDirective = false;
+        missingMovieTarget = false;
 
         try
         {
@@ -159,6 +187,73 @@ internal static class RplinkHelper
             {
                 error = "Link file is empty.";
                 return false;
+            }
+
+            if (string.Equals(raw, "@Series", StringComparison.OrdinalIgnoreCase))
+            {
+                var libraryRoot = ResolveAtPrefixRoot(rplinkPath);
+                if (string.IsNullOrEmpty(libraryRoot))
+                {
+                    error = "Link root is unavailable for the @Series target.";
+                    return false;
+                }
+
+                isSeriesDirective = true;
+                targetPath = Path.Combine(
+                    libraryRoot,
+                    "@Master.Series",
+                    Path.GetFileNameWithoutExtension(rplinkPath));
+                return true;
+            }
+
+            if (string.Equals(raw, "@Movie", StringComparison.OrdinalIgnoreCase))
+            {
+                var libraryRoot = ResolveAtPrefixRoot(rplinkPath);
+                if (string.IsNullOrEmpty(libraryRoot))
+                {
+                    error = "Link root is unavailable for the @Movie target.";
+                    return false;
+                }
+
+                var movieDirectory = Path.Combine(libraryRoot, "@Master.Movies");
+                var movieName = Path.GetFileNameWithoutExtension(rplinkPath);
+                var expectedPattern = Path.Combine(movieDirectory, movieName + ".*");
+                missingMovieTarget = true;
+                try
+                {
+                    var movieTarget = Directory
+                        .EnumerateFiles(
+                            movieDirectory,
+                            movieName + ".*",
+                            SearchOption.TopDirectoryOnly)
+                        .Where(MovieScanner.IsSupportedVideoFile)
+                        .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(path => path, StringComparer.Ordinal)
+                        .FirstOrDefault();
+
+                    targetPath = movieTarget ?? expectedPattern;
+                    missingMovieTarget = movieTarget is null;
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    targetPath = expectedPattern;
+                }
+                catch (FileNotFoundException)
+                {
+                    targetPath = expectedPattern;
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    targetPath = expectedPattern;
+                    error = BuildErrorDetails(ex);
+                }
+                catch (IOException ex)
+                {
+                    targetPath = expectedPattern;
+                    error = BuildErrorDetails(ex);
+                }
+
+                return true;
             }
 
             // Handle anchored paths with "@" prefix.

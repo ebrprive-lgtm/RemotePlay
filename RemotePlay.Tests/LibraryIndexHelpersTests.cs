@@ -65,6 +65,36 @@ public sealed class LibraryIndexHelpersTests
         Assert.Equal(3, crumbs.Length);
     }
 
+    [Fact]
+    public void BuildLibraryFileForLink_WithMovieDirective_IndexesResolvedVideoFile()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "RemotePlayLibraryIndexTests", Guid.NewGuid().ToString("N"));
+        var masterMovies = Path.Combine(root, "@Master.Movies");
+        var linkDirectory = Path.Combine(root, "Links");
+        var movieName = "1971 - MovieName";
+        var moviePath = Path.Combine(masterMovies, movieName + ".mp4");
+        var linkPath = Path.Combine(linkDirectory, movieName + ".rplink");
+        try
+        {
+            Directory.CreateDirectory(masterMovies);
+            Directory.CreateDirectory(linkDirectory);
+            File.WriteAllText(moviePath, "video");
+            File.WriteAllText(linkPath, "@Movie");
+
+            var libraryFile = LibraryIndexHelpers.BuildLibraryFileForLink(root, linkPath);
+
+            Assert.NotNull(libraryFile);
+            Assert.Equal(moviePath, libraryFile.FilePath);
+            Assert.True(libraryFile.IsLink);
+            Assert.Equal(linkPath, libraryFile.LinkSourcePath);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+                Directory.Delete(root, recursive: true);
+        }
+    }
+
     // ── EnumerateLibraryVideoFiles ─────────────────────────────────────────
 
     [Fact]
