@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Text.Json;
@@ -8,7 +9,7 @@ internal sealed partial class WebServer
 {
     private const int MaxEncodedVideoPathLength = 65536;
     private const int VideoStreamBufferSize = 81920;
-    private readonly VideoAudioCompatibilityTranscoder _videoAudioCompatibilityTranscoder = new();
+    private readonly VideoAudioCompatibilityTranscoder _videoAudioCompatibilityTranscoder;
 
     private static readonly Dictionary<string, string> _videoStreamMimeTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -65,6 +66,10 @@ internal sealed partial class WebServer
             return;
         }
 
+        var playbackTelemetryId = GetPlaybackTelemetryId(ctx.Request);
+        var playbackRequestTimestamp = Stopwatch.GetTimestamp();
+        LogPlaybackTiming(playbackTelemetryId, "request", playbackRequestTimestamp);
+
         var streamPath = filePath;
         var audioCompatibility = ctx.Request.QueryString["audioCompat"];
         if (string.Equals(audioCompatibility, "aac", StringComparison.OrdinalIgnoreCase)
@@ -113,7 +118,9 @@ internal sealed partial class WebServer
                             ctx,
                             filePath,
                             streamRequest,
-                            cancellationToken).ConfigureAwait(false))
+                            cancellationToken,
+                            playbackTelemetryId,
+                            playbackRequestTimestamp).ConfigureAwait(false))
                         {
                             return;
                         }
@@ -265,6 +272,7 @@ internal sealed partial class WebServer
         {
             var buffer = new byte[VideoStreamBufferSize];
             var remaining = contentLength;
+            var firstByteLogged = false;
 
             while (remaining > 0)
             {
@@ -319,6 +327,12 @@ internal sealed partial class WebServer
                     return;
                 }
 
+                if (!firstByteLogged)
+                {
+                    firstByteLogged = true;
+                    LogPlaybackTiming(playbackTelemetryId, "first-byte", playbackRequestTimestamp);
+                }
+
                 remaining -= read;
             }
         }
@@ -343,7 +357,9 @@ internal sealed partial class WebServer
         HttpListenerContext ctx,
         string sourcePath,
         VideoAudioCompatibilityStreamRequest streamRequest,
-        CancellationToken serverCancellationToken)
+        CancellationToken serverCancellationToken,
+        string? playbackTelemetryId,
+        long playbackRequestTimestamp)
     {
         var progressiveOutput = streamRequest.ProgressiveOutput
             ?? throw new InvalidOperationException("Progressive video output was not initialized.");
@@ -359,6 +375,7 @@ internal sealed partial class WebServer
             return false;
         }
 
+        LogPlaybackTiming(playbackTelemetryId, "first-fragment", playbackRequestTimestamp);
         ctx.Response.StatusCode = (int)HttpStatusCode.OK;
         ctx.Response.ContentType = "video/mp4";
         ctx.Response.SendChunked = true;
@@ -370,7 +387,11 @@ internal sealed partial class WebServer
         {
             await progressiveOutput.CopyToAsync(
                 ctx.Response.OutputStream,
-                linkedCancellation.Token).ConfigureAwait(false);
+                linkedCancellation.Token,
+                () => LogPlaybackTiming(
+                    playbackTelemetryId,
+                    "first-byte",
+                    playbackRequestTimestamp)).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (
             serverCancellationToken.IsCancellationRequested
@@ -411,6 +432,37 @@ internal sealed partial class WebServer
         }
 
         return true;
+    }
+
+    private static string? GetPlaybackTelemetryId(HttpListenerRequest request)
+    {
+        var value = request.QueryString["playbackId"];
+        if (string.IsNullOrEmpty(value) || value.Length > 64)
+            return null;
+
+        foreach (var character in value)
+        {
+            if (!(character is >= 'a' and <= 'z')
+                && !(character is >= 'A' and <= 'Z')
+                && !(character is >= '0' and <= '9')
+                && character is not '-' and not '_')
+            {
+                return null;
+            }
+        }
+
+        return value;
+    }
+
+    private static void LogPlaybackTiming(string? playbackId, string stage, long requestTimestamp)
+    {
+        if (playbackId is null)
+            return;
+
+        var elapsedMs = (long)Stopwatch.GetElapsedTime(requestTimestamp).TotalMilliseconds;
+        Logger.Detail(
+            "Playback",
+            $"[LOCAL-PLAYBACK] id={playbackId} stage={stage} serverElapsedMs={elapsedMs}");
     }
 
     private void HandleVideoTranscodeStatus(HttpListenerContext ctx)

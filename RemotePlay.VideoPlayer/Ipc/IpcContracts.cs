@@ -49,6 +49,7 @@ public static class RemotePlayCommandPipe
 public sealed record PlayCommand : IpcMessage
 {
     public required string FilePath { get; init; }
+    public bool IsLiveTv { get; init; }
     public double StartPositionSeconds { get; init; }
     public double Volume { get; init; } = 1.0;
     public double Brightness { get; init; } = 0.5;
@@ -188,6 +189,7 @@ public sealed record StatusResponse : IpcMessage
     public Guid RequestId { get; init; }
     public bool IsPlaying { get; init; }
     public bool IsPaused { get; init; }
+    public bool IsLiveTv { get; init; }
     public double PositionSeconds { get; init; }
     public double DurationSeconds { get; init; }
     public string? CurrentFilePath { get; init; }
@@ -198,42 +200,9 @@ public sealed record StatusResponse : IpcMessage
     public string LastError { get; init; } = string.Empty;
 }
 
-public sealed record PlaybackStartedEvent : IpcMessage
-{
-    public required string FilePath { get; init; }
-    public double DurationSeconds { get; init; }
-}
-
-public sealed record PlaybackEndedEvent : IpcMessage
-{
-}
-
-public sealed record PlaybackErrorEvent : IpcMessage
-{
-    public required string ErrorMessage { get; init; }
-}
-
-public sealed record SubtitlesDetectedEvent : IpcMessage
-{
-    public bool HasSubtitles { get; init; }
-}
-
-public sealed record AudioTracksDetectedEvent : IpcMessage
-{
-    public int TrackCount { get; init; }
-}
-
 public sealed record AcknowledgmentResponse : IpcMessage
 {
     public Guid RequestId { get; init; }
     public bool Success { get; init; }
     public string? ErrorMessage { get; init; }
-}
-
-/// <summary>
-/// Pushed by the server immediately after accepting a connection so the client
-/// can confirm liveness without a request/response round-trip.
-/// </summary>
-public sealed record ReadyNotification : IpcMessage
-{
 }

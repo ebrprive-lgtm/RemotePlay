@@ -442,6 +442,27 @@ public class RplinkHelperTests : IDisposable
     }
 
     [Fact]
+    public void TryReadTarget_WithEmptyLink_FindsNestedSeriesBeforeMovie()
+    {
+        var libraryRoot = Path.Combine(_tempDir, "AutoNestedSeriesLibrary");
+        var masterSeries = Path.Combine(libraryRoot, "@Master.Series");
+        var masterMovies = Path.Combine(libraryRoot, "@Master.Movies");
+        var links = Path.Combine(libraryRoot, "Links");
+        var seriesName = "Auto Series";
+        var seriesTarget = Path.Combine(masterSeries, "Drama", "International", seriesName);
+        Directory.CreateDirectory(seriesTarget);
+        Directory.CreateDirectory(Path.Combine(masterMovies, "Drama"));
+        Directory.CreateDirectory(links);
+        File.WriteAllText(Path.Combine(masterMovies, "Drama", seriesName + ".mp4"), "movie");
+
+        var linkPath = Path.Combine(links, seriesName + ".rplink");
+        File.WriteAllText(linkPath, string.Empty);
+
+        Assert.Equal(seriesTarget, RplinkHelper.TryReadTarget(linkPath));
+        Assert.True(RplinkHelper.IsTargetFolder(linkPath));
+    }
+
+    [Fact]
     public void TryReadTarget_WithEmptyLinkAndNoSeries_ResolvesSupportedMovieExtension()
     {
         var libraryRoot = Path.Combine(_tempDir, "AutoMovieLibrary");
@@ -456,6 +477,26 @@ public class RplinkHelperTests : IDisposable
         File.WriteAllText(moviePath, "movie");
         var linkPath = Path.Combine(links, movieName + ".rplink");
         File.WriteAllText(linkPath, " \r\n");
+
+        Assert.Equal(moviePath, RplinkHelper.TryReadTarget(linkPath));
+        Assert.False(RplinkHelper.IsTargetFolder(linkPath));
+    }
+
+    [Fact]
+    public void TryReadTarget_WithEmptyLink_FindsNestedMovieWhenNoSeriesMatches()
+    {
+        var libraryRoot = Path.Combine(_tempDir, "AutoNestedMovieLibrary");
+        var masterMovies = Path.Combine(libraryRoot, "@Master.Movies");
+        var links = Path.Combine(libraryRoot, "Links");
+        var movieName = "Auto Movie";
+        var moviePath = Path.Combine(masterMovies, "Drama", "International", movieName + ".mkv");
+        Directory.CreateDirectory(Path.GetDirectoryName(moviePath)!);
+        Directory.CreateDirectory(Path.Combine(libraryRoot, "@Master.Series"));
+        Directory.CreateDirectory(links);
+        File.WriteAllText(moviePath, "movie");
+
+        var linkPath = Path.Combine(links, movieName + ".rplink");
+        File.WriteAllText(linkPath, string.Empty);
 
         Assert.Equal(moviePath, RplinkHelper.TryReadTarget(linkPath));
         Assert.False(RplinkHelper.IsTargetFolder(linkPath));

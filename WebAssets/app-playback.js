@@ -59,6 +59,32 @@ function _newLocalVideoTranscodeId() {
   return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
 }
 
+function _localVideoTimingNow() {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+function _sendLocalVideoTiming(state, eventName, source = '') {
+  if (!state?.playbackTelemetryId || !Number.isFinite(state.playbackStartedAtMs)) return;
+  const elapsedMs = Math.max(0, Math.round(_localVideoTimingNow() - state.playbackStartedAtMs));
+  const sourceField = source ? ' source=' + source : '';
+  void fetch('/api/log', {
+    method: 'POST',
+    body: '[LOCAL-PLAYBACK] id=' + state.playbackTelemetryId
+      + ' event=' + eventName
+      + ' elapsedMs=' + elapsedMs
+      + sourceField,
+    keepalive: true,
+  }).catch(() => {});
+}
+
+function _recordLocalVideoFirstFrame(state, source) {
+  if (state.firstFrameTimingReported) return;
+  state.firstFrameTimingReported = true;
+  _sendLocalVideoTiming(state, 'first-frame', source);
+}
+
 function _localVideoHasSource() {
   return Boolean(_localVideoState?.path);
 }
@@ -722,6 +748,7 @@ function _bindLocalVideoEvents() {
     'play',
     'pause',
     'loadedmetadata',
+    'loadeddata',
     'durationchange',
     'timeupdate',
     'seeking',
@@ -736,6 +763,14 @@ function _bindLocalVideoEvents() {
     video.addEventListener(eventName, () => {
       const state = _localVideoState;
       if (!state) return;
+      if (eventName === 'loadeddata' && !state.loadedDataTimingReported) {
+        state.loadedDataTimingReported = true;
+        _sendLocalVideoTiming(state, 'loadeddata');
+        if (!state.frameCallbackRequested) _recordLocalVideoFirstFrame(state, 'loadeddata-fallback');
+      }
+      if (eventName === 'playing' && !state.frameCallbackRequested) {
+        _recordLocalVideoFirstFrame(state, 'playing-fallback');
+      }
       if (eventName === 'loadedmetadata') {
         state.localVideoMediaReady = true;
         state.localVideoMediaReady = true;
@@ -890,6 +925,8 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
     : 0;
   const progressiveRequested = touchClient && startPositionSeconds <= 0.05;
   const transcodeId = progressiveRequested ? _newLocalVideoTranscodeId() : '';
+  const playbackTelemetryId = _newLocalVideoTranscodeId();
+  const playbackStartedAtMs = _localVideoTimingNow();
   const supportedAudioCodecs = touchClient
     ? _getLocalVideoSupportedAudioCodecs(video)
     : [];
@@ -901,6 +938,7 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
     query.set('progressive', progressiveRequested ? '1' : '0');
     if (transcodeId) query.set('transcodeId', transcodeId);
   }
+  query.set('playbackId', playbackTelemetryId);
   const source = '/api/video/stream?' + query.toString();
   const generation = ++_localVideoGeneration;
   const savedResumePositionSeconds = Number(options.resumePositionSeconds);
@@ -920,6 +958,11 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
     linkPath: linkPath || '',
     name: name || 'Local video',
     streamUrl: new URL(source, window.location.href).href,
+    playbackTelemetryId,
+    playbackStartedAtMs,
+    loadedDataTimingReported: false,
+    firstFrameTimingReported: false,
+    frameCallbackRequested: typeof video.requestVideoFrameCallback === 'function',
     loading: true,
     errorMessage: '',
     compatibilityWarning: touchClient ? '' : _localVideoCompatibilityWarning(video, name || path),
@@ -1004,6 +1047,16 @@ function _playLocalVideo(path, name, linkPath, options = {}) {
 
   video.src = source;
   video.load();
+  if (_localVideoState?.generation === generation && _localVideoState.frameCallbackRequested) {
+    try {
+      video.requestVideoFrameCallback(() => {
+        if (_localVideoState?.generation === generation)
+          _recordLocalVideoFirstFrame(_localVideoState, 'video-frame-callback');
+      });
+    } catch {
+      _localVideoState.frameCallbackRequested = false;
+    }
+  }
   if (autoplay) {
     try {
       const playRequest = video.play();

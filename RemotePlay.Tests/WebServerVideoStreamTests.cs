@@ -189,6 +189,43 @@ public sealed class WebServerVideoStreamTests : IClassFixture<VideoStreamTestHos
     }
 
     [Fact]
+    public async Task LargeStreamSupportsRepeatedSeeksAndRecoversAfterClientStopsReading()
+    {
+        var bytes = new byte[8 * 1024 * 1024];
+        new Random(4312).NextBytes(bytes);
+        var filePath = _host.WriteVideo(_host.PrimaryRoot, $"long-playback-{Guid.NewGuid():N}.mp4", bytes);
+        var rangeLength = 16 * 1024;
+
+        for (var seek = 0; seek < 24; seek++)
+        {
+            var start = seek * (bytes.Length / 24);
+            using var request = new HttpRequestMessage(HttpMethod.Get, _host.GetStreamUrl(filePath));
+            request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(start, start + rangeLength - 1);
+            using var response = await _host.Client.SendAsync(request);
+            var expected = bytes.AsMemory(start, rangeLength).ToArray();
+
+            Assert.Equal(HttpStatusCode.PartialContent, response.StatusCode);
+            Assert.Equal(expected, await response.Content.ReadAsByteArrayAsync());
+        }
+
+        using (var request = new HttpRequestMessage(HttpMethod.Get, _host.GetStreamUrl(filePath)))
+        using (var response = await _host.Client.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead))
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            await using var stream = await response.Content.ReadAsStreamAsync();
+            var initialPlaybackBytes = new byte[64 * 1024];
+            await stream.ReadExactlyAsync(initialPlaybackBytes);
+            Assert.Equal(bytes.AsSpan(0, initialPlaybackBytes.Length).ToArray(), initialPlaybackBytes);
+        }
+
+        using var replay = await _host.Client.GetAsync(_host.GetStreamUrl(filePath));
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+        Assert.Equal(bytes, await replay.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
     public async Task GetWithoutPathOrWithInvalidToken_ReturnsBadRequest()
     {
         using var missing = await _host.Client.GetAsync("/api/video/stream");
@@ -640,19 +677,21 @@ public sealed class VideoStreamTestHost : IDisposable
 
         var cacheDirectory = Path.Combine(_temporaryDirectory, "cache");
         var cacheFilePath = Path.Combine(cacheDirectory, "podcast-top-pool.json");
+        Directory.CreateDirectory(cacheDirectory);
         History = new PlaybackHistory(Path.Combine(_temporaryDirectory, "history.json"));
-        Port = WebServerApiTests.FindFreePort();
-        _server = new WebServer(
+        var started = WebServerTestServer.Start(port => new WebServer(
             new AppConfig
             {
-                Port = Port,
+                Port = port,
                 AdditionalMoviesPaths = [PrimaryRoot, AdditionalRoot],
                 MaxRequestsPerIpPerWindow = 0,
             },
             WebServerApiTests.BuildStubCallbacks(),
             playbackHistory: History,
-            podcastTopPoolCacheFilePath: cacheFilePath);
-        _server.Start();
+            podcastTopPoolCacheFilePath: cacheFilePath,
+            libraryIndexCacheFilePath: Path.Combine(cacheDirectory, "library-index.json")));
+        _server = started.Server;
+        Port = started.Port;
         Client = new HttpClient { BaseAddress = new Uri($"http://localhost:{Port}") };
     }
 

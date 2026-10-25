@@ -896,6 +896,8 @@ public partial class MainWindow : Window
 
     private void UpdateAdjacentVideoButtons(string? previousTitle, string? nextTitle)
     {
+        UpdatePlaybackControlsVisibility();
+
         _previousVideoTitle = string.IsNullOrWhiteSpace(previousTitle) ? null : previousTitle;
         _nextVideoTitle = string.IsNullOrWhiteSpace(nextTitle) ? null : nextTitle;
 
@@ -910,6 +912,19 @@ public partial class MainWindow : Window
         AutomationProperties.SetName(
             NextVideoButton,
             _nextVideoTitle is null ? "Next video" : $"Next video: {_nextVideoTitle}");
+    }
+
+    private void UpdatePlaybackControlsVisibility()
+    {
+        var visibility = _activePlayCommand?.IsLiveTv == true
+            ? System.Windows.Visibility.Collapsed
+            : System.Windows.Visibility.Visible;
+
+        SeekSlider.Visibility = visibility;
+        PlaybackTimeText.Visibility = visibility;
+        PlaybackTimeButton.Visibility = visibility;
+        PreviousVideoButton.Visibility = visibility;
+        NextVideoButton.Visibility = visibility;
     }
 
     private void SetPlaybackPaused(bool paused)
@@ -1095,6 +1110,7 @@ public partial class MainWindow : Window
                     RequestId = status.MessageId,
                     IsPlaying = _mediaPlayer?.IsPlaying ?? false,
                     IsPaused = _isPaused,
+                    IsLiveTv = _activePlayCommand?.IsLiveTv == true,
                     PositionSeconds = GetPositionSeconds(),
                     DurationSeconds = GetDurationSeconds(),
                     CurrentFilePath = _currentFilePath,
@@ -1246,6 +1262,7 @@ public partial class MainWindow : Window
         // Store state fields immediately (thread-safe value types / strings)
         System.Threading.Volatile.Write(ref _playbackStopRequested, false);
         _currentFilePath = cmd.FilePath;
+        _activePlayCommand = cmd;
         System.Threading.Volatile.Write(ref _lastPlaybackError, string.Empty);
         System.Threading.Volatile.Write(ref _lastVlcErrorMessage, string.Empty);
         Dispatcher.BeginInvoke(
@@ -1269,7 +1286,6 @@ public partial class MainWindow : Window
         _pendingSeekPositionFallbackAttempted = false;
         _pendingSeekConfirmSamples = 0;
         _pendingSeekLastConfirmSampleAt = 0;
-        _activePlayCommand = cmd;
 
         // All LibVLC operations must run on the UI thread.
         // BeginInvoke = fire-and-forget; ACK is returned to the main app immediately.

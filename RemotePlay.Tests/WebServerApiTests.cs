@@ -1,7 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
-using System.Net.Sockets;
 using System.Text.Json;
 using System.Threading.Tasks;
 using RemotePlay.Models;
@@ -33,7 +32,6 @@ public sealed class WebServerApiTests : IDisposable
 
     public WebServerApiTests()
     {
-        var port = FindFreePort();
         _podcastTopPoolCacheDirectory = Path.Combine(
             Path.GetTempPath(),
             "RemotePlayPodcastCacheTests",
@@ -47,7 +45,7 @@ public sealed class WebServerApiTests : IDisposable
         _podcastUpstreamClient = new HttpClient(_podcastHttpHandler);
         _podcastCatalogHttpClient = new HttpClient(_podcastCatalogHttpHandler);
         var podcastFeedHttpClient = new PodcastFeedHttpClient(_podcastUpstreamClient, _podcastHostResolver);
-        _server = new WebServer(
+        var started = WebServerTestServer.Start(port => new WebServer(
             new AppConfig { Port = port },
             BuildStubCallbacks(
                 (url, title) => _radioPlayRequests.Add((url, title)),
@@ -58,9 +56,9 @@ public sealed class WebServerApiTests : IDisposable
             podcastFeedHttpClient: podcastFeedHttpClient,
             podcastFeedCacheTimeProvider: _podcastCacheTimeProvider,
             podcastCatalogHttpClient: _podcastCatalogHttpClient,
-            podcastTopPoolCacheFilePath: _podcastTopPoolCacheFile);
-        _server.Start();
-        _client = new HttpClient { BaseAddress = new Uri($"http://localhost:{port}") };
+            podcastTopPoolCacheFilePath: _podcastTopPoolCacheFile));
+        _server = started.Server;
+        _client = new HttpClient { BaseAddress = new Uri($"http://localhost:{started.Port}") };
     }
 
     public void Dispose()
@@ -275,12 +273,17 @@ public sealed class WebServerApiTests : IDisposable
     [Fact]
     public async Task RateLimiting_BypassesLocalAddresses()
     {
-        var port = FindFreePort();
-        var config = new AppConfig { Port = port, MaxRequestsPerIpPerWindow = 2, RateLimitWindowSeconds = 60 };
-        var tightServer = new WebServer(config, BuildStubCallbacks());
+        var (tightServer, port) = WebServerTestServer.Start(candidatePort =>
+            new WebServer(
+                new AppConfig
+                {
+                    Port = candidatePort,
+                    MaxRequestsPerIpPerWindow = 2,
+                    RateLimitWindowSeconds = 60,
+                },
+                BuildStubCallbacks()));
         using var tightClient = new HttpClient();
         tightClient.BaseAddress = new Uri($"http://localhost:{port}");
-        tightServer.Start();
 
         try
         {
@@ -317,12 +320,12 @@ public sealed class WebServerApiTests : IDisposable
     [Fact]
     public async Task RateLimiting_Disabled_WhenLimitIsZero()
     {
-        var port = FindFreePort();
-        var config = new AppConfig { Port = port, MaxRequestsPerIpPerWindow = 0 };
-        var openServer = new WebServer(config, BuildStubCallbacks());
+        var (openServer, port) = WebServerTestServer.Start(candidatePort =>
+            new WebServer(
+                new AppConfig { Port = candidatePort, MaxRequestsPerIpPerWindow = 0 },
+                BuildStubCallbacks()));
         using var openClient = new HttpClient();
         openClient.BaseAddress = new Uri($"http://localhost:{port}");
-        openServer.Start();
 
         for (var i = 0; i < 10; i++)
         {
@@ -962,15 +965,14 @@ public sealed class WebServerApiTests : IDisposable
                 : new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
         };
 
-        var restartedPort = FindFreePort();
-        var restartedServer = new WebServer(
-            new AppConfig { Port = restartedPort },
+        var (restartedServer, restartedPort) = WebServerTestServer.Start(port =>
+            new WebServer(
+            new AppConfig { Port = port },
             BuildStubCallbacks(),
             podcastFeedHttpClient: new PodcastFeedHttpClient(_podcastUpstreamClient, _podcastHostResolver),
             podcastFeedCacheTimeProvider: _podcastCacheTimeProvider,
             podcastCatalogHttpClient: _podcastCatalogHttpClient,
-            podcastTopPoolCacheFilePath: _podcastTopPoolCacheFile);
-        restartedServer.Start();
+            podcastTopPoolCacheFilePath: _podcastTopPoolCacheFile));
         using var restartedClient = new HttpClient();
         restartedClient.BaseAddress = new Uri($"http://localhost:{restartedPort}");
 
@@ -1893,15 +1895,6 @@ public sealed class WebServerApiTests : IDisposable
         {
             Content = new StringContent(json),
         };
-    }
-
-    internal static int FindFreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
     }
 
     internal static WebServerCallbacks BuildStubCallbacks(

@@ -277,31 +277,76 @@ Verification:
 
 ### Phase 5 — Dead-code and asset audit
 
-- [ ] Search for unused C# types, XAML resources, JavaScript modules, CSS
+- [x] Search for unused C# types, XAML resources, JavaScript modules, CSS
   selectors, and bundled assets. Check reflection, dynamic loading, routes,
   service-worker caching, and test fixtures before removal.
-- [ ] Remove unused code/assets in separate, reviewable batches. Preserve
+- [x] Remove unused code/assets in separate, reviewable batches. Preserve
   movie-card click/play behavior, grid/list behavior, music queue behavior,
   podcast discovery, and video playback/control paths.
-- [ ] Keep third-party and geographic data assets when referenced; document
+- [x] Keep third-party and geographic data assets when referenced; document
   their source and purpose rather than removing them based only on size.
-- [ ] Re-run focused tests after each removal batch so regressions can be
+- [x] Re-run focused tests after each removal batch so regressions can be
   attributed to a specific change.
+
+#### Phase 5 execution record
+
+- Removed the unused `LinkItem` model and unreferenced IPC event DTOs. Retained
+  the DI and UDP extension helpers because their extension methods are called.
+- Removed the empty `_card_block.css` and superseded `app.js` comment stub.
+  The `/app.js` route remains a server-generated bundle of the 12 live modules,
+  and the service-worker cache path is unchanged.
+- Removed unused CSS selectors and the unreferenced
+  `BrowserMenuGroupLabel` XAML resource. Existing movie-card, grid/list,
+  queue, podcast, radio-globe, and video playback/control paths remain wired.
+- Retained the routed `/world-110m.json` asset because the endpoint is
+  externally observable. Added [WEB_ASSET_PROVENANCE.md](../WEB_ASSET_PROVENANCE.md)
+  with the world-atlas/Natural Earth provenance, the exact upstream match for
+  the U.S. state file, and its unresolved upstream license information.
+- Focused IPC/web-asset tests passed (78 tests). Final Release build succeeded
+  with the existing `WFAC010` high-DPI warning; all 719 .NET tests and all 10
+  browser regression tests passed. `git diff --check` passed.
 
 ### Phase 6 — Final verification and repository review
 
-- [ ] From a clean checkout, restore and build the solution in Release.
-- [ ] Run all .NET tests and browser regression tests; resolve failures caused
+- [x] In a fresh detached worktree with the cleanup changes applied, restore
+  and build the solution in Release.
+- [x] Run all .NET tests and browser regression tests; resolve failures caused
   by cleanup without broadening scope to unrelated behavior changes.
-- [ ] Publish using the documented command and verify the runtime identifier,
+- [x] Publish using the documented command and verify the runtime identifier,
   version metadata, web assets, native dependencies, and isolated-player
   executable.
-- [ ] Check documentation links, formatting, project references, XAML/resource
+- [x] Check documentation links, formatting, project references, XAML/resource
   loading, and `git diff --check`.
-- [ ] Confirm the final root contains only the solution/project entry points,
+- [x] Confirm the final root contains only the solution/project entry points,
   repository essentials, and concise onboarding documentation.
-- [ ] Confirm no unapproved local configuration, generated output, crash log,
+- [x] Confirm no unapproved local configuration, generated output, crash log,
   scratch tool, or obsolete plan remains tracked.
+
+#### Phase 6 execution record
+
+- Created a detached worktree at `HEAD`, applied the Phase 5 cleanup delta, and
+  validated without the ignored local config or existing build outputs.
+  `dotnet restore .\RemotePlay.slnx` and the Release solution build passed for
+  all four projects. The existing `WFAC010` high-DPI warning remains.
+- All 719 .NET tests and all 10 browser regression tests passed. The first .NET
+  run hit a transient `HttpListener` port collision; an immediate full rerun
+  passed without code changes.
+- The documented `PortableWinX64` publish succeeded from both the fresh
+  worktree and the repository. The repository output is version `4.0.1`;
+  both runtime manifests target `win-x64`, both executables are x64, all 19
+  web assets and 3 PWA assets match their source hashes, and all 650 bundled
+  LibVLC DLLs are x64. No x86/ARM64 payload or nested `publish` folder exists;
+  the ignored local config remains in place.
+- Checked local links in 12 Markdown files: none are broken. The targeted C#
+  formatter check and new provenance-document formatting check passed. The
+  formatter still reports broad pre-existing differences for the compact CSS
+  and historical cleanup document; repository-wide formatting remains
+  deferred rather than introducing unrelated churn. The WPF project compiled,
+  solution membership and test references were verified, and
+  `git diff --check` passed.
+- No generated output, test result, crash log, or local config is tracked.
+  Remaining plans under `docs/plans/` have open manual/provider follow-ups or
+  are active suggestions; this completed cleanup plan is archived.
 
 ## Decisions and scope
 

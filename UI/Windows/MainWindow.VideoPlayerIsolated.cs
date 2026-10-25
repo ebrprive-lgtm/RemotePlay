@@ -127,7 +127,7 @@ public partial class MainWindow
         }
     }
 
-    private async void PlayMovieIsolated(string filePath, double startPositionSeconds = 0)
+    private async void PlayMovieIsolated(string filePath, double startPositionSeconds = 0, bool isLiveTv = false)
     {
         await _videoPlaybackStartLock.WaitAsync();
         try
@@ -220,6 +220,7 @@ public partial class MainWindow
             {
                 MessageType = nameof(PlayCommand),
                 FilePath = filePath,
+                IsLiveTv = isLiveTv,
                 StartPositionSeconds = Math.Max(0, startPositionSeconds),
                 Volume = _volume,
                 Brightness = _brightness,

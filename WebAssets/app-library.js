@@ -3940,7 +3940,7 @@ async function searchLibrary(q, offset = 0, append = false) {
 }
 // ── Video command-bar filter / sort state ────────────────────────────
 let _videoFilter = 'all'; // 'all' | 'unwatched' | 'watched' | 'fav' | 'progress'
-let _videoSort    = 'name'; // 'name' | 'folder' | 'duration' | 'size' | 'progress'
+let _videoSort    = 'name'; // 'name' | 'folder' | 'duration' | 'year' | 'progress'
 let _videoSortDir = 'asc';  // 'asc' | 'desc'
 let _currentRawFiles = []; // last unfiltered file list from server
 let _currentFolderRows = []; // folder/link rows shown above videos in list view
@@ -4051,6 +4051,7 @@ function _videoRenderBreadcrumbTokens(searching, data) {
   if (currentMode !== 'video') return;
   const bc = document.getElementById('breadcrumb');
   if (!bc || !data) return;
+  bc.querySelector('#video-breadcrumb-tokens')?.remove();
 
   const tokens = [];
   const q = (data.query || '').trim();
@@ -4066,7 +4067,10 @@ function _videoRenderBreadcrumbTokens(searching, data) {
     .map((token) => `${token.label}: <button class="radio-crumb-value" type="button" onclick="videoClearBreadcrumbToken('${token.key}')" title="Reset ${token.label}">${esc(token.value)}</button>`)
     .join('<span class="radio-crumb-sep">, </span>');
 
-  bc.innerHTML += `<span> &rsaquo; </span>${details}`;
+  const tokenContainer = document.createElement('span');
+  tokenContainer.id = 'video-breadcrumb-tokens';
+  tokenContainer.innerHTML = `<span> &rsaquo; </span>${details}`;
+  bc.appendChild(tokenContainer);
 }
 
 function videoClearBreadcrumbToken(key) {
@@ -4126,13 +4130,33 @@ function _applyVcbViewBtn() {
 }
 function _sortedFiles(files) {
   const arr = files.slice();
-  const asc = _videoSortDir !== 'desc';
+  const direction = _videoSortDir === 'desc' ? -1 : 1;
   switch (_videoSort) {
-    case 'folder':   arr.sort((a,b) => { const r = (a.folder||'').localeCompare(b.folder||'') || (a.displayName||a.name||'').localeCompare(b.displayName||b.name||''); return asc ? r : -r; }); break;
-    case 'duration': arr.sort((a,b) => { const r = (Number(a.duration)||0) - (Number(b.duration)||0); return asc ? -r : r; }); break;
-    case 'year':     arr.sort((a,b) => { const ya = _parseYear(a.name||''), yb = _parseYear(b.name||''); const r = (yb||'0').localeCompare(ya||'0') || (a.displayName||a.name||'').localeCompare(b.displayName||b.name||''); return asc ? r : -r; }); break;
-    case 'progress': arr.sort((a,b) => { const r = (Number(a.progress)||0) - (Number(b.progress)||0); return asc ? -r : r; }); break;
-    default:         arr.sort((a,b) => { const r = (a.displayName||a.name||'').localeCompare(b.displayName||b.name||''); return asc ? r : -r; }); break;
+    case 'folder':
+      arr.sort((a,b) => {
+        const r = (a.folder||'').localeCompare(b.folder||'') ||
+          (a.displayName||a.name||'').localeCompare(b.displayName||b.name||'');
+        return r * direction;
+      });
+      break;
+    case 'duration':
+      arr.sort((a,b) => ((Number(a.duration)||0) - (Number(b.duration)||0)) * direction);
+      break;
+    case 'year':
+      arr.sort((a,b) => {
+        const ya = _parseYear(a.name||'') || '0';
+        const yb = _parseYear(b.name||'') || '0';
+        const r = ya.localeCompare(yb) ||
+          (a.displayName||a.name||'').localeCompare(b.displayName||b.name||'');
+        return r * direction;
+      });
+      break;
+    case 'progress':
+      arr.sort((a,b) => ((Number(a.progress)||0) - (Number(b.progress)||0)) * direction);
+      break;
+    default:
+      arr.sort((a,b) => (a.displayName||a.name||'').localeCompare(b.displayName||b.name||'') * direction);
+      break;
   }
   return arr;
 }

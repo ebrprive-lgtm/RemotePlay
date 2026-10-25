@@ -88,6 +88,10 @@ channel-switch behavior.
 
 - [x] Correlate browser telemetry and server logs with a request identifier and
   record elapsed time and phase (probe, player handoff, startup confirmation).
+- [x] Persist startup, per-candidate attempt/failure, and success/failure
+  timings through `/api/log` using an allowlist of identifiers, phases, elapsed
+  time, attempt counts, status codes, and error types; omit channel names,
+  provider hosts, URLs, and raw error messages.
 - [x] Keep diagnostics useful without logging complete stream URLs or
   credentials; include the provider host, HTTP status, and sanitized failure
   reason.
@@ -117,7 +121,7 @@ operating-system network policy.
 ## Validation record
 
 - [x] Focused Release API and regression tests: 24 passed, 0 failed.
-- [x] Deno Live TV browser-flow tests: 10 passed, 0 failed.
+- [x] Deno Live TV browser-flow tests: 11 passed, 0 failed.
 - [x] `git diff --check` completed without whitespace errors.
 - [x] Browser harness formatting check passed with `deno fmt --check`.
 - [ ] Manually verify channel startup, source fallback, and stop/switch behavior

@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Http;
-using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -24,9 +23,10 @@ public sealed class SseTests : IDisposable
 
     public SseTests()
     {
-        _port = FindFreePort();
-        _server = new WebServer(new AppConfig { Port = _port }, BuildStubCallbacks());
-        _server.Start();
+        var started = WebServerTestServer.Start(port =>
+            new WebServer(new AppConfig { Port = port }, BuildStubCallbacks()));
+        _server = started.Server;
+        _port = started.Port;
         _client = new HttpClient
         {
             BaseAddress = new Uri($"http://localhost:{_port}"),
@@ -260,9 +260,8 @@ public sealed class SseTests : IDisposable
     [Fact]
     public async Task Stop_TerminatesOpenSseStream()
     {
-        var stopPort = FindFreePort();
-        var stopServer = new WebServer(new AppConfig { Port = stopPort }, BuildStubCallbacks());
-        stopServer.Start();
+        var (stopServer, stopPort) = WebServerTestServer.Start(port =>
+            new WebServer(new AppConfig { Port = port }, BuildStubCallbacks()));
 
         using var stopClient = new HttpClient
         {
@@ -351,15 +350,6 @@ public sealed class SseTests : IDisposable
         }
 
         return sb.ToString();
-    }
-
-    private static int FindFreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
     }
 
     private static WebServerCallbacks BuildStubCallbacks() => new()

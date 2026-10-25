@@ -1097,6 +1097,46 @@ function _liveTvEmitTelemetry(eventName, data) {
       ...(data && typeof data === 'object' ? data : {}),
     };
     document.dispatchEvent(new CustomEvent('rp:telemetry', { detail }));
+
+    const timingEvents = new Set([
+      'play_start',
+      'play_attempt',
+      'play_attempt_failed',
+      'play_success',
+      'play_failed',
+    ]);
+    const requestId = String(detail.requestId || '');
+    if (
+      detail.domain !== 'live-tv' ||
+      !timingEvents.has(detail.event) ||
+      !/^[A-Za-z0-9_-]{1,64}$/.test(requestId)
+    ) return;
+
+    const fields = ['requestId=' + requestId, 'event=' + detail.event];
+    const allowedPhases = new Set([
+      'playback_start',
+      'player_handoff',
+      'player_startup',
+      'startup_confirmed',
+      'playback_failed',
+    ]);
+    if (allowedPhases.has(detail.phase)) fields.push('phase=' + detail.phase);
+    const elapsedMs = Number(detail.elapsedMs);
+    if (Number.isFinite(elapsedMs) && elapsedMs >= 0)
+      fields.push('elapsedMs=' + Math.round(elapsedMs));
+    const attempt = Number(detail.attempt);
+    if (Number.isInteger(attempt) && attempt > 0 && attempt <= 32)
+      fields.push('attempt=' + attempt);
+    const statusCode = Number(detail.statusCode);
+    if (Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599)
+      fields.push('statusCode=' + statusCode);
+    if (typeof detail.errorType === 'string' && /^[A-Za-z0-9_]{1,32}$/.test(detail.errorType))
+      fields.push('errorType=' + detail.errorType);
+    void fetch('/api/log', {
+      method: 'POST',
+      body: '[LIVE-TV-TIMING] ' + fields.join(' '),
+      keepalive: true,
+    }).catch(() => {});
   } catch {}
 }
 

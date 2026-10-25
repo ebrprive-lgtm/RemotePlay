@@ -61,6 +61,7 @@ internal sealed record LibraryScanStatus
     public int ScannedFolders { get; init; }
     public DateTimeOffset? StartedUtc { get; init; }
     public DateTimeOffset? CompletedUtc { get; init; }
+    public long? ScanDurationMs { get; init; }
     public string LastError { get; init; } = string.Empty;
     /// <summary>Number of .rplink files found to have missing targets during the last stale-link background check.</summary>
     public int StaleLinkCount { get; init; }

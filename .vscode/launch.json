@@ -5,7 +5,7 @@
       "name": "C#: Launch Startup Project",
       "type": "coreclr",
       "request": "launch",
-      "preLaunchTask": "build",
+      "preLaunchTask": "Build Debug",
       "program": "${workspaceFolder}\\bin\\Debug\\net8.0-windows\\RemotePlay.dll",
       "cwd": "${workspaceFolder}",
       "console": "internalConsole",

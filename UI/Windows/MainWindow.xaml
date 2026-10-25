@@ -136,24 +136,6 @@
             </Setter>
         </Style>
 
-        <Style x:Key="BrowserMenuGroupLabel" TargetType="MenuItem">
-            <Setter Property="Foreground" Value="#4a4a6a"/>
-            <Setter Property="FontSize" Value="9.5"/>
-            <Setter Property="FontWeight" Value="Bold"/>
-            <Setter Property="Padding" Value="16,6,16,2"/>
-            <Setter Property="IsEnabled" Value="False"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="MenuItem">
-                        <TextBlock Text="{TemplateBinding Header}"
-                                   Foreground="{TemplateBinding Foreground}"
-                                   FontSize="{TemplateBinding FontSize}"
-                                   FontWeight="{TemplateBinding FontWeight}"
-                                   Padding="{TemplateBinding Padding}"/>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
         <!-- ── End browser context menu styles ─────────────────────────── -->
 
         <Style x:Key="DarkTab" TargetType="TabItem">

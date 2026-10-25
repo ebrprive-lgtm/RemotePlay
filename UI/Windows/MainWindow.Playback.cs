@@ -114,18 +114,21 @@ public partial class MainWindow
         PlayMovie(filePath, 0);
     }
 
-    private void PlayMovie(string filePath, double startPositionSeconds)
+    private void PlayMovie(string filePath, double startPositionSeconds, bool isLiveTv = false)
     {
         // Always marshal to the UI thread — callers may come from background threads
         // (web server callbacks, queue timers, VLC event handlers, etc.)
         if (!Dispatcher.CheckAccess())
         {
-            Dispatcher.BeginInvoke(() => PlayMovie(filePath, startPositionSeconds));
+            Dispatcher.BeginInvoke(() => PlayMovie(filePath, startPositionSeconds, isLiveTv));
             return;
         }
 
         // Use isolated video player process to prevent crashes
-        PlayMovieIsolated(filePath, double.IsFinite(startPositionSeconds) ? Math.Max(0, startPositionSeconds) : 0);
+        PlayMovieIsolated(
+            filePath,
+            double.IsFinite(startPositionSeconds) ? Math.Max(0, startPositionSeconds) : 0,
+            isLiveTv);
     }
 
     // Legacy direct VLC playback (kept for reference, not used)
@@ -1462,7 +1465,7 @@ public partial class MainWindow
             PlayNamed = (path, displayName) =>
             {
                 _currentPlaybackDisplayName = string.IsNullOrWhiteSpace(displayName) ? null : displayName.Trim();
-                PlayMovie(path);
+                PlayMovie(path, 0, isLiveTv: true);
             },
             Stop = StopMovie,
             Pause = TogglePause,

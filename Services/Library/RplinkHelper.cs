@@ -5,7 +5,8 @@ namespace RemotePlay;
 
 /// <summary>Helpers for the <c>.rplink</c> file format — a single-line text file whose content is a
 /// target path or a library directive such as <c>@Series</c> or <c>@Movie</c>. Empty links are
-/// inferred from a same-name series folder or movie file. Year-prefixed names also search their
+/// inferred by searching for a same-name series folder under <c>@Master.Series</c> before searching
+/// for a same-name video file under <c>@Master.Movies</c>. Year-prefixed names also search their
 /// corresponding decade folders, including legacy concrete paths to the old flat master layout.</summary>
 internal static class RplinkHelper
 {
@@ -364,15 +365,10 @@ internal static class RplinkHelper
             targetPath = Path.Combine(candidateDirectory, movieName + ".*");
             try
             {
-                var movieTarget = Directory
-                    .EnumerateFiles(
-                        candidateDirectory,
-                        movieName + ".*",
-                        SearchOption.TopDirectoryOnly)
-                    .Where(MovieScanner.IsSupportedVideoFile)
-                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(path => path, StringComparer.Ordinal)
-                    .FirstOrDefault();
+                var movieTarget = FindMatchingMovieFile(
+                    candidateDirectory,
+                    movieName,
+                    SearchOption.TopDirectoryOnly);
 
                 if (movieTarget is null)
                     continue;
@@ -401,7 +397,54 @@ internal static class RplinkHelper
             }
         }
 
+        try
+        {
+            var movieTarget = FindMatchingMovieFile(
+                movieDirectory,
+                movieName,
+                SearchOption.AllDirectories);
+
+            if (movieTarget is not null)
+            {
+                targetPath = movieTarget;
+                missingMovieTarget = false;
+            }
+        }
+        catch (DirectoryNotFoundException)
+        {
+        }
+        catch (FileNotFoundException)
+        {
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            error = BuildErrorDetails(ex);
+        }
+        catch (IOException ex)
+        {
+            error = BuildErrorDetails(ex);
+        }
+
         return true;
+    }
+
+    private static string? FindMatchingMovieFile(
+        string movieDirectory,
+        string movieName,
+        SearchOption searchOption)
+    {
+        var searchPattern = movieName + ".*";
+
+        return Directory
+            .EnumerateFiles(movieDirectory, searchPattern, searchOption)
+            .Where(path => string.Equals(
+                Path.GetFileNameWithoutExtension(path),
+                movieName,
+                StringComparison.OrdinalIgnoreCase))
+            .Where(MovieScanner.IsSupportedVideoFile)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(path => path, StringComparer.Ordinal)
+            .FirstOrDefault();
     }
 
     private static (string TargetPath, bool Exists) ResolveSeriesTarget(
@@ -413,12 +456,40 @@ internal static class RplinkHelper
         if (Directory.Exists(directTarget))
             return (directTarget, true);
 
+        var fallbackTarget = directTarget;
         var decade = GetDecadeFolderName(seriesName);
-        if (decade is null)
-            return (directTarget, false);
+        if (decade is not null)
+        {
+            var decadeTarget = Path.Combine(seriesDirectory, decade, seriesName);
+            if (Directory.Exists(decadeTarget))
+                return (decadeTarget, true);
 
-        var decadeTarget = Path.Combine(seriesDirectory, decade, seriesName);
-        return (decadeTarget, Directory.Exists(decadeTarget));
+            fallbackTarget = decadeTarget;
+        }
+
+        try
+        {
+            var nestedTarget = Directory
+                .EnumerateDirectories(seriesDirectory, seriesName, SearchOption.AllDirectories)
+                .Where(path => string.Equals(
+                    Path.GetFileName(path),
+                    seriesName,
+                    StringComparison.OrdinalIgnoreCase))
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(path => path, StringComparer.Ordinal)
+                .FirstOrDefault();
+
+            if (nestedTarget is not null)
+                return (nestedTarget, true);
+        }
+        catch (DirectoryNotFoundException)
+        {
+        }
+        catch (FileNotFoundException)
+        {
+        }
+
+        return (fallbackTarget, false);
     }
 
     private static string? GetDecadeFolderName(string name)

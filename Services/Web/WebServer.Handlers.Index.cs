@@ -1,5 +1,6 @@
 ﻿using System.IO;
 using System.Net;
+using System.Diagnostics;
 
 namespace RemotePlay;
 
@@ -33,12 +34,14 @@ internal sealed partial class WebServer
 
             _isIndexing = true;
             _scanStartedUtc = DateTimeOffset.UtcNow;
+            Interlocked.Exchange(ref _libraryScanDurationMs, -1);
             _scannedFiles = 0;
             _scannedFolders = 0;
             _lastScanError = string.Empty;
             Logger.Info($"Library index refresh starting (force={force}, cached={_libraryIndex.Length})");
         }
 
+        var scanStartedTimestamp = Stopwatch.GetTimestamp();
         Task.Run(() =>
         {
             try
@@ -112,6 +115,9 @@ internal sealed partial class WebServer
             }
             finally
             {
+                var scanDurationMs = (long)Stopwatch.GetElapsedTime(scanStartedTimestamp).TotalMilliseconds;
+                Interlocked.Exchange(ref _libraryScanDurationMs, scanDurationMs);
+                Logger.Detail($"Library index refresh finished in {scanDurationMs} ms");
                 lock (_libraryIndexGate)
                     _isIndexing = false;
             }

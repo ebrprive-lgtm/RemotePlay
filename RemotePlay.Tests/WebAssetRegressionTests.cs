@@ -397,6 +397,11 @@ public sealed class WebAssetRegressionTests
             playbackJs,
             "query.set('audioCompat', 'auto');",
             "query.set('audioCodecs', supportedAudioCodecs.join(','));",
+            "query.set('playbackId', playbackTelemetryId);",
+            "function _sendLocalVideoTiming(state, eventName, source = '')",
+            "video.requestVideoFrameCallback",
+            "_sendLocalVideoTiming(state, 'loadeddata');",
+            "'[LOCAL-PLAYBACK] id='",
             "function _getLocalVideoSupportedAudioCodecs(video)",
             "audioCompatibilityRequested: touchClient",
             "state.audioCompatibilityRequested",
@@ -1432,6 +1437,42 @@ public sealed class WebAssetRegressionTests
             appJs,
             "// Keep folders and folder links at the top regardless of active video sort.",
             "return [..._currentFolderRows, ...sortedFiles];");
+    }
+
+    [Fact]
+    public void VideoSortBreadcrumbTokensReplacePreviousSuffix()
+    {
+        var libraryJs = ReadWebAsset("app-library.js");
+        var methodStart = libraryJs.IndexOf("function _videoRenderBreadcrumbTokens(", StringComparison.Ordinal);
+        var methodEnd = libraryJs.IndexOf("\nfunction videoClearBreadcrumbToken(", methodStart, StringComparison.Ordinal);
+        Assert.True(methodStart >= 0 && methodEnd > methodStart);
+        var method = libraryJs[methodStart..methodEnd];
+
+        AssertContainsAll(
+            method,
+            "bc.querySelector('#video-breadcrumb-tokens')?.remove();",
+            "tokenContainer.id = 'video-breadcrumb-tokens';",
+            "bc.appendChild(tokenContainer);");
+        Assert.DoesNotContain("bc.innerHTML +=", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void VideoListSortingUsesConsistentAscendingAndDescendingDirection()
+    {
+        var libraryJs = ReadWebAsset("app-library.js");
+        var methodStart = libraryJs.IndexOf("function _sortedFiles(files) {", StringComparison.Ordinal);
+        var methodEnd = libraryJs.IndexOf("\nfunction _filteredFiles(", methodStart, StringComparison.Ordinal);
+        Assert.True(methodStart >= 0 && methodEnd > methodStart);
+        var method = libraryJs[methodStart..methodEnd];
+
+        AssertContainsAll(
+            method,
+            "const direction = _videoSortDir === 'desc' ? -1 : 1;",
+            "((Number(a.duration)||0) - (Number(b.duration)||0)) * direction",
+            "const r = ya.localeCompare(yb) ||",
+            "((Number(a.progress)||0) - (Number(b.progress)||0)) * direction",
+            ".localeCompare(b.displayName||b.name||'') * direction");
+        Assert.DoesNotContain("asc ? -r : r", method, StringComparison.Ordinal);
     }
 
     [Fact]

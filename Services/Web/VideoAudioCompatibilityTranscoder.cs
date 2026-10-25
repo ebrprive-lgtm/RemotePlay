@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using RemotePlay.Models;
 
 namespace RemotePlay;
 
@@ -18,6 +19,7 @@ internal sealed class VideoAudioCompatibilityTranscoder
     private readonly string _cacheDirectory;
     private readonly string _ffmpegExecutable;
     private readonly Func<string, string, VideoAudioCompatibilityMode, bool, ProcessStartInfo> _processStartInfoFactory;
+    private readonly Func<string, CancellationToken, Task<MediaCodecInfo>> _mediaInfoProbe;
     private readonly object _transcodeTasksLock = new();
     private readonly Dictionary<string, TranscodeOperation<VideoAudioCompatibilityStream>> _transcodeTasks =
         new(StringComparer.Ordinal);
@@ -29,7 +31,8 @@ internal sealed class VideoAudioCompatibilityTranscoder
     internal VideoAudioCompatibilityTranscoder(
         string? cacheDirectory = null,
         string ffmpegExecutable = "ffmpeg",
-        Func<string, string, VideoAudioCompatibilityMode, bool, ProcessStartInfo>? processStartInfoFactory = null)
+        Func<string, string, VideoAudioCompatibilityMode, bool, ProcessStartInfo>? processStartInfoFactory = null,
+        Func<string, CancellationToken, Task<MediaCodecInfo>>? mediaInfoProbe = null)
     {
         _cacheDirectory = Path.GetFullPath(
             cacheDirectory ?? Path.Combine(Path.GetTempPath(), "RemotePlay", "VideoAudioCompatibility"));
@@ -39,6 +42,7 @@ internal sealed class VideoAudioCompatibilityTranscoder
                 progressive
                     ? CreateProgressiveStartInfo(_ffmpegExecutable, sourcePath, mode)
                     : CreateStartInfo(_ffmpegExecutable, sourcePath, temporaryOutputPath, mode));
+        _mediaInfoProbe = mediaInfoProbe ?? VideoMediaInfoProbe.ProbeAsync;
     }
 
     internal async Task<string> GetOrCreateCompatibleMp4Async(
@@ -737,14 +741,14 @@ internal sealed class VideoAudioCompatibilityTranscoder
         }
     }
 
-    private static async Task<VideoAudioCompatibilityMode> SelectCompatibilityModeAsync(
+    private async Task<VideoAudioCompatibilityMode> SelectCompatibilityModeAsync(
         string sourcePath,
         IReadOnlyCollection<string> supportedAudioCodecs,
         CancellationToken cancellationToken)
     {
         try
         {
-            var mediaInfo = await VideoMediaInfoProbe.ProbeAsync(sourcePath, cancellationToken)
+            var mediaInfo = await _mediaInfoProbe(sourcePath, cancellationToken)
                 .ConfigureAwait(false);
             return VideoAudioCompatibilitySelector.Select(
                 sourcePath,

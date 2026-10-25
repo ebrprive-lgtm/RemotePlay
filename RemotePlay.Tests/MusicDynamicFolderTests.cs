@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Http;
-using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
@@ -30,12 +29,11 @@ public sealed class MusicDynamicFolderTests : IDisposable
         _tempRoot = Path.Combine(Path.GetTempPath(), $"rp_dyntest_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempRoot);
 
-        var port = FindFreePort();
-        _server = new WebServer(
+        var started = WebServerTestServer.Start(port => new WebServer(
             new AppConfig { Port = port, AdditionalMusicPaths = [_tempRoot] },
-            BuildStubCallbacks());
-        _server.Start();
-        _client = new HttpClient { BaseAddress = new Uri($"http://localhost:{port}") };
+            BuildStubCallbacks()));
+        _server = started.Server;
+        _client = new HttpClient { BaseAddress = new Uri($"http://localhost:{started.Port}") };
     }
 
     public void Dispose()
@@ -1114,15 +1112,6 @@ public sealed class MusicDynamicFolderTests : IDisposable
     {
         var json = await response.Content.ReadAsStringAsync();
         return JsonDocument.Parse(json);
-    }
-
-    private static int FindFreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
     }
 
     private static WebServerCallbacks BuildStubCallbacks() => new()

@@ -22,6 +22,14 @@ function createLiveTvHarness({
   storage = new Map(),
 } = {}) {
   const events = [];
+  const logRequests = [];
+  const fetchProxy = (url, options) => {
+    if (url === "/api/log") {
+      logRequests.push({ url, options });
+      return Promise.resolve({ ok: true, status: 200 });
+    }
+    return fetchImpl(url, options);
+  };
   const document = {
     getElementById: () => null,
     querySelectorAll: () => [],
@@ -48,6 +56,7 @@ function createLiveTvHarness({
     "_viewMode",
     "console",
     "events",
+    "logRequests",
     `${liveTvSource}
 return {
   applyRoute(token) {
@@ -74,8 +83,10 @@ return {
   failureCategory(message, statusCode) { return _liveTvFailureCategory(message, statusCode); },
   friendlyFailureReason(message, statusCode) { return _liveTvFriendlyFailureReason(message, statusCode); },
   async play(url, name) { await liveTvPlayChannel(url, name); },
+  emitTelemetry(eventName, data) { _liveTvEmitTelemetry(eventName, data); },
   cancel() { return liveTvCancelPendingPlaybackStart(); },
   events,
+  logs: logRequests,
   state() {
     return {
       currentUrl: _liveTvCurrentUrl,
@@ -97,12 +108,13 @@ return {
   return app(
     document,
     localStorage,
-    fetchImpl,
+    fetchProxy,
     pollStatus,
     CustomEvent,
     { "live-tv": "grid" },
     { warn: () => {}, error: () => {} },
     events,
+    logRequests,
   );
 }
 
@@ -399,4 +411,34 @@ Deno.test("server cancellation is reported as cancellation, not a channel failur
     ),
   );
   assert(!harness.events.some((event) => event.event === "play_failed"));
+});
+
+Deno.test("startup timing logs allowlisted fields without channel or provider details", () => {
+  const harness = createLiveTvHarness();
+
+  harness.emitTelemetry("play_attempt_failed", {
+    requestId: "live-tv-safe_123",
+    phase: "player_startup",
+    attempt: 2,
+    elapsedMs: 834,
+    statusCode: 502,
+    errorType: "TypeError",
+    channelName: "Private Channel",
+    candidateHost: "private-provider.example",
+    error: "private stream URL and credentials",
+  });
+
+  assertEquals(harness.logs.length, 1);
+  assertEquals(harness.logs[0].url, "/api/log");
+  const log = harness.logs[0].options.body;
+  assert(log.includes("[LIVE-TV-TIMING]"));
+  assert(log.includes("event=play_attempt_failed"));
+  assert(log.includes("requestId=live-tv-safe_123"));
+  assert(log.includes("attempt=2"));
+  assert(log.includes("elapsedMs=834"));
+  assert(log.includes("statusCode=502"));
+  assert(log.includes("errorType=TypeError"));
+  assert(!log.includes("Private Channel"));
+  assert(!log.includes("private-provider.example"));
+  assert(!log.includes("credentials"));
 });

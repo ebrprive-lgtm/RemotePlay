@@ -221,6 +221,7 @@ internal sealed class VideoPlayerProcessManager : IDisposable
                     MessageType = nameof(PlayCommand),
                     FilePath = lastFilePath,
                     StartPositionSeconds = lastPosition,
+                    IsLiveTv = lastKnownState.IsLiveTv,
                     Volume = lastKnownState.Volume,
                     Brightness = lastKnownState.Brightness,
                     Saturation = lastKnownState.Saturation,
@@ -366,6 +367,7 @@ internal sealed class VideoPlayerProcessManager : IDisposable
                     FilePath = response.CurrentFilePath,
                     PositionSeconds = response.PositionSeconds,
                     IsPlaying = response.IsPlaying,
+                    IsLiveTv = response.IsLiveTv,
                     DisplayIndex = _lastKnownState.DisplayIndex, // Preserve display
                     Volume = _lastKnownState.Volume,
                     Brightness = _lastKnownState.Brightness,
@@ -393,6 +395,7 @@ internal sealed class VideoPlayerProcessManager : IDisposable
             MessageType = nameof(StatusResponse),
             CurrentFilePath = cmd.FilePath,
             PositionSeconds = cmd.StartPositionSeconds,
+            IsLiveTv = cmd.IsLiveTv,
             PlayerState = "Opening"
         });
 
@@ -402,6 +405,7 @@ internal sealed class VideoPlayerProcessManager : IDisposable
             FilePath = cmd.FilePath,
             PositionSeconds = cmd.StartPositionSeconds,
             IsPlaying = true,
+            IsLiveTv = cmd.IsLiveTv,
             DisplayIndex = cmd.TargetDisplayIndex,
             Volume = cmd.Volume,
             Brightness = cmd.Brightness,
@@ -819,6 +823,7 @@ internal sealed class VideoPlayerProcessManager : IDisposable
         public string? FilePath { get; set; }
         public double PositionSeconds { get; set; }
         public bool IsPlaying { get; set; }
+        public bool IsLiveTv { get; set; }
         public int DisplayIndex { get; set; }
         public double Volume { get; set; } = 1.0;
         public double Brightness { get; set; } = 0.5;

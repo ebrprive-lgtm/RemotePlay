@@ -429,9 +429,19 @@ design to HLS/MSE rather than promising it from the progressive response.
   probes for AAC encode and audio copy.
 - [x] Retain the existing HTTP regressions for authorization before codec
   probing and ordinary source range responses.
-- [ ] Add progressive HTTP integration tests for chunked delivery before
-  conversion completes, active Range behavior, concurrent readers,
-  disconnect/cancel cleanup, and range requests against a completed cache file.
+- [x] Add deterministic progressive HTTP integration tests for first-fragment
+  delivery before conversion completes, concurrent readers, zero-byte and
+  nonzero active Range behavior, explicit cancel cleanup, and repeated Range
+  requests against the completed cache.
+- [x] Correlate browser timing with server stream stages using a sanitized
+  playback ID. Record server request/first-fragment/first-byte timing and
+  browser `loadeddata` plus `requestVideoFrameCallback` first-frame timing
+  (with an event fallback); do not log media paths or stream URLs.
+- [x] Add long-stream regressions for an 8 MiB video, repeated seeks, client
+  disconnect, and successful replay after the interrupted read.
+- [x] Add a 1,250-file decade-library scan/search/browse regression using an
+  isolated index-cache path; report scan duration and memory deltas without
+  asserting machine-specific performance thresholds.
 - [x] Add browser source regressions that verify polling/cancel continue after
   loading, unbuffered seeks are rejected, and progressive state is shown in
   diagnostics.

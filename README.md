@@ -58,4 +58,4 @@ The validated publish output is `bin\Release\net8.0-windows\publish`.
 - [Isolated video player testing guide](docs/testing/VIDEO_PLAYER_ISOLATION_TESTING.md)
 - [Active plans and suggestions](docs/plans/)
 - [Completed plans and suggestions archive](docs/archive/)
-- [Repository cleanup plan](docs/plans/REPOSITORY_CLEANUP_PLAN.md)
+- [Repository cleanup plan](docs/archive/REPOSITORY_CLEANUP_PLAN.md)

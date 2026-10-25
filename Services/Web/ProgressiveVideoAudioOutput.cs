@@ -272,12 +272,16 @@ internal sealed class ProgressiveVideoAudioOutput
         }
     }
 
-    internal async Task CopyToAsync(Stream destination, CancellationToken cancellationToken)
+    internal async Task CopyToAsync(
+        Stream destination,
+        CancellationToken cancellationToken,
+        Action? onFirstWrite = null)
     {
         ArgumentNullException.ThrowIfNull(destination);
         await using var reader = await OpenReaderAsync(cancellationToken).ConfigureAwait(false);
         var buffer = new byte[81920];
         long position = 0;
+        var firstWrite = true;
 
         while (true)
         {
@@ -310,6 +314,11 @@ internal sealed class ProgressiveVideoAudioOutput
                     buffer.AsMemory(0, read),
                     cancellationToken).ConfigureAwait(false);
                 await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
+                if (firstWrite)
+                {
+                    firstWrite = false;
+                    onFirstWrite?.Invoke();
+                }
                 position += read;
                 continue;
             }

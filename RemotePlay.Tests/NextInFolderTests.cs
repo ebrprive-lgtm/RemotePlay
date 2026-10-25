@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Http;
-using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -24,10 +23,10 @@ public sealed class NextInFolderTests : IDisposable
 
     public NextInFolderTests()
     {
-        var port = FindFreePort();
-        _server = new WebServer(new AppConfig { Port = port }, BuildStubCallbacks());
-        _server.Start();
-        _client = new HttpClient { BaseAddress = new Uri($"http://localhost:{port}") };
+        var started = WebServerTestServer.Start(port =>
+            new WebServer(new AppConfig { Port = port }, BuildStubCallbacks()));
+        _server = started.Server;
+        _client = new HttpClient { BaseAddress = new Uri($"http://localhost:{started.Port}") };
 
         // Create a unique temp directory for this test class instance
         _tempDir = Path.Combine(Path.GetTempPath(), "RemotePlayTests_NextInFolder_" + Guid.NewGuid().ToString("N"));
@@ -308,15 +307,6 @@ public sealed class NextInFolderTests : IDisposable
         if (pad == 2) normalized += "==";
         else if (pad == 3) normalized += "=";
         return Encoding.UTF8.GetString(Convert.FromBase64String(normalized));
-    }
-
-    private static int FindFreePort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
     }
 
     private static WebServerCallbacks BuildStubCallbacks() => new()

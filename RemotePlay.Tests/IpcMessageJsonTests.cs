@@ -38,6 +38,7 @@ public sealed class IpcMessageJsonTests
         {
             MessageType = nameof(StatusResponse),
             IsPlaying = true,
+            IsLiveTv = true,
             CurrentFilePath = @"C:\Videos\movie.mkv",
             DurationSeconds = 120
         };
@@ -47,8 +48,26 @@ public sealed class IpcMessageJsonTests
 
         Assert.NotNull(deserialized);
         Assert.True(deserialized.IsPlaying);
+        Assert.True(deserialized.IsLiveTv);
         Assert.Equal(@"C:\Videos\movie.mkv", deserialized.CurrentFilePath);
         Assert.Equal(120, deserialized.DurationSeconds);
+    }
+
+    [Fact]
+    public void Serialize_PlayCommand_PreservesLiveTvMode()
+    {
+        IpcMessage command = new PlayCommand
+        {
+            MessageType = nameof(PlayCommand),
+            FilePath = "https://example.com/live/stream.m3u8",
+            IsLiveTv = true
+        };
+
+        var json = IpcMessageJson.Serialize(command, Options);
+        var deserialized = JsonSerializer.Deserialize<PlayCommand>(json, Options);
+
+        Assert.NotNull(deserialized);
+        Assert.True(deserialized.IsLiveTv);
     }
 
     [Fact]

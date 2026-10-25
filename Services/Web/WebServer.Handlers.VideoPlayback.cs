@@ -933,6 +933,7 @@ internal sealed partial class WebServer
         {
             // Diagnostic trace prefixes are Detail-level; everything else is Info
             if (body.StartsWith("[LOCAL-", StringComparison.Ordinal) ||
+                body.StartsWith("[LIVE-TV-TIMING]", StringComparison.Ordinal) ||
                 body.StartsWith("[RADIO-LOCAL]", StringComparison.Ordinal) ||
                 body.StartsWith("[RADIO-SERVER]", StringComparison.Ordinal) ||
                 body.StartsWith("[PROXY]", StringComparison.Ordinal))

@@ -20,7 +20,6 @@ internal sealed partial class WebServer
 {
     private const string WebAssetsDirectoryName = "WebAssets";
     private static readonly string ThumbnailCacheDirectory = AppPaths.ThumbnailCacheDirectory;
-    private static readonly string LibraryIndexCacheFile = AppPaths.LibraryIndexCacheFile;
     private static readonly string MusicIndexCacheFile   = AppPaths.MusicIndexCacheFile;
     private static readonly string M3uIndexCacheFile      = AppPaths.M3uIndexCacheFile;
     private static readonly string LiveTvCatalogCacheFile = AppPaths.LiveTvCatalogCacheFile;
@@ -76,6 +75,7 @@ internal sealed partial class WebServer
     private readonly PodcastFeedCache _podcastFeedCache;
     private readonly TimeProvider _podcastFeedCacheTimeProvider;
     private readonly string _podcastTopPoolCacheFilePath;
+    private readonly string _libraryIndexCacheFile;
     private readonly PresenceBroadcaster? _broadcaster;
     private readonly RemotePlay.Services.Discovery.DlnaDiscovery? _dlna;
     private readonly PlaybackHistory _playbackHistory;
@@ -122,6 +122,7 @@ internal sealed partial class WebServer
     private DateTimeOffset _libraryWatcherStartedUtc;
     private DateTimeOffset? _pendingLibraryRescanUtc;
     private DateTimeOffset? _scanStartedUtc;
+    private long _libraryScanDurationMs = -1;
     private int _scannedFiles;
     private int _scannedFolders;
     private string _lastScanError = string.Empty;
@@ -252,7 +253,9 @@ internal sealed partial class WebServer
         PodcastFeedHttpClient? podcastFeedHttpClient = null,
         TimeProvider? podcastFeedCacheTimeProvider = null,
         System.Net.Http.HttpClient? podcastCatalogHttpClient = null,
-        string? podcastTopPoolCacheFilePath = null)
+        string? podcastTopPoolCacheFilePath = null,
+        string? libraryIndexCacheFilePath = null,
+        VideoAudioCompatibilityTranscoder? videoAudioCompatibilityTranscoder = null)
     {
         _config = config;
         _expertMode = config.ExpertMode;
@@ -265,6 +268,10 @@ internal sealed partial class WebServer
         _podcastTopPoolCacheFilePath = string.IsNullOrWhiteSpace(podcastTopPoolCacheFilePath)
             ? AppPaths.PodcastTopPoolCacheFile
             : Path.GetFullPath(podcastTopPoolCacheFilePath);
+        _libraryIndexCacheFile = string.IsNullOrWhiteSpace(libraryIndexCacheFilePath)
+            ? AppPaths.LibraryIndexCacheFile
+            : Path.GetFullPath(libraryIndexCacheFilePath);
+        _videoAudioCompatibilityTranscoder = videoAudioCompatibilityTranscoder ?? new();
         LoadPodcastTopPoolCache();
         _broadcaster = broadcaster;
         _dlna = dlna;
@@ -373,6 +380,9 @@ internal sealed partial class WebServer
             ScannedFolders = _scannedFolders,
             StartedUtc    = _scanStartedUtc,
             CompletedUtc  = _lastIndexRefreshUtc,
+            ScanDurationMs = Volatile.Read(ref _libraryScanDurationMs) is var scanDuration && scanDuration >= 0
+                ? scanDuration
+                : null,
             LastError     = _lastScanError,
             StaleLinkCount = _staleLinkCount,
             AllPathsInvalid      = !_isIndexing && !_config.AllResolvedMoviesPaths.Any(Directory.Exists),
@@ -607,10 +617,10 @@ internal sealed partial class WebServer
     {
         try
         {
-            if (!File.Exists(LibraryIndexCacheFile))
+            if (!File.Exists(_libraryIndexCacheFile))
                 return;
 
-            var json = File.ReadAllText(LibraryIndexCacheFile);
+            var json = File.ReadAllText(_libraryIndexCacheFile);
             var cache = JsonSerializer.Deserialize<LibraryIndexCache>(json, CaseInsensitiveOptions);
             if (cache is null || !string.Equals(NormalizePath(cache.RootPath), NormalizePath(_config.ResolvedMoviesPath), StringComparison.OrdinalIgnoreCase))
                 return;
@@ -640,12 +650,12 @@ internal sealed partial class WebServer
             };
 
             var json = JsonSerializer.Serialize(cache, IndentedOptions);
-            var tmp = LibraryIndexCacheFile + ".tmp";
+            var tmp = _libraryIndexCacheFile + ".tmp";
             File.WriteAllText(tmp, json);
-            if (File.Exists(LibraryIndexCacheFile))
-                File.Replace(tmp, LibraryIndexCacheFile, destinationBackupFileName: null);
+            if (File.Exists(_libraryIndexCacheFile))
+                File.Replace(tmp, _libraryIndexCacheFile, destinationBackupFileName: null);
             else
-                File.Move(tmp, LibraryIndexCacheFile);
+                File.Move(tmp, _libraryIndexCacheFile);
         }
         catch (Exception ex)
         {
